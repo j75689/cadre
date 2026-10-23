@@ -74,6 +74,12 @@ type Entry struct {
 	Data []byte
 }
 
+// KeyInfo describes a log entry without its data.
+type KeyInfo struct {
+	Key  string
+	Size int64
+}
+
 // Log is the append-only log: threads, run history, audit. A stream is a
 // sequence of immutable entries ordered by key.
 //
@@ -96,6 +102,10 @@ type Log interface {
 	// of zero or less means no limit. Entries of streams nested under this
 	// one are never returned.
 	Read(ctx context.Context, stream, after string, limit int) ([]Entry, error)
+	// Keys is Read without the data: the keys and sizes of up to limit
+	// entries after after, in ascending key order. It never reads entry
+	// contents, so finding the latest entry of a stream is cheap.
+	Keys(ctx context.Context, stream, after string, limit int) ([]KeyInfo, error)
 }
 
 // ErrInvalidName is returned by Log methods for a malformed stream or key.

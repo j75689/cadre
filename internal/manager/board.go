@@ -110,6 +110,8 @@ type ThreadEntry struct {
 	Kind   EntryKind `json:"kind"`
 	Body   string    `json:"body"`
 	At     time.Time `json:"at"`
+	// RunID is the run that wrote an agent's entry.
+	RunID string `json:"runId,omitempty"`
 }
 
 // ThreadStream is the log stream holding a task's thread.
@@ -125,6 +127,11 @@ const maxSeqRaces = 20
 // skipped by reading the log past it. Author and entry kinds are required:
 // nobody is recorded as a human by default.
 func (m *Manager) AppendThread(ctx context.Context, key storage.Key, author Author, kind EntryKind, body string) (*ThreadEntry, error) {
+	return m.appendThread(ctx, key, author, kind, body, "")
+}
+
+// appendThread is AppendThread, recording the run that wrote the entry.
+func (m *Manager) appendThread(ctx context.Context, key storage.Key, author Author, kind EntryKind, body, runID string) (*ThreadEntry, error) {
 	switch {
 	case author.Name == "" || strings.TrimSpace(body) == "":
 		return nil, fmt.Errorf("author and body are required: %w", ErrInvalid)
@@ -142,7 +149,7 @@ func (m *Manager) AppendThread(ctx context.Context, key storage.Key, author Auth
 	if t.Status.Thread != nil {
 		rev = t.Status.Thread.Revision
 	}
-	entry := &ThreadEntry{Seq: rev + 1, Author: author, Kind: kind, Body: body, At: m.now().UTC().Truncate(time.Second)}
+	entry := &ThreadEntry{Seq: rev + 1, Author: author, Kind: kind, Body: body, At: m.now().UTC().Truncate(time.Second), RunID: runID}
 	for range maxSeqRaces {
 		data, err := json.Marshal(entry)
 		if err != nil {
@@ -168,21 +175,33 @@ func (m *Manager) AppendThread(ctx context.Context, key storage.Key, author Auth
 }
 
 // lastSeq returns the highest sequence number in the thread, given that
-// taken is known to exist.
+// taken is known to exist. It lists keys only.
 func (m *Manager) lastSeq(ctx context.Context, stream string, taken int64) (int64, error) {
-	last := taken
-	entries, err := m.store.Read(ctx, stream, storage.SeqKey(taken), 0)
+	return m.latestSeq(ctx, stream, taken)
+}
+
+// latestSeq returns the highest sequence number in a stream keyed by
+// SeqKey, starting from one known to exist (0 for none). It lists keys
+// after it, never entry contents, and makes no assumption that the
+// numbers are dense.
+func (m *Manager) latestSeq(ctx context.Context, stream string, from int64) (int64, error) {
+	after := ""
+	if from > 0 {
+		after = storage.SeqKey(from)
+	}
+	keys, err := m.store.Keys(ctx, stream, after, 0)
 	if err != nil {
 		return 0, err
 	}
-	for _, e := range entries {
-		seq, err := strconv.ParseInt(e.Key, 10, 64)
+	latest := from
+	for _, k := range keys {
+		seq, err := strconv.ParseInt(k.Key, 10, 64)
 		if err != nil {
-			return 0, fmt.Errorf("thread entry key %q: %w", e.Key, err)
+			return 0, fmt.Errorf("%s key %q: %w", stream, k.Key, err)
 		}
-		last = max(last, seq)
+		latest = max(latest, seq)
 	}
-	return last, nil
+	return latest, nil
 }
 
 // readStream reads a log stream after the key after, decoding each entry.

@@ -589,3 +589,32 @@ func testLogAlreadyExistsMeansReadable(t *testing.T, s *suite) {
 		t.Fatalf("append %s/R1 succeeded but Read returns %+v, %v", parent, got, rerr)
 	}
 }
+
+// Keys lists what Read would return, without the data: keys and sizes, in
+// order, paged by after and limit, and never a nested stream's entries.
+func testLogKeys(t *testing.T, s *suite) {
+	d := s.open()
+	stream := s.ns + "/t/files/a"
+	for seq, data := range []string{"x", "yy", "zzz"} {
+		if err := d.Append(s.ctx, stream, storage.SeqKey(int64(seq+1)), []byte(data)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := d.Append(s.ctx, stream+"/nested", "k", []byte("n")); err != nil {
+		t.Fatal(err)
+	}
+	all, err := d.Keys(s.ctx, stream, "", 0)
+	want := []storage.KeyInfo{{Key: storage.SeqKey(1), Size: 1}, {Key: storage.SeqKey(2), Size: 2}, {Key: storage.SeqKey(3), Size: 3}}
+	if err != nil || !slices.Equal(all, want) {
+		t.Fatalf("keys: %+v, %v; want %+v", all, err, want)
+	}
+	if page, err := d.Keys(s.ctx, stream, storage.SeqKey(1), 1); err != nil || !slices.Equal(page, want[1:2]) {
+		t.Fatalf("keys after 1, limit 1: %+v, %v", page, err)
+	}
+	if none, err := d.Keys(s.ctx, s.ns+"/t/files/missing", "", 0); err != nil || len(none) != 0 {
+		t.Fatalf("keys of a missing stream: %+v, %v", none, err)
+	}
+	if _, err := d.Keys(s.ctx, s.ns+"//t", "", 0); !errors.Is(err, storage.ErrInvalidName) {
+		t.Fatalf("keys of a malformed stream: %v", err)
+	}
+}

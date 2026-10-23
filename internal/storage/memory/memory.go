@@ -243,6 +243,19 @@ func (d *Driver) Read(_ context.Context, stream, after string, limit int) ([]sto
 	return out, nil
 }
 
+// Keys implements storage.Log.
+func (d *Driver) Keys(ctx context.Context, stream, after string, limit int) ([]storage.KeyInfo, error) {
+	entries, err := d.Read(ctx, stream, after, limit)
+	if err != nil {
+		return nil, err
+	}
+	out := make([]storage.KeyInfo, len(entries))
+	for i, e := range entries {
+		out[i] = storage.KeyInfo{Key: e.Key, Size: int64(len(e.Data))}
+	}
+	return out, nil
+}
+
 // ListTeams implements storage.Index.
 func (d *Driver) ListTeams(context.Context) ([]v1alpha1.Team, error) {
 	d.b.mu.Lock()

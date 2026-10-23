@@ -6,7 +6,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"strconv"
 	"strings"
 	"unicode/utf8"
 
@@ -46,20 +45,29 @@ func (m *Manager) RunPost(ctx context.Context, key storage.Key, runID, body stri
 	if err != nil {
 		return nil, err
 	}
-	return m.AppendThread(ctx, key, agentAuthor(t), EntryComment, body)
+	return m.appendThread(ctx, key, agentAuthor(t), EntryComment, body, runID)
 }
 
 // RunAsk appends the agent's question and ends the run as
 // Waiting{Question}. When it returns without error the run is over: the
 // runner must stop, without finishing.
+//
+// There is one Question per ask: if the thread's latest entry is already
+// this run's Question with the same text (a retry after ending the run
+// failed), it is reused and only the run is ended.
 func (m *Manager) RunAsk(ctx context.Context, key storage.Key, runID, question string) (*ThreadEntry, error) {
 	t, err := m.activeRun(ctx, key, runID)
 	if err != nil {
 		return nil, err
 	}
-	entry, err := m.AppendThread(ctx, key, agentAuthor(t), EntryQuestion, question)
+	entry, err := m.lastEntry(ctx, key)
 	if err != nil {
 		return nil, err
+	}
+	if entry == nil || entry.Kind != EntryQuestion || entry.RunID != runID || entry.Body != question {
+		if entry, err = m.appendThread(ctx, key, agentAuthor(t), EntryQuestion, question, runID); err != nil {
+			return nil, err
+		}
 	}
 	if _, _, err := m.Finish(ctx, key, FinishRequest{
 		RunID: runID, Outcome: task.OutcomeWaiting, Reason: v1alpha1.WaitingQuestion, ThreadSeq: entry.Seq,
@@ -67,6 +75,24 @@ func (m *Manager) RunAsk(ctx context.Context, key storage.Key, runID, question s
 		return entry, err
 	}
 	return entry, nil
+}
+
+// lastEntry returns the thread's latest entry, or nil for an empty thread.
+func (m *Manager) lastEntry(ctx context.Context, key storage.Key) (*ThreadEntry, error) {
+	stream := ThreadStream(key)
+	latest, err := m.latestSeq(ctx, stream, 0)
+	if err != nil || latest == 0 {
+		return nil, err
+	}
+	var after string
+	if latest > 1 {
+		after = storage.SeqKey(latest - 1)
+	}
+	entries, err := readStream[ThreadEntry](ctx, m.store, stream, after, 1)
+	if err != nil || len(entries) == 0 {
+		return nil, err
+	}
+	return &entries[0], nil
 }
 
 // SubtaskCreated is a subtask a run asked for.
@@ -77,8 +103,10 @@ type SubtaskCreated struct {
 
 // RunCreateSubtask records a subtask in the task's outbox (the Record
 // transition, fenced on the run), then applies the outbox and numbers the
-// subtask at once so the agent learns its number. If that last part fails
-// the subtask still appears with the next dispatch, and Number is 0.
+// subtask at once so the agent learns its number. Applying the outbox
+// applies every item pending on the task, not only this one, which is what
+// the dispatcher would do next anyway. That eager part is best effort: if
+// it fails the subtask appears with the next dispatch, and Number is 0.
 func (m *Manager) RunCreateSubtask(ctx context.Context, key storage.Key, runID string, spec v1alpha1.TaskSpec) (*SubtaskCreated, error) {
 	if err := requireRunID(runID); err != nil {
 		return nil, err
@@ -184,35 +212,15 @@ func (m *Manager) RunWriteFile(ctx context.Context, key storage.Key, runID, path
 	return info, nil
 }
 
-// latestVersion returns the highest version in a file stream, 0 if none.
-// It reads keys only as far as it must: versions are dense.
+// latestVersion returns the highest version in a file stream, 0 if none,
+// from its keys alone.
 func (m *Manager) latestVersion(ctx context.Context, stream string) (int64, error) {
-	var latest int64
-	for {
-		next, err := m.store.Read(ctx, stream, storage.SeqKey(latest+64), 1)
-		if err != nil {
-			return 0, err
-		}
-		if len(next) == 0 {
-			break
-		}
-		latest += 64
-	}
-	entries, err := m.store.Read(ctx, stream, storage.SeqKey(latest), 0)
-	if err != nil {
-		return 0, err
-	}
-	for _, e := range entries {
-		if v, err := strconv.ParseInt(e.Key, 10, 64); err == nil {
-			latest = max(latest, v)
-		}
-	}
-	return latest, nil
+	return m.latestSeq(ctx, stream, 0)
 }
 
 // appendSeq appends data under the next free sequence number.
 func (m *Manager) appendSeq(ctx context.Context, stream string, data []byte) error {
-	seq, err := m.latestVersion(ctx, stream)
+	seq, err := m.latestSeq(ctx, stream, 0)
 	if err != nil {
 		return err
 	}
