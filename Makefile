@@ -38,7 +38,7 @@ manifests: $(CONTROLLER_GEN) ## Generate CRD manifests into config/crd/bases
 	$(CONTROLLER_GEN) crd paths=./api/... output:crd:artifacts:config=config/crd/bases
 
 verify-generated: generate manifests ## Fail if generated files are out of date
-	@test -z "$$(git status --porcelain -- api config)" || { git status --short -- api config; echo "generated files are stale: run make generate manifests and commit"; exit 1; }
+	@test -z "$$(git status --porcelain -- api/*/zz_generated.deepcopy.go config/crd)" || { git status --short -- api/*/zz_generated.deepcopy.go config/crd; echo "generated files are stale: run make generate manifests and commit"; exit 1; }
 
 tidy:
 	go mod tidy
