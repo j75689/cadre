@@ -23,6 +23,7 @@ const (
 	CodeRunMismatch       = "run_mismatch"       // 409: the run lost its task; stop
 	CodeStepMismatch      = "step_mismatch"      // 409: step mode; drop this result
 	CodeInvalidTransition = "invalid_transition" // 409: not allowed from the task's phase
+	CodeInProgress        = "in_progress"        // 409: being done by another request
 	CodeUnavailable       = "unavailable"        // 503: retry later
 )
 
@@ -86,6 +87,8 @@ func Classify(err error) string {
 		return CodeStepMismatch
 	case errors.Is(err, task.ErrInvalidTransition):
 		return CodeInvalidTransition
+	case errors.Is(err, manager.ErrInProgress):
+		return CodeInProgress
 	case errors.Is(err, manager.ErrInvalid), errors.Is(err, task.ErrInvalidEvent),
 		errors.Is(err, storage.ErrInvalidQuery), errors.Is(err, storage.ErrInvalid), errors.Is(err, storage.ErrInvalidName):
 		return CodeInvalid
@@ -111,6 +114,13 @@ func Fail(w http.ResponseWriter, log *slog.Logger, err error) {
 		WriteError(w, http.StatusConflict, code, task.ErrInvalidTransition.Error())
 	case CodeInvalid:
 		WriteError(w, http.StatusBadRequest, code, err.Error())
+	case CodeInProgress:
+		// The message says when to come back, and nothing else.
+		msg := manager.ErrInProgress.Error()
+		if p := (*manager.CallInProgress)(nil); errors.As(err, &p) {
+			msg = p.Error()
+		}
+		WriteError(w, http.StatusConflict, code, msg)
 	case CodeNotFound:
 		WriteError(w, http.StatusNotFound, code, "not found")
 	case CodeAlreadyExists:

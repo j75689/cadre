@@ -34,17 +34,15 @@ type Server struct {
 	// schemas caches the tools' input and output schemas, which would
 	// otherwise be built by reflection on every request.
 	schemas *sdk.SchemaCache
-	// sources, when set, lets the endpoint forward the agent's
-	// ToolServers; discovery caches their tool lists.
-	sources   Sources
-	discovery discovery
+	// fwd, when set, forwards the agent's ToolServers.
+	fwd *Forwarder
 }
 
 // Option configures the endpoint.
 type Option func(*Server)
 
-// WithToolServers forwards each run's agent's ToolServers, read from src.
-func WithToolServers(src Sources) Option { return func(s *Server) { s.sources = src } }
+// WithForwarder forwards each run's agent's ToolServers through f.
+func WithForwarder(f *Forwarder) Option { return func(s *Server) { s.fwd = f } }
 
 // NewServer returns the endpoint.
 func NewServer(m *manager.Manager, log *slog.Logger, opts ...Option) *Server {
@@ -101,6 +99,8 @@ func (s *Server) serverFor(r *http.Request) *sdk.Server {
 	server := sdk.NewServer(&sdk.Implementation{Name: "cadre run " + t.Status.Run.ID, Version: v1alpha1.GroupVersion.Version},
 		&sdk.ServerOptions{SchemaCache: s.schemas})
 	s.addTools(server, t)
-	s.addForwarded(server, t, s.forwardedTools(r.Context(), t))
+	if s.fwd != nil {
+		s.addForwarded(server, t, s.fwd.forwardedTools(r.Context(), t))
+	}
 	return server
 }

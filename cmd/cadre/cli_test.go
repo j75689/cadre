@@ -12,9 +12,11 @@ import (
 	"testing"
 	"time"
 
+	v1alpha1 "github.com/j75689/cadre/api/v1alpha1"
 	"github.com/j75689/cadre/internal/api"
 	"github.com/j75689/cadre/internal/manager"
 	"github.com/j75689/cadre/internal/runner"
+	"github.com/j75689/cadre/internal/storage"
 	"github.com/j75689/cadre/internal/storage/memory"
 )
 
@@ -133,4 +135,45 @@ func TestRunnerFakeHonoursCadreNamespace(t *testing.T) {
 	if len(got.Namespaces) != 1 || got.Namespaces[0] != "team-b" {
 		t.Fatalf("claimed in %v, want only team-b", got.Namespaces)
 	}
+}
+
+// approver is a ToolCaller that echoes the call.
+type approver struct{}
+
+func (approver) CallTool(_ context.Context, _ string, call manager.ToolCall) manager.ToolResult {
+	return manager.ToolResult{Body: "opened " + string(call.Arguments)}
+}
+
+func TestApproveAndDenyFromTheCLI(t *testing.T) {
+	m := manager.New(memory.NewBackend().Open(), manager.Config{Agents: manager.ReadyBuiltin("team-a", "coder", "claude"), Tools: approver{}})
+	log := slog.New(slog.NewTextHandler(io.Discard, nil))
+	mux := http.NewServeMux()
+	api.NewServer(m, log).Register(mux)
+	srv := httptest.NewServer(mux)
+	defer srv.Close()
+	ctx := context.Background()
+	key := storage.Key{Namespace: "team-a", Name: "open-pr"}
+	ask := func(args string) {
+		t.Helper()
+		c, err := m.Claim(ctx, manager.ClaimRequest{Runner: "r", Labels: map[string]string{v1alpha1.LabelRuntime: string(v1alpha1.RuntimeBuiltin)}})
+		if err != nil || c == nil {
+			t.Fatalf("claim: %+v, %v", c, err)
+		}
+		call := manager.ToolCall{Name: "github__create_pull_request", ToolServer: "github", Tool: "create_pull_request", Arguments: []byte(args)}
+		if _, err := m.RunToolCall(ctx, key, c.RunID, call); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	cadre(t, srv.URL, "team", "init")
+	cadre(t, srv.URL, "task", "create", "Open a PR", "--name", "open-pr", "--agent", "coder")
+	if err := cadreFails(t, srv.URL, "task", "approve", "open-pr"); !strings.Contains(err.Error(), "not waiting for a tool approval") {
+		t.Fatalf("approve a Todo task: %v", err)
+	}
+	ask(`{"title":"fix login"}`)
+	mustContain(t, cadre(t, srv.URL, "task", "get", "open-pr"), "Waiting:   ToolApproval", "(ToolCall): Calls github__create_pull_request", `arguments: {"title":"fix login"}`)
+	mustContain(t, cadre(t, srv.URL, "task", "approve", "open-pr"), `The call returned: opened {"title":"fix login"}`, "#1 is Todo")
+	ask(`{}`)
+	mustContain(t, cadre(t, srv.URL, "task", "deny", "#1", "-m", "not today"), "#1 is Todo")
+	mustContain(t, cadre(t, srv.URL, "task", "get", "#1"), "alice (Denied): not today")
 }

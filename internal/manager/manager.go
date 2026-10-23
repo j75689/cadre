@@ -23,6 +23,9 @@ type Config struct {
 	// Agents decides which tasks a runner may claim. Without it no task is
 	// claimable.
 	Agents Agents
+	// Tools makes the calls humans approve. Without it an approved call
+	// is recorded as not made.
+	Tools ToolCaller
 
 	// Lease is how long a claim or heartbeat keeps a run alive.
 	Lease time.Duration

@@ -301,6 +301,15 @@ func TestReplyClearsWaiting(t *testing.T) {
 	}
 }
 
+func TestReplyToOneWait(t *testing.T) {
+	waiting := taskIn(v1alpha1.PhaseWaiting, step)
+	waiting.Status.Waiting.ThreadSeq = 4
+	if s := apply(t, waiting, Reply{ThreadSeq: 4}).Status; s.Phase != v1alpha1.PhaseTodo {
+		t.Fatalf("a reply to the wait's entry: %+v", s)
+	}
+	wantErr(t, waiting, Reply{ThreadSeq: 3}, ErrInvalidTransition)
+}
+
 func TestReclaim(t *testing.T) {
 	live := taskIn(v1alpha1.PhaseRunning, runtime)
 	live.Status.Run.LeaseUntil = metav1.NewTime(now)

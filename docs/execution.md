@@ -19,7 +19,7 @@ Every transition is one conditional write on the Task (`resourceVersion` in the 
 | `Todo` → `Running` | a claim | Team semaphore has room; a new run_id and lease are minted |
 | lease renewal | heartbeat | run_id matches, otherwise 409 and the runner must stop |
 | `Running` → `Waiting` | finish with `Waiting{reason}` | run_id matches; the run ends |
-| `Waiting` → `Todo` | human reply or approval | `waiting` cleared |
+| `Waiting` → `Todo` | human reply, or a decision on a tool call | `waiting` cleared; a decision names the call's thread entry and is refused if the task now waits on another |
 | `Running` → `Review` / `Done` / `Failed` | finish | run_id matches |
 | `Running` → `Todo` | lease expiry reclaim | `leaseUntil` has passed; the run is marked interrupted |
 | any → `Cancelled` | human | an in-flight run gets 409 on its next heartbeat |
@@ -98,16 +98,24 @@ The agent's ToolServers are forwarded through the same endpoint:
 
 - Each ToolServer in the Agent's `toolRefs` that exists, is Ready and has a `url` offers its tools as `<toolserver>__<tool>`, both names reduced to the model APIs' characters (a `.` in the ToolServer's name becomes `_`). A name over 64 characters, a tool whose input schema is not an object schema, and every tool among several reducing to one name are skipped and logged.
 - The tool list is built from cached reads of the Agent and its ToolServers. Tool lists are discovered with an MCP client, concurrently, within 10 seconds in all, and cached per ToolServer for a minute (a new generation lists again); a failure to list is remembered for 15 seconds. A ToolServer that cannot be reached offers no tools, which is logged and never breaks the core tools.
-- `permissions` decide what is offered: `allow` is forwarded, `deny` is neither offered nor callable. An `ask` tool is not offered yet; approval arrives with the next change.
+- `permissions` decide what is offered: `allow` is forwarded, `deny` is neither offered nor callable, and `ask` is offered but must ask a human first (below).
 - Each call is fenced on the run, then reads its ToolServer fresh: one that is gone, not Ready or no longer allows the tool gets no call. The call is made with the ToolServer's credential, read fresh from its Secret for every call (trailing newlines trimmed) and never cached or logged; it is sent only to the ToolServer's own host, and redirects are not followed. A call may take 60 seconds; results keep text and structured content up to 1 MiB, cut on a character boundary, and media is dropped with a note.
+
+A call of an `ask` tool is not made by the run. It appends a ToolCall entry to the thread, recording the tool and its arguments under a fresh call id, and ends the run as `Waiting{ToolApproval}` naming that entry, in one step like `thread_ask`; the runner must stop without calling finish. A human then decides, with `POST /api/v1/namespaces/{ns}/tasks/{name}/approve` (`{author, approve, note}`) or `cadre task approve|deny`; a reply does not end this wait.
+
+- **Approve** appends an Approved entry, makes the call Cadre-side on the ToolServer read fresh (one that is gone, not Ready or now denies the tool gets no call, and the result says so), appends a ToolResult entry with what the call returned, and sends the task back to `Todo`. The next run reads the result in the thread.
+- **Deny** appends a Denied entry and sends the task back to `Todo`.
+- **The earliest decision wins.** Decisions are create-only appends to the thread, so two humans deciding at once cannot both win: a request makes the call only when the winning Approved entry is its own. A request losing to the other decision gets 409 `invalid_transition`; one losing to the same decision just ends the wait.
+- **An approved call is never repeated.** If the approver dies after its Approved entry but before the ToolResult, the call may or may not have happened. Approving again within two minutes of the Approved entry (the 60-second call bound plus a margin) gets 409 `in_progress`, saying when to try again; after that it records a ToolResult saying the outcome is unknown, without making the call, and ends the wait. The agent may ask again, which needs a fresh approval.
+- Once the call is made, its result and the end of the wait are written even if the human's request goes away. An approval may take up to 90 seconds, like a request to the per-run endpoint.
 
 What fencing guarantees for each tool in runtime mode, in M1:
 
 | Tool | Guarantee |
 | --- | --- |
 | `task_create_subtask` | fully fenced: the subtask enters the outbox in a conditional write on the Task that checks the run |
-| `thread_ask` | the run ends through Finish, which is fenced; the Question is appended just before it |
-| `thread_post`, `thread_ask`'s Question, `task_files_write` | checked, then written: a fresh read must show the run still holding the task, then the log entry is appended. A run that loses its task in the moment between the two can still land that one entry. |
+| `thread_ask`, an `ask` tool | the run ends through Finish, which is fenced; the Question or ToolCall is appended just before it |
+| `thread_post`, `thread_ask`'s Question, an `ask` tool's ToolCall, `task_files_write` | checked, then written: a fresh read must show the run still holding the task, then the log entry is appended. A run that loses its task in the moment between the two can still land that one entry. |
 
 A two-phase write would close that window: the content written first, then a pointer to it committed in a run-fenced write. It is planned for M2.
 

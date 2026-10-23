@@ -33,6 +33,7 @@ func TestFail(t *testing.T) {
 		storage.ErrStreamCollision: {503, httpjson.CodeUnavailable},
 		manager.ErrInvalid:         {400, httpjson.CodeInvalid},
 		manager.ErrBusy:            {503, httpjson.CodeUnavailable},
+		manager.ErrInProgress:      {409, httpjson.CodeInProgress},
 		fmt.Errorf("etcd timeout"): {503, httpjson.CodeUnavailable},
 	} {
 		rec := httptest.NewRecorder()

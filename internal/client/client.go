@@ -147,6 +147,13 @@ func (c *Client) Reply(ctx context.Context, ns, name, author, body string) (*api
 	return &out, err
 }
 
+// Approve approves (approve true) or denies the tool call a task waits on.
+func (c *Client) Approve(ctx context.Context, ns, name, author string, approve bool, note string) (*api.ApproveResponse, error) {
+	var out api.ApproveResponse
+	_, err := c.do(ctx, http.MethodPost, taskPath(ns, name)+"/approve", api.ApproveRequest{Author: author, Approve: &approve, Note: note}, &out)
+	return &out, err
+}
+
 // Thread reads up to limit thread entries after sequence number after.
 func (c *Client) Thread(ctx context.Context, ns, name string, after int64, limit int) (*api.Thread, error) {
 	var out api.Thread
