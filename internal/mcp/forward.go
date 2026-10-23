@@ -358,7 +358,17 @@ func (s *Server) addForwarded(server *sdk.Server, t *v1alpha1.Task, tools map[st
 			description = strings.TrimSpace(description + "\n\n" + askNote)
 		}
 		var handler sdk.ToolHandler = func(ctx context.Context, req *sdk.CallToolRequest) (*sdk.CallToolResult, error) {
-			if fw.ask {
+			if err := s.m.CheckRun(ctx, key, runID); err != nil {
+				return s.fail(err), nil
+			}
+			// What the ToolServer permits now decides, not the list the
+			// tool was offered from: a tool denied since is refused
+			// without paging a human, and the run goes on.
+			ts, perm, why := s.fwd.callable(ctx, t.Namespace, fw.server.Name, fw.remote.Name)
+			if ts == nil {
+				return toolError(why), nil
+			}
+			if perm == v1alpha1.PermissionAsk {
 				_, err := s.m.RunToolCall(ctx, key, runID, manager.ToolCall{
 					Name: name, ToolServer: fw.server.Name, Tool: fw.remote.Name, Arguments: req.Params.Arguments,
 				})
@@ -366,13 +376,6 @@ func (s *Server) addForwarded(server *sdk.Server, t *v1alpha1.Task, tools map[st
 					return s.fail(err), nil
 				}
 				return &sdk.CallToolResult{Content: []sdk.Content{&sdk.TextContent{Text: msgApprovalEnded}}}, nil
-			}
-			if err := s.m.CheckRun(ctx, key, runID); err != nil {
-				return s.fail(err), nil
-			}
-			ts, why := s.fwd.callable(ctx, t.Namespace, fw.server.Name, fw.remote.Name, false)
-			if ts == nil {
-				return toolError(why), nil
 			}
 			return s.fwd.forward(ctx, ts, fw.remote.Name, req.Params.Arguments), nil
 		}
@@ -391,33 +394,35 @@ func (s *Server) addForwarded(server *sdk.Server, t *v1alpha1.Task, tools map[st
 const askNote = "Calling this tool needs a human's approval: the call is recorded and the run ends. Stop working once you call it; a new run continues with its result once a human decides."
 
 // callable reads a ToolServer fresh for a call of tool: it must exist, be
-// Ready and still permit the tool, by allow or, for a call a human approved,
-// by ask. Otherwise it returns nil and what to tell the agent.
-func (f *Forwarder) callable(ctx context.Context, namespace, server, tool string, approved bool) (*v1alpha1.ToolServer, string) {
+// Ready and permit the tool, by allow or ask, which it returns. Otherwise it
+// returns nil and what to tell the agent.
+func (f *Forwarder) callable(ctx context.Context, namespace, server, tool string) (*v1alpha1.ToolServer, v1alpha1.Permission, string) {
+	if f == nil || f.sources == nil {
+		return nil, "", "This server forwards no ToolServers."
+	}
 	ts, err := f.sources.ToolServer(ctx, namespace, server)
 	if err != nil && !isNotFound(err) {
 		f.log.Warn("forward call: read ToolServer", "toolServer", namespace+"/"+server, "err", err)
-		return nil, msgUnreachable
+		return nil, "", msgUnreachable
 	}
 	if err != nil || ts.Spec.URL == "" || !ts.Status.ReadyFor(ts.Generation) {
-		return nil, "This tool's server is gone or not Ready."
+		return nil, "", "This tool's server is gone or not Ready."
 	}
-	switch permissionFor(ts.Spec.Permissions, tool) {
-	case v1alpha1.PermissionAllow:
-		return ts, ""
-	case v1alpha1.PermissionAsk:
-		if approved {
-			return ts, ""
-		}
+	perm := permissionFor(ts.Spec.Permissions, tool)
+	if perm != v1alpha1.PermissionAllow && perm != v1alpha1.PermissionAsk {
+		return nil, perm, "This tool is no longer available to this run."
 	}
-	return nil, "This tool is no longer available to this run."
+	return ts, perm, ""
 }
+
+// CallTimeout is the longest a forwarded call may take.
+func (f *Forwarder) CallTimeout() time.Duration { return forwardTimeout }
 
 // CallTool makes a call a human approved, on its ToolServer read fresh. A
 // call its ToolServer no longer permits is not made, and the result says
 // so. The result's text is what the agent reads next.
 func (f *Forwarder) CallTool(ctx context.Context, namespace string, call manager.ToolCall) manager.ToolResult {
-	ts, why := f.callable(ctx, namespace, call.ToolServer, call.Tool, true)
+	ts, _, why := f.callable(ctx, namespace, call.ToolServer, call.Tool)
 	if ts == nil {
 		return manager.ToolResult{Body: "The call was not made. " + why, IsError: true}
 	}

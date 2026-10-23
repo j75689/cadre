@@ -287,7 +287,7 @@ func (m *Manager) Answer(ctx context.Context, key storage.Key, author Author, bo
 	} else if entry, err = m.AppendThread(ctx, key, author, EntryAnswer, body); err != nil {
 		return nil, nil, err
 	}
-	t, err = m.transition(ctx, key, task.Reply{})
+	t, err = m.transition(ctx, key, task.Reply{ThreadSeq: w.ThreadSeq})
 	if err != nil {
 		return nil, entry, err
 	}

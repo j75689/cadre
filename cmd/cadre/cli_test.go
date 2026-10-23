@@ -144,6 +144,8 @@ func (approver) CallTool(_ context.Context, _ string, call manager.ToolCall) man
 	return manager.ToolResult{Body: "opened " + string(call.Arguments)}
 }
 
+func (approver) CallTimeout() time.Duration { return time.Minute }
+
 func TestApproveAndDenyFromTheCLI(t *testing.T) {
 	m := manager.New(memory.NewBackend().Open(), manager.Config{Agents: manager.ReadyBuiltin("team-a", "coder", "claude"), Tools: approver{}})
 	log := slog.New(slog.NewTextHandler(io.Discard, nil))
@@ -172,6 +174,9 @@ func TestApproveAndDenyFromTheCLI(t *testing.T) {
 	}
 	ask(`{"title":"fix login"}`)
 	mustContain(t, cadre(t, srv.URL, "task", "get", "open-pr"), "Waiting:   ToolApproval", "(ToolCall): Calls github__create_pull_request", `arguments: {"title":"fix login"}`)
+	if err := cadreFails(t, srv.URL, "task", "reply", "open-pr", "-m", "yes"); !strings.Contains(err.Error(), "use approve or deny") {
+		t.Fatalf("reply to a tool approval: %v", err)
+	}
 	mustContain(t, cadre(t, srv.URL, "task", "approve", "open-pr"), `The call returned: opened {"title":"fix login"}`, "#1 is Todo")
 	ask(`{}`)
 	mustContain(t, cadre(t, srv.URL, "task", "deny", "#1", "-m", "not today"), "#1 is Todo")

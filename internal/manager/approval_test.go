@@ -7,6 +7,7 @@ import (
 	"sync"
 	"sync/atomic"
 	"testing"
+	"time"
 
 	v1alpha1 "github.com/j75689/cadre/api/v1alpha1"
 	"github.com/j75689/cadre/internal/storage"
@@ -20,6 +21,8 @@ func (c *caller) CallTool(_ context.Context, _ string, call ToolCall) ToolResult
 	c.calls.Add(1)
 	return ToolResult{Body: "opened " + string(call.Arguments)}
 }
+
+func (c *caller) CallTimeout() time.Duration { return time.Minute }
 
 var (
 	bob    = Author{Kind: AuthorUser, Name: "bob"}
@@ -172,7 +175,7 @@ func TestApprovedCallIsNeverRepeated(t *testing.T) {
 	if _, err := m.Approve(ctx, key, alice, true, ""); !errors.Is(err, ErrInProgress) {
 		t.Fatalf("approving while the call may run: %v, want ErrInProgress", err)
 	}
-	e.clock.add(RepairAfter)
+	e.clock.add(2 * time.Minute) // the caller's minute, and the margin
 	a, err := m.Approve(ctx, key, alice, true, "")
 	if err != nil || !a.Result.Call.IsError || a.Result.Body != msgUnknownOutcome || a.Task.Status.Phase != v1alpha1.PhaseTodo {
 		t.Fatalf("repair: %+v, %v", a, err)
@@ -190,5 +193,63 @@ func TestApproveWithoutTools(t *testing.T) {
 	a, err := e.m.Approve(ctx, key, alice, true, "")
 	if err != nil || !a.Result.Call.IsError || !strings.Contains(a.Result.Body, "not made") {
 		t.Fatalf("approval: %+v, %v", a, err)
+	}
+}
+
+// A retried call whose arguments come back spaced or with HTML characters
+// is still the one call.
+func TestRunToolCallComparesCanonicalArguments(t *testing.T) {
+	e := newEnv(t, 1)
+	key := e.addTask(t, "t", v1alpha1.AssigneeAgent)
+	c := e.claim(t)
+	call := prCall
+	call.Arguments = []byte(`{"body": "a < b && c > d"}`)
+	if _, err := e.manager(&failSecondWrite{Driver: e.store}).RunToolCall(ctx, key, c.RunID, call); err == nil {
+		t.Fatal("first call: want the injected failure")
+	}
+	if _, err := e.m.RunToolCall(ctx, key, c.RunID, call); err != nil {
+		t.Fatal(err)
+	}
+	if thread, _ := e.m.ReadThread(ctx, key, 0, 0); len(thread) != 1 {
+		t.Fatalf("%d entries, want one ToolCall: %+v", len(thread), thread)
+	}
+	bad := prCall
+	bad.Arguments = []byte(`{not json`)
+	if _, err := e.m.RunToolCall(ctx, key, c.RunID, bad); !errors.Is(err, ErrInvalid) {
+		t.Fatalf("arguments that are not JSON: %v, want ErrInvalid", err)
+	}
+}
+
+// replyFirst lets another approver of the same decision end the wait just
+// after the result is recorded.
+type replyFirst struct {
+	storage.Driver
+	once  sync.Once
+	after func()
+}
+
+func (r *replyFirst) Append(c context.Context, stream, key string, data []byte) error {
+	err := r.Driver.Append(c, stream, key, data)
+	if err == nil && strings.Contains(string(data), `"kind":"ToolResult"`) {
+		r.once.Do(r.after)
+	}
+	return err
+}
+
+// The approver who made the call succeeds even when another approver of
+// the same decision ended the wait first.
+func TestApproverWhoseWaitWasEndedSucceeds(t *testing.T) {
+	e := newEnv(t, 1)
+	tools := &caller{}
+	key := e.addTask(t, "t", v1alpha1.AssigneeAgent)
+	e.asked(t, e.withTools(e.store, tools), key)
+	race := &replyFirst{Driver: e.store, after: func() {
+		if _, err := e.withTools(e.store, tools).Approve(ctx, key, bob, true, ""); err != nil {
+			t.Error(err)
+		}
+	}}
+	a, err := e.withTools(race, tools).Approve(ctx, key, alice, true, "")
+	if err != nil || a.Task.Status.Phase != v1alpha1.PhaseTodo || tools.calls.Load() != 1 {
+		t.Fatalf("approval whose wait another ended: %+v, %v, %d calls", a, err, tools.calls.Load())
 	}
 }

@@ -435,3 +435,38 @@ func TestAskApproveAndDeny(t *testing.T) {
 		t.Fatalf("the upstream saw %v; only the first, approved call may reach it", up.lastArg.Load())
 	}
 }
+
+// An ask tool denied since the list was built is refused without recording
+// a call, and the run goes on.
+func TestAskDeniedSinceListingKeepsTheRun(t *testing.T) {
+	e, _, src := forwardingEnv(t)
+	c := e.claim(t)
+	s := e.session(t, c.MCPToken)
+	if _, err := s.ListTools(ctx, nil); err != nil {
+		t.Fatal(err)
+	}
+	denied := src.toolServers["github"].DeepCopy()
+	denied.Spec.Permissions["create_pull_request"] = v1alpha1.PermissionDeny
+	src.changed = map[string]*v1alpha1.ToolServer{"github": denied}
+	res, err := s.CallTool(ctx, &sdk.CallToolParams{Name: "github__create_pull_request", Arguments: map[string]any{"query": "x"}})
+	if err != nil || !res.IsError {
+		t.Fatalf("an ask tool denied since: %+v, %v", res, err)
+	}
+	key := storage.Key{Namespace: ns, Name: "t"}
+	got, err := e.m.GetTask(ctx, key)
+	if err != nil || got.Status.Phase != v1alpha1.PhaseRunning {
+		t.Fatalf("after the refused call: %+v, %v", got.Status, err)
+	}
+	if thread, _ := e.m.ReadThread(ctx, key, 0, 0); len(thread) != 0 {
+		t.Fatalf("a refused call was recorded: %+v", thread)
+	}
+}
+
+// A Forwarder without Sources makes no call and does not panic.
+func TestForwarderWithoutSources(t *testing.T) {
+	f := mcp.NewForwarder(nil, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	res := f.CallTool(ctx, ns, manager.ToolCall{ID: "x", Name: "github__search", ToolServer: "github", Tool: "search"})
+	if !res.IsError || !strings.Contains(res.Body, "not made") {
+		t.Fatalf("a call without sources: %+v", res)
+	}
+}

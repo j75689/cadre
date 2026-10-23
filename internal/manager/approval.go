@@ -38,9 +38,11 @@ type ToolResult struct {
 
 // ToolCaller makes an approved call on its ToolServer, which it reads
 // fresh. It never fails: a call it cannot or may not make comes back as an
-// error result saying why.
+// error result saying why. It bounds the call itself, by CallTimeout.
 type ToolCaller interface {
 	CallTool(ctx context.Context, namespace string, call ToolCall) ToolResult
+	// CallTimeout is the longest a call may take.
+	CallTimeout() time.Duration
 }
 
 // MaxToolArguments bounds the arguments of a call that asks first.
@@ -63,13 +65,19 @@ func (e *CallInProgress) Error() string {
 // Is makes a CallInProgress match ErrInProgress.
 func (e *CallInProgress) Is(target error) bool { return target == ErrInProgress }
 
-// Approval timing: an approved call runs for at most CallTimeout, so one
-// approved longer than RepairAfter ago without a result is taken to have
+// repairMargin is how much longer than its ToolCaller's CallTimeout an
+// approved call without a result is waited for before it is taken to have
 // died with its approver.
-const (
-	CallTimeout = 60 * time.Second
-	RepairAfter = CallTimeout + time.Minute
-)
+const repairMargin = time.Minute
+
+// repairAfter is how long after its approval a call without a result is
+// written off as unknown.
+func (m *Manager) repairAfter() time.Duration {
+	if m.cfg.Tools == nil {
+		return repairMargin
+	}
+	return m.cfg.Tools.CallTimeout() + repairMargin
+}
 
 // systemAuthor writes the results of approved calls.
 var systemAuthor = Author{Kind: AuthorSystem, Name: "cadre"}
@@ -89,6 +97,11 @@ func (m *Manager) RunToolCall(ctx context.Context, key storage.Key, runID string
 	case len(call.Arguments) > MaxToolArguments:
 		return nil, fmt.Errorf("arguments are %d bytes, the limit is %d: %w", len(call.Arguments), MaxToolArguments, ErrInvalid)
 	}
+	args, err := canonical(call.Arguments)
+	if err != nil {
+		return nil, err
+	}
+	call.Arguments = args
 	t, err := m.activeRun(ctx, key, runID)
 	if err != nil {
 		return nil, err
@@ -114,6 +127,21 @@ func (m *Manager) RunToolCall(ctx context.Context, key storage.Key, runID string
 	return entry, nil
 }
 
+// canonical is arguments as the thread stores them: json.Marshal compacts
+// a raw message and escapes HTML characters, so a retried call compares
+// equal to its recorded entry whatever its spacing.
+func canonical(args json.RawMessage) (json.RawMessage, error) {
+	if len(args) == 0 {
+		return nil, nil
+	}
+	if !json.Valid(args) {
+		return nil, fmt.Errorf("arguments are not JSON: %w", ErrInvalid)
+	}
+	return json.Marshal(args)
+}
+
+// sameCall compares a recorded call, whose arguments the thread holds in
+// canonical form, with one in canonical form.
 func sameCall(recorded *ToolCall, call ToolCall) bool {
 	return recorded != nil && recorded.Name == call.Name && recorded.ToolServer == call.ToolServer &&
 		recorded.Tool == call.Tool && string(recorded.Arguments) == string(call.Arguments)
@@ -137,11 +165,15 @@ type Approval struct {
 // twice. A request that loses to the other decision fails with
 // ErrInvalidTransition; one that loses to the same decision finishes the
 // wait. A call is never repeated: when its approver died before recording
-// the result, approving again after RepairAfter records the outcome as
-// unknown, and before that fails with ErrInProgress.
+// the result, approving again once the ToolCaller's CallTimeout and a
+// minute have passed records the outcome as unknown, and before that fails
+// with ErrInProgress. Only the earliest decision on a call counts; a later
+// one, from an approver who lost a race, stays in the thread and means
+// nothing.
 //
 // The result and the Reply are written even if ctx ends once the call has
-// been made.
+// been made. A Reply that finds the wait already ended by another approver
+// of the same decision succeeds.
 func (m *Manager) Approve(ctx context.Context, key storage.Key, author Author, approve bool, note string) (*Approval, error) {
 	if author.Name == "" {
 		return nil, fmt.Errorf("author is required: %w", ErrInvalid)
@@ -154,7 +186,7 @@ func (m *Manager) Approve(ctx context.Context, key storage.Key, author Author, a
 	if t.Status.Phase != v1alpha1.PhaseWaiting || w == nil || w.Reason != v1alpha1.WaitingToolApproval {
 		return nil, fmt.Errorf("approve a task that is not waiting for a tool approval: %w", task.ErrInvalidTransition)
 	}
-	since, err := m.ReadThread(ctx, key, w.ThreadSeq-1, 0)
+	since, err := m.callEntries(ctx, key, w.ThreadSeq)
 	if err != nil {
 		return nil, err
 	}
@@ -177,7 +209,7 @@ func (m *Manager) Approve(ctx context.Context, key storage.Key, author Author, a
 			return nil, err
 		}
 		// Another approver may have decided first.
-		if since, err = m.ReadThread(ctx, key, w.ThreadSeq-1, 0); err != nil {
+		if since, err = m.callEntries(ctx, key, w.ThreadSeq); err != nil {
 			return nil, err
 		}
 		decision = firstAbout(since, call.ID, EntryApproved, EntryDenied)
@@ -192,8 +224,8 @@ func (m *Manager) Approve(ctx context.Context, key storage.Key, author Author, a
 		switch {
 		case mine != nil && mine.Seq == decision.Seq:
 			result = m.callTool(ctx, key.Namespace, call)
-		case m.now().Sub(decision.At) < RepairAfter:
-			return nil, &CallInProgress{RepairAt: decision.At.Add(RepairAfter)}
+		case m.now().Sub(decision.At) < m.repairAfter():
+			return nil, &CallInProgress{RepairAt: decision.At.Add(m.repairAfter())}
 		default:
 			result = ToolResult{Body: msgUnknownOutcome, IsError: true}
 		}
@@ -210,21 +242,40 @@ func (m *Manager) Approve(ctx context.Context, key storage.Key, author Author, a
 			return nil, err
 		}
 	}
-	if out.Task, err = m.transition(ctx, key, task.Reply{ThreadSeq: w.ThreadSeq}); err != nil {
+	if out.Task, err = m.replyTo(ctx, key, w.ThreadSeq); err != nil {
 		return nil, err
 	}
 	return out, nil
 }
 
-// callTool makes an approved call, bounded by CallTimeout but not by ctx:
-// a caller that hangs up does not cut a call that may be taking effect.
+// callEntries reads the thread from the entry a wait names. The task is
+// known to exist.
+func (m *Manager) callEntries(ctx context.Context, key storage.Key, seq int64) ([]ThreadEntry, error) {
+	return readStream[ThreadEntry](ctx, m.store, ThreadStream(key), storage.SeqKey(seq-1), 0)
+}
+
+// replyTo ends the wait on thread entry seq. A wait another request already
+// ended counts as ended: that request acted on the same decision.
+func (m *Manager) replyTo(ctx context.Context, key storage.Key, seq int64) (*v1alpha1.Task, error) {
+	t, err := m.transition(ctx, key, task.Reply{ThreadSeq: seq})
+	if !errors.Is(err, task.ErrInvalidTransition) {
+		return t, err
+	}
+	if t, rerr := m.store.GetTask(ctx, key); rerr == nil {
+		if w := t.Status.Waiting; t.Status.Phase != v1alpha1.PhaseWaiting || w == nil || w.ThreadSeq != seq {
+			return t, nil
+		}
+	}
+	return nil, err
+}
+
+// callTool makes an approved call, bounded by the ToolCaller but not by
+// ctx: a caller that hangs up does not cut a call that may be taking effect.
 func (m *Manager) callTool(ctx context.Context, namespace string, call ToolCall) ToolResult {
 	if m.cfg.Tools == nil {
 		return ToolResult{Body: "The call was not made: this server forwards no ToolServers.", IsError: true}
 	}
-	ctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), CallTimeout)
-	defer cancel()
-	return m.cfg.Tools.CallTool(ctx, namespace, call)
+	return m.cfg.Tools.CallTool(context.WithoutCancel(ctx), namespace, call)
 }
 
 // firstAbout returns the earliest entry about call id of one of kinds.

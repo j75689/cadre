@@ -216,6 +216,10 @@ func newTaskReply(g *globals) *cobra.Command {
 			}
 			res, err := c.Reply(cmd.Context(), g.namespace, name, g.as, msg)
 			if client.IsCode(err, httpjson.CodeInvalidTransition) {
+				if t, gerr := c.GetTask(cmd.Context(), g.namespace, name); gerr == nil && t.Status.Waiting != nil &&
+					t.Status.Waiting.Reason == v1alpha1.WaitingToolApproval {
+					return fmt.Errorf("%s is waiting for a tool approval; use approve or deny instead", name)
+				}
 				return fmt.Errorf("%s is not waiting for an answer; use comment instead", name)
 			}
 			if err != nil {
