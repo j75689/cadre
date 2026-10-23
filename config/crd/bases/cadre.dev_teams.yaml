@@ -86,12 +86,42 @@ spec:
                 format: int64
                 type: integer
               running:
-                description: |-
-                  Running is the number of runs currently holding a slot of the
-                  MaxConcurrentRuns semaphore. It is a cache, recomputable from the index.
+                description: Running is len(Slots), written with it, for kubectl's
+                  printer column.
                 format: int32
                 minimum: 0
                 type: integer
+              slots:
+                description: |-
+                  Slots are the runs holding a slot of the MaxConcurrentRuns semaphore,
+                  keyed by run id. Taking and giving back a slot are idempotent. The cap
+                  is enforced when a slot is taken, not by the schema: the reconciler may
+                  briefly re-add a run that is visibly Running past the cap.
+                items:
+                  description: Slot is one run holding a slot of the Team's semaphore.
+                  properties:
+                    acquiredAt:
+                      description: AcquiredAt is when the slot was taken.
+                      format: date-time
+                      type: string
+                    runId:
+                      description: RunID is the run holding the slot.
+                      pattern: ^[0-9A-HJKMNP-TV-Z]{26}$
+                      type: string
+                    task:
+                      description: Task is the name of the task the run was claimed
+                        for.
+                      minLength: 1
+                      type: string
+                  required:
+                  - acquiredAt
+                  - runId
+                  - task
+                  type: object
+                type: array
+                x-kubernetes-list-map-keys:
+                - runId
+                x-kubernetes-list-type: map
             type: object
         type: object
         x-kubernetes-validations:

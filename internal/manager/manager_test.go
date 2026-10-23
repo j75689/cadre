@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"slices"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -315,19 +316,54 @@ func TestRecordEvent(t *testing.T) {
 	}
 }
 
-func TestTeamReconcileNeedsTwoScans(t *testing.T) {
+func TestReconcileTeams(t *testing.T) {
 	e := newEnv(t, 5)
+	live := e.addTask(t, "live", v1alpha1.AssigneeAgent)
+	e.addTask(t, "idle", v1alpha1.AssigneeAgent)
+	c := e.claim(t) // takes "idle" or "live"; make sure we know which
+	key := storage.Key{Namespace: ns, Name: c.Task.Name}
+	other := "idle"
+	if key == (storage.Key{Namespace: ns, Name: "idle"}) {
+		other = live.Name
+	}
+
+	// Two orphan slots, one young (a claim in flight, perhaps) and one old,
+	// and the live run's slot lost.
 	team, _ := e.store.GetTeam(ctx, ns)
-	team.Status.Running = 3 // releases that were lost
+	team.Status.Slots = []v1alpha1.Slot{
+		{RunID: "01JB000000000000000000000Y", Task: other, AcquiredAt: metav1.NewTime(e.clock.now())},
+		{RunID: "01JB000000000000000000000D", Task: other, AcquiredAt: metav1.NewTime(e.clock.now().Add(-2 * time.Minute))},
+		{RunID: "01JB000000000000000000000G", Task: "gone", AcquiredAt: metav1.NewTime(e.clock.now().Add(-2 * time.Minute))},
+	}
+	team.Status.Running = 3
 	if err := e.store.UpdateTeamStatus(ctx, team); err != nil {
 		t.Fatal(err)
 	}
-	var r teamReconciler
-	if err := r.reconcile(ctx, e.m); err != nil || e.running(t) != 3 {
-		t.Fatalf("first scan: running %d, err %v; want it untouched", e.running(t), err)
+	if err := e.m.ReconcileTeams(ctx); err != nil {
+		t.Fatal(err)
 	}
-	if err := r.reconcile(ctx, e.m); err != nil || e.running(t) != 0 {
-		t.Fatalf("second scan: running %d, err %v; want 0", e.running(t), err)
+	team, _ = e.store.GetTeam(ctx, ns)
+	var held []string
+	for _, sl := range team.Status.Slots {
+		held = append(held, sl.RunID)
+	}
+	slices.Sort(held)
+	want := []string{"01JB000000000000000000000Y", c.RunID}
+	slices.Sort(want)
+	if !slices.Equal(held, want) || team.Status.Running != 2 {
+		t.Fatalf("slots %v (running %d), want the young orphan and the live run %v", held, team.Status.Running, want)
+	}
+
+	// Once the young orphan is old too, it goes; the live run stays.
+	e.clock.add(61 * time.Second)
+	if _, err := e.m.Heartbeat(ctx, key, c.RunID); err != nil {
+		t.Fatal(err)
+	}
+	if err := e.m.ReconcileTeams(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if team, _ = e.store.GetTeam(ctx, ns); len(team.Status.Slots) != 1 || team.Status.Slots[0].RunID != c.RunID {
+		t.Fatalf("slots %+v, want only the live run", team.Status.Slots)
 	}
 }
 

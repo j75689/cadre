@@ -35,11 +35,33 @@ type TeamStatus struct {
 	// +optional
 	NextNumber int64 `json:"nextNumber,omitempty"`
 
-	// Running is the number of runs currently holding a slot of the
-	// MaxConcurrentRuns semaphore. It is a cache, recomputable from the index.
+	// Slots are the runs holding a slot of the MaxConcurrentRuns semaphore,
+	// keyed by run id. Taking and giving back a slot are idempotent. The cap
+	// is enforced when a slot is taken, not by the schema: the reconciler may
+	// briefly re-add a run that is visibly Running past the cap.
+	// +listType=map
+	// +listMapKey=runId
+	// +optional
+	Slots []Slot `json:"slots,omitempty"`
+
+	// Running is len(Slots), written with it, for kubectl's printer column.
 	// +kubebuilder:validation:Minimum=0
 	// +optional
 	Running int32 `json:"running,omitempty"`
+}
+
+// Slot is one run holding a slot of the Team's semaphore.
+type Slot struct {
+	// RunID is the run holding the slot.
+	// +kubebuilder:validation:Pattern=`^[0-9A-HJKMNP-TV-Z]{26}$`
+	RunID string `json:"runId"`
+
+	// Task is the name of the task the run was claimed for.
+	// +kubebuilder:validation:MinLength=1
+	Task string `json:"task"`
+
+	// AcquiredAt is when the slot was taken.
+	AcquiredAt metav1.Time `json:"acquiredAt"`
 }
 
 // Team opts a namespace in to Cadre and holds its task counter and

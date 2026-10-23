@@ -142,6 +142,11 @@ func (m *Manager) applyItem(ctx context.Context, parent *v1alpha1.Task, it v1alp
 		if it.Run == nil {
 			return fmt.Errorf("no run: %w", ErrInvalid)
 		}
+		// The transition that ended the run released its slot already,
+		// unless that release was lost; releasing again is a no-op.
+		if err := m.releaseSlot(ctx, parent.Namespace, it.ID); err != nil {
+			return err
+		}
 		data, err := json.Marshal(it.Run)
 		if err != nil {
 			return err
@@ -180,48 +185,69 @@ func (m *Manager) ReclaimExpired(ctx context.Context) error {
 	})
 }
 
-// teamReconciler corrects a Team's running count from the index. A lost
-// release leaves the count too high, which only costs capacity; correcting
-// it too eagerly could let a claim overshoot, because a claim holds its slot
-// before the index shows the task Running. So a count is only lowered once
-// two scans in a row saw the same excess.
-type teamReconciler struct {
-	excess map[string]int32
-}
-
-func (r *teamReconciler) reconcile(ctx context.Context, m *Manager) error {
-	if r.excess == nil {
-		r.excess = map[string]int32{}
-	}
+// ReconcileTeams repairs the Teams' slot sets. Like every transition, it
+// decides only on fresh reads of the Task a slot names, never on the index:
+// the index only proposes candidates, and an eventually consistent count can
+// never tell a claim in flight from a lost release.
+//
+//   - A slot whose task does not hold its run is given back once it is older
+//     than twice the lease. Its claim never landed, or the run ended and both
+//     of its releases were lost. A younger slot may belong to a claim in
+//     flight, so it is left alone.
+//   - A run that is Running without a slot is added back, past the cap if
+//     need be, so the count never hides a run that is visibly running.
+func (m *Manager) ReconcileTeams(ctx context.Context) error {
 	return m.forEachTeam(ctx, func(ns string) error {
-		running, err := m.store.ListTasks(ctx, storage.Query{Namespace: ns, Phases: []v1alpha1.Phase{v1alpha1.PhaseRunning}})
-		if err != nil {
-			return err
-		}
-		count := int32(len(running))
 		team, err := m.store.GetTeam(ctx, ns)
 		if err != nil {
 			return err
 		}
-		excess := team.Status.Running - count
-		prev := r.excess[ns]
-		r.excess[ns] = excess
-		if excess <= 0 || prev <= 0 {
-			return nil
+		now := m.now()
+		var errs []error
+		for _, sl := range team.Status.Slots {
+			if now.Sub(sl.AcquiredAt.Time) <= 2*m.cfg.Lease {
+				continue
+			}
+			t, err := m.store.GetTask(ctx, storage.Key{Namespace: ns, Name: sl.Task})
+			switch {
+			case errors.Is(err, storage.ErrNotFound):
+			case err != nil:
+				errs = append(errs, err)
+				continue
+			case t.Status.Run != nil && t.Status.Run.ID == sl.RunID:
+				continue // the run is live
+			}
+			if err := m.releaseSlot(ctx, ns, sl.RunID); err != nil {
+				errs = append(errs, err)
+			}
 		}
-		fix := min(excess, prev)
-		if err := m.writeTeam(ctx, ns, func(team *v1alpha1.Team) (v1alpha1.TeamStatus, error) {
-			s := team.Status
-			s.Running = max(s.Running-fix, 0)
-			return s, nil
-		}); err != nil {
-			return err
+
+		running, err := m.store.ListTasks(ctx, storage.Query{Namespace: ns, Phases: []v1alpha1.Phase{v1alpha1.PhaseRunning}})
+		if err != nil {
+			return errors.Join(append(errs, err)...)
 		}
-		// The fixed part is gone; only what is left over counts as seen
-		// once. Otherwise the next scan would treat a claim in flight as a
-		// second sighting and take its slot.
-		r.excess[ns] = excess - fix
-		return nil
+		for _, cand := range running {
+			if cand.Status.Run == nil || task.HoldsSlot(team, cand.Status.Run.ID) {
+				continue
+			}
+			t, err := m.store.GetTask(ctx, storage.Key{Namespace: ns, Name: cand.Name})
+			if err != nil {
+				if !errors.Is(err, storage.ErrNotFound) {
+					errs = append(errs, err)
+				}
+				continue
+			}
+			if t.Status.Phase != v1alpha1.PhaseRunning || t.Status.Run == nil {
+				continue
+			}
+			runID := t.Status.Run.ID
+			if err := m.writeTeam(ctx, ns, func(team *v1alpha1.Team) (v1alpha1.TeamStatus, error) {
+				return task.AddSlot(team, runID, t.Name, now), nil
+			}); err != nil {
+				errs = append(errs, err)
+			}
+		}
+		return errors.Join(errs...)
 	})
 }
 
@@ -250,7 +276,6 @@ func (m *Manager) Run(ctx context.Context, cfg LoopConfig, log *slog.Logger) {
 	dispatch := time.NewTicker(cfg.Dispatch)
 	defer reclaim.Stop()
 	defer dispatch.Stop()
-	var teams teamReconciler
 	for {
 		select {
 		case <-ctx.Done():
@@ -266,7 +291,7 @@ func (m *Manager) Run(ctx context.Context, cfg LoopConfig, log *slog.Logger) {
 			if err := m.Dispatch(ctx); err != nil {
 				log.Warn("dispatch outbox", "err", err)
 			}
-			if err := teams.reconcile(ctx, m); err != nil {
+			if err := m.ReconcileTeams(ctx); err != nil {
 				log.Warn("reconcile teams", "err", err)
 			}
 		}

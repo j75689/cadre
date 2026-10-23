@@ -91,30 +91,28 @@ func TestFailedAndUncertainClaimWrites(t *testing.T) {
 	}
 }
 
-func TestTeamReconcileForgetsAFixedExcess(t *testing.T) {
-	e := newEnv(t, 5)
-	setRunning := func(n int32) {
-		team, _ := e.store.GetTeam(ctx, ns)
-		team.Status.Running = n
-		if err := e.store.UpdateTeamStatus(ctx, team); err != nil {
-			t.Fatal(err)
-		}
+// failingTeamWrites makes every Team status write fail.
+type failingTeamWrites struct{ storage.Driver }
+
+func (failingTeamWrites) UpdateTeamStatus(context.Context, *v1alpha1.Team) error { return errTimeout }
+
+// A slot whose release was lost is given back by the dispatcher when it
+// applies the run's RunEnded item.
+func TestDispatchReleasesALostSlot(t *testing.T) {
+	e := newEnv(t, 1)
+	key := e.addTask(t, "t", v1alpha1.AssigneeAgent)
+	c := e.claim(t)
+	if _, _, err := e.manager(failingTeamWrites{e.store}).Finish(ctx, key, FinishRequest{RunID: c.RunID, Outcome: task.OutcomeDone}); err != nil {
+		t.Fatal(err)
 	}
-	setRunning(2)
-	var r teamReconciler
-	for range 2 {
-		if err := r.reconcile(ctx, e.m); err != nil {
-			t.Fatal(err)
-		}
+	if e.running(t) != 1 {
+		t.Fatalf("running %d; the release should have been lost", e.running(t))
+	}
+	if err := e.m.Dispatch(ctx); err != nil {
+		t.Fatal(err)
 	}
 	if e.running(t) != 0 {
-		t.Fatalf("running %d after two scans, want 0", e.running(t))
-	}
-	// A claim holds its slot but is not Running in the index yet. One scan
-	// must not take the slot, however large the excess fixed before it.
-	setRunning(1)
-	if err := r.reconcile(ctx, e.m); err != nil || e.running(t) != 1 {
-		t.Fatalf("the scan after a fix took a live claim's slot: running %d, %v", e.running(t), err)
+		t.Fatalf("running %d after dispatch, want 0", e.running(t))
 	}
 }
 

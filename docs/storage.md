@@ -55,7 +55,7 @@ spec:
 
 etcd and object storage offer conditional writes on **single objects** only, so the core is written to that constraint from day one:
 
-1. **One transition changes one object.** The Task is an aggregate; every transition writes only that Task. The one exception is the Team semaphore, which is claimed before and released after the Task write and tolerates a lost decrement (it is recomputed from the index).
+1. **One transition changes one object.** The Task is an aggregate; every transition writes only that Task. The one exception is the Team semaphore: a run's slot is taken in the Team before the Task claim and given back after the Task write that ends the run. Slots are a set of run ids, so taking and giving back are idempotent. A slot that is not given back is never lost: the run's end is also written to the Task's outbox, and the dispatcher gives the slot back before it acks the item. A slot taken by a claim that never landed is removed by a reconciler, which decides on fresh reads of the named Task only, never on the index, and only once the slot is older than twice the lease.
 2. **Side effects live inside the object.** "Create a subtask", "notify", "dispatch a run" are written into the Task's embedded outbox together with the state change. A dispatcher applies them idempotently and clears them with another conditional write.
 3. **Indexes are always rebuildable.** Board indexes and per-team counts are caches, rebuilt from a list on restart.
 4. **Audit history is embedded.** A deliverable's history is an append-only list inside its object, written with its state; it moves to the log when it grows.
