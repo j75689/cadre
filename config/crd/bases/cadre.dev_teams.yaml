@@ -1,0 +1,103 @@
+---
+apiVersion: apiextensions.k8s.io/v1
+kind: CustomResourceDefinition
+metadata:
+  annotations:
+    controller-gen.kubebuilder.io/version: v0.23.0
+  name: teams.cadre.dev
+spec:
+  group: cadre.dev
+  names:
+    kind: Team
+    listKind: TeamList
+    plural: teams
+    singular: team
+  scope: Namespaced
+  versions:
+  - additionalPrinterColumns:
+    - jsonPath: .spec.displayName
+      name: DisplayName
+      type: string
+    - jsonPath: .status.running
+      name: Running
+      type: integer
+    - jsonPath: .spec.maxConcurrentRuns
+      name: Max
+      type: integer
+    - jsonPath: .metadata.creationTimestamp
+      name: Age
+      type: date
+    name: v1alpha1
+    schema:
+      openAPIV3Schema:
+        description: |-
+          Team opts a namespace in to Cadre and holds its task counter and
+          concurrency semaphore.
+        properties:
+          apiVersion:
+            description: |-
+              APIVersion defines the versioned schema of this representation of an object.
+              Servers should convert recognized schemas to the latest internal value, and
+              may reject unrecognized values.
+              More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#resources
+            type: string
+          kind:
+            description: |-
+              Kind is a string value representing the REST resource this object represents.
+              Servers may infer this from the endpoint the client submits requests to.
+              Cannot be updated.
+              In CamelCase.
+              More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#types-kinds
+            type: string
+          metadata:
+            type: object
+          spec:
+            description: TeamSpec is the human-owned configuration of a team.
+            properties:
+              archiveAfter:
+                description: |-
+                  ArchiveAfter is how long a finished task stays on the board before it is
+                  archived to object storage. It must be a positive Go duration such as
+                  720h.
+                type: string
+                x-kubernetes-validations:
+                - message: archiveAfter must be a positive duration such as 720h
+                  rule: duration(self) > duration('0s')
+              displayName:
+                description: DisplayName is the name shown on the board.
+                type: string
+              maxConcurrentRuns:
+                default: 1
+                description: |-
+                  MaxConcurrentRuns caps the number of tasks in this team that may be
+                  Running at once. Claims are refused while the cap is reached.
+                format: int32
+                minimum: 1
+                type: integer
+            type: object
+          status:
+            description: TeamStatus is the control state of a team, written only by
+              the Task Manager.
+            properties:
+              nextNumber:
+                description: |-
+                  NextNumber is the human-facing number the next task will receive.
+                  It is claimed with a conditional write.
+                format: int64
+                type: integer
+              running:
+                description: |-
+                  Running is the number of runs currently holding a slot of the
+                  MaxConcurrentRuns semaphore. It is a cache, recomputable from the index.
+                format: int32
+                minimum: 0
+                type: integer
+            type: object
+        type: object
+        x-kubernetes-validations:
+        - message: a Team must be named team
+          rule: self.metadata.name == 'team'
+    served: true
+    storage: true
+    subresources:
+      status: {}

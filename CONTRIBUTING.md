@@ -17,13 +17,19 @@ Thank you for taking the time to contribute. Cadre is at the design stage, so th
 
 ## Development
 
-Requirements: Go (see `go.mod`), `make`, a local Kubernetes (Docker Desktop, OrbStack or kind) and MinIO for object storage once M0 lands.
+Requirements: Go (see `go.mod`) and `make`. Running Cadre itself later also needs a local Kubernetes (Docker Desktop, OrbStack or kind) and MinIO for object storage.
 
 ```sh
-make build      # build all binaries into bin/
-make test       # run unit tests
-make check      # gofmt, go vet, golangci-lint and tests
+make build             # build all binaries into bin/
+make generate          # regenerate deepcopy code after changing api/
+make manifests         # regenerate the CRDs in config/crd/bases
+make test              # run all tests, including the CRD tests against an envtest API server
+make check             # gofmt, go vet, golangci-lint, verify-generated and tests: what CI runs
+make verify-generated  # regenerate, then fail if the committed generated files differ
+make tools             # install the pinned tools into bin/tools
 ```
+
+The tools (controller-gen, golangci-lint, setup-envtest) are pinned in the `Makefile` and installed into `bin/tools` on first use. The first `make test` also downloads the envtest `kube-apiserver` and `etcd` binaries, so it needs network access once. Without `make`, the API tests skip unless `CI` is set, and then they fail.
 
 ## Commit messages
 
