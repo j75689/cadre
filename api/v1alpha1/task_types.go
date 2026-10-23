@@ -108,7 +108,9 @@ type Waiting struct {
 	// Since is when the task started waiting.
 	Since metav1.Time `json:"since"`
 
-	// ThreadSeq is the thread entry that asked for the human, if any.
+	// ThreadSeq is the thread entry that asked for the human, if any. Thread
+	// sequences start at 1, so an unset ThreadSeq means none.
+	// +kubebuilder:validation:Minimum=1
 	// +optional
 	ThreadSeq int64 `json:"threadSeq,omitempty"`
 }
@@ -251,6 +253,7 @@ type TaskStatus struct {
 // +kubebuilder:object:root=true
 // +kubebuilder:subresource:status
 // +kubebuilder:resource:scope=Namespaced
+// +kubebuilder:validation:XValidation:rule="!has(self.spec.parentRef) || self.spec.parentRef.name != self.metadata.name",message="a Task cannot be its own parent"
 // +kubebuilder:printcolumn:name="Number",type=integer,JSONPath=`.status.number`
 // +kubebuilder:printcolumn:name="Phase",type=string,JSONPath=`.status.phase`
 // +kubebuilder:printcolumn:name="Assignee",type=string,JSONPath=`.spec.assignee.name`

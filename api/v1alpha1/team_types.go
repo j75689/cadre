@@ -21,7 +21,9 @@ type TeamSpec struct {
 	MaxConcurrentRuns int32 `json:"maxConcurrentRuns,omitempty"`
 
 	// ArchiveAfter is how long a finished task stays on the board before it is
-	// archived to object storage.
+	// archived to object storage. It must be a positive Go duration such as
+	// 720h.
+	// +kubebuilder:validation:XValidation:rule="duration(self) > duration('0s')",message="archiveAfter must be a positive duration such as 720h"
 	// +optional
 	ArchiveAfter *metav1.Duration `json:"archiveAfter,omitempty"`
 }

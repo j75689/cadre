@@ -9,6 +9,7 @@ import (
 
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/envtest"
@@ -18,11 +19,16 @@ import (
 
 const ns = "default"
 
-// startAPIServer applies the generated CRDs to an envtest API server. It skips
-// when the envtest binaries are not installed; `make test` installs them.
+// startAPIServer applies the generated CRDs to an envtest API server. Outside
+// CI it skips when the envtest binaries are not installed; `make test`
+// installs them. In CI a missing install fails, so coverage cannot silently
+// disappear.
 func startAPIServer(t *testing.T) client.Client {
 	t.Helper()
 	if os.Getenv("KUBEBUILDER_ASSETS") == "" {
+		if os.Getenv("CI") != "" {
+			t.Fatal("KUBEBUILDER_ASSETS is not set in CI; run make test")
+		}
 		t.Skip("KUBEBUILDER_ASSETS is not set; run make test")
 	}
 	env := &envtest.Environment{
@@ -91,11 +97,27 @@ func TestCRDs(t *testing.T) {
 		}
 	})
 
+	t.Run("team archiveAfter must be a positive duration", func(t *testing.T) {
+		// The typed client cannot even encode these, so send raw objects.
+		for _, d := range []string{"30d", "-1h", "0s"} {
+			team := &unstructured.Unstructured{Object: map[string]any{
+				"apiVersion": v1alpha1.GroupVersion.String(),
+				"kind":       "Team",
+				"metadata":   map[string]any{"name": v1alpha1.TeamName, "namespace": "kube-public"},
+				"spec":       map[string]any{"archiveAfter": d},
+			}}
+			if err := c.Create(ctx, team); !apierrors.IsInvalid(err) {
+				t.Errorf("archiveAfter %q: got %v, want Invalid", d, err)
+			}
+		}
+	})
+
 	t.Run("task validation", func(t *testing.T) {
 		for name, spec := range map[string]v1alpha1.TaskSpec{
 			"missing title":    {},
 			"unknown priority": {Title: "x", Priority: "whenever"},
 			"unknown assignee": {Title: "x", Assignee: &v1alpha1.Assignee{Kind: "Robot", Name: "r"}},
+			"own parent":       {Title: "x", ParentRef: &v1alpha1.TaskReference{Name: "invalid"}},
 		} {
 			task := &v1alpha1.Task{ObjectMeta: metav1.ObjectMeta{Name: "invalid", Namespace: ns}, Spec: spec}
 			if err := c.Create(ctx, task); !apierrors.IsInvalid(err) {

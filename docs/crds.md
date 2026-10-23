@@ -48,6 +48,13 @@ Three roles:
 
 Role mapping for SSO (the equivalent of Argo CD's `AppProject` roles) hangs here.
 
+| Field | Rule |
+| --- | --- |
+| `metadata.name` | must be `team` |
+| `spec.maxConcurrentRuns` | at least 1, default 1 |
+| `spec.archiveAfter` | a positive duration, such as `720h` |
+| `status.nextNumber`, `status.running` | written by the Task Manager only; `running` is a cache, recomputed from the index |
+
 ## Task
 
 Iron rule: humans and GitOps write `spec`; only the Task Manager writes `status`, through the status subresource. `kubectl edit` and the state machine never overwrite each other, and spec changes never touch the run's fencing fields.
@@ -86,6 +93,21 @@ status:
 - **Exactly seven phases.** `waiting.reason` (`Question`, `ToolApproval`, `Review`) carries the detail. Fewer fields make the move past `v1alpha1` cheaper.
 - **Task is the single aggregate.** The run's control state lives inside the Task, so "the run finished, change the task's phase" is one write on one object.
 - `thread.revision` is the thread's sequencer: every append advances it with a conditional write, so watching the Task is enough to learn the thread changed.
+
+| Field | Values |
+| --- | --- |
+| `spec.title` | required |
+| `spec.assignee.kind` | `Agent` or `User`; an unassigned task is never claimed |
+| `spec.priority` | `low`, `medium`, `high`, `urgent`; default `medium` |
+| `spec.parentRef` | another Task in the same namespace, never the task itself |
+| `status.phase` | the seven phases above |
+| `status.waiting.reason` | `Question`, `ToolApproval`, `Review` |
+| `status.waiting.threadSeq` | a thread sequence; sequences start at 1 |
+| `status.run.id`, `status.outbox[].id` | ULIDs |
+| `status.run.mode` | `runtime` or `step` |
+| `status.outbox[].kind` | `CreateSubtask`, whose `spec` is the subtask's `TaskSpec`; `Notify` is added once its payload is defined |
+
+A `CreateSubtask` item names the subtask after its own id, lowercased (a valid DNS-1123 label). Re-applying the item is then a create of an object that already exists, which is what makes the dispatcher idempotent.
 
 ## Agent, ModelProvider, ToolServer
 

@@ -57,8 +57,12 @@ spec:
               archiveAfter:
                 description: |-
                   ArchiveAfter is how long a finished task stays on the board before it is
-                  archived to object storage.
+                  archived to object storage. It must be a positive Go duration such as
+                  720h.
                 type: string
+                x-kubernetes-validations:
+                - message: archiveAfter must be a positive duration such as 720h
+                  rule: duration(self) > duration('0s')
               displayName:
                 description: DisplayName is the name shown on the board.
                 type: string

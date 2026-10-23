@@ -3,13 +3,23 @@ CMDS     := cadre cadre-server cadre-runner
 GOFLAGS  ?=
 
 TOOLS                  := $(CURDIR)/$(BIN)/tools
-CONTROLLER_GEN         := $(TOOLS)/controller-gen
 CONTROLLER_GEN_VERSION := v0.23.0
-GOLANGCI_LINT          := $(TOOLS)/golangci-lint
 GOLANGCI_LINT_VERSION  := v2.15.0
-ENVTEST                := $(TOOLS)/setup-envtest
 ENVTEST_VERSION        := v0.25.2
 ENVTEST_K8S_VERSION    := 1.37.0
+
+# Tool binaries carry their version, so bumping a version installs a new binary
+# instead of silently reusing a stale one.
+CONTROLLER_GEN := $(TOOLS)/controller-gen-$(CONTROLLER_GEN_VERSION)
+GOLANGCI_LINT  := $(TOOLS)/golangci-lint-$(GOLANGCI_LINT_VERSION)
+ENVTEST        := $(TOOLS)/setup-envtest-$(ENVTEST_VERSION)
+
+# go-install installs package $(2) at version $(3) as the binary $(1).
+define go-install
+	@set -e; tmp=$$(mktemp -d); \
+	GOBIN=$$tmp go install $(2)@$(3); \
+	mkdir -p $(TOOLS); mv $$tmp/$$(basename $(2)) $(1); rm -rf $$tmp
+endef
 
 .PHONY: all build test fmt vet lint check tidy clean generate manifests verify-generated tools
 
@@ -19,8 +29,9 @@ build: ## Build all binaries into bin/
 	@mkdir -p $(BIN)
 	@for c in $(CMDS); do echo "building $$c"; go build $(GOFLAGS) -o $(BIN)/$$c ./cmd/$$c; done
 
-test: $(ENVTEST) ## Run unit tests, with envtest binaries for API tests
-	KUBEBUILDER_ASSETS="$$($(ENVTEST) use $(ENVTEST_K8S_VERSION) --bin-dir $(TOOLS)/envtest -p path)" go test -race -count=1 ./...
+test: $(ENVTEST) ## Run unit tests; downloads envtest binaries on first run
+	assets=$$($(ENVTEST) use $(ENVTEST_K8S_VERSION) --bin-dir $(TOOLS)/envtest -p path) && \
+	KUBEBUILDER_ASSETS="$$assets" go test -race -count=1 ./...
 
 fmt: ## Check formatting
 	@test -z "$$(gofmt -l .)" || { echo "unformatted files:"; gofmt -l .; exit 1; }
@@ -48,13 +59,13 @@ check: fmt vet lint verify-generated test ## Everything CI runs
 tools: $(CONTROLLER_GEN) $(GOLANGCI_LINT) $(ENVTEST) ## Install pinned tools into bin/tools
 
 $(CONTROLLER_GEN):
-	GOBIN=$(TOOLS) go install sigs.k8s.io/controller-tools/cmd/controller-gen@$(CONTROLLER_GEN_VERSION)
+	$(call go-install,$@,sigs.k8s.io/controller-tools/cmd/controller-gen,$(CONTROLLER_GEN_VERSION))
 
 $(GOLANGCI_LINT):
-	GOBIN=$(TOOLS) go install github.com/golangci/golangci-lint/v2/cmd/golangci-lint@$(GOLANGCI_LINT_VERSION)
+	$(call go-install,$@,github.com/golangci/golangci-lint/v2/cmd/golangci-lint,$(GOLANGCI_LINT_VERSION))
 
 $(ENVTEST):
-	GOBIN=$(TOOLS) go install sigs.k8s.io/controller-runtime/tools/setup-envtest@$(ENVTEST_VERSION)
+	$(call go-install,$@,sigs.k8s.io/controller-runtime/tools/setup-envtest,$(ENVTEST_VERSION))
 
 clean:
 	rm -rf $(BIN)
