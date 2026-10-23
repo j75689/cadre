@@ -3,7 +3,7 @@
 **A self-hosted, cloud-native platform for humans and AI agents to work together.**
 Declare agents, models and tools as Kubernetes CRDs. Run the work on a board. Keep every credential inside the cluster.
 
-> Status: design stage (October 2026). No runnable code yet. See [Roadmap](#roadmap).
+> Status: M0 complete (October 2026): the task state machine, the kubernetes storage driver, the Task Manager, `/api/v1`, `/runner/v1`, a CLI and a chaos test that runs in CI. No agents yet; M1 is in progress. See [Roadmap](#roadmap).
 
 ## What it is
 
@@ -46,7 +46,7 @@ Not a SaaS. Not a workflow engine. Not an LLM gateway. Not a sandbox. Cadre inte
 
 | Milestone | Scope | Done when |
 | --- | --- | --- |
-| **M0** state machine | `Task` and `Team` CRDs, storage interface, conformance suite, kubernetes driver, every transition, outbox dispatcher, `cadre` CLI with a fake runner | two managers survive the chaos test; no task runs twice |
+| **M0** state machine (done) | `Task` and `Team` CRDs, storage interface, conformance suite, kubernetes driver, every transition, outbox dispatcher, `cadre` CLI with a fake runner | two managers survive the chaos test; no task runs twice |
 | **M1** runner | `Agent`, `ModelProvider`, `ToolServer`, runner protocol, per-run MCP, `cadre-runner` builtin loop (Anthropic, OpenAI-compatible) | `kubectl apply` a Task, the agent asks a question, a human answers from the CLI, the agent finishes |
 | **M2** execution | builtin loop in step mode, Job backend, managed ToolServers | a rolling update of workers never interrupts a run |
 | **M3** platform | web UI, OIDC and policy RBAC, `Schedule`, `Notifier`, Helm chart | a team uses Cadre day to day without kubectl |
@@ -54,7 +54,7 @@ Not a SaaS. Not a workflow engine. Not an LLM gateway. Not a sandbox. Cadre inte
 
 ## Contributing
 
-Cadre is at the design stage and the design documents are the place to contribute right now. Read [CONTRIBUTING.md](CONTRIBUTING.md) and open an issue or a pull request. Everyone participating is expected to follow the [Code of Conduct](CODE_OF_CONDUCT.md).
+Cadre is early: the design documents under `docs/` are the spec, and the code follows them. Read [CONTRIBUTING.md](CONTRIBUTING.md) and open an issue or a pull request. Everyone participating is expected to follow the [Code of Conduct](CODE_OF_CONDUCT.md).
 
 ## Name
 
