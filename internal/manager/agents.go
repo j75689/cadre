@@ -12,6 +12,7 @@ import (
 
 // Agents gives the Task Manager the configuration a claim needs. Agents and
 // ModelProviders are CRDs, not storage-driver data, so they come from here.
+// All three methods return storage.ErrNotFound for a missing object.
 type Agents interface {
 	// CachedAgent may answer from a cache. It only pre-filters claim
 	// candidates; no decision rests on it.
@@ -21,8 +22,6 @@ type Agents interface {
 	// ModelProvider reads the ModelProvider fresh.
 	ModelProvider(ctx context.Context, namespace, name string) (*v1alpha1.ModelProvider, error)
 }
-
-// Both return storage.ErrNotFound for a missing object.
 
 // claimableBy reports whether a runner sending labels may claim the tasks of
 // agent: the agent is Ready for its current spec, and its runtime matches.
@@ -86,4 +85,16 @@ func ReadyAgent(namespace, name, modelRef string, runtime v1alpha1.AgentRuntime)
 	a.Status.ObservedGeneration = 1
 	a.Status.Conditions = []metav1.Condition{{Type: v1alpha1.ConditionReady, Status: metav1.ConditionTrue, ObservedGeneration: 1, Reason: "Resolved"}}
 	return a
+}
+
+// ReadyBuiltin returns Agents holding one Ready builtin agent and the
+// ModelProvider it names, as a cluster with working controllers would; for
+// tests.
+func ReadyBuiltin(namespace, agent, model string) StaticAgents {
+	mp := &v1alpha1.ModelProvider{Spec: v1alpha1.ModelProviderSpec{Type: v1alpha1.ProviderAnthropic, Model: "claude-opus-5-5"}}
+	mp.Namespace, mp.Name = namespace, model
+	return StaticAgents{
+		Agents:         map[string]*v1alpha1.Agent{namespace + "/" + agent: ReadyAgent(namespace, agent, model, v1alpha1.AgentRuntime{Type: v1alpha1.RuntimeBuiltin})},
+		ModelProviders: map[string]*v1alpha1.ModelProvider{namespace + "/" + model: mp},
+	}
 }

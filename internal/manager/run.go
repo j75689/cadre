@@ -23,7 +23,7 @@ var ErrInvalid = errors.New("invalid request")
 type ClaimRequest struct {
 	Runner     string
 	Namespaces []string          // empty means every Team namespace
-	Labels     map[string]string // matched against Agent selectors from M1; ignored in M0
+	Labels     map[string]string // decide which agents' tasks the runner may take (see claimableBy)
 }
 
 // Claimed is a task handed to a runner.
@@ -53,7 +53,7 @@ func (m *Manager) Claim(ctx context.Context, req ClaimRequest) (*Claimed, error)
 	if req.Runner == "" {
 		return nil, fmt.Errorf("runner is required: %w", ErrInvalid)
 	}
-	namespaces, err := m.namespaces(ctx, req.Namespaces)
+	namespaces, err := m.namespaces(ctx, req.Namespaces, true)
 	if err != nil {
 		return nil, err
 	}
@@ -72,14 +72,19 @@ func (m *Manager) Claim(ctx context.Context, req ClaimRequest) (*Claimed, error)
 }
 
 // namespaces returns the requested namespaces that have a Team, or all of
-// them.
-func (m *Manager) namespaces(ctx context.Context, want []string) ([]string, error) {
+// them. With withRoom, namespaces whose Team the index shows full are left
+// out, so a full team costs no API reads; the conditional slot write still
+// decides.
+func (m *Manager) namespaces(ctx context.Context, want []string, withRoom bool) ([]string, error) {
 	teams, err := m.store.ListTeams(ctx)
 	if err != nil {
 		return nil, err
 	}
 	var out []string
 	for _, t := range teams {
+		if withRoom && len(t.Status.Slots) >= int(max(t.Spec.MaxConcurrentRuns, 1)) {
+			continue
+		}
 		if len(want) == 0 || slices.Contains(want, t.Namespace) {
 			out = append(out, t.Namespace)
 		}
@@ -98,14 +103,24 @@ func (m *Manager) claimIn(ctx context.Context, ns, runner string, labels map[str
 		if cand.Spec.Assignee == nil || cand.Spec.Assignee.Kind != v1alpha1.AssigneeAgent {
 			continue
 		}
-		if cached, err := m.agents.CachedAgent(ctx, ns, cand.Spec.Assignee.Name); err != nil || !claimableBy(cached, labels) {
+		// The cache may say no; anything else it says (an error, such as
+		// a cache still syncing) is settled by the fresh read below.
+		cached, err := m.agents.CachedAgent(ctx, ns, cand.Spec.Assignee.Name)
+		if errors.Is(err, storage.ErrNotFound) || (err == nil && !claimableBy(cached, labels)) {
 			continue
 		}
-		// The decision: a fresh read of the agent. A missing or unready
-		// agent, or one this runner may not run, makes the task
-		// unclaimable for now; the claim moves on.
+		// The decision: fresh reads of the agent and its model. A missing
+		// or unready agent, one this runner may not run, or a missing
+		// model makes the task unclaimable for now; the claim moves on.
 		agent, err := m.agents.Agent(ctx, ns, cand.Spec.Assignee.Name)
 		if errors.Is(err, storage.ErrNotFound) || (err == nil && !claimableBy(agent, labels)) {
+			continue
+		}
+		if err != nil {
+			return nil, err
+		}
+		model, err := m.agents.ModelProvider(ctx, ns, agent.Spec.ModelRef)
+		if errors.Is(err, storage.ErrNotFound) {
 			continue
 		}
 		if err != nil {
@@ -124,17 +139,13 @@ func (m *Manager) claimIn(ctx context.Context, ns, runner string, labels map[str
 			return nil, err
 		}
 		t, err := m.transition(ctx, storage.Key{Namespace: ns, Name: cand.Name}, task.Claim{
-			RunID: runID, Mode: v1alpha1.RunModeRuntime, Runner: runner, Lease: m.cfg.Lease,
+			RunID: runID, Mode: v1alpha1.RunModeRuntime, Runner: runner, Lease: m.cfg.Lease, Agent: agent.Name,
 		})
 		if err == nil && t.Status.Run != nil && t.Status.Run.ID == runID {
-			c := &Claimed{Task: t, RunID: runID, Mode: v1alpha1.RunModeRuntime, LeaseUntil: t.Status.Run.LeaseUntil.Time, Agent: agent}
-			// The agent was Ready, so its ModelProvider existed a moment
-			// ago; if it is gone now the runner learns from the missing
-			// model block.
-			if mp, err := m.agents.ModelProvider(ctx, ns, agent.Spec.ModelRef); err == nil {
-				c.ModelProvider = mp
-			}
-			return c, nil
+			return &Claimed{
+				Task: t, RunID: runID, Mode: v1alpha1.RunModeRuntime, LeaseUntil: t.Status.Run.LeaseUntil.Time,
+				Agent: agent, ModelProvider: model,
+			}, nil
 		}
 		if err == nil {
 			// The claim landed, but the run was ended (cancelled, say)

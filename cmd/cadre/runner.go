@@ -58,7 +58,10 @@ its lease while it "works", stops a run at once if the run loses its task
 	f.StringVar(&outcome, "outcome", "Done", "Done, Review, Failed or Waiting")
 	f.StringVar(&reason, "reason", "Question", "with --outcome Waiting: Question, ToolApproval or Review")
 	f.IntVar(&o.Subtasks, "subtasks", 0, "subtasks each run asks for")
-	f.StringToStringVarP(&o.Labels, "label", "l", nil, "a claim label, key=value; repeatable. Builtin agents need cadre.dev/runtime=builtin")
+	// The fake stands in for cadre-runner, so by default it claims builtin
+	// agents as cadre-runner does.
+	f.StringToStringVarP(&o.Labels, "label", "l", map[string]string{v1alpha1.LabelRuntime: string(v1alpha1.RuntimeBuiltin)},
+		"claim labels, key=value; repeatable. The default claims builtin agents, as cadre-runner does")
 	f.BoolVar(&o.Once, "once", false, "stop after one run")
 	f.DurationVar(&o.Poll, "poll", time.Second, "wait between claims when there is no work")
 	cmd.AddCommand(fake)

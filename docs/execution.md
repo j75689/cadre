@@ -67,7 +67,7 @@ POST /runner/v1/finish     run_id, outcome: Done | Review | Waiting{reason} | Fa
 Claiming matches a task's agent to the runner:
 
 - The agent must exist and be Ready for its current spec. Otherwise its tasks are passed over until it is.
-- A `builtin` agent is claimed only by `cadre-runner`, which sends the label `cadre.dev/runtime: builtin`.
+- A `builtin` agent is claimed by a runner sending the label `cadre.dev/runtime: builtin`. `cadre-runner` always sends it. Until runners are authenticated any runner sending it qualifies; once they are, the label is bound to `cadre-runner`'s ServiceAccount.
 - A `runner` agent is claimed by any runner whose labels include every pair of its selector.
 - The `cadre.dev/` label prefix is reserved, so a selector cannot match the builtin label.
 - The index only proposes candidates. The agent is read fresh for the decision.

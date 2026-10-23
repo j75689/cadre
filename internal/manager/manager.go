@@ -59,10 +59,10 @@ func New(store storage.Driver, cfg Config, opts ...Option) *Manager {
 	if cfg.Heartbeat <= 0 {
 		cfg.Heartbeat = DefaultConfig.Heartbeat
 	}
-	m := &Manager{store: store, cfg: cfg, agents: cfg.Agents, now: time.Now, newID: func() string { return ulid.Make().String() }}
-	if m.agents == nil {
-		m.agents = StaticAgents{}
+	if cfg.Agents == nil {
+		cfg.Agents = StaticAgents{}
 	}
+	m := &Manager{store: store, cfg: cfg, agents: cfg.Agents, now: time.Now, newID: func() string { return ulid.Make().String() }}
 	for _, o := range opts {
 		o(m)
 	}

@@ -12,7 +12,6 @@ import (
 	"testing"
 	"time"
 
-	v1alpha1 "github.com/j75689/cadre/api/v1alpha1"
 	"github.com/j75689/cadre/internal/api"
 	"github.com/j75689/cadre/internal/manager"
 	"github.com/j75689/cadre/internal/runner"
@@ -59,9 +58,7 @@ func mustContain(t *testing.T, got string, wants ...string) {
 // runner, a question for a human, the answer, a second run that finishes
 // with subtasks, and the board showing all of it.
 func TestTaskLifeFromTheCLI(t *testing.T) {
-	m := manager.New(memory.NewBackend().Open(), manager.Config{Agents: manager.StaticAgents{Agents: map[string]*v1alpha1.Agent{
-		"team-a/coder": manager.ReadyAgent("team-a", "coder", "claude", v1alpha1.AgentRuntime{Type: v1alpha1.RuntimeBuiltin}),
-	}}})
+	m := manager.New(memory.NewBackend().Open(), manager.Config{Agents: manager.ReadyBuiltin("team-a", "coder", "claude")})
 	log := slog.New(slog.NewTextHandler(io.Discard, nil))
 	mux := http.NewServeMux()
 	api.NewServer(m, log).Register(mux)

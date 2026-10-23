@@ -24,10 +24,8 @@ const ns = "team-a"
 // testAgents holds the builtin agent every test task is assigned to, and
 // builtin is the claim label cadre-runner sends.
 var (
-	testAgents = StaticAgents{Agents: map[string]*v1alpha1.Agent{
-		ns + "/coder": ReadyAgent(ns, "coder", "claude", v1alpha1.AgentRuntime{Type: v1alpha1.RuntimeBuiltin}),
-	}}
-	builtin = map[string]string{v1alpha1.LabelRuntime: string(v1alpha1.RuntimeBuiltin)}
+	testAgents = ReadyBuiltin(ns, "coder", "claude")
+	builtin    = map[string]string{v1alpha1.LabelRuntime: string(v1alpha1.RuntimeBuiltin)}
 )
 
 var ctx = context.Background()

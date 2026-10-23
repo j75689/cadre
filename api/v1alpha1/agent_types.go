@@ -8,8 +8,10 @@ import (
 // +kubebuilder:validation:Enum=builtin;runner
 type RuntimeType string
 
-// LabelRuntime is the claim label cadre-runner sends; only it claims
-// builtin agents.
+// LabelRuntime is the claim label that lets a runner claim builtin agents.
+// cadre-runner always sends it. Any runner sending it may claim them until
+// runners are authenticated; then the label is bound to cadre-runner's
+// ServiceAccount.
 const LabelRuntime = "cadre.dev/runtime"
 
 // Runtime types.

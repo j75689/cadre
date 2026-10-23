@@ -150,6 +150,23 @@ func TestClaimDecidesTheAssigneeOnAFreshRead(t *testing.T) {
 	}
 }
 
+// The index still shows the task assigned to coder, but it was reassigned to
+// another agent: the claim was decided for coder, so it must not land.
+func TestClaimRefusesATaskReassignedToAnotherAgent(t *testing.T) {
+	e := newEnv(t, 1)
+	key := e.addTask(t, "t", v1alpha1.AssigneeAgent)
+	stale := *e.get(t, key)
+	e.reassign(t, key, "reviewer")
+
+	m := e.manager(&staleIndex{Driver: e.store, board: []v1alpha1.Task{stale}})
+	if c, err := m.Claim(ctx, ClaimRequest{Runner: "r", Labels: builtin}); c != nil || err != nil || e.running(t) != 0 {
+		t.Fatalf("claim of a reassigned task: %+v, %v, running %d", c, err, e.running(t))
+	}
+	if e.get(t, key).Status.Phase != v1alpha1.PhaseTodo {
+		t.Fatal("the reassigned task was claimed for its old agent")
+	}
+}
+
 // A subtask whose name is taken by an unrelated task stays in the outbox.
 func TestDispatchKeepsASubtaskWhoseNameIsTaken(t *testing.T) {
 	e := newEnv(t, 1)

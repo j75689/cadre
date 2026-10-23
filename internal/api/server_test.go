@@ -29,9 +29,7 @@ func start(t *testing.T) (*client.Client, *manager.Manager) {
 func startURL(t *testing.T) (*client.Client, *manager.Manager, string) {
 	t.Helper()
 	store := memory.NewBackend().Open()
-	m := manager.New(store, manager.Config{Agents: manager.StaticAgents{Agents: map[string]*v1alpha1.Agent{
-		ns + "/coder": manager.ReadyAgent(ns, "coder", "claude", v1alpha1.AgentRuntime{Type: v1alpha1.RuntimeBuiltin}),
-	}}})
+	m := manager.New(store, manager.Config{Agents: manager.ReadyBuiltin(ns, "coder", "claude")})
 	log := slog.New(slog.NewTextHandler(io.Discard, nil))
 	mux := http.NewServeMux()
 	api.NewServer(m, log).Register(mux)
