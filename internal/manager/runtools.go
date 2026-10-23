@@ -84,6 +84,28 @@ func (m *Manager) RunAsk(ctx context.Context, key storage.Key, runID, question s
 	return entry, nil
 }
 
+// MaxThreadPage is the most thread entries a run reads in one call.
+const MaxThreadPage = 200
+
+// RunReadThread returns up to limit thread entries after sequence number
+// after, oldest first; limit 0 or over MaxThreadPage means MaxThreadPage.
+func (m *Manager) RunReadThread(ctx context.Context, key storage.Key, runID string, after int64, limit int) ([]ThreadEntry, error) {
+	if after < 0 || limit < 0 {
+		return nil, fmt.Errorf("after and limit must not be negative: %w", ErrInvalid)
+	}
+	if _, err := m.activeRun(ctx, key, runID); err != nil {
+		return nil, err
+	}
+	if limit == 0 || limit > MaxThreadPage {
+		limit = MaxThreadPage
+	}
+	var from string
+	if after > 0 {
+		from = storage.SeqKey(after)
+	}
+	return readStream[ThreadEntry](ctx, m.store, ThreadStream(key), from, limit)
+}
+
 // lastEntry returns the thread's latest entry, or nil for an empty thread.
 func (m *Manager) lastEntry(ctx context.Context, key storage.Key) (*ThreadEntry, error) {
 	stream := ThreadStream(key)

@@ -106,8 +106,8 @@ func TestConfigCRDs(t *testing.T) {
 		t.Errorf("agent applied without runtime has runtime type %q, want builtin", typ)
 	}
 	a := &v1alpha1.Agent{ObjectMeta: metav1.ObjectMeta{Name: "defaults", Namespace: ns}, Spec: v1alpha1.AgentSpec{ModelRef: "claude"}}
-	if err := c.Create(context.Background(), a); err != nil || a.Spec.Runtime.Type != v1alpha1.RuntimeBuiltin {
-		t.Errorf("agent defaults: %+v, %v", a.Spec.Runtime, err)
+	if err := c.Create(context.Background(), a); err != nil || a.Spec.Runtime.Type != v1alpha1.RuntimeBuiltin || a.Spec.Effort != v1alpha1.EffortHigh {
+		t.Errorf("agent defaults: %+v, %v", a.Spec, err)
 	}
 	ts := &v1alpha1.ToolServer{ObjectMeta: metav1.ObjectMeta{Name: "defaults", Namespace: ns}, Spec: v1alpha1.ToolServerSpec{URL: "https://x"}}
 	if err := c.Create(context.Background(), ts); err != nil || ts.Spec.Transport != v1alpha1.TransportStreamableHTTP {

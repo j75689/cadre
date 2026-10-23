@@ -284,14 +284,14 @@ func (f *Forwarder) connect(ctx context.Context, ts *v1alpha1.ToolServer) (*sdk.
 		// A Secret written from a file often ends in a newline, which
 		// would make the header invalid.
 		value = strings.TrimRight(value, "\r\n")
-		transport = credential{host: endpoint.Host, header: header, value: prefix + value, next: transport}
+		transport = Credential(endpoint.Host, header, prefix+value, transport)
 	}
 	client := sdk.NewClient(&sdk.Implementation{Name: "cadre", Version: v1alpha1.GroupVersion.Version}, nil)
 	return client.Connect(ctx, &sdk.StreamableClientTransport{
 		Endpoint: ts.Spec.URL,
 		// Redirects are not followed: the credential must not travel to
 		// wherever a ToolServer points.
-		HTTPClient: &http.Client{Transport: transport, CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }},
+		HTTPClient: NoRedirects(transport),
 		MaxRetries: -1,
 	}, nil)
 }
@@ -337,6 +337,18 @@ type credential struct {
 	next                http.RoundTripper
 }
 
+// Credential returns a RoundTripper that sets header to value on requests
+// for host only, so a credential never reaches another host.
+func Credential(host, header, value string, next http.RoundTripper) http.RoundTripper {
+	return credential{host: host, header: header, value: value, next: next}
+}
+
+// NoRedirects is an HTTP client on transport that does not follow
+// redirects: a credential must not travel to wherever a server points.
+func NoRedirects(transport http.RoundTripper) *http.Client {
+	return &http.Client{Transport: transport, CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}
+}
+
 func (c credential) RoundTrip(r *http.Request) (*http.Response, error) {
 	if r.URL.Host == c.host {
 		r = r.Clone(r.Context())
@@ -375,7 +387,7 @@ func (s *Server) addForwarded(server *sdk.Server, t *v1alpha1.Task, tools map[st
 				if err != nil {
 					return s.fail(err), nil
 				}
-				return &sdk.CallToolResult{Content: []sdk.Content{&sdk.TextContent{Text: msgApprovalEnded}}}, nil
+				return runEnded(msgApprovalEnded), nil
 			}
 			return s.fwd.forward(ctx, ts, fw.remote.Name, req.Params.Arguments), nil
 		}

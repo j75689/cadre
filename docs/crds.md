@@ -178,6 +178,7 @@ spec:
 | Agent | `toolRefs` | ToolServers in the same namespace, a set |
 | Agent | `runtime.type` | `builtin` (the default) or `runner` |
 | Agent | `runtime.selector` | required, with at least one label, for `runner`; forbidden for `builtin` |
+| Agent | `effort` | `low`, `medium`, `high` (the default), `xhigh` or `max`: how much thinking the builtin loop asks the model for. It is on the Agent, not the ModelProvider, because one model serves agents that need different depth |
 
 All three report a `Ready` condition and `observedGeneration` in their status:
 

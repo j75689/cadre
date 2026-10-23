@@ -100,7 +100,7 @@ func runTools(t *testing.T, e *env) {
 		names = append(names, tool.Name)
 	}
 	slices.Sort(names)
-	if want := []string{"task_create_subtask", "task_files_list", "task_files_read", "task_files_write", "thread_ask", "thread_post"}; !slices.Equal(names, want) {
+	if want := []string{"task_create_subtask", "task_files_list", "task_files_read", "task_files_write", "thread_ask", "thread_post", "thread_read"}; !slices.Equal(names, want) {
 		t.Fatalf("tools %v, want %v", names, want)
 	}
 	modelName := regexp.MustCompile(`^[a-zA-Z0-9_-]{1,64}$`)
@@ -117,6 +117,18 @@ func runTools(t *testing.T, e *env) {
 	thread, _ := e.m.ReadThread(ctx, key, 0, 0)
 	if len(thread) != 1 || thread[0].Author.Kind != manager.AuthorAgent || thread[0].Author.Name != "coder" {
 		t.Fatalf("thread: %+v", thread)
+	}
+
+	call(t, s, "thread_post", map[string]any{"body": "Found it."}, nil)
+	var read struct{ Entries []manager.ThreadEntry }
+	if msg := call(t, s, "thread_read", map[string]any{"after": 1}, &read); msg != "" || len(read.Entries) != 1 || read.Entries[0].Body != "Found it." {
+		t.Fatalf("thread_read after 1: %+v %q", read, msg)
+	}
+	if msg := call(t, s, "thread_read", map[string]any{"limit": 1}, &read); msg != "" || len(read.Entries) != 1 || read.Entries[0].Seq != 1 {
+		t.Fatalf("thread_read limit 1: %+v %q", read, msg)
+	}
+	if msg := call(t, s, "thread_read", map[string]any{"after": -1}, nil); !strings.HasPrefix(msg, "Invalid call") {
+		t.Fatalf("thread_read after -1: %q", msg)
 	}
 
 	var sub manager.SubtaskCreated
@@ -163,8 +175,13 @@ func runTools(t *testing.T, e *env) {
 		Seq     int64
 		Message string
 	}
-	if msg := call(t, s, "thread_ask", map[string]any{"question": "Staging or production?"}, &asked); msg != "" || !strings.Contains(asked.Message, "do not call finish") {
-		t.Fatalf("thread_ask: %+v %q", asked, msg)
+	res, err := s.CallTool(ctx, &sdk.CallToolParams{Name: "thread_ask", Arguments: map[string]any{"question": "Staging or production?"}})
+	if err != nil || res.IsError || res.Meta[mcp.MetaRunEnded] != true {
+		t.Fatalf("thread_ask: %+v, %v; want a result marked run ended", res, err)
+	}
+	data, _ := json.Marshal(res.StructuredContent)
+	if err := json.Unmarshal(data, &asked); err != nil || !strings.Contains(asked.Message, "do not call finish") {
+		t.Fatalf("thread_ask result: %+v, %v", asked, err)
 	}
 	tk, _ := e.m.GetTask(ctx, key)
 	if tk.Status.Phase != v1alpha1.PhaseWaiting || tk.Status.Waiting.Reason != v1alpha1.WaitingQuestion || tk.Status.Waiting.ThreadSeq != asked.Seq {
@@ -187,8 +204,12 @@ func TestALostRunIsToldToStop(t *testing.T) {
 		t.Fatalf("post from another run: %v", err)
 	}
 	r := mcp.FailForTest(slog.New(slog.NewTextHandler(io.Discard, nil)), task.ErrRunMismatch)
-	if !r.IsError || !strings.Contains(r.Content[0].(*sdk.TextContent).Text, "no longer active") || !strings.Contains(r.Content[0].(*sdk.TextContent).Text, "Stop") {
-		t.Fatalf("lost-run tool error: %+v", r)
+	if !r.IsError || !strings.Contains(r.Content[0].(*sdk.TextContent).Text, "no longer active") || !strings.Contains(r.Content[0].(*sdk.TextContent).Text, "Stop") ||
+		r.Meta[mcp.MetaRunEnded] != true {
+		t.Fatalf("lost-run tool error: %+v; want it marked run ended", r)
+	}
+	if other := mcp.FailForTest(slog.New(slog.NewTextHandler(io.Discard, nil)), storage.ErrNotFound); other.Meta[mcp.MetaRunEnded] != nil {
+		t.Fatalf("an ordinary tool error is marked run ended: %+v", other)
 	}
 	_ = c
 }

@@ -21,6 +21,18 @@ const (
 	msgApprovalEnded = "This call needs a human's approval. It has been recorded and this run has ended; a new run continues with the call's result, or its denial, once a human decides. Stop working on this task now and do not call finish."
 )
 
+// MetaRunEnded is set, true, in the _meta of a tool result after which the
+// run is over: the server has ended it (thread_ask, or a call that must ask
+// a human first). A runner seeing it stops at once, makes no further call
+// and does not finish.
+const MetaRunEnded = "cadre.dev/runEnded"
+
+// runEnded is a tool result telling the agent, and the runner, that the run
+// is over.
+func runEnded(msg string) *sdk.CallToolResult {
+	return &sdk.CallToolResult{Content: []sdk.Content{&sdk.TextContent{Text: msg}}, Meta: sdk.Meta{MetaRunEnded: true}}
+}
+
 // Tool inputs and outputs.
 type (
 	postIn struct {
@@ -31,6 +43,13 @@ type (
 	}
 	askIn struct {
 		Question string `json:"question" jsonschema:"the question for a human; the run ends once it is posted"`
+	}
+	threadIn struct {
+		After int64 `json:"after,omitempty" jsonschema:"read entries after this sequence number; 0 reads from the start"`
+		Limit int   `json:"limit,omitempty" jsonschema:"at most this many entries, 200 at most and by default"`
+	}
+	threadOut struct {
+		Entries []manager.ThreadEntry `json:"entries"`
 	}
 	askOut struct {
 		Seq     int64  `json:"seq"`
@@ -82,7 +101,19 @@ func (s *Server) addTools(server *sdk.Server, t *v1alpha1.Task) {
 			if err != nil {
 				return s.fail(err), askOut{}, nil
 			}
-			return &sdk.CallToolResult{Content: []sdk.Content{&sdk.TextContent{Text: msgAskEnded}}}, askOut{Seq: e.Seq, Message: msgAskEnded}, nil
+			return runEnded(msgAskEnded), askOut{Seq: e.Seq, Message: msgAskEnded}, nil
+		})
+
+	sdk.AddTool(server, &sdk.Tool{Name: "thread_read", Description: "Read the task's thread, oldest first: comments, questions and answers, and tool calls with their approvals and results. Page with after, the last sequence number read."},
+		func(ctx context.Context, _ *sdk.CallToolRequest, in threadIn) (*sdk.CallToolResult, threadOut, error) {
+			entries, err := s.m.RunReadThread(ctx, key, runID, in.After, in.Limit)
+			if err != nil {
+				return s.fail(err), threadOut{}, nil
+			}
+			if entries == nil {
+				entries = []manager.ThreadEntry{}
+			}
+			return nil, threadOut{Entries: entries}, nil
 		})
 
 	sdk.AddTool(server, &sdk.Tool{Name: "task_create_subtask", Description: "Create a subtask of this task. It is unassigned unless an assignee is given."},
@@ -143,5 +174,10 @@ func (s *Server) fail(err error) *sdk.CallToolResult {
 	}
 	r := &sdk.CallToolResult{Content: []sdk.Content{&sdk.TextContent{Text: msg}}}
 	r.IsError = true
+	if msg == msgRunGone {
+		// The run is over: the runner stops now, not at its next
+		// heartbeat.
+		r.Meta = sdk.Meta{MetaRunEnded: true}
+	}
 	return r
 }

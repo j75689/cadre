@@ -57,6 +57,20 @@ spec:
               description:
                 description: Description says what the agent is for, on the board.
                 type: string
+              effort:
+                default: high
+                description: |-
+                  Effort is how much thinking and token spend the builtin loop asks
+                  the model for. It belongs to the agent, not the ModelProvider: one
+                  model serves agents that need different depth. Runner agents ignore
+                  it.
+                enum:
+                - low
+                - medium
+                - high
+                - xhigh
+                - max
+                type: string
               instructions:
                 description: Instructions are the agent's system prompt.
                 type: string

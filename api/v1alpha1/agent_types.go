@@ -23,6 +23,20 @@ const (
 	RuntimeRunner RuntimeType = "runner"
 )
 
+// Effort is how much thinking and token spend Cadre's builtin loop asks
+// the model for.
+// +kubebuilder:validation:Enum=low;medium;high;xhigh;max
+type Effort string
+
+// Effort levels.
+const (
+	EffortLow    Effort = "low"
+	EffortMedium Effort = "medium"
+	EffortHigh   Effort = "high"
+	EffortXHigh  Effort = "xhigh"
+	EffortMax    Effort = "max"
+)
+
 // AgentRuntime says who runs an agent's tasks.
 //
 // +kubebuilder:validation:XValidation:rule="self.type == 'runner' || !has(self.selector)",message="selector is for runtime type runner"
@@ -62,6 +76,14 @@ type AgentSpec struct {
 	// Instructions are the agent's system prompt.
 	// +optional
 	Instructions string `json:"instructions,omitempty"`
+
+	// Effort is how much thinking and token spend the builtin loop asks
+	// the model for. It belongs to the agent, not the ModelProvider: one
+	// model serves agents that need different depth. Runner agents ignore
+	// it.
+	// +kubebuilder:default=high
+	// +optional
+	Effort Effort `json:"effort,omitempty"`
 
 	// Runtime says who runs the agent's tasks; by default Cadre's builtin
 	// loop. The object default makes an Agent applied without a runtime
