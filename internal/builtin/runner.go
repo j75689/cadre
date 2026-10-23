@@ -48,16 +48,21 @@ type Options struct {
 	RetryFor time.Duration
 	// Transport carries the MCP requests; default http.DefaultTransport.
 	Transport http.RoundTripper
-	// Backoff is the first wait before claiming again after a run that
-	// could not reach its MCP endpoint; it doubles with each such run in a
-	// row, up to MaxBackoff. Defaults 5s and 5 minutes.
+	// Backoff is the first wait before claiming again after a failed
+	// claim, or a run abandoned because its MCP endpoint did not answer; it
+	// doubles with each in a row, up to MaxBackoff. Defaults 5s and 5
+	// minutes.
 	Backoff, MaxBackoff time.Duration
+	// CallTimeout bounds one request to the run's MCP endpoint; default a
+	// little over the server's bound for it.
+	CallTimeout time.Duration
 }
 
 // Defaults.
 const (
-	DefaultMaxTurns = 100
-	DefaultRetryFor = 5 * time.Minute
+	DefaultMaxTurns    = 100
+	DefaultRetryFor    = 5 * time.Minute
+	DefaultCallTimeout = 105 * time.Second // cadre-server bounds an MCP request at 90s
 	// contextCeiling is the share of the model's window at which a run
 	// stops and hands the task to a human.
 	contextCeiling = 0.8
@@ -81,6 +86,9 @@ func Run(ctx context.Context, c *client.Client, o Options) error {
 	if o.MaxBackoff < o.Backoff {
 		o.MaxBackoff = max(5*time.Minute, o.Backoff)
 	}
+	if o.CallTimeout <= 0 {
+		o.CallTimeout = DefaultCallTimeout
+	}
 	if o.Log == nil {
 		o.Log = slog.New(slog.DiscardHandler)
 	}
@@ -89,24 +97,42 @@ func Run(ctx context.Context, c *client.Client, o Options) error {
 		labels = map[string]string{}
 	}
 	labels[v1alpha1.LabelRuntime] = string(v1alpha1.RuntimeBuiltin)
-	// A run abandoned because its MCP endpoint was unreachable still holds
-	// a Team slot until its lease runs out, so the next claim waits, longer
-	// with each abandoned run in a row: a dead endpoint cannot turn into a
-	// tight loop of claims that hold slots.
+	// A failed claim, and a run abandoned because its MCP endpoint did not
+	// answer (it still holds a Team slot until its lease runs out), make
+	// the next claim wait, longer with each in a row: a broken server or
+	// endpoint cannot turn into a tight loop of claims.
 	backoff := time.Duration(0)
+	wait := func(d time.Duration) bool {
+		select {
+		case <-ctx.Done():
+			return false
+		case <-time.After(d):
+			return true
+		}
+	}
+	grow := func() time.Duration {
+		backoff = min(max(2*backoff, o.Backoff), o.MaxBackoff)
+		return backoff
+	}
 	for {
 		sent := time.Now()
 		claim, err := c.Claim(ctx, runner.ClaimRequest{Runner: o.Runner, Namespaces: o.Namespaces, Labels: labels})
-		if err != nil && ctx.Err() == nil {
-			o.Log.Warn("claim failed", "err", err)
-		}
-		if claim == nil {
-			select {
-			case <-ctx.Done():
+		switch {
+		case ctx.Err() != nil:
+			return nil
+		case err != nil:
+			d := grow()
+			o.Log.Warn("claim failed; waiting before the next", "err", err, "wait", d)
+			if !wait(d) {
 				return nil
-			case <-time.After(o.Poll):
-				continue
 			}
+			continue
+		case claim == nil:
+			backoff = 0
+			if !wait(o.Poll) {
+				return nil
+			}
+			continue
 		}
 		abandoned := (&run{o: o, c: c, claim: claim, ref: runner.TaskRef{Namespace: claim.Task.Namespace, Name: claim.Task.Name}}).work(ctx, sent)
 		if o.Once || ctx.Err() != nil {
@@ -116,12 +142,10 @@ func Run(ctx context.Context, c *client.Client, o Options) error {
 			backoff = 0
 			continue
 		}
-		backoff = min(max(2*backoff, o.Backoff), o.MaxBackoff)
-		o.Log.Warn("waiting before the next claim", "wait", backoff)
-		select {
-		case <-ctx.Done():
+		d := grow()
+		o.Log.Warn("waiting before the next claim", "wait", d)
+		if !wait(d) {
 			return nil
-		case <-time.After(backoff):
 		}
 	}
 }
@@ -140,11 +164,21 @@ type run struct {
 var errLost = errors.New("the run lost its task")
 
 // ending is how a run ends: finished with an outcome and a comment, or not
-// finished at all because the server ended it or it lost its task.
+// finished at all because the server ended it or it lost its task, or
+// abandoned to its lease because its MCP endpoint stopped answering.
 type ending struct {
-	finish  bool
-	outcome v1alpha1.RunOutcome
-	comment string
+	finish    bool
+	abandoned bool
+	outcome   v1alpha1.RunOutcome
+	comment   string
+}
+
+// abandon leaves the run to its lease: without its endpoint it can neither
+// act nor comment, and the outage is not the task's fault.
+func (r *run) abandon(err error) ending {
+	r.o.Log.Error("the run's MCP endpoint stopped answering; leaving the task to its lease",
+		"task", r.ref.Namespace+"/"+r.ref.Name, "run", r.claim.RunID, "err", err)
+	return ending{abandoned: true}
 }
 
 func finishWith(outcome v1alpha1.RunOutcome, comment string) ending {
@@ -162,10 +196,12 @@ func (r *run) work(ctx context.Context, claimSent time.Time) (abandoned bool) {
 	go func() { defer close(beating); r.heartbeat(runCtx, cancel, claimSent) }()
 	defer func() { cancel(nil); <-beating }()
 
-	s, err := connect(runCtx, r.claim.MCP, r.o.Transport)
+	s, err := connect(runCtx, r.claim.MCP, r.o.Transport, r.o.CallTimeout)
 	if err != nil {
 		// Without the endpoint the run can neither read the task nor
-		// comment: leave it to the lease, which hands it out again.
+		// comment: leave it to the lease, which hands it out again. A 404
+		// here is more likely a misconfigured endpoint than a run cancelled
+		// in the moment since its claim, so it backs off too.
 		log.Error("the run's MCP endpoint could not be reached; leaving the task to its lease", "err", err)
 		return runCtx.Err() == nil
 	}
@@ -176,12 +212,16 @@ func (r *run) work(ctx context.Context, claimSent time.Time) (abandoned bool) {
 	case runCtx.Err() != nil:
 		log.Info("run stopped", "why", context.Cause(runCtx))
 		return false
+	case end.abandoned:
+		return true
 	case !end.finish:
 		log.Info("run ended by the server")
 		return false
 	}
+	// The comment says why the run ended; it is retried like the finish,
+	// and the run finishes after it either way.
 	if end.comment != "" {
-		if err := s.post(runCtx, end.comment); err != nil {
+		if err := retryShort(runCtx, func() error { return s.post(runCtx, end.comment) }); err != nil {
 			log.Warn("post the run's last comment", "err", err)
 		}
 	}
@@ -232,13 +272,18 @@ func (r *run) drive(ctx context.Context, s *session) ending {
 			return err
 		}
 		setup = Setup{
-			Model: *agent.Model, Effort: agent.Effort, Credential: credential,
-			System: systemPrompt(agent), Prompt: firstPrompt(r.claim.Task, thread, files), Tools: tools,
+			Model: *agent.Model, Effort: agent.Effort, Credential: credential, System: systemPrompt(agent), Tools: tools,
+			Prompt: func(window int64) string { return firstPrompt(r.claim.Task, thread, files, promptBudget(window)) },
 		}
 		return nil
 	})
-	if err != nil {
-		return r.failed(ctx, "This run could not read its task", err)
+	switch {
+	case ctx.Err() != nil, errors.Is(err, errRunGone):
+		return ending{}
+	case err != nil:
+		// The run's endpoint serves these reads; when it cannot, the
+		// outage is not the task's.
+		return r.abandon(err)
 	}
 	conv, err := p.Start(ctx, setup)
 	if err != nil {
@@ -273,6 +318,11 @@ func (r *run) drive(ctx context.Context, s *session) ending {
 		results := make([]ToolResult, 0, len(reply.Calls))
 		for _, call := range reply.Calls {
 			res, err := s.call(ctx, call)
+			if errors.Is(err, errTransport) {
+				// Not retried: the call may have taken effect with only
+				// its answer lost.
+				return r.abandon(err)
+			}
 			if err != nil {
 				return ending{}
 			}
@@ -289,13 +339,19 @@ func (r *run) drive(ctx context.Context, s *session) ending {
 	return finishWith(v1alpha1.RunOutcomeReview, fmt.Sprintf("This run stopped after %d model turns, its limit. A new run starts again from the thread.", r.o.MaxTurns))
 }
 
-// failed ends the run Failed, saying what went wrong.
+// failed ends the run Failed. The thread is read by everyone on the board,
+// so it gets one sentence; the error, which can carry request URLs, ids
+// and response bodies, goes to the log only.
 func (r *run) failed(ctx context.Context, what string, err error) ending {
 	if ctx.Err() != nil {
 		return ending{}
 	}
-	r.o.Log.Warn(what, "task", r.ref.Namespace+"/"+r.ref.Name, "err", err)
-	return finishWith(v1alpha1.RunOutcomeFailed, what+": "+err.Error())
+	r.o.Log.Error(what, "task", r.ref.Namespace+"/"+r.ref.Name, "run", r.claim.RunID, "err", err)
+	hint := "it may pass on a new run"
+	if isPermanent(err) {
+		hint = "check the agent's ModelProvider and its credential"
+	}
+	return finishWith(v1alpha1.RunOutcomeFailed, fmt.Sprintf("%s; %s. cadre-runner's log has the details for run %s.", what, hint, r.claim.RunID))
 }
 
 // retry retries f with backoff, for at most RetryFor, unless its error is
@@ -305,7 +361,7 @@ func (r *run) retry(ctx context.Context, f func() error) error {
 	wait := time.Second
 	for {
 		err := f()
-		if err == nil || isPermanent(err) || ctx.Err() != nil || time.Now().Add(wait).After(deadline) {
+		if err == nil || isPermanent(err) || errors.Is(err, errRunGone) || ctx.Err() != nil || time.Now().Add(wait).After(deadline) {
 			return err
 		}
 		select {
@@ -375,6 +431,23 @@ func (r *run) heartbeat(ctx context.Context, cancel context.CancelCauseFunc, cla
 
 func lostTask(err error) bool {
 	return client.IsCode(err, httpjson.CodeRunMismatch) || client.IsCode(err, httpjson.CodeNotFound)
+}
+
+// retryShort retries f a few times over a few seconds, for the writes that
+// end a run.
+func retryShort(ctx context.Context, f func() error) error {
+	var err error
+	for attempt := range 8 {
+		if err = f(); err == nil {
+			return nil
+		}
+		select {
+		case <-ctx.Done():
+			return err
+		case <-time.After(time.Duration(attempt+1) * 200 * time.Millisecond):
+		}
+	}
+	return err
 }
 
 // finish retries transient failures; a retry of a finish that landed is

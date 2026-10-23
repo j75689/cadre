@@ -99,7 +99,11 @@ func (m *Manager) RunReadThread(ctx context.Context, key storage.Key, runID stri
 	if limit == 0 || limit > MaxThreadPage {
 		limit = MaxThreadPage
 	}
-	return m.ReadThread(ctx, key, after, limit)
+	var from string
+	if after > 0 {
+		from = storage.SeqKey(after)
+	}
+	return readStream[ThreadEntry](ctx, m.store, ThreadStream(key), from, limit)
 }
 
 // lastEntry returns the thread's latest entry, or nil for an empty thread.

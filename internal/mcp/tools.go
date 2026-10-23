@@ -174,5 +174,10 @@ func (s *Server) fail(err error) *sdk.CallToolResult {
 	}
 	r := &sdk.CallToolResult{Content: []sdk.Content{&sdk.TextContent{Text: msg}}}
 	r.IsError = true
+	if msg == msgRunGone {
+		// The run is over: the runner stops now, not at its next
+		// heartbeat.
+		r.Meta = sdk.Meta{MetaRunEnded: true}
+	}
 	return r
 }

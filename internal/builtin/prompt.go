@@ -40,8 +40,24 @@ func clip(s string) string {
 	return s[:cut] + fmt.Sprintf("\n[clipped: %d of %d bytes shown; thread_read has the whole entry]", cut, len(s))
 }
 
-// firstPrompt renders the task, its thread oldest first, and its files.
-func firstPrompt(t runner.ClaimedTask, thread []manager.ThreadEntry, files []manager.FileInfo) string {
+// defaultPromptBudget bounds the first message when the model's context
+// window is unknown.
+const defaultPromptBudget = 200 << 10
+
+// promptBudget is how many bytes the first message may take: about a
+// quarter of a window of window tokens (at some four bytes a token), or
+// defaultPromptBudget when the window is unknown.
+func promptBudget(window int64) int {
+	if window <= 0 {
+		return defaultPromptBudget
+	}
+	return int(min(window, 1<<30))
+}
+
+// firstPrompt renders the task, its thread oldest first, and its files, in
+// about budget bytes. When the thread does not fit, the newest entries are
+// kept, and a note says how many older ones thread_read still has.
+func firstPrompt(t runner.ClaimedTask, thread []manager.ThreadEntry, files []manager.FileInfo, budget int) string {
 	var b strings.Builder
 	fmt.Fprintf(&b, "# Task #%d: %s\n", t.Number, t.Title)
 	if t.Priority != "" {
@@ -54,29 +70,59 @@ func firstPrompt(t runner.ClaimedTask, thread []manager.ThreadEntry, files []man
 		fmt.Fprintf(&b, "Subtask of: %s\n", t.ParentRef.Name)
 	}
 	if d := strings.TrimSpace(t.Description); d != "" {
-		fmt.Fprintf(&b, "\n%s\n", d)
+		fmt.Fprintf(&b, "\n%s\n", clip(d))
+	}
+	head := b.String()
+	tail := filesSection(files)
+
+	entries := make([]string, len(thread))
+	for i, e := range thread {
+		entries[i] = entry(e)
+	}
+	left := budget - len(head) - len(tail) - 200 // the section heading and the note
+	first := len(entries)
+	for first > 0 && len(entries[first-1]) <= left {
+		first--
+		left -= len(entries[first])
 	}
 	b.WriteString("\n## Thread\n")
-	if len(thread) == 0 {
+	switch {
+	case len(thread) == 0:
 		b.WriteString("\nThe thread is empty.\n")
+	case first > 0:
+		fmt.Fprintf(&b, "\nThe %d oldest entries, up to %d, are left out to keep this message short; read them with thread_read.\n", first, thread[first-1].Seq)
 	}
-	for _, e := range thread {
-		fmt.Fprintf(&b, "\n### %d · %s · %s %s · %s\n", e.Seq, e.Kind, strings.ToLower(string(e.Author.Kind)), e.Author.Name, e.At.Format("2006-01-02 15:04 UTC"))
-		switch {
-		case e.Kind == manager.EntryToolCall && e.Call != nil:
-			fmt.Fprintf(&b, "Calls %s (call %s) with arguments:\n%s\n", e.Call.Name, e.Call.ID, clip(string(e.Call.Arguments)))
-		case e.Kind == manager.EntryToolResult && e.Call != nil:
-			status := "returned"
-			if e.Call.IsError {
-				status = "failed"
-			}
-			fmt.Fprintf(&b, "Call %s %s:\n%s\n", e.Call.ID, status, clip(e.Body))
-		case (e.Kind == manager.EntryApproved || e.Kind == manager.EntryDenied) && e.Call != nil:
-			fmt.Fprintf(&b, "Call %s: %s\n", e.Call.ID, e.Body)
-		default:
-			fmt.Fprintf(&b, "%s\n", e.Body)
+	for _, e := range entries[first:] {
+		b.WriteString(e)
+	}
+	b.WriteString(tail)
+	return b.String()
+}
+
+// entry renders one thread entry.
+func entry(e manager.ThreadEntry) string {
+	var b strings.Builder
+	fmt.Fprintf(&b, "\n### %d · %s · %s %s · %s\n", e.Seq, e.Kind, strings.ToLower(string(e.Author.Kind)), e.Author.Name, e.At.Format("2006-01-02 15:04 UTC"))
+	switch {
+	case e.Kind == manager.EntryToolCall && e.Call != nil:
+		fmt.Fprintf(&b, "Calls %s (call %s) with arguments:\n%s\n", e.Call.Name, e.Call.ID, clip(string(e.Call.Arguments)))
+	case e.Kind == manager.EntryToolResult && e.Call != nil:
+		status := "returned"
+		if e.Call.IsError {
+			status = "failed"
 		}
+		fmt.Fprintf(&b, "Call %s %s:\n%s\n", e.Call.ID, status, clip(e.Body))
+	case (e.Kind == manager.EntryApproved || e.Kind == manager.EntryDenied) && e.Call != nil:
+		fmt.Fprintf(&b, "Call %s: %s\n", e.Call.ID, clip(e.Body))
+	default:
+		fmt.Fprintf(&b, "%s\n", clip(e.Body))
 	}
+	return b.String()
+}
+
+// filesSection renders the task's files.
+func filesSection(files []manager.FileInfo) string {
+	var b strings.Builder
 	b.WriteString("\n## Files\n")
 	if len(files) == 0 {
 		b.WriteString("\nThe task has no files yet.\n")

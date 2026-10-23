@@ -470,3 +470,27 @@ func TestForwarderWithoutSources(t *testing.T) {
 		t.Fatalf("a call without sources: %+v", res)
 	}
 }
+
+// Credential sets its header for its own host only.
+func TestCredentialIsHostScoped(t *testing.T) {
+	var seen []string
+	next := roundTrip(func(r *http.Request) (*http.Response, error) {
+		seen = append(seen, r.URL.Host+"="+r.Header.Get("Authorization"))
+		return &http.Response{StatusCode: 204, Body: http.NoBody, Request: r}, nil
+	})
+	c := &http.Client{Transport: mcp.Credential("a.example", "Authorization", "Bearer t", next)}
+	for _, u := range []string{"http://a.example/x", "http://b.example/x"} {
+		res, err := c.Get(u)
+		if err != nil {
+			t.Fatal(err)
+		}
+		_ = res.Body.Close()
+	}
+	if seen[0] != "a.example=Bearer t" || seen[1] != "b.example=" {
+		t.Fatalf("headers sent: %v", seen)
+	}
+}
+
+type roundTrip func(*http.Request) (*http.Response, error)
+
+func (f roundTrip) RoundTrip(r *http.Request) (*http.Response, error) { return f(r) }

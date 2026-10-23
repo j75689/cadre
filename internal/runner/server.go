@@ -127,6 +127,9 @@ func claimedAgent(c *manager.Claimed) *ClaimedAgent {
 		return nil
 	}
 	a := &ClaimedAgent{Name: c.Agent.Name, Instructions: c.Agent.Spec.Instructions, ToolServers: c.Agent.Spec.ToolRefs, Effort: c.Agent.Spec.Effort}
+	if a.Effort == "" {
+		a.Effort = v1alpha1.EffortHigh // an Agent stored before the field had its default
+	}
 	if mp := c.ModelProvider; mp != nil {
 		s := mp.Spec
 		a.Model = &ClaimedModel{

@@ -27,8 +27,10 @@ type Setup struct {
 	// when it has none. It lives for the run only and is never logged.
 	Credential string
 	System     string
-	// Prompt is the first user message: the task and its thread.
-	Prompt string
+	// Prompt renders the first user message, the task and its thread, for
+	// a model whose context window is contextTokens (0 if unknown): the
+	// provider calls it once it knows the window.
+	Prompt func(contextTokens int64) string
 	// Tools are the run's MCP tools, sorted by name.
 	Tools []Tool
 }

@@ -23,7 +23,7 @@ func TestFirstPromptShowsCallsClipped(t *testing.T) {
 		{Seq: 3, Author: manager.Author{Kind: manager.AuthorSystem, Name: "cadre"}, Kind: manager.EntryToolResult, Body: big, At: at, Call: &manager.ToolCall{ID: "c1", IsError: true}},
 	}
 	files := []manager.FileInfo{{Path: "notes.md", Version: 2, Size: 10}}
-	p := firstPrompt(runner.ClaimedTask{Number: 7, Title: "Open a PR", Labels: []string{"backend"}}, thread, files)
+	p := firstPrompt(runner.ClaimedTask{Number: 7, Title: "Open a PR", Labels: []string{"backend"}}, thread, files, defaultPromptBudget)
 	for _, want := range []string{
 		"# Task #7: Open a PR", "Labels: backend",
 		`Calls github__create_pull_request (call c1) with arguments:` + "\n" + `{"title":"fix login"}`,
@@ -45,5 +45,28 @@ func TestSystemPrompt(t *testing.T) {
 	}
 	if got := systemPrompt(nil); got != preamble {
 		t.Fatalf("without instructions: %q", got)
+	}
+}
+
+// A thread over the budget keeps its newest entries, and says how many
+// older ones were left out.
+func TestFirstPromptKeepsTheNewestEntries(t *testing.T) {
+	var thread []manager.ThreadEntry
+	for i := range 300 {
+		thread = append(thread, manager.ThreadEntry{Seq: int64(i + 1), Kind: manager.EntryComment, Author: manager.Author{Kind: manager.AuthorUser, Name: "alice"},
+			Body: strings.Repeat("x", 1000)})
+	}
+	p := firstPrompt(runner.ClaimedTask{Number: 1, Title: "Long"}, thread, nil, 50<<10)
+	if len(p) > 50<<10 {
+		t.Fatalf("prompt is %d bytes, over its 50 KiB budget", len(p))
+	}
+	if !strings.Contains(p, "### 300 ") || strings.Contains(p, "### 1 ") || !strings.Contains(p, "oldest entries, up to") || !strings.Contains(p, "thread_read") {
+		t.Fatalf("prompt keeps the wrong entries:\n%s", p[:400])
+	}
+	if got := promptBudget(1_000_000); got != 1_000_000 {
+		t.Fatalf("budget for a 1M window: %d", got)
+	}
+	if got := promptBudget(0); got != defaultPromptBudget {
+		t.Fatalf("budget for an unknown window: %d", got)
 	}
 }

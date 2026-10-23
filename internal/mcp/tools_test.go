@@ -204,8 +204,12 @@ func TestALostRunIsToldToStop(t *testing.T) {
 		t.Fatalf("post from another run: %v", err)
 	}
 	r := mcp.FailForTest(slog.New(slog.NewTextHandler(io.Discard, nil)), task.ErrRunMismatch)
-	if !r.IsError || !strings.Contains(r.Content[0].(*sdk.TextContent).Text, "no longer active") || !strings.Contains(r.Content[0].(*sdk.TextContent).Text, "Stop") {
-		t.Fatalf("lost-run tool error: %+v", r)
+	if !r.IsError || !strings.Contains(r.Content[0].(*sdk.TextContent).Text, "no longer active") || !strings.Contains(r.Content[0].(*sdk.TextContent).Text, "Stop") ||
+		r.Meta[mcp.MetaRunEnded] != true {
+		t.Fatalf("lost-run tool error: %+v; want it marked run ended", r)
+	}
+	if other := mcp.FailForTest(slog.New(slog.NewTextHandler(io.Discard, nil)), storage.ErrNotFound); other.Meta[mcp.MetaRunEnded] != nil {
+		t.Fatalf("an ordinary tool error is marked run ended: %+v", other)
 	}
 	_ = c
 }
