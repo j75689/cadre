@@ -78,8 +78,9 @@ var (
 
 // transition reads the task, applies ev and writes the result, retrying on
 // conflicts. On success it returns the written task. A transition that ends
-// a run releases the Team slot after the Task write, which is the commit
-// point; a lost release is tolerated (see teamReconciler).
+// a run gives the run's Team slot back after the Task write, which is the
+// commit point. If that release is lost, the dispatcher repeats it when it
+// applies the run's RunEnded item; releases are idempotent.
 //
 // A write that fails without a conflict, a timeout say, may still have been
 // committed. The task is then read again: if it holds exactly the status
@@ -91,6 +92,10 @@ func (m *Manager) transition(ctx context.Context, key storage.Key, ev task.Event
 		if err != nil {
 			return nil, err
 		}
+		var runID string
+		if t.Status.Run != nil {
+			runID = t.Status.Run.ID
+		}
 		res, err := task.Apply(t, ev, m.now())
 		if err != nil {
 			return t, err
@@ -101,40 +106,55 @@ func (m *Manager) transition(ctx context.Context, key storage.Key, ev task.Event
 			continue
 		}
 		if err != nil {
-			landed, rerr := m.landed(ctx, key, &res.Status)
+			cur, landed, rerr := m.landed(ctx, key, ev, &res.Status)
 			if rerr != nil {
 				return nil, fmt.Errorf("%s %s: %w: %w", task.KindOf(ev), key, ErrUncertain, err)
 			}
 			if !landed {
 				return nil, err
 			}
-			if t, err = m.store.GetTask(ctx, key); err != nil {
-				return nil, fmt.Errorf("%s %s: %w: %w", task.KindOf(ev), key, ErrUncertain, err)
-			}
+			t = cur
 		}
 		if res.ReleasesSlot {
-			m.releaseSlot(ctx, key.Namespace)
+			// The dispatcher repeats a release lost here.
+			_ = m.releaseSlot(ctx, key.Namespace, runID)
 		}
 		return t, nil
 	}
 	return nil, fmt.Errorf("%s %s: %w", task.KindOf(ev), key, ErrBusy)
 }
 
-// landed reports whether the task now holds exactly status.
-func (m *Manager) landed(ctx context.Context, key storage.Key, status *v1alpha1.TaskStatus) (bool, error) {
+// landed reads the task again after an ambiguous write of ev and reports
+// whether the write took effect, returning what it read.
+//
+// A claim is recognised by its run id, which only that claim can have
+// written: comparing whole statuses would mistake a live claim for a lost
+// one as soon as anything else touched the task, such as the dispatcher
+// acking an outbox item, and its slot would be given back. Other events
+// compare the whole status; a wrong "not landed" there only costs the
+// caller a retry.
+func (m *Manager) landed(ctx context.Context, key storage.Key, ev task.Event, status *v1alpha1.TaskStatus) (*v1alpha1.Task, bool, error) {
 	cur, err := m.store.GetTask(ctx, key)
 	if err != nil {
-		return false, err
+		return nil, false, err
 	}
-	return equality.Semantic.DeepEqual(&cur.Status, status), nil
+	if c, ok := ev.(task.Claim); ok {
+		return cur, cur.Status.Run != nil && cur.Status.Run.ID == c.RunID, nil
+	}
+	return cur, equality.Semantic.DeepEqual(&cur.Status, status), nil
 }
 
-// releaseSlot gives a run slot back to the namespace's Team. A failure only
-// leaves the count too high, which the team reconciler corrects.
-func (m *Manager) releaseSlot(ctx context.Context, namespace string) {
-	_ = m.writeTeam(ctx, namespace, func(team *v1alpha1.Team) (v1alpha1.TeamStatus, error) {
-		return task.ReleaseSlot(team), nil
+// releaseSlot gives runID's slot back to the namespace's Team. It is
+// idempotent. A failure is repaired later by the dispatcher or the
+// reconciler, so it is only reported, never acted on.
+func (m *Manager) releaseSlot(ctx context.Context, namespace, runID string) error {
+	err := m.writeTeam(ctx, namespace, func(team *v1alpha1.Team) (v1alpha1.TeamStatus, error) {
+		return task.ReleaseSlot(team, runID), nil
 	})
+	if errors.Is(err, storage.ErrNotFound) {
+		return nil // no Team, no slot
+	}
+	return err
 }
 
 // writeTeam reads the namespace's Team, applies change and writes it,
@@ -148,6 +168,9 @@ func (m *Manager) writeTeam(ctx context.Context, namespace string, change func(*
 		next, err := change(team)
 		if err != nil {
 			return err
+		}
+		if equality.Semantic.DeepEqual(&team.Status, &next) {
+			return nil // nothing to write: the change was already in place
 		}
 		team.Status = next
 		err = m.store.UpdateTeamStatus(ctx, team)

@@ -37,14 +37,16 @@ spec:
   archiveAfter: 720h
 status:
   nextNumber: 124
-  running: 3
+  slots:                      # the runs holding a slot of maxConcurrentRuns
+    - { runId: 01JB..., task: fix-login-flake, acquiredAt: ... }
+  running: 1                  # len(slots), for kubectl's printer column
 ```
 
 Three roles:
 
 1. **Opt-in.** Controllers only handle Tasks in namespaces that have a `Team`. The UI's team list is the `Team` list intersected with the namespaces the user may access. A Task applied in a namespace without a Team never runs.
 2. **Counter.** `status.nextNumber` is claimed with a conditional write and copied to `Task.status.number`, so humans can say "#123".
-3. **Semaphore.** A claim first does a conditional write on Team (`running < maxConcurrentRuns`, increment), then the conditional claim on the Task; if the Task claim loses, Team is decremented again. Counting first and deciding afterwards would overshoot.
+3. **Semaphore.** `status.slots` is the set of runs holding a slot, keyed by run id. A claim mints its run id, then adds it to the set with a conditional write on Team (only while the set has fewer than `maxConcurrentRuns` entries), then makes the conditional claim on the Task; if the Task claim loses, the run id is removed again. Taking the slot first and deciding afterwards would overshoot. Adding a run id that is already there, and removing one that is not, are no-ops, so every release can be retried safely and none can be counted twice.
 
 Role mapping for SSO (the equivalent of Argo CD's `AppProject` roles) hangs here.
 
@@ -53,7 +55,7 @@ Role mapping for SSO (the equivalent of Argo CD's `AppProject` roles) hangs here
 | `metadata.name` | must be `team` |
 | `spec.maxConcurrentRuns` | at least 1, default 1 |
 | `spec.archiveAfter` | a positive duration, such as `720h` |
-| `status.nextNumber`, `status.running` | written by the Task Manager only; `running` is a cache, recomputed from the index |
+| `status.nextNumber`, `status.slots`, `status.running` | written by the Task Manager only; `slots` is a list keyed by `runId`; `running` is `len(slots)`, written with it |
 
 ## Task
 

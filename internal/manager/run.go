@@ -93,29 +93,41 @@ func (m *Manager) claimIn(ctx context.Context, ns, runner string) (*Claimed, err
 		if cand.Spec.Assignee == nil || cand.Spec.Assignee.Kind != v1alpha1.AssigneeAgent {
 			continue
 		}
-		err := m.writeTeam(ctx, ns, task.AcquireSlot)
+		// The run id is minted first, so the slot is the run's from the start
+		// and every release names it.
+		runID := m.newID()
+		err := m.writeTeam(ctx, ns, func(team *v1alpha1.Team) (v1alpha1.TeamStatus, error) {
+			return task.AcquireSlot(team, runID, cand.Name, m.now())
+		})
 		if errors.Is(err, task.ErrNoSlot) || errors.Is(err, storage.ErrNotFound) {
 			return nil, nil // the team is full or gone: try the next namespace
 		}
 		if err != nil {
 			return nil, err
 		}
-		runID := m.newID()
 		t, err := m.transition(ctx, storage.Key{Namespace: ns, Name: cand.Name}, task.Claim{
 			RunID: runID, Mode: v1alpha1.RunModeRuntime, Runner: runner, Lease: m.cfg.Lease,
 		})
-		if err == nil {
+		if err == nil && t.Status.Run != nil && t.Status.Run.ID == runID {
 			return &Claimed{Task: t, RunID: runID, Mode: v1alpha1.RunModeRuntime, LeaseUntil: t.Status.Run.LeaseUntil.Time}, nil
+		}
+		if err == nil {
+			// The claim landed, but the run was ended (cancelled, say)
+			// before it could be handed out. That transition released the
+			// slot; releasing it again below is a no-op.
+			err = fmt.Errorf("claim of %s ended before it was handed out: %w", cand.Name, task.ErrInvalidTransition)
 		}
 		if errors.Is(err, ErrUncertain) {
 			// The claim may have landed: keep the slot. If it did not, the
-			// team reconciler gives the slot back.
+			// reconciler gives the slot back once it is old enough.
 			return nil, err
 		}
 		// Lost the task (someone else claimed it, it was cancelled,
 		// reassigned or deleted, the index was stale) or the write failed:
-		// give the slot back.
-		m.releaseSlot(ctx, ns)
+		// give the slot back. If the claim did land after all and was then
+		// ended by a cancel or reclaim, that transition releases the same
+		// run id, which is a no-op.
+		_ = m.releaseSlot(ctx, ns, runID)
 		if !isLostCandidate(err) {
 			return nil, err
 		}

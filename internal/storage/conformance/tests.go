@@ -252,8 +252,9 @@ func testOutboxAppliedOnce(t *testing.T, s *suite) {
 	})
 }
 
-// The Team counter hands out every number once, and the semaphore never lets
-// more than MaxConcurrentRuns parties in.
+// The Team counter hands out every number once, the semaphore never lets
+// more than MaxConcurrentRuns runs in, and a slot is given back once however
+// often it is released.
 func testTeamSemaphoreAndCounter(t *testing.T, s *suite) {
 	a, b := s.open(), s.open()
 	const maxRuns = 3
@@ -279,15 +280,32 @@ func testTeamSemaphoreAndCounter(t *testing.T, s *suite) {
 		}
 	}
 
-	wins, errs := race(parties, []storage.Driver{a, b}, func(_ int, d storage.Driver) error {
-		return s.writeTeam(d, task.AcquireSlot)
+	wins, errs := race(parties, []storage.Driver{a, b}, func(i int, d storage.Driver) error {
+		return s.writeTeam(d, func(cur *v1alpha1.Team) (v1alpha1.TeamStatus, error) {
+			return task.AcquireSlot(cur, runID(i), "work", testNow)
+		})
 	})
 	if wins != maxRuns {
 		t.Fatalf("%d parties acquired a slot, want %d", wins, maxRuns)
 	}
 	allErrorsAre(t, errs, task.ErrNoSlot)
-	if got := s.team(a); got.Status.Running != maxRuns || got.Status.NextNumber != parties+1 {
+	got := s.team(a)
+	if got.Status.Running != maxRuns || len(got.Status.Slots) != maxRuns || got.Status.NextNumber != parties+1 {
 		t.Fatalf("team status %+v", got.Status)
+	}
+
+	// Releasing is idempotent across processes: every party releases the
+	// same slot, and exactly one slot is given back.
+	held := got.Status.Slots[0].RunID
+	if _, errs := race(parties, []storage.Driver{a, b}, func(_ int, d storage.Driver) error {
+		return s.writeTeam(d, func(cur *v1alpha1.Team) (v1alpha1.TeamStatus, error) {
+			return task.ReleaseSlot(cur, held), nil
+		})
+	}); len(errs) > 0 {
+		t.Fatalf("release: %v", errs)
+	}
+	if got := s.team(a); got.Status.Running != maxRuns-1 || slices.ContainsFunc(got.Status.Slots, func(sl v1alpha1.Slot) bool { return sl.RunID == held }) {
+		t.Fatalf("after %d releases of one slot: %+v", parties, got.Status)
 	}
 }
 

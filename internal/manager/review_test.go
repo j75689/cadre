@@ -6,6 +6,7 @@ import (
 	"strings"
 	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/oklog/ulid/v2"
 
@@ -28,6 +29,9 @@ type flaky struct {
 	// the write's outcome cannot be checked.
 	readsFailAfterWrite atomic.Bool
 	wrote               atomic.Bool
+	// afterCommit, if set, runs between a commitThenFail write and its
+	// error, as another writer slipping in before the re-read.
+	afterCommit func()
 }
 
 func (f *flaky) UpdateTaskStatus(c context.Context, t *v1alpha1.Task) error {
@@ -37,6 +41,9 @@ func (f *flaky) UpdateTaskStatus(c context.Context, t *v1alpha1.Task) error {
 	}
 	err := f.Driver.UpdateTaskStatus(c, t)
 	if err == nil && f.commitThenFail.CompareAndSwap(true, false) {
+		if f.afterCommit != nil {
+			f.afterCommit()
+		}
 		return errTimeout
 	}
 	return err
@@ -91,30 +98,28 @@ func TestFailedAndUncertainClaimWrites(t *testing.T) {
 	}
 }
 
-func TestTeamReconcileForgetsAFixedExcess(t *testing.T) {
-	e := newEnv(t, 5)
-	setRunning := func(n int32) {
-		team, _ := e.store.GetTeam(ctx, ns)
-		team.Status.Running = n
-		if err := e.store.UpdateTeamStatus(ctx, team); err != nil {
-			t.Fatal(err)
-		}
+// failingTeamWrites makes every Team status write fail.
+type failingTeamWrites struct{ storage.Driver }
+
+func (failingTeamWrites) UpdateTeamStatus(context.Context, *v1alpha1.Team) error { return errTimeout }
+
+// A slot whose release was lost is given back by the dispatcher when it
+// applies the run's RunEnded item.
+func TestDispatchReleasesALostSlot(t *testing.T) {
+	e := newEnv(t, 1)
+	key := e.addTask(t, "t", v1alpha1.AssigneeAgent)
+	c := e.claim(t)
+	if _, _, err := e.manager(failingTeamWrites{e.store}).Finish(ctx, key, FinishRequest{RunID: c.RunID, Outcome: task.OutcomeDone}); err != nil {
+		t.Fatal(err)
 	}
-	setRunning(2)
-	var r teamReconciler
-	for range 2 {
-		if err := r.reconcile(ctx, e.m); err != nil {
-			t.Fatal(err)
-		}
+	if e.running(t) != 1 {
+		t.Fatalf("running %d; the release should have been lost", e.running(t))
+	}
+	if err := e.m.Dispatch(ctx); err != nil {
+		t.Fatal(err)
 	}
 	if e.running(t) != 0 {
-		t.Fatalf("running %d after two scans, want 0", e.running(t))
-	}
-	// A claim holds its slot but is not Running in the index yet. One scan
-	// must not take the slot, however large the excess fixed before it.
-	setRunning(1)
-	if err := r.reconcile(ctx, e.m); err != nil || e.running(t) != 1 {
-		t.Fatalf("the scan after a fix took a live claim's slot: running %d, %v", e.running(t), err)
+		t.Fatalf("running %d after dispatch, want 0", e.running(t))
 	}
 }
 
@@ -184,5 +189,57 @@ func TestAlreadyFinishedReportsItsOwnPhase(t *testing.T) {
 	phase, again, err := e.m.Finish(ctx, key, req)
 	if err != nil || !again || phase != v1alpha1.PhaseWaiting {
 		t.Fatalf("retried finish: %s %v %v; want Waiting, already finished", phase, again, err)
+	}
+}
+
+// A claim lands but reports an error, and the task changes again before the
+// re-read (here its thread advances; the dispatcher acking an outbox item is
+// the same). The claim is recognised by its run id and keeps its slot.
+func TestAmbiguousClaimSurvivesAConcurrentChange(t *testing.T) {
+	e := newEnv(t, 1)
+	key := e.addTask(t, "t", v1alpha1.AssigneeAgent)
+	f := &flaky{Driver: e.store}
+	f.commitThenFail.Store(true)
+	f.afterCommit = func() {
+		tk, err := e.store.GetTask(ctx, key)
+		if err == nil {
+			tk.Status.Thread = &v1alpha1.ThreadStatus{Revision: 1}
+			err = e.store.UpdateTaskStatus(ctx, tk)
+		}
+		if err != nil {
+			t.Errorf("concurrent change: %v", err)
+		}
+	}
+	c, err := e.manager(f).Claim(ctx, ClaimRequest{Runner: "r"})
+	if err != nil || c == nil {
+		t.Fatalf("claim: %+v, %v", c, err)
+	}
+	tk := e.get(t, key)
+	if tk.Status.Run == nil || tk.Status.Run.ID != c.RunID || e.running(t) != 1 {
+		t.Fatalf("task run %+v, running %d; want the claim live with its slot", tk.Status.Run, e.running(t))
+	}
+}
+
+// A slot re-added for a visibly Running run is dated from the run's start,
+// so it ages out promptly if the run ends right after.
+func TestReaddedSlotIsDatedFromTheRun(t *testing.T) {
+	e := newEnv(t, 1)
+	e.addTask(t, "t", v1alpha1.AssigneeAgent)
+	c := e.claim(t)
+	team, _ := e.store.GetTeam(ctx, ns)
+	team.Status.Slots, team.Status.Running = nil, 0
+	if err := e.store.UpdateTeamStatus(ctx, team); err != nil {
+		t.Fatal(err)
+	}
+	e.clock.add(10 * time.Second)
+	if err := e.m.ReconcileTeams(ctx); err != nil {
+		t.Fatal(err)
+	}
+	team, _ = e.store.GetTeam(ctx, ns)
+	if len(team.Status.Slots) != 1 || team.Status.Slots[0].RunID != c.RunID {
+		t.Fatalf("slots %+v, want the running run re-added", team.Status.Slots)
+	}
+	if want := c.LeaseUntil.Add(-30 * time.Second); !team.Status.Slots[0].AcquiredAt.Time.Equal(want) {
+		t.Fatalf("re-added slot dated %s, want the run's start %s", team.Status.Slots[0].AcquiredAt, want)
 	}
 }

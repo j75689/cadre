@@ -359,30 +359,55 @@ func TestTeam(t *testing.T) {
 		t.Fatalf("second number %d", n)
 	}
 
-	for i := 0; i < 2; i++ {
-		s, err := AcquireSlot(team)
-		if err != nil {
-			t.Fatalf("acquire %d: %v", i, err)
+	acquire := func(runID string) error {
+		s, err := AcquireSlot(team, runID, "task-"+runID, now)
+		if err == nil {
+			team.Status = s
 		}
-		team.Status = s
+		return err
 	}
-	if _, err := AcquireSlot(team); !errors.Is(err, ErrNoSlot) {
+	if err := acquire(runA); err != nil {
+		t.Fatal(err)
+	}
+	// Taking a slot the run already holds is not a second slot.
+	if err := acquire(runA); err != nil || team.Status.Running != 1 || len(team.Status.Slots) != 1 {
+		t.Fatalf("re-acquire: %v, running %d, slots %+v", err, team.Status.Running, team.Status.Slots)
+	}
+	if err := acquire(runB); err != nil || team.Status.Running != 2 {
+		t.Fatalf("second slot: %v, running %d", err, team.Status.Running)
+	}
+	if err := acquire("01JB00000000000000000000RC"); !errors.Is(err, ErrNoSlot) {
 		t.Fatalf("acquire past the limit: got %v", err)
 	}
-	team.Status = ReleaseSlot(team)
-	team.Status = ReleaseSlot(team)
-	team.Status = ReleaseSlot(team)
-	if team.Status.Running != 0 {
-		t.Fatalf("running = %d after over-release", team.Status.Running)
+	if sl := team.Status.Slots[0]; sl.Task != "task-"+runA || !sl.AcquiredAt.Time.Equal(now) {
+		t.Fatalf("slot %+v", sl)
+	}
+
+	// Releases are idempotent: a run gives back only its own slot, once.
+	team.Status = ReleaseSlot(team, runA)
+	team.Status = ReleaseSlot(team, runA)
+	team.Status = ReleaseSlot(team, "01JB00000000000000000000RZ")
+	if team.Status.Running != 1 || !HoldsSlot(team, runB) || HoldsSlot(team, runA) {
+		t.Fatalf("after releases: %+v", team.Status)
+	}
+
+	// The reconciler may add a visibly Running run past the cap.
+	if err := acquire(runA); err != nil {
+		t.Fatal(err)
+	}
+	team.Status = AddSlot(team, "01JB00000000000000000000RC", "late", now)
+	team.Status = AddSlot(team, "01JB00000000000000000000RC", "late", now)
+	if team.Status.Running != 3 {
+		t.Fatalf("running %d after AddSlot past the cap, want 3", team.Status.Running)
 	}
 
 	unset := &v1alpha1.Team{}
-	s, err := AcquireSlot(unset)
+	s, err := AcquireSlot(unset, runA, "t", now)
 	if err != nil || s.Running != 1 {
 		t.Fatalf("unset maxConcurrentRuns: got %v, running %d; want the default of 1", err, s.Running)
 	}
 	unset.Status = s
-	if _, err := AcquireSlot(unset); !errors.Is(err, ErrNoSlot) {
+	if _, err := AcquireSlot(unset, runB, "t", now); !errors.Is(err, ErrNoSlot) {
 		t.Fatalf("second slot with the default of 1: got %v", err)
 	}
 }
