@@ -29,6 +29,8 @@ make verify-generated  # regenerate, then fail if the committed generated files 
 make tools             # install the pinned tools into bin/tools
 ```
 
+Any change to the log or a storage driver is verified against a real S3-compatible store, not only the in-process fake, which stays for unit tests. Start SeaweedFS (`docker run -p 8333:8333 chrislusf/seaweedfs:4.48 server -s3`, then create a bucket) and run the tests with `CADRE_TEST_S3_ENDPOINT`, `CADRE_TEST_S3_BUCKET`, `CADRE_TEST_S3_ACCESS_KEY` and `CADRE_TEST_S3_SECRET_KEY` set; CI does the same. The verification table of a change to the chaos test always includes a SeaweedFS run.
+
 The tools (controller-gen, golangci-lint, setup-envtest) are pinned in the `Makefile` and installed into `bin/tools` on first use. The first `make test` also downloads the envtest `kube-apiserver` and `etcd` binaries, so it needs network access once. Without `make`, the API tests skip unless `CI` is set, and then they fail.
 
 ## Commit messages

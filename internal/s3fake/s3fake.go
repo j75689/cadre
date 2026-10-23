@@ -1,6 +1,6 @@
 // Package s3fake is an in-process S3 server for tests. It implements only what
 // Cadre's drivers use: path-style buckets, PutObject with If-None-Match: *,
-// GetObject, DeleteObject and ListObjectsV2 (prefix, delimiter, start-after,
+// GetObject, HeadObject, DeleteObject and ListObjectsV2 (prefix, delimiter, start-after,
 // max-keys and continuation). It is not a general S3 emulator.
 package s3fake
 
@@ -84,6 +84,13 @@ func (s *Server) serve(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusNoContent)
 	case r.Method == http.MethodGet && key == "" && r.URL.Query().Get("list-type") == "2":
 		list(w, r, bucket, objects)
+	case r.Method == http.MethodHead:
+		body, exists := objects[key]
+		if !exists {
+			w.WriteHeader(http.StatusNotFound)
+			return
+		}
+		w.Header().Set("Content-Length", strconv.Itoa(len(body)))
 	case r.Method == http.MethodGet:
 		body, exists := objects[key]
 		if !exists {

@@ -72,12 +72,20 @@ type Entry struct {
 
 // Log is the append-only log: threads, run history, audit. A stream is a
 // sequence of immutable entries ordered by key.
+//
+// Layout rule: a stream must never be nested under a path that is an entry
+// of another stream (stream "a/runs" with entry "R1" rules out a stream
+// "a/runs/R1/..."). Object stores backed by a filesystem, such as SeaweedFS,
+// cannot hold a file and a directory of the same name.
 type Log interface {
 	// Append writes one entry. It fails with ErrAlreadyExists if the key is
 	// taken, so concurrent appenders racing for a key get exactly one winner
-	// and a retried append of the same entry is detectable. The stream must
-	// pass ValidateStream and the key ValidateKey, or it fails with
-	// ErrInvalidName.
+	// and a retried append of the same entry is detectable. ErrAlreadyExists
+	// means an entry with that key exists and Read returns it; a driver that
+	// cannot write the key for any other reason must say so with another
+	// error, or an idempotent caller would take a lost write for a done one.
+	// The stream must pass ValidateStream and the key ValidateKey, or it
+	// fails with ErrInvalidName.
 	Append(ctx context.Context, stream, key string, data []byte) error
 	// Read returns up to limit entries with keys greater than after, in
 	// ascending key order. An empty after reads from the start, and a limit

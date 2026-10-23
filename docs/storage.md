@@ -36,6 +36,11 @@ The log relies on `If-None-Match: *` being **enforced** on PutObject: two append
 - Known not to enforce it: Garage (accepts the header and overwrites). Do not use it.
 - Development and CI use SeaweedFS, pinned to a release tag.
 
+Two more rules keep the log honest on every store:
+
+- **A 412 is only "taken" if the entry exists.** A store backed by a filesystem (SeaweedFS) also answers 412 when the key is the directory of a nested stream. The driver checks the object after a 412 and reports a collision as an error, never as "already exists", because an idempotent caller treats "already exists" as done and would lose the entry.
+- **No stream is nested under another stream's entry.** Stream `ns/task/runs` with entry `<runId>` rules out a stream `ns/task/runs/<runId>/...`, since a filesystem cannot hold a file and a directory of the same name. Streams in use: `ns/task/thread` (entries by sequence number), `ns/task/runs` (entries by run id) and `ns/task/events/<runId>` (entries by sequence number).
+
 ## StorageProvider
 
 ```yaml
