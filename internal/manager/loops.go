@@ -48,21 +48,26 @@ func (m *Manager) NumberNew(ctx context.Context) error {
 		// One failing task must not hold up the ones after it.
 		var errs []error
 		for _, t := range unborn {
-			var n int64
-			if err := m.writeTeam(ctx, ns, func(team *v1alpha1.Team) (v1alpha1.TeamStatus, error) {
-				num, next := task.ClaimNumber(team)
-				n = num
-				return next, nil
-			}); err != nil {
-				return err // the Team itself is failing; the rest would too
-			}
-			_, err := m.transition(ctx, storage.Key{Namespace: ns, Name: t.Name}, task.Create{Number: n})
-			if err != nil && !isLostCandidate(err) {
+			if _, err := m.numberTask(ctx, storage.Key{Namespace: ns, Name: t.Name}); err != nil && !isLostCandidate(err) {
 				errs = append(errs, fmt.Errorf("%s: %w", t.Name, err))
 			}
 		}
 		return errors.Join(errs...)
 	})
+}
+
+// numberTask claims a number from the Team's counter and moves the task to
+// Todo. It is the one numbering path, used by NumberNew and by CreateTask.
+func (m *Manager) numberTask(ctx context.Context, key storage.Key) (*v1alpha1.Task, error) {
+	var n int64
+	if err := m.writeTeam(ctx, key.Namespace, func(team *v1alpha1.Team) (v1alpha1.TeamStatus, error) {
+		num, next := task.ClaimNumber(team)
+		n = num
+		return next, nil
+	}); err != nil {
+		return nil, err
+	}
+	return m.transition(ctx, key, task.Create{Number: n})
 }
 
 // Dispatch applies every pending outbox item and acks the applied ones.
