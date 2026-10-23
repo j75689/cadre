@@ -53,6 +53,18 @@ The loop lives in someone else's process: an ACP agent such as Claude Code, a ka
 
 Step-mode workers only run inside the cluster; a process outside the cluster is always a runtime-mode runner. Kubernetes Job, Agent Sandbox and a user's own machine are all runtime mode; they differ only in who starts the runner process. The builtin loop first ships as a runtime-mode runner (`cadre-runner`) and becomes step mode later.
 
+### The builtin loop in runtime mode
+
+`cadre-runner` claims builtin agents' tasks and runs each as one conversation with the agent's model:
+
+- **It starts from the task.** The system prompt is a fixed Cadre preamble followed by the Agent's `instructions`. The first message is the task (title, description, labels), its whole thread oldest first, read with `thread_read`, and its file list. A ToolCall's arguments and a ToolResult's body are clipped at 8 KiB there, with a note; `thread_read` has them in full. Nothing else carries over from earlier runs: the thread is the memory, and a reclaimed run starts again from it.
+- **The conversation is append-only.** What the model returns goes back unchanged, thinking blocks included, and the results of one turn's tool calls go back together in one message. Tools are listed once per run and sorted by name, so the prompt cache holds.
+- **Tool calls go through the run's MCP endpoint**, one at a time in the order the model made them. A result marked `_meta: {"cadre.dev/runEnded": true}` (from `thread_ask`, or a call that must ask a human first) means the server has ended the run: the runner stops at once, makes no further call and does not finish.
+- **How a run ends.** A reply with no tool call is the agent's summary: it is posted to the thread and the run finishes `Review`. Reaching the turn limit (100) or 80% of the model's context window also posts a comment and finishes `Review`, so a human decides whether to run again. A refusal, a reply cut off at the output limit, a model error that retrying cannot fix, or one that keeps failing for five minutes, posts a comment and finishes `Failed`.
+- **It reports every model response** on `/runner/v1/events`: input, output and prompt-cache tokens, the context size, and which tools were called. Reporting is best effort.
+- **A run that cannot reach its MCP endpoint is left to its lease**, logged as an error: it can neither read the task nor comment. Such a run still holds a Team slot until the lease runs out, so the runner waits before claiming again, 5 seconds after the first and twice as long after each one in a row, up to 5 minutes.
+- **It stops at once when its task is gone**: a heartbeat answered `run_mismatch` or `not_found`, or a lease that ran out without a renewal getting through, cancels the run without a finish.
+
 ## Runner protocol
 
 Pull based. A runner is any process that speaks it. In-cluster runners authenticate with a ServiceAccount token, which Cadre verifies with TokenReview; out-of-cluster runners use a `Runner` resource and a secret.
@@ -87,6 +99,7 @@ Core tools:
 | Tool | Behaviour |
 | --- | --- |
 | `thread_post` | append the agent's message to the thread; returns its sequence number |
+| `thread_read` | the thread, oldest first, at most 200 entries after a sequence number |
 | `thread_ask` | append the agent's question and end the run as `Waiting{Question}`, in one step; the runner must stop without calling finish |
 | `task_create_subtask` | record the subtask in the outbox (fenced on the run); the dispatcher creates it, unassigned unless an assignee is given; returns its name and number |
 | `task_files_read` / `task_files_write` | the latest version of a task file, or a new version of it: UTF-8 text, at most 1 MiB, paths up to 255 bytes |

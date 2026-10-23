@@ -156,7 +156,7 @@ func (e *env) status(t *testing.T, authorization string) int {
 func TestTheTokenOpensItsRunOnly(t *testing.T) {
 	e := start(t)
 	c := e.claim(t)
-	if tools, err := e.connect(c.MCPToken); err != nil || len(tools) != 6 {
+	if tools, err := e.connect(c.MCPToken); err != nil || len(tools) != 7 {
 		t.Fatalf("connect with the run's token: %d tools, %v", len(tools), err)
 	}
 

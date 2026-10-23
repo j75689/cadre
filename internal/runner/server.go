@@ -86,6 +86,7 @@ func (s *Server) events(w http.ResponseWriter, r *http.Request) {
 	err := s.m.RecordEvent(r.Context(), key(req.Task), manager.Event{
 		RunID: req.RunID, Seq: req.Seq,
 		InputTokens: req.Usage.InputTokens, OutputTokens: req.Usage.OutputTokens,
+		CacheReadInputTokens: req.Usage.CacheReadInputTokens, CacheCreationInputTokens: req.Usage.CacheCreationInputTokens,
 		ContextTokens: req.ContextTokens, Progress: req.Progress,
 	})
 	if err != nil {
@@ -125,7 +126,7 @@ func claimedAgent(c *manager.Claimed) *ClaimedAgent {
 	if c.Agent == nil {
 		return nil
 	}
-	a := &ClaimedAgent{Name: c.Agent.Name, Instructions: c.Agent.Spec.Instructions, ToolServers: c.Agent.Spec.ToolRefs}
+	a := &ClaimedAgent{Name: c.Agent.Name, Instructions: c.Agent.Spec.Instructions, ToolServers: c.Agent.Spec.ToolRefs, Effort: c.Agent.Spec.Effort}
 	if mp := c.ModelProvider; mp != nil {
 		s := mp.Spec
 		a.Model = &ClaimedModel{

@@ -375,7 +375,7 @@ func (s *Server) addForwarded(server *sdk.Server, t *v1alpha1.Task, tools map[st
 				if err != nil {
 					return s.fail(err), nil
 				}
-				return &sdk.CallToolResult{Content: []sdk.Content{&sdk.TextContent{Text: msgApprovalEnded}}}, nil
+				return runEnded(msgApprovalEnded), nil
 			}
 			return s.fwd.forward(ctx, ts, fw.remote.Name, req.Params.Arguments), nil
 		}

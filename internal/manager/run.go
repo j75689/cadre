@@ -282,12 +282,15 @@ func (m *Manager) endedRun(ctx context.Context, t *v1alpha1.Task, runID string) 
 
 // Event is a runner's progress report.
 type Event struct {
-	RunID         string `json:"runId"`
-	Seq           int64  `json:"seq"`
-	InputTokens   int64  `json:"inputTokens,omitempty"`
-	OutputTokens  int64  `json:"outputTokens,omitempty"`
-	ContextTokens int64  `json:"contextTokens,omitempty"`
-	Progress      string `json:"progress,omitempty"`
+	RunID        string `json:"runId"`
+	Seq          int64  `json:"seq"`
+	InputTokens  int64  `json:"inputTokens,omitempty"`
+	OutputTokens int64  `json:"outputTokens,omitempty"`
+	// Prompt-cache tokens, apart from InputTokens.
+	CacheReadInputTokens     int64  `json:"cacheReadInputTokens,omitempty"`
+	CacheCreationInputTokens int64  `json:"cacheCreationInputTokens,omitempty"`
+	ContextTokens            int64  `json:"contextTokens,omitempty"`
+	Progress                 string `json:"progress,omitempty"`
 }
 
 // RecordEvent appends a progress event to the run's event log. A duplicate

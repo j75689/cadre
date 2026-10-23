@@ -29,6 +29,7 @@ var (
 		Agents: map[string]*v1alpha1.Agent{ns + "/coder": func() *v1alpha1.Agent {
 			a := manager.ReadyAgent(ns, "coder", "claude", v1alpha1.AgentRuntime{Type: v1alpha1.RuntimeBuiltin})
 			a.Spec.Instructions = "Fix what you are given."
+			a.Spec.Effort = v1alpha1.EffortXHigh
 			a.Spec.ToolRefs = []string{"github"}
 			return a
 		}()},
@@ -114,7 +115,7 @@ func TestRunnerProtocol(t *testing.T) {
 		t.Fatalf("claim: %+v", claim)
 	}
 	ag := claim.Agent
-	if ag == nil || ag.Name != "coder" || ag.Instructions != "Fix what you are given." || len(ag.ToolServers) != 1 || ag.ToolServers[0] != "github" ||
+	if ag == nil || ag.Name != "coder" || ag.Instructions != "Fix what you are given." || ag.Effort != v1alpha1.EffortXHigh || len(ag.ToolServers) != 1 || ag.ToolServers[0] != "github" ||
 		ag.Model == nil || ag.Model.Type != v1alpha1.ProviderAnthropic || ag.Model.Model != "claude-opus-5-5" ||
 		ag.Model.SecretRef == nil || ag.Model.SecretRef.Name != "anthropic" || ag.Model.SecretRef.Key != "api-key" {
 		t.Fatalf("claimed agent: %+v (model %+v)", ag, ag.Model)

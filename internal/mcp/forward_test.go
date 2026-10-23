@@ -188,8 +188,8 @@ func TestForwardedTools(t *testing.T) {
 	if want := []string{"github__big", "github__create_pull_request", "github__picture", "github__runes", "github__search", "github__weird_name_v2"}; !slices.Equal(forwarded, want) {
 		t.Fatalf("forwarded tools %v, want %v", forwarded, want)
 	}
-	if len(tools.Tools) != 6+len(forwarded) {
-		t.Fatalf("%d tools, want the six core tools and the forwarded ones", len(tools.Tools))
+	if len(tools.Tools) != 7+len(forwarded) {
+		t.Fatalf("%d tools, want the seven core tools and the forwarded ones", len(tools.Tools))
 	}
 
 	var res *sdk.CallToolResult
@@ -265,8 +265,8 @@ func TestPermissionsAndCredentials(t *testing.T) {
 	src2.secrets["github/token"] = "wrong"
 	c2 := e2.claim(t)
 	tools, err = e2.connect(c2.MCPToken)
-	if err != nil || len(tools) != 6 {
-		t.Fatalf("with a wrong credential: %d tools, %v; want the six core tools", len(tools), err)
+	if err != nil || len(tools) != 7 {
+		t.Fatalf("with a wrong credential: %d tools, %v; want the seven core tools", len(tools), err)
 	}
 }
 
@@ -395,7 +395,7 @@ func TestAskApproveAndDeny(t *testing.T) {
 	}
 
 	res := ask("fix login")
-	if res.IsError || !strings.Contains(res.Content[0].(*sdk.TextContent).Text, "approval") {
+	if res.IsError || res.Meta[mcp.MetaRunEnded] != true || !strings.Contains(res.Content[0].(*sdk.TextContent).Text, "approval") {
 		t.Fatalf("ask: %+v", res)
 	}
 	got, err := e.m.GetTask(ctx, key)

@@ -55,6 +55,8 @@ type ClaimedAgent struct {
 	Instructions string `json:"instructions,omitempty"`
 	// ToolServers are the names of the ToolServers the agent may use.
 	ToolServers []string `json:"toolServers,omitempty"`
+	// Effort is how much thinking the builtin loop asks the model for.
+	Effort v1alpha1.Effort `json:"effort,omitempty"`
 	// Model says which model the agent uses and where its credential is.
 	// It is for cadre-runner, Cadre's own runner; other runners bring
 	// their own loop and credentials and ignore it.
@@ -120,6 +122,10 @@ type HeartbeatResponse struct {
 type Usage struct {
 	InputTokens  int64 `json:"inputTokens,omitempty"`
 	OutputTokens int64 `json:"outputTokens,omitempty"`
+	// Prompt-cache tokens, counted apart from InputTokens as the model
+	// APIs report them.
+	CacheReadInputTokens     int64 `json:"cacheReadInputTokens,omitempty"`
+	CacheCreationInputTokens int64 `json:"cacheCreationInputTokens,omitempty"`
 }
 
 // EventsRequest reports a run's progress. A repeated seq is accepted.
