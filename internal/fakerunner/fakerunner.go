@@ -303,9 +303,12 @@ func stalled(ctx context.Context, c *client.Client, plan Plan, claim *runner.Cla
 	case <-time.After(plan.Stall):
 	}
 	ref := runner.TaskRef{Namespace: claim.Task.Namespace, Name: claim.Task.Name}
-	// A woken run's requests may succeed (the task was never reclaimed) or
-	// be turned away as lost; anything else is a protocol surprise.
+	// A woken run's requests may succeed (the task was never reclaimed), be
+	// turned away as lost, or not get through (a server unavailable, a cut
+	// connection: the run learns nothing and stops). Any other answer is a
+	// protocol surprise.
 	late := func(err error, ok Observation) (bool, error) {
+		var cerr *client.Error
 		switch {
 		case err == nil:
 			ok.Late = true
@@ -314,7 +317,7 @@ func stalled(ctx context.Context, c *client.Client, plan Plan, claim *runner.Cla
 		case lostTask(err):
 			observe(Observation{Kind: Rejected, Late: true})
 			return false, nil
-		case ctx.Err() != nil:
+		case ctx.Err() != nil, !errors.As(err, &cerr), cerr.Status >= 500:
 			return false, nil
 		default:
 			return false, fmt.Errorf("late request of stalled run %s: %w", claim.RunID, err)
