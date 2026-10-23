@@ -179,3 +179,6 @@ func (m *Manager) Heartbeat(ctx context.Context, key storage.Key, runID string) 
 	}
 	return t.Status.Run.LeaseUntil.Time, nil
 }
+
+// Config returns the manager's effective configuration.
+func (m *Manager) Config() Config { return m.cfg }
