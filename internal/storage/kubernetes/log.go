@@ -115,13 +115,41 @@ func (l *objectLog) Append(ctx context.Context, stream, key string, data []byte)
 		case err == nil:
 			return nil
 		case code == "PreconditionFailed":
-			return fmt.Errorf("log %s entry %s: %w", stream, key, storage.ErrAlreadyExists)
+			return l.taken(ctx, stream, key, objKey)
 		case code == "ConditionalRequestConflict" && attempt < conditionalRetries:
 			if err := conflictBackoff(ctx, attempt); err != nil {
 				return err
 			}
 		default:
 			return fmt.Errorf("log %s entry %s: %w", stream, key, err)
+		}
+	}
+}
+
+// taken explains a 412 on Append. Usually the key holds an entry. But a store
+// backed by a filesystem also answers 412 when the key is the directory of a
+// nested stream, and then no entry exists: reporting ErrAlreadyExists would
+// make an idempotent caller drop the entry silently.
+func (l *objectLog) taken(ctx context.Context, stream, key, objKey string) error {
+	var err error
+	for attempt := 0; ; attempt++ {
+		_, err = l.s3.HeadObject(ctx, &s3.HeadObjectInput{Bucket: &l.bucket, Key: &objKey})
+		code := errorCode(err)
+		var missing *types.NotFound
+		switch {
+		case err == nil:
+			return fmt.Errorf("log %s entry %s: %w", stream, key, storage.ErrAlreadyExists)
+		case errors.As(err, &missing) || code == "NotFound" || code == "NoSuchKey":
+			return fmt.Errorf("log %s entry %s: the key is the path of a nested stream %s/%s/, not an entry: %w",
+				stream, key, stream, key, storage.ErrStreamCollision)
+		}
+		// A transient failure: an ordinary race for a key must not turn
+		// into an error because the check could not be made at once.
+		if attempt == conditionalRetries {
+			return fmt.Errorf("log %s entry %s: check a refused append: %w", stream, key, err)
+		}
+		if err := conflictBackoff(ctx, attempt); err != nil {
+			return err
 		}
 	}
 }

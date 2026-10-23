@@ -1,6 +1,6 @@
 // Package s3fake is an in-process S3 server for tests. It implements only what
 // Cadre's drivers use: path-style buckets, PutObject with If-None-Match: *,
-// GetObject, DeleteObject and ListObjectsV2 (prefix, delimiter, start-after,
+// GetObject, HeadObject, DeleteObject and ListObjectsV2 (prefix, delimiter, start-after,
 // max-keys and continuation). It is not a general S3 emulator.
 package s3fake
 
@@ -13,6 +13,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 )
 
 // Server is a running fake.
@@ -25,6 +26,15 @@ type Server struct {
 	// IgnoreIfNoneMatch makes the fake accept and ignore If-None-Match, like
 	// a store that does not enforce it. Set it before use.
 	IgnoreIfNoneMatch bool
+
+	// Filer makes the fake behave like a store backed by a filesystem
+	// (SeaweedFS): a key that is also the directory of other keys cannot
+	// hold an object, so a conditional put of it answers 412 and a HEAD of
+	// it answers 404. Set it before use.
+	Filer bool
+
+	// HeadFailures makes the next that many HEAD requests fail with 500.
+	HeadFailures atomic.Int32
 }
 
 // CreateBucket creates a bucket.
@@ -68,7 +78,8 @@ func (s *Server) serve(w http.ResponseWriter, r *http.Request) {
 	case !ok:
 		writeError(w, http.StatusNotFound, "NoSuchBucket")
 	case r.Method == http.MethodPut:
-		if _, exists := objects[key]; exists && r.Header.Get("If-None-Match") == "*" && !s.IgnoreIfNoneMatch {
+		conditional := r.Header.Get("If-None-Match") == "*" && !s.IgnoreIfNoneMatch
+		if _, exists := objects[key]; conditional && (exists || s.Filer && isDir(objects, key)) {
 			writeError(w, http.StatusPreconditionFailed, "PreconditionFailed")
 			return
 		}
@@ -84,6 +95,15 @@ func (s *Server) serve(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusNoContent)
 	case r.Method == http.MethodGet && key == "" && r.URL.Query().Get("list-type") == "2":
 		list(w, r, bucket, objects)
+	case r.Method == http.MethodHead && s.takeHeadFailure():
+		writeError(w, http.StatusInternalServerError, "InternalError")
+	case r.Method == http.MethodHead:
+		body, exists := objects[key]
+		if !exists {
+			w.WriteHeader(http.StatusNotFound)
+			return
+		}
+		w.Header().Set("Content-Length", strconv.Itoa(len(body)))
 	case r.Method == http.MethodGet:
 		body, exists := objects[key]
 		if !exists {
@@ -156,4 +176,26 @@ func writeError(w http.ResponseWriter, status int, code string) {
 		XMLName xml.Name `xml:"Error"`
 		Code    string
 	}{Code: code})
+}
+
+// isDir reports whether key is the directory of another key.
+func isDir(objects map[string][]byte, key string) bool {
+	for k := range objects {
+		if strings.HasPrefix(k, key+"/") {
+			return true
+		}
+	}
+	return false
+}
+
+func (s *Server) takeHeadFailure() bool {
+	for {
+		n := s.HeadFailures.Load()
+		if n <= 0 {
+			return false
+		}
+		if s.HeadFailures.CompareAndSwap(n, n-1) {
+			return true
+		}
+	}
 }

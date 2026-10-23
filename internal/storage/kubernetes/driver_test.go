@@ -65,7 +65,21 @@ func startAPIServer(t *testing.T) *rest.Config {
 
 func TestConformance(t *testing.T) {
 	cfg := startAPIServer(t)
-	s3cfg := s3Config(t)
+	runConformance(t, cfg, s3Config(t))
+}
+
+// The fake can behave like a filesystem-backed store, so the refusal paths
+// SeaweedFS takes also run without one.
+func TestConformanceOnAFilerFake(t *testing.T) {
+	cfg := startAPIServer(t)
+	fake := s3fake.New()
+	t.Cleanup(fake.Close)
+	fake.Filer = true
+	fake.CreateBucket("filer")
+	runConformance(t, cfg, kubernetes.S3Config{Endpoint: fake.URL, Bucket: "filer", AccessKey: "fake", SecretKey: "fake", PathStyle: true})
+}
+
+func runConformance(t *testing.T, cfg *rest.Config, s3cfg kubernetes.S3Config) {
 	admin, err := client.New(cfg, client.Options{})
 	if err != nil {
 		t.Fatalf("client: %v", err)

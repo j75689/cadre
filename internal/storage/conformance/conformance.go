@@ -53,6 +53,7 @@ func Run(t *testing.T, f Factory) {
 		{"IndexListsTeams", testIndexListsTeams},
 		{"LogAppend", testLogAppend},
 		{"LogNestedStreams", testLogNestedStreams},
+		{"LogAlreadyExistsMeansReadable", testLogAlreadyExistsMeansReadable},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {

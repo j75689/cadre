@@ -556,3 +556,36 @@ func testIndexListsTeams(t *testing.T, s *suite) {
 		return nil
 	})
 }
+
+// ErrAlreadyExists must mean the entry exists and Read returns it. Writing an
+// entry whose key is the path of a nested stream breaks the layout rule, so
+// drivers may refuse it; this case pins how. A flat store (the memory driver,
+// the S3 fake) accepts the entry and returns it. A store backed by a
+// filesystem (SeaweedFS) refuses it, and must say so with an error other
+// than ErrAlreadyExists, or an idempotent caller would drop the entry
+// silently believing it was written.
+func testLogAlreadyExistsMeansReadable(t *testing.T, s *suite) {
+	d := s.open()
+	parent := s.ns + "/t/runs"
+	if err := d.Append(s.ctx, parent+"/R1/events", "0001", []byte("event")); err != nil {
+		t.Fatalf("append to the nested stream: %v", err)
+	}
+	err := d.Append(s.ctx, parent, "R1", []byte("record"))
+	if errors.Is(err, storage.ErrAlreadyExists) {
+		t.Fatalf("append %s/R1: ErrAlreadyExists, but no such entry was ever written: %v", parent, err)
+	}
+	if err != nil {
+		// Refused loudly: allowed, provided nothing changed.
+		if got, rerr := d.Read(s.ctx, parent, "", 0); rerr != nil || len(got) != 0 {
+			t.Errorf("after a refused append, %s holds %+v (%v); want no phantom entry", parent, got, rerr)
+		}
+		if got, rerr := d.Read(s.ctx, parent+"/R1/events", "", 0); rerr != nil || len(got) != 1 || got[0].Key != "0001" {
+			t.Errorf("after a refused append, the nested stream holds %+v (%v); want its one entry", got, rerr)
+		}
+		return
+	}
+	got, rerr := d.Read(s.ctx, parent, "", 0)
+	if rerr != nil || len(got) != 1 || got[0].Key != "R1" || string(got[0].Data) != "record" {
+		t.Fatalf("append %s/R1 succeeded but Read returns %+v, %v", parent, got, rerr)
+	}
+}

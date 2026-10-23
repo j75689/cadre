@@ -29,6 +29,7 @@ func TestFail(t *testing.T) {
 		storage.ErrAlreadyExists:   {409, httpjson.CodeAlreadyExists},
 		storage.ErrNotFound:        {404, httpjson.CodeNotFound},
 		storage.ErrInvalid:         {400, httpjson.CodeInvalid},
+		storage.ErrStreamCollision: {503, httpjson.CodeUnavailable},
 		manager.ErrInvalid:         {400, httpjson.CodeInvalid},
 		manager.ErrBusy:            {503, httpjson.CodeUnavailable},
 		fmt.Errorf("etcd timeout"): {503, httpjson.CodeUnavailable},
