@@ -64,6 +64,8 @@ const (
 	StopToolUse   Stop = "tool_use"
 	StopMaxTokens Stop = "max_tokens"
 	StopRefusal   Stop = "refusal"
+	// StopContextFull is the model's context window filling up.
+	StopContextFull Stop = "context_full"
 )
 
 // Reply is one model response.
@@ -100,6 +102,9 @@ func Permanent(err error) error { return permanent{err} }
 type permanent struct{ error }
 
 func (p permanent) Unwrap() error { return p.error }
+
+// IsPermanent reports whether err was marked Permanent.
+func IsPermanent(err error) bool { return isPermanent(err) }
 
 func isPermanent(err error) bool {
 	var p permanent

@@ -305,6 +305,8 @@ func (r *run) drive(ctx context.Context, s *session) ending {
 			return finishWith(v1alpha1.RunOutcomeFailed, why+".")
 		case StopMaxTokens:
 			return finishWith(v1alpha1.RunOutcomeFailed, "The model's reply was cut off at its output limit, so the run stopped.")
+		case StopContextFull:
+			return finishWith(v1alpha1.RunOutcomeReview, "This run stopped because the model's context window is full. A new run starts again from the thread.")
 		}
 		if len(reply.Calls) == 0 {
 			summary := strings.TrimSpace(reply.Text)
