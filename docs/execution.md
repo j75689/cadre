@@ -80,16 +80,31 @@ The claim response describes the agent: its instructions, its ToolServers, and a
 
 The token is minted when a run is claimed and handed to the runner in the claim response (`mcp: {url, token}`), once. Only its SHA-256 is stored, in the Task's `status.run`, written in the same conditional write as the claim. The token is bound to that one run and dies with it: when the run ends (finish, cancel, lease-expiry reclaim) `status.run` is cleared and the token stops working, and a reclaimed task gets a fresh token with its new run. The endpoint keeps no session; every request resolves the token on a fresh read of the task, so any replica can serve it.
 
+Tool names follow the model APIs' rule, `^[a-zA-Z0-9_-]{1,64}$`, so a runner hands them to a model unchanged. Forwarded ToolServer tools are named `<toolserver>__<tool>`; ToolServer names cannot contain `_`, so they never collide with the core tools.
+
 Core tools:
 
 | Tool | Behaviour |
 | --- | --- |
-| `thread.post` | append a message to the thread |
-| `thread.ask` | append a question; the run must end and the phase becomes `Waiting{Question}` |
-| `task.create_subtask` | written to the outbox; the dispatcher creates it |
-| `task.files.read` / `task.files.write` | the task's files, stored in object storage |
+| `thread_post` | append the agent's message to the thread; returns its sequence number |
+| `thread_ask` | append the agent's question and end the run as `Waiting{Question}`, in one step; the runner must stop without calling finish |
+| `task_create_subtask` | record the subtask in the outbox (fenced on the run); the dispatcher creates it, unassigned unless an assignee is given; returns its name and number |
+| `task_files_read` / `task_files_write` | the latest version of a task file, or a new version of it: UTF-8 text, at most 1 MiB, paths up to 255 bytes |
+| `task_files_list` | the task's files with their latest version and size |
 
-plus the ToolServers forwarded from the Agent's `toolRefs`. Every tool checks the run_id; a run that has lost its task is always rejected.
+plus the ToolServers forwarded from the Agent's `toolRefs`. Every tool checks the run_id; a run that has lost its task is always rejected, with a tool error telling the agent to stop.
+
+What fencing guarantees for each tool in runtime mode, in M1:
+
+| Tool | Guarantee |
+| --- | --- |
+| `task_create_subtask` | fully fenced: the subtask enters the outbox in a conditional write on the Task that checks the run |
+| `thread_ask` | the run ends through Finish, which is fenced; the Question is appended just before it |
+| `thread_post`, `thread_ask`'s Question, `task_files_write` | checked, then written: a fresh read must show the run still holding the task, then the log entry is appended. A run that loses its task in the moment between the two can still land that one entry. |
+
+A two-phase write would close that window: the content written first, then a pointer to it committed in a run-fenced write. It is planned for M2.
+
+Task files are stored as one log stream of versions per path, `<ns>/<task>/files/<base64url(path)>`, plus an index stream, `<ns>/<task>/files-index`, recording each write's path, version and size. A write appends the version first and the index entry second. Reads use the version streams, so a write whose index entry was lost is still read, and the path is indexed again by its next write.
 
 ## Correctness: three layers
 

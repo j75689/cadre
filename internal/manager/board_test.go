@@ -336,3 +336,50 @@ type teamGone struct{ storage.Driver }
 func (teamGone) GetTeam(context.Context, string) (*v1alpha1.Team, error) {
 	return nil, storage.ErrNotFound
 }
+
+// A thread_ask whose ending of the run failed is retried: the thread keeps
+// one Question, and the retry ends the run.
+func TestRunAskWritesOneQuestion(t *testing.T) {
+	e := newEnv(t, 1)
+	key := e.addTask(t, "t", v1alpha1.AssigneeAgent)
+	c := e.claim(t)
+	// The Question's revision advance lands; the Finish write fails.
+	m := e.manager(&failSecondWrite{Driver: e.store})
+	if _, err := m.RunAsk(ctx, key, c.RunID, "Staging or production?"); err == nil {
+		t.Fatal("first ask: want the injected failure")
+	}
+	entry, err := e.m.RunAsk(ctx, key, c.RunID, "Staging or production?")
+	if err != nil || entry.Seq != 1 || entry.RunID != c.RunID {
+		t.Fatalf("retried ask: %+v, %v", entry, err)
+	}
+	thread, _ := e.m.ReadThread(ctx, key, 0, 0)
+	if len(thread) != 1 {
+		t.Fatalf("%d entries, want one Question: %+v", len(thread), thread)
+	}
+	if tk := e.get(t, key); tk.Status.Phase != v1alpha1.PhaseWaiting || tk.Status.Waiting.ThreadSeq != 1 {
+		t.Fatalf("after the retry: %+v", tk.Status)
+	}
+}
+
+// takenFiles makes every version of every file look taken.
+type takenFiles struct{ storage.Driver }
+
+func (f takenFiles) Append(c context.Context, stream, key string, data []byte) error {
+	if strings.Contains(stream, "/files/") {
+		return fmt.Errorf("%s: %w", key, storage.ErrAlreadyExists)
+	}
+	return f.Driver.Append(c, stream, key, data)
+}
+
+// A write that cannot win a version is reported busy and indexes nothing.
+func TestWriteFileGivesUpOnAnEndlessVersionRace(t *testing.T) {
+	e := newEnv(t, 1)
+	key := e.addTask(t, "t", v1alpha1.AssigneeAgent)
+	c := e.claim(t)
+	if _, err := e.manager(takenFiles{e.store}).RunWriteFile(ctx, key, c.RunID, "a.txt", "x"); !errors.Is(err, ErrBusy) {
+		t.Fatalf("write: %v, want ErrBusy", err)
+	}
+	if files, err := e.m.RunListFiles(ctx, key, c.RunID); err != nil || len(files) != 0 {
+		t.Fatalf("index after a lost write: %+v, %v", files, err)
+	}
+}

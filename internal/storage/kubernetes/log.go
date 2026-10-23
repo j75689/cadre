@@ -191,34 +191,57 @@ func (l *objectLog) probe(ctx context.Context) error {
 const readParallelism = 16
 
 func (l *objectLog) Read(ctx context.Context, stream, after string, limit int) ([]storage.Entry, error) {
+	var out []storage.Entry
+	err := l.list(ctx, stream, after, limit, func(prefix string, objs []types.Object) error {
+		entries, err := l.getAll(ctx, prefix, objs)
+		out = append(out, entries...)
+		return err
+	})
+	return out, err
+}
+
+// Keys lists keys and sizes from ListObjectsV2 alone, with no GET.
+func (l *objectLog) Keys(ctx context.Context, stream, after string, limit int) ([]storage.KeyInfo, error) {
+	var out []storage.KeyInfo
+	err := l.list(ctx, stream, after, limit, func(prefix string, objs []types.Object) error {
+		for _, obj := range objs {
+			out = append(out, storage.KeyInfo{Key: strings.TrimPrefix(*obj.Key, prefix), Size: aws.ToInt64(obj.Size)})
+		}
+		return nil
+	})
+	return out, err
+}
+
+// list pages through a stream's objects in key order, handing each page to
+// page, until limit objects (zero or less: all) have been listed.
+func (l *objectLog) list(ctx context.Context, stream, after string, limit int, page func(prefix string, objs []types.Object) error) error {
 	if err := storage.ValidateStream(stream); err != nil {
-		return nil, err
+		return err
 	}
 	prefix := l.streamPrefix(stream)
 	// The delimiter keeps nested streams out: their objects are rolled up
-	// into CommonPrefixes, which Read ignores.
+	// into CommonPrefixes, which are ignored.
 	in := &s3.ListObjectsV2Input{Bucket: &l.bucket, Prefix: &prefix, Delimiter: aws.String("/")}
 	if after != "" {
 		in.StartAfter = aws.String(prefix + after)
 	}
-	var out []storage.Entry
+	listed := 0
 	for {
 		if limit > 0 {
-			in.MaxKeys = aws.Int32(int32(min(limit-len(out), 1000)))
+			in.MaxKeys = aws.Int32(int32(min(limit-listed, 1000)))
 		}
-		page, err := l.s3.ListObjectsV2(ctx, in)
+		res, err := l.s3.ListObjectsV2(ctx, in)
 		if err != nil {
-			return nil, fmt.Errorf("list log %s: %w", stream, err)
+			return fmt.Errorf("list log %s: %w", stream, err)
 		}
-		entries, err := l.getAll(ctx, prefix, page.Contents)
-		if err != nil {
-			return nil, err
+		if err := page(prefix, res.Contents); err != nil {
+			return err
 		}
-		out = append(out, entries...)
-		if !aws.ToBool(page.IsTruncated) || (limit > 0 && len(out) >= limit) {
-			return out, nil
+		listed += len(res.Contents)
+		if !aws.ToBool(res.IsTruncated) || (limit > 0 && listed >= limit) {
+			return nil
 		}
-		in.ContinuationToken = page.NextContinuationToken
+		in.ContinuationToken = res.NextContinuationToken
 	}
 }
 

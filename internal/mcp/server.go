@@ -31,11 +31,14 @@ type Server struct {
 	m   *manager.Manager
 	log *slog.Logger
 	mcp http.Handler
+	// schemas caches the tools' input and output schemas, which would
+	// otherwise be built by reflection on every request.
+	schemas *sdk.SchemaCache
 }
 
 // NewServer returns the endpoint.
 func NewServer(m *manager.Manager, log *slog.Logger) *Server {
-	s := &Server{m: m, log: log}
+	s := &Server{m: m, log: log, schemas: sdk.NewSchemaCache()}
 	s.mcp = sdk.NewStreamableHTTPHandler(s.serverFor, &sdk.StreamableHTTPOptions{Stateless: true, Logger: log})
 	return s
 }
@@ -76,12 +79,14 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	s.mcp.ServeHTTP(w, r.WithContext(context.WithValue(r.Context(), runKey{}, t)))
 }
 
-// serverFor builds the MCP server for one request. The run's tools arrive
-// with the next change; for now the endpoint only authenticates.
+// serverFor builds the MCP server for one request, with the run's tools.
 func (s *Server) serverFor(r *http.Request) *sdk.Server {
-	name := "cadre"
-	if t := runOf(r.Context()); t != nil && t.Status.Run != nil {
-		name = "cadre run " + t.Status.Run.ID
+	t := runOf(r.Context())
+	if t == nil || t.Status.Run == nil {
+		return sdk.NewServer(&sdk.Implementation{Name: "cadre", Version: v1alpha1.GroupVersion.Version}, nil)
 	}
-	return sdk.NewServer(&sdk.Implementation{Name: name, Version: v1alpha1.GroupVersion.Version}, nil)
+	server := sdk.NewServer(&sdk.Implementation{Name: "cadre run " + t.Status.Run.ID, Version: v1alpha1.GroupVersion.Version},
+		&sdk.ServerOptions{SchemaCache: s.schemas})
+	s.addTools(server, t)
+	return server
 }
