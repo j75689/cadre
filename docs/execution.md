@@ -76,7 +76,11 @@ The claim response describes the agent: its instructions, its ToolServers, and a
 
 ## Per-run MCP endpoint
 
-`/mcp/run/<token>`, where the token maps to a run_id. Core tools:
+`/mcp/run`, with the run's token in `Authorization: Bearer <token>`, the standard MCP transport authentication. The token maps to a run_id. It is never part of a URL, so it cannot leak into ingress, mesh or client access logs, or into a redirect.
+
+The token is minted when a run is claimed and handed to the runner in the claim response (`mcp: {url, token}`), once. Only its SHA-256 is stored, in the Task's `status.run`, written in the same conditional write as the claim. The token is bound to that one run and dies with it: when the run ends (finish, cancel, lease-expiry reclaim) `status.run` is cleared and the token stops working, and a reclaimed task gets a fresh token with its new run. The endpoint keeps no session; every request resolves the token on a fresh read of the task, so any replica can serve it.
+
+Core tools:
 
 | Tool | Behaviour |
 | --- | --- |

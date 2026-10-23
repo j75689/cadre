@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
@@ -45,5 +46,25 @@ func TestFail(t *testing.T) {
 		if leaks && want.status != 400 {
 			t.Errorf("%v: the response leaks internal details: %q", err, er.Error.Message)
 		}
+	}
+}
+
+// Requests are logged; health probes only at debug level.
+func TestLogRequests(t *testing.T) {
+	var buf strings.Builder
+	log := slog.New(slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelInfo}))
+	h := httpjson.LogRequests(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusTeapot)
+		_ = http.NewResponseController(w).Flush() // reaches the real writer through Unwrap
+	}), log)
+	for _, path := range []string{"/api/v1/teams", "/healthz", "/readyz"} {
+		h.ServeHTTP(httptest.NewRecorder(), httptest.NewRequest(http.MethodGet, path, nil))
+	}
+	out := buf.String()
+	if !strings.Contains(out, "path=/api/v1/teams") || !strings.Contains(out, "status=418") {
+		t.Errorf("request not logged:\n%s", out)
+	}
+	if strings.Contains(out, "healthz") || strings.Contains(out, "readyz") {
+		t.Errorf("health probes logged at info:\n%s", out)
 	}
 }

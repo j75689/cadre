@@ -65,7 +65,7 @@ Step-mode workers always run inside the cluster, as a pool of interchangeable po
 Runtime-mode backends differ only in who starts the runner process. They all speak the same pull-based runner protocol and all call tools through the per-run MCP endpoint. In step mode, Agent Sandbox is the place where tools that need a shell execute: a kind of ToolServer, not an execution backend.
 
 ### Per-run tool server
-- Every run gets its own MCP endpoint (`/mcp/run/<token>`) exposing Cadre's own tools (post to the thread, ask a question, create a subtask, read and write task files) plus the ToolServers the agent is allowed to use.
+- Every run gets its own MCP endpoint (`/mcp/run`, authenticated by the run's bearer token) exposing Cadre's own tools (post to the thread, ask a question, create a subtask, read and write task files) plus the ToolServers the agent is allowed to use.
 - Tools execute on the Cadre side with the team's credentials. Credentials never reach the execution environment.
 
 ### LLM access

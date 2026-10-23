@@ -37,3 +37,24 @@ func TestBoundRequests(t *testing.T) {
 		t.Fatalf("request deadline in %s, want within a minute", until)
 	}
 }
+
+func TestResolvePublicURL(t *testing.T) {
+	for _, tc := range []struct {
+		flag, listen string
+		inCluster    bool
+		want         string
+		ok           bool
+	}{
+		{"", ":8080", false, "http://localhost:8080", true},
+		{"", "[::]:9090", false, "http://localhost:9090", true},
+		{"", "0.0.0.0:80", false, "http://localhost:80", true},
+		{"https://cadre.example.com", ":8080", true, "https://cadre.example.com", true},
+		{"", ":8080", true, "", false},
+		{"", "8080", false, "", false},
+	} {
+		got, err := resolvePublicURL(tc.flag, tc.listen, tc.inCluster)
+		if (err == nil) != tc.ok || got != tc.want {
+			t.Errorf("resolvePublicURL(%q, %q, %v) = %q, %v; want %q, ok=%v", tc.flag, tc.listen, tc.inCluster, got, err, tc.want, tc.ok)
+		}
+	}
+}

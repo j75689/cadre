@@ -76,8 +76,22 @@ type ClaimedModel struct {
 	WorkloadIdentity bool                   `json:"workloadIdentity,omitempty"`
 }
 
+// ClaimedMCP is the run's per-run MCP endpoint. Every request to URL sends
+// "Authorization: Bearer <Token>". The token is a credential bound to this
+// run; it stops working when the run ends, and a reclaimed task gets a fresh
+// one with its new run.
+type ClaimedMCP struct {
+	URL   string `json:"url"`
+	Token string `json:"token"`
+}
+
 // ClaimResponse is the 200 body of a claim; 204 means there is no work.
-// A later step adds "mcp" (url, token); fields are only ever added.
+// Fields are only ever added.
+//
+// A run that calls the thread.ask tool has ended when the tool returns: the
+// server finished it as Waiting{Question}. The runner must stop without
+// calling finish; if it calls finish anyway, run_mismatch is the expected
+// answer and means stop, as always.
 type ClaimResponse struct {
 	Task             ClaimedTask      `json:"task"`
 	RunID            string           `json:"runId"`
@@ -86,6 +100,7 @@ type ClaimResponse struct {
 	LeaseSeconds     int              `json:"leaseSeconds"`
 	HeartbeatSeconds int              `json:"heartbeatSeconds"`
 	Agent            *ClaimedAgent    `json:"agent,omitempty"`
+	MCP              *ClaimedMCP      `json:"mcp,omitempty"`
 }
 
 // HeartbeatRequest renews a run's lease.

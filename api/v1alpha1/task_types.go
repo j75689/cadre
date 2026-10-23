@@ -147,6 +147,13 @@ type Run struct {
 
 	// LeaseUntil is when the run may be reclaimed unless it is renewed.
 	LeaseUntil metav1.Time `json:"leaseUntil"`
+
+	// MCPTokenHash is the hex SHA-256 of the run's per-run MCP token. The
+	// token itself is handed to the runner once, at claim, and never
+	// stored; it is bound to this run and stops working when the run ends.
+	// +kubebuilder:validation:Pattern=`^[0-9a-f]{64}$`
+	// +optional
+	MCPTokenHash string `json:"mcpTokenHash,omitempty"`
 }
 
 // OutboxKind is the kind of side effect an outbox item asks for.

@@ -11,6 +11,7 @@ import (
 	"flag"
 	"fmt"
 	"log/slog"
+	"net"
 	"net/http"
 	"os"
 	"os/signal"
@@ -23,7 +24,9 @@ import (
 
 	"github.com/j75689/cadre/internal/api"
 	"github.com/j75689/cadre/internal/controller"
+	"github.com/j75689/cadre/internal/httpjson"
 	"github.com/j75689/cadre/internal/manager"
+	"github.com/j75689/cadre/internal/mcp"
 	"github.com/j75689/cadre/internal/runner"
 	"github.com/j75689/cadre/internal/storage/kubernetes"
 )
@@ -37,7 +40,8 @@ func main() {
 
 func run() error {
 	var (
-		listen    = flag.String("listen", ":8080", "address to serve /api/v1, /runner/v1 and /healthz on")
+		listen    = flag.String("listen", ":8080", "address to serve /api/v1, /runner/v1, /mcp/run and the health probes on")
+		publicURL = flag.String("public-url", "", "URL runners reach this server at, for their per-run MCP endpoint; required in a cluster (default outside one: http://localhost and the listen port)")
 		lease     = flag.Duration("lease", manager.DefaultConfig.Lease, "how long a claim or heartbeat keeps a run alive")
 		heartbeat = flag.Duration("heartbeat", manager.DefaultConfig.Heartbeat, "how often runners renew; also the reclaim grace")
 		reclaim   = flag.Duration("reclaim-interval", manager.DefaultLoopConfig.Reclaim, "how often expired leases are reclaimed")
@@ -85,7 +89,11 @@ func run() error {
 
 	m := manager.New(store, manager.Config{Lease: *lease, Heartbeat: *heartbeat, Agents: controller.Agents(ctrls)})
 	mux := http.NewServeMux()
-	runner.NewServer(m, log).Register(mux)
+	if *publicURL, err = resolvePublicURL(*publicURL, *listen, os.Getenv("KUBERNETES_SERVICE_HOST") != ""); err != nil {
+		return err
+	}
+	runner.NewServer(m, log, *publicURL).Register(mux)
+	mcp.NewServer(m, log).Register(mux)
 	api.NewServer(m, log).Register(mux)
 	mux.HandleFunc("GET /healthz", func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(http.StatusOK) })
 	mux.HandleFunc("GET /readyz", func(w http.ResponseWriter, r *http.Request) {
@@ -99,7 +107,7 @@ func run() error {
 
 	srv := &http.Server{
 		Addr:              *listen,
-		Handler:           boundRequests(mux, requestTimeout),
+		Handler:           httpjson.LogRequests(boundRequests(mux, requestTimeout), log),
 		ReadHeaderTimeout: 10 * time.Second,
 		ReadTimeout:       30 * time.Second,
 		WriteTimeout:      requestTimeout + 5*time.Second,
@@ -165,4 +173,22 @@ func validateTimings(lease, heartbeat time.Duration) error {
 		return fmt.Errorf("--heartbeat %s must be shorter than --lease %s", heartbeat, lease)
 	}
 	return nil
+}
+
+// resolvePublicURL returns the URL runners reach this server at. Outside a
+// cluster it defaults to localhost on the listen port; inside one there is
+// no sensible default, and a wrong one would only show at a runner's first
+// tool call, so the flag is required.
+func resolvePublicURL(flagValue, listen string, inCluster bool) (string, error) {
+	if flagValue != "" {
+		return flagValue, nil
+	}
+	if inCluster {
+		return "", errors.New("--public-url is required in a cluster: runners reach their MCP endpoint there")
+	}
+	_, port, err := net.SplitHostPort(listen)
+	if err != nil {
+		return "", fmt.Errorf("--listen %q: %w", listen, err)
+	}
+	return "http://" + net.JoinHostPort("localhost", port), nil
 }

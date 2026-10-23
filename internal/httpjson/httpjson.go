@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"log/slog"
 	"net/http"
+	"time"
 
 	"github.com/j75689/cadre/internal/manager"
 	"github.com/j75689/cadre/internal/storage"
@@ -103,3 +104,34 @@ func Fail(w http.ResponseWriter, log *slog.Logger, err error) {
 		WriteError(w, http.StatusServiceUnavailable, CodeUnavailable, "temporarily unavailable; retry")
 	}
 }
+
+// LogRequests logs every request's method, path, status and duration;
+// health probes at debug level, since they arrive every few seconds.
+// Credentials never travel in paths (the per-run MCP token is a header), so
+// paths are logged as they are.
+func LogRequests(next http.Handler, log *slog.Logger) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		start := time.Now()
+		rec := &statusRecorder{ResponseWriter: w, status: http.StatusOK}
+		next.ServeHTTP(rec, r)
+		level := slog.LevelInfo
+		if r.URL.Path == "/healthz" || r.URL.Path == "/readyz" {
+			level = slog.LevelDebug
+		}
+		log.Log(r.Context(), level, "request", "method", r.Method, "path", r.URL.Path, "status", rec.status, "duration", time.Since(start))
+	})
+}
+
+type statusRecorder struct {
+	http.ResponseWriter
+	status int
+}
+
+func (s *statusRecorder) WriteHeader(code int) {
+	s.status = code
+	s.ResponseWriter.WriteHeader(code)
+}
+
+// Unwrap lets http.ResponseController reach the underlying writer, for
+// flushing streamed (MCP) responses and the rest.
+func (s *statusRecorder) Unwrap() http.ResponseWriter { return s.ResponseWriter }

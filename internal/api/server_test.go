@@ -33,7 +33,7 @@ func startURL(t *testing.T) (*client.Client, *manager.Manager, string) {
 	log := slog.New(slog.NewTextHandler(io.Discard, nil))
 	mux := http.NewServeMux()
 	api.NewServer(m, log).Register(mux)
-	runner.NewServer(m, log).Register(mux)
+	runner.NewServer(m, log, "http://cadre.test").Register(mux)
 	srv := httptest.NewServer(mux)
 	t.Cleanup(srv.Close)
 	return client.New(srv.URL, nil), m, srv.URL
