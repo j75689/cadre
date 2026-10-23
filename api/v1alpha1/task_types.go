@@ -150,24 +150,85 @@ type Run struct {
 }
 
 // OutboxKind is the kind of side effect an outbox item asks for.
-// +kubebuilder:validation:Enum=CreateSubtask
+// +kubebuilder:validation:Enum=CreateSubtask;RunEnded
 type OutboxKind string
 
 // Outbox kinds.
 const (
+	// OutboxCreateSubtask creates the subtask in Spec.
 	OutboxCreateSubtask OutboxKind = "CreateSubtask"
+	// OutboxRunEnded appends Run to the task's run history.
+	OutboxRunEnded OutboxKind = "RunEnded"
 )
+
+// RunEndReason says why a run ended.
+// +kubebuilder:validation:Enum=Finished;Interrupted;Cancelled
+type RunEndReason string
+
+// Run end reasons.
+const (
+	RunFinished    RunEndReason = "Finished"
+	RunInterrupted RunEndReason = "Interrupted" // its lease expired and it was reclaimed
+	RunCancelled   RunEndReason = "Cancelled"
+)
+
+// RunOutcome is how a finished run ended, as reported by the runner.
+// +kubebuilder:validation:Enum=Done;Review;Waiting;Failed
+type RunOutcome string
+
+// Run outcomes.
+const (
+	RunOutcomeDone    RunOutcome = "Done"
+	RunOutcomeReview  RunOutcome = "Review"
+	RunOutcomeWaiting RunOutcome = "Waiting"
+	RunOutcomeFailed  RunOutcome = "Failed"
+)
+
+// RunRecord is a run that has ended, as kept in the run history.
+type RunRecord struct {
+	// ID is the run's ULID.
+	// +kubebuilder:validation:Pattern=`^[0-9A-HJKMNP-TV-Z]{26}$`
+	ID string `json:"id"`
+
+	// Mode is runtime or step.
+	Mode RunMode `json:"mode"`
+
+	// Runner is the runner, or the worker of the last step, that held the run.
+	// +optional
+	Runner string `json:"runner,omitempty"`
+
+	// Step is the step the run had reached.
+	// +kubebuilder:validation:Minimum=0
+	// +optional
+	Step int64 `json:"step,omitempty"`
+
+	// Reason is why the run ended.
+	Reason RunEndReason `json:"reason"`
+
+	// Outcome is set when Reason is Finished.
+	// +optional
+	Outcome RunOutcome `json:"outcome,omitempty"`
+
+	// EndedAt is when the run ended.
+	EndedAt metav1.Time `json:"endedAt"`
+}
 
 // OutboxItem is a side effect written in the same conditional write as the
 // state change that caused it. The dispatcher applies it idempotently and then
 // clears it with another conditional write.
+//
+// +kubebuilder:validation:XValidation:rule="self.kind != 'CreateSubtask' || has(self.spec)",message="a CreateSubtask item needs spec"
+// +kubebuilder:validation:XValidation:rule="self.kind != 'RunEnded' || has(self.run)",message="a RunEnded item needs run"
 type OutboxItem struct {
-	// ID is a ULID minted when the item is written. It is the idempotency key.
+	// ID is a ULID and the item's idempotency key.
 	//
-	// For CreateSubtask the subtask's metadata.name is derived from it
-	// deterministically (the lowercase ULID, a valid DNS-1123 label), so
-	// re-applying the item is a create that already exists and leaves no
-	// trace.
+	// For CreateSubtask it is minted when the item is written, and the
+	// subtask's metadata.name is derived from it deterministically (the
+	// lowercase ULID, a valid DNS-1123 label), so re-applying the item is a
+	// create that already exists and leaves no trace.
+	//
+	// For RunEnded it is the ended run's id: a run ends once, and the
+	// dispatcher appends the record to the run history keyed on it.
 	// +kubebuilder:validation:Pattern=`^[0-9A-HJKMNP-TV-Z]{26}$`
 	ID string `json:"id"`
 
@@ -177,6 +238,10 @@ type OutboxItem struct {
 	// Spec is the subtask to create, for kind CreateSubtask.
 	// +optional
 	Spec *TaskSpec `json:"spec,omitempty"`
+
+	// Run is the ended run to record, for kind RunEnded.
+	// +optional
+	Run *RunRecord `json:"run,omitempty"`
 }
 
 // ThreadStatus points at the task's thread in the log.

@@ -171,9 +171,28 @@ func TestCRDs(t *testing.T) {
 			t.Fatalf("run = %+v, want %+v", got.Status.Run, task.Status.Run)
 		}
 
-		got.Status.Outbox[0].ID = "not-a-ulid"
-		if err := c.Status().Update(ctx, got); !apierrors.IsInvalid(err) {
-			t.Fatalf("outbox id not-a-ulid: got %v, want Invalid", err)
+		for name, it := range map[string]v1alpha1.OutboxItem{
+			"id not a ULID":           {ID: "not-a-ulid", Kind: v1alpha1.OutboxCreateSubtask, Spec: &v1alpha1.TaskSpec{Title: "x"}},
+			"CreateSubtask, no spec":  {ID: "01JB0000000000000000000002", Kind: v1alpha1.OutboxCreateSubtask},
+			"RunEnded, no run":        {ID: "01JB0000000000000000000002", Kind: v1alpha1.OutboxRunEnded},
+			"RunEnded, unknown cause": {ID: "01JB0000000000000000000002", Kind: v1alpha1.OutboxRunEnded, Run: &v1alpha1.RunRecord{ID: "01JB0000000000000000000002", Mode: v1alpha1.RunModeRuntime, Reason: "Bored", EndedAt: lease}},
+		} {
+			bad := got.DeepCopy()
+			bad.Status.Outbox = []v1alpha1.OutboxItem{it}
+			if err := c.Status().Update(ctx, bad); !apierrors.IsInvalid(err) {
+				t.Errorf("outbox %s: got %v, want Invalid", name, err)
+			}
+		}
+
+		got.Status.Outbox = append(got.Status.Outbox, v1alpha1.OutboxItem{
+			ID: task.Status.Run.ID, Kind: v1alpha1.OutboxRunEnded,
+			Run: &v1alpha1.RunRecord{
+				ID: task.Status.Run.ID, Mode: v1alpha1.RunModeRuntime, Reason: v1alpha1.RunFinished,
+				Outcome: v1alpha1.RunOutcomeDone, EndedAt: lease,
+			},
+		})
+		if err := c.Status().Update(ctx, got); err != nil {
+			t.Fatalf("valid RunEnded item: %v", err)
 		}
 	})
 }
