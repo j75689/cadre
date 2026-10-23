@@ -87,7 +87,7 @@ Two layers, as in Argo CD:
 ## Installation
 
 - A Helm chart and a plain `install.yaml`, cluster level.
-- Local development uses the Kubernetes built into Docker Desktop or OrbStack, with MinIO for object storage. There is no single-machine mode outside Kubernetes.
+- Local development uses the Kubernetes built into Docker Desktop or OrbStack, with SeaweedFS as the object store. There is no single-machine mode outside Kubernetes.
 - An operator and a top-level `Cadre` resource arrive together with the postgres driver, which needs managed databases and migrations.
 
 ### Enterprise checklist

@@ -17,7 +17,7 @@ Thank you for taking the time to contribute. Cadre is at the design stage, so th
 
 ## Development
 
-Requirements: Go (see `go.mod`) and `make`. Running Cadre itself later also needs a local Kubernetes (Docker Desktop, OrbStack or kind) and MinIO for object storage.
+Requirements: Go (see `go.mod`) and `make`. Running Cadre itself later also needs a local Kubernetes (Docker Desktop, OrbStack or kind) and an S3-compatible object store (SeaweedFS in the development setup).
 
 ```sh
 make build             # build all binaries into bin/
