@@ -16,7 +16,7 @@ The kubernetes driver uses object storage for its log. A separate `objectstore` 
 
 ### `kubernetes` (default, first)
 - `Task` and `Team` are CRDs; their status holds control state only: phase, `run_id`, `step`, lease, outbox, pointers.
-- Thread, conversation history, run history and files live in object storage (MinIO, S3, GCS). One object per entry; the sequence number is claimed with `If-None-Match`, and the Task's `thread.revision` is advanced afterwards so watchers notice.
+- Thread, conversation history, run history and files live in object storage (S3, GCS, or any S3-compatible store that enforces conditional writes; see below). One object per entry; the sequence number is claimed with `If-None-Match`, and the Task's `thread.revision` is advanced afterwards so watchers notice.
 - Board queries run in memory: the server caches every Task through an informer and builds indexes for ordering and filtering. Argo CD works the same way.
 - Fits thousands to tens of thousands of tasks per installation. Limits: about 1.5 MB per etcd object, about 8 GB total by default, a few thousand writes per second per cluster, shared with everything else in the cluster. Finished tasks are archived to object storage after `Team.spec.archiveAfter`, leaving a stub in the index.
 - It is the first driver built, on purpose: it is the most constrained of the three, so building it first keeps the core from growing queries only SQL can answer.
@@ -26,6 +26,15 @@ The kubernetes driver uses object storage for its log. A separate `objectstore` 
 - The database is created by the operator: a CloudNativePG `Cluster` with `ScheduledBackup`, a cloud-managed instance through Crossplane, GCP Config Connector or AWS ACK, or simply a connection string in a Secret.
 - Schema migrations are driven by the operator: a version change runs the migration Job first, then the rolling update. No advisory locks needed.
 - Only common Postgres features (`SKIP LOCKED` is fine). No `LISTEN/NOTIFY`, no advisory locks, so every Postgres-compatible service works.
+
+## Object store requirements
+
+The log relies on `If-None-Match: *` being **enforced** on PutObject: two appenders racing for the same key must get exactly one success and one `412 Precondition Failed`. A store that accepts the header and ignores it loses entries silently, which is worse than a store that rejects the header.
+
+- At startup the driver probes the configured store: it writes a unique scratch key twice with `If-None-Match: *`, requires the second write to fail with 412, then deletes the key. If the probe fails the driver refuses to start.
+- Known to enforce the precondition: Amazon S3 (since 2024), Google Cloud Storage (generation preconditions), SeaweedFS, versitygw, LocalStack.
+- Known not to enforce it: Garage (accepts the header and overwrites). Do not use it.
+- Development and CI use SeaweedFS, pinned to a release tag.
 
 ## StorageProvider
 
