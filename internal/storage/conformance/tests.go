@@ -575,7 +575,14 @@ func testLogAlreadyExistsMeansReadable(t *testing.T, s *suite) {
 		t.Fatalf("append %s/R1: ErrAlreadyExists, but no such entry was ever written: %v", parent, err)
 	}
 	if err != nil {
-		return // refused loudly: allowed
+		// Refused loudly: allowed, provided nothing changed.
+		if got, rerr := d.Read(s.ctx, parent, "", 0); rerr != nil || len(got) != 0 {
+			t.Errorf("after a refused append, %s holds %+v (%v); want no phantom entry", parent, got, rerr)
+		}
+		if got, rerr := d.Read(s.ctx, parent+"/R1/events", "", 0); rerr != nil || len(got) != 1 || got[0].Key != "0001" {
+			t.Errorf("after a refused append, the nested stream holds %+v (%v); want its one entry", got, rerr)
+		}
+		return
 	}
 	got, rerr := d.Read(s.ctx, parent, "", 0)
 	if rerr != nil || len(got) != 1 || got[0].Key != "R1" || string(got[0].Data) != "record" {

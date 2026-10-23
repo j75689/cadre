@@ -92,6 +92,11 @@ func Fail(w http.ResponseWriter, log *slog.Logger, err error) {
 		WriteError(w, http.StatusNotFound, CodeNotFound, "not found")
 	case errors.Is(err, storage.ErrAlreadyExists):
 		WriteError(w, http.StatusConflict, CodeAlreadyExists, "already exists")
+	case errors.Is(err, storage.ErrStreamCollision):
+		// A server-side layout fault: retriable for the client, and logged
+		// so it is investigated.
+		log.Error("log layout fault", "err", err)
+		WriteError(w, http.StatusServiceUnavailable, CodeUnavailable, "temporarily unavailable; retry")
 	default:
 		// Busy objects and storage failures are worth retrying.
 		log.Warn("request failed", "err", err)

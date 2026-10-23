@@ -4,8 +4,10 @@ import (
 	"context"
 	"errors"
 	"testing"
+	"time"
 
 	"github.com/j75689/cadre/internal/s3fake"
+	"github.com/j75689/cadre/internal/storage"
 )
 
 func fakeLog(t *testing.T, ignoreIfNoneMatch bool) (*objectLog, *s3fake.Server) {
@@ -46,5 +48,48 @@ func TestProbeFailsWithoutBucket(t *testing.T) {
 	l.bucket = "missing"
 	if err := l.probe(context.Background()); err == nil {
 		t.Fatal("probe of a missing bucket succeeded")
+	}
+}
+
+// A 412 is "taken" only if the entry exists: on a filesystem-backed store a
+// key that is the directory of a nested stream also answers 412.
+func TestAppendTellsATakenKeyFromACollision(t *testing.T) {
+	ctx := context.Background()
+	l, fake := fakeLog(t, false)
+	fake.Filer = true
+	if err := l.Append(ctx, "a/runs", "R1", []byte("record")); err != nil {
+		t.Fatal(err)
+	}
+	if err := l.Append(ctx, "a/runs", "R1", []byte("again")); !errors.Is(err, storage.ErrAlreadyExists) {
+		t.Errorf("append a taken key: %v, want ErrAlreadyExists", err)
+	}
+	if err := l.Append(ctx, "a/runs/R2/events", "0001", []byte("event")); err != nil {
+		t.Fatal(err)
+	}
+	err := l.Append(ctx, "a/runs", "R2", []byte("record"))
+	if !errors.Is(err, storage.ErrStreamCollision) || errors.Is(err, storage.ErrAlreadyExists) {
+		t.Errorf("append over a nested stream: %v, want ErrStreamCollision", err)
+	}
+}
+
+// A HEAD that fails for a moment after a 412 is retried, so an ordinary race
+// for a key still ends as ErrAlreadyExists. The SDK retries a 500 three times
+// by itself, so four failures are needed to reach the driver's own retry.
+func TestTakenRetriesATransientHead(t *testing.T) {
+	ctx := context.Background()
+	l, fake := fakeLog(t, false)
+	if err := l.Append(ctx, "a/thread", "0001", []byte("x")); err != nil {
+		t.Fatal(err)
+	}
+	fake.HeadFailures.Store(4)
+	if err := l.Append(ctx, "a/thread", "0001", []byte("y")); !errors.Is(err, storage.ErrAlreadyExists) {
+		t.Fatalf("append a taken key while HEAD fails four times: %v, want ErrAlreadyExists", err)
+	}
+	// A HEAD that keeps failing ends in an error, never in "already exists".
+	fake.HeadFailures.Store(1000)
+	short, cancel := context.WithTimeout(ctx, 2*time.Second)
+	defer cancel()
+	if err := l.Append(short, "a/thread", "0001", []byte("y")); err == nil || errors.Is(err, storage.ErrAlreadyExists) {
+		t.Fatalf("append a taken key while HEAD keeps failing: %v, want an error that is not ErrAlreadyExists", err)
 	}
 }

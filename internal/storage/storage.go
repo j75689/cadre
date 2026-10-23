@@ -22,6 +22,10 @@ var (
 	// ErrInvalid means the store refused an object as malformed, as the
 	// Kubernetes API server does when a CRD validation rule fails.
 	ErrInvalid = errors.New("invalid object")
+	// ErrStreamCollision means a log entry could not be written because its
+	// path is taken by a nested stream: a layout fault on the server side,
+	// not a malformed request (see Log).
+	ErrStreamCollision = errors.New("log entry collides with a nested stream")
 )
 
 // Driver is a storage backend.
