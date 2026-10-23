@@ -221,14 +221,22 @@ func (d *Driver) Read(_ context.Context, stream, after string, limit int) ([]sto
 
 // ListTasks implements storage.Index.
 func (d *Driver) ListTasks(_ context.Context, q storage.Query) ([]v1alpha1.Task, error) {
+	if err := q.Validate(); err != nil {
+		return nil, err
+	}
 	d.mu.RLock()
-	var out []v1alpha1.Task
+	defer d.mu.RUnlock()
+	var matched []*v1alpha1.Task
 	for _, t := range d.index {
 		if q.Matches(t) {
-			out = append(out, *t.DeepCopy())
+			matched = append(matched, t)
 		}
 	}
-	d.mu.RUnlock()
-	slices.SortFunc(out, func(a, b v1alpha1.Task) int { return storage.CompareTasks(&a, &b) })
-	return q.Page(out), nil
+	slices.SortFunc(matched, storage.CompareTasks)
+	page := storage.Page(q, matched)
+	out := make([]v1alpha1.Task, len(page))
+	for i, t := range page {
+		t.DeepCopyInto(&out[i])
+	}
+	return out, nil
 }

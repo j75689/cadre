@@ -49,8 +49,8 @@ func testStaleVersionConflicts(t *testing.T, s *suite) {
 	if first.ResourceVersion == stale.ResourceVersion {
 		t.Fatal("a successful write did not update the version in place")
 	}
-	if got := s.get(d, "t"); got.ResourceVersion != first.ResourceVersion || got.Status.Thread.Revision != 1 {
-		t.Fatalf("read back version %q revision %+v", got.ResourceVersion, got.Status.Thread)
+	if got := s.get(d, "t"); got.ResourceVersion != first.ResourceVersion || got.Status.Thread == nil || got.Status.Thread.Revision != 1 {
+		t.Fatalf("read back version %q thread %+v", got.ResourceVersion, got.Status.Thread)
 	}
 	// The returned version is usable for the next write.
 	first.Status.Thread.Revision = 2
@@ -135,9 +135,9 @@ func testClaimExactlyOnce(t *testing.T, s *suite) {
 		t.Fatalf("%d claims succeeded, want exactly 1", wins)
 	}
 	allErrorsAre(t, errs, task.ErrInvalidTransition)
-	got := s.get(a, "work")
-	if got.Status.Phase != v1alpha1.PhaseRunning || got.Status.Runs.Count != 1 || got.Status.Run.ID != got.Status.Runs.LastID {
-		t.Fatalf("after the race: %+v", got.Status)
+	got := s.get(a, "work").Status
+	if got.Phase != v1alpha1.PhaseRunning || got.Run == nil || got.Runs == nil || got.Runs.Count != 1 || got.Run.ID != got.Runs.LastID {
+		t.Fatalf("after the race: %+v", got)
 	}
 }
 
@@ -150,7 +150,7 @@ func testRedeliveredStepAdvancesOnce(t *testing.T, s *suite) {
 	if err := transition(s.ctx, a, s.key("steps"), task.Claim{RunID: run, Mode: v1alpha1.RunModeStep, Lease: time.Minute}); err != nil {
 		t.Fatalf("claim: %v", err)
 	}
-	step := task.Advance{RunID: run, Step: 0, Outbox: []v1alpha1.OutboxItem{{
+	step := task.Advance{RunID: run, Step: 0, Runner: "w", Lease: time.Minute, Outbox: []v1alpha1.OutboxItem{{
 		ID: runID(100), Kind: v1alpha1.OutboxCreateSubtask, Spec: &v1alpha1.TaskSpec{Title: "child"},
 	}}}
 	readers := readBarrier(parties)
@@ -161,9 +161,9 @@ func testRedeliveredStepAdvancesOnce(t *testing.T, s *suite) {
 		t.Fatalf("step committed %d times, want exactly 1", wins)
 	}
 	allErrorsAre(t, errs, task.ErrStepMismatch)
-	got := s.get(b, "steps")
-	if got.Status.Run.Step != 1 || len(got.Status.Outbox) != 1 {
-		t.Fatalf("step %d, outbox %d items", got.Status.Run.Step, len(got.Status.Outbox))
+	got := s.get(b, "steps").Status
+	if got.Run == nil || got.Run.Step != 1 || len(got.Outbox) != 1 {
+		t.Fatalf("after the race: run %+v, outbox %+v", got.Run, got.Outbox)
 	}
 }
 
@@ -184,7 +184,15 @@ func testOutboxAppliedOnce(t *testing.T, s *suite) {
 		t.Fatalf("finish: %v", err)
 	}
 
+	runs := s.ns + "/parent/runs"
 	apply := func(d storage.Driver, it v1alpha1.OutboxItem) error {
+		if it.Kind == v1alpha1.OutboxRunEnded {
+			err := d.Append(s.ctx, runs, it.ID, []byte(it.Run.Reason))
+			if errors.Is(err, storage.ErrAlreadyExists) {
+				return nil
+			}
+			return err
+		}
 		sub := &v1alpha1.Task{ObjectMeta: metav1.ObjectMeta{Name: task.SubtaskName(it), Namespace: s.ns}, Spec: *it.Spec.DeepCopy()}
 		sub.Spec.ParentRef = &v1alpha1.TaskReference{Name: "parent"}
 		if err := d.CreateTask(s.ctx, sub); err != nil && !errors.Is(err, storage.ErrAlreadyExists) {
@@ -223,9 +231,13 @@ func testOutboxAppliedOnce(t *testing.T, s *suite) {
 	}
 	for _, it := range items {
 		sub := s.get(a, task.SubtaskName(it))
-		if sub.Spec.Title != it.Spec.Title || sub.Spec.ParentRef.Name != "parent" {
+		if sub.Spec.Title != it.Spec.Title || sub.Spec.ParentRef == nil || sub.Spec.ParentRef.Name != "parent" {
 			t.Errorf("subtask %s: %+v", sub.Name, sub.Spec)
 		}
+	}
+	history, err := a.Read(s.ctx, runs, "", 0)
+	if err != nil || len(history) != 1 || history[0].Key != run || string(history[0].Data) != string(v1alpha1.RunFinished) {
+		t.Fatalf("run history: %+v, err %v; want one Finished entry for %s", history, err, run)
 	}
 	eventually(t, "index holds parent and two subtasks", func() error {
 		ts, err := a.ListTasks(s.ctx, storage.Query{Namespace: s.ns})
@@ -249,26 +261,9 @@ func testTeamSemaphoreAndCounter(t *testing.T, s *suite) {
 		t.Fatalf("create team: %v", err)
 	}
 
-	writeTeam := func(d storage.Driver, change func(*v1alpha1.Team) (v1alpha1.TeamStatus, error)) error {
-		for {
-			cur, err := d.GetTeam(s.ctx, s.ns)
-			if err != nil {
-				return err
-			}
-			next, err := change(cur)
-			if err != nil {
-				return err
-			}
-			cur.Status = next
-			if err := d.UpdateTeamStatus(s.ctx, cur); !errors.Is(err, storage.ErrConflict) {
-				return err
-			}
-		}
-	}
-
 	numbers := make([]int64, parties)
 	if _, errs := race(parties, []storage.Driver{a, b}, func(i int, d storage.Driver) error {
-		return writeTeam(d, func(cur *v1alpha1.Team) (v1alpha1.TeamStatus, error) {
+		return s.writeTeam(d, func(cur *v1alpha1.Team) (v1alpha1.TeamStatus, error) {
 			n, next := task.ClaimNumber(cur)
 			numbers[i] = n
 			return next, nil
@@ -284,13 +279,13 @@ func testTeamSemaphoreAndCounter(t *testing.T, s *suite) {
 	}
 
 	wins, errs := race(parties, []storage.Driver{a, b}, func(_ int, d storage.Driver) error {
-		return writeTeam(d, task.AcquireSlot)
+		return s.writeTeam(d, task.AcquireSlot)
 	})
 	if wins != maxRuns {
 		t.Fatalf("%d parties acquired a slot, want %d", wins, maxRuns)
 	}
 	allErrorsAre(t, errs, task.ErrNoSlot)
-	if got, _ := a.GetTeam(s.ctx, s.ns); got.Status.Running != maxRuns || got.Status.NextNumber != parties+1 {
+	if got := s.team(a); got.Status.Running != maxRuns || got.Status.NextNumber != parties+1 {
 		t.Fatalf("team status %+v", got.Status)
 	}
 }
@@ -421,5 +416,58 @@ func testLogAppend(t *testing.T, s *suite) {
 	}
 	if empty, err := b.Read(s.ctx, s.ns+"/none", "", 0); err != nil || len(empty) != 0 {
 		t.Fatalf("read a missing stream: %+v, err %v", empty, err)
+	}
+}
+
+// A status write never persists the spec it carries, so the state machine can
+// never overwrite a human's concurrent spec edit.
+func testStatusWritesLeaveSpecAlone(t *testing.T, s *suite) {
+	d := s.open()
+	s.newTask(d, "t", 1, "")
+	tk := s.get(d, "t")
+	tk.Spec.Title = "rewritten by a status write"
+	tk.Status.Thread = &v1alpha1.ThreadStatus{Revision: 1}
+	if err := d.UpdateTaskStatus(s.ctx, tk); err != nil {
+		t.Fatalf("task status write: %v", err)
+	}
+	if got := s.get(d, "t"); got.Spec.Title != "t" || got.Status.Thread == nil {
+		t.Errorf("task: spec %q, thread %+v; want the spec untouched and the status written", got.Spec.Title, got.Status.Thread)
+	}
+
+	team := &v1alpha1.Team{ObjectMeta: metav1.ObjectMeta{Name: v1alpha1.TeamName, Namespace: s.ns}, Spec: v1alpha1.TeamSpec{DisplayName: "Backend", MaxConcurrentRuns: 1}}
+	if err := d.CreateTeam(s.ctx, team); err != nil {
+		t.Fatalf("create team: %v", err)
+	}
+	team.Spec.DisplayName = "rewritten by a status write"
+	team.Spec.MaxConcurrentRuns = 50
+	team.Status.NextNumber = 2
+	if err := d.UpdateTeamStatus(s.ctx, team); err != nil {
+		t.Fatalf("team status write: %v", err)
+	}
+	if got := s.team(d); got.Spec.DisplayName != "Backend" || got.Spec.MaxConcurrentRuns != 1 || got.Status.NextNumber != 2 {
+		t.Errorf("team: spec %+v, status %+v; want the spec untouched and the status written", got.Spec, got.Status)
+	}
+}
+
+func testCloseIsIdempotent(t *testing.T, s *suite) {
+	d := s.env.Open()
+	for i := 0; i < 2; i++ {
+		if err := d.Close(); err != nil {
+			t.Fatalf("close %d: %v", i+1, err)
+		}
+	}
+}
+
+func testIndexRejectsInvalidQueries(t *testing.T, s *suite) {
+	d := s.open()
+	s.newTask(d, "t", 1, "")
+	for _, q := range []storage.Query{
+		{},
+		{Namespace: s.ns, Offset: -1},
+		{Namespace: s.ns, Limit: -1},
+	} {
+		if _, err := d.ListTasks(s.ctx, q); !errors.Is(err, storage.ErrInvalidQuery) {
+			t.Errorf("query %+v: got %v, want ErrInvalidQuery", q, err)
+		}
 	}
 }

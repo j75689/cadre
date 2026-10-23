@@ -41,12 +41,15 @@ func Run(t *testing.T, f Factory) {
 		{"CreateIsCreateIfNotExists", testCreateIsCreateIfNotExists},
 		{"CreateIgnoresStatus", testCreateIgnoresStatus},
 		{"NotFound", testNotFound},
+		{"StatusWritesLeaveSpecAlone", testStatusWritesLeaveSpecAlone},
+		{"CloseIsIdempotent", testCloseIsIdempotent},
 		{"ClaimExactlyOnce", testClaimExactlyOnce},
 		{"RedeliveredStepAdvancesOnce", testRedeliveredStepAdvancesOnce},
 		{"OutboxAppliedOnceAfterDispatcherDies", testOutboxAppliedOnce},
 		{"TeamSemaphoreAndCounter", testTeamSemaphoreAndCounter},
 		{"IndexRebuildsAfterRestart", testIndexRebuilds},
 		{"IndexQuery", testIndexQuery},
+		{"IndexRejectsInvalidQueries", testIndexRejectsInvalidQueries},
 		{"LogAppend", testLogAppend},
 	}
 	for _, tc := range tests {
@@ -65,11 +68,45 @@ type suite struct {
 	ctx context.Context
 }
 
-// open starts a driver and closes it when the test ends.
+// open starts a driver and closes it when the test ends. Tests may close it
+// earlier; Close is idempotent.
 func (s *suite) open() storage.Driver {
 	d := s.env.Open()
-	s.t.Cleanup(func() { _ = d.Close() })
+	s.t.Cleanup(func() {
+		if err := d.Close(); err != nil {
+			s.t.Errorf("close: %v", err)
+		}
+	})
 	return d
+}
+
+// team reads the Team, failing the test if it cannot.
+func (s *suite) team(d storage.Driver) *v1alpha1.Team {
+	s.t.Helper()
+	team, err := d.GetTeam(s.ctx, s.ns)
+	if err != nil {
+		s.t.Fatalf("get team: %v", err)
+	}
+	return team
+}
+
+// writeTeam reads the Team, applies change and writes it, retrying conflicts.
+func (s *suite) writeTeam(d storage.Driver, change func(*v1alpha1.Team) (v1alpha1.TeamStatus, error)) error {
+	for attempt := 0; attempt < maxConflicts; attempt++ {
+		cur, err := d.GetTeam(s.ctx, s.ns)
+		if err != nil {
+			return err
+		}
+		next, err := change(cur)
+		if err != nil {
+			return err
+		}
+		cur.Status = next
+		if err := d.UpdateTeamStatus(s.ctx, cur); !errors.Is(err, storage.ErrConflict) {
+			return err
+		}
+	}
+	return fmt.Errorf("team %s: %w", s.ns, errTooManyConflicts)
 }
 
 func (s *suite) key(name string) storage.Key { return storage.Key{Namespace: s.ns, Name: name} }
@@ -109,11 +146,20 @@ func transition(ctx context.Context, d storage.Driver, key storage.Key, ev task.
 	return transitionAfter(ctx, d, key, ev, nil)
 }
 
+// maxConflicts bounds conflict retries, so a driver whose versions never match
+// fails the test with its last error instead of hanging it.
+const maxConflicts = 100
+
+var errTooManyConflicts = errors.New("still conflicting after many retries")
+
 // transitionAfter is transition, but the first attempt waits for every party
 // to have read the task before it writes, so all of them race from the same
 // version instead of happening to run one after another.
 func transitionAfter(ctx context.Context, d storage.Driver, key storage.Key, ev task.Event, readers *sync.WaitGroup) error {
-	for {
+	for attempt := 0; ; attempt++ {
+		if attempt == maxConflicts {
+			return fmt.Errorf("%s on %s: %w", task.KindOf(ev), key, errTooManyConflicts)
+		}
 		t, err := d.GetTask(ctx, key)
 		if readers != nil {
 			readers.Done()

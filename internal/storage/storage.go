@@ -24,7 +24,7 @@ type Driver interface {
 	Objects
 	Log
 	Index
-	// Close stops background work such as watches.
+	// Close stops background work such as watches. It is idempotent.
 	Close() error
 }
 
@@ -73,7 +73,8 @@ type Log interface {
 	// and a retried append of the same entry is detectable.
 	Append(ctx context.Context, stream, key string, data []byte) error
 	// Read returns up to limit entries with keys greater than after, in
-	// ascending key order. An empty after reads from the start.
+	// ascending key order. An empty after reads from the start, and a limit
+	// of zero or less means no limit.
 	Read(ctx context.Context, stream, after string, limit int) ([]Entry, error)
 }
 
@@ -84,8 +85,23 @@ func SeqKey(seq int64) string { return fmt.Sprintf("%020d", seq) }
 type Query struct {
 	Namespace string           // required
 	Phases    []v1alpha1.Phase // any of these; empty means all
-	Offset    int
-	Limit     int // zero means no limit
+	Offset    int              // not negative
+	Limit     int              // not negative; zero means no limit
+}
+
+// ErrInvalidQuery is returned by ListTasks for a query Validate rejects.
+var ErrInvalidQuery = errors.New("invalid query")
+
+// Validate rejects a query without a namespace or with a negative offset or
+// limit. Every driver calls it first in ListTasks.
+func (q Query) Validate() error {
+	switch {
+	case q.Namespace == "":
+		return fmt.Errorf("namespace is required: %w", ErrInvalidQuery)
+	case q.Offset < 0 || q.Limit < 0:
+		return fmt.Errorf("offset %d, limit %d: must not be negative: %w", q.Offset, q.Limit, ErrInvalidQuery)
+	}
+	return nil
 }
 
 // Index is the rebuildable index for board queries.
@@ -96,6 +112,7 @@ type Query struct {
 // correctness always rests on Objects' conditional writes.
 type Index interface {
 	// ListTasks returns matching Tasks ordered by priority (urgent first),
-	// then by number, then by name.
+	// then by number, then by name. It fails with ErrInvalidQuery if
+	// q.Validate does.
 	ListTasks(ctx context.Context, q Query) ([]v1alpha1.Task, error)
 }
