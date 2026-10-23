@@ -8,6 +8,8 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"slices"
+	"strings"
 
 	v1alpha1 "github.com/j75689/cadre/api/v1alpha1"
 )
@@ -70,12 +72,37 @@ type Entry struct {
 type Log interface {
 	// Append writes one entry. It fails with ErrAlreadyExists if the key is
 	// taken, so concurrent appenders racing for a key get exactly one winner
-	// and a retried append of the same entry is detectable.
+	// and a retried append of the same entry is detectable. The stream must
+	// pass ValidateStream and the key ValidateKey, or it fails with
+	// ErrInvalidName.
 	Append(ctx context.Context, stream, key string, data []byte) error
 	// Read returns up to limit entries with keys greater than after, in
 	// ascending key order. An empty after reads from the start, and a limit
-	// of zero or less means no limit.
+	// of zero or less means no limit. Entries of streams nested under this
+	// one are never returned.
 	Read(ctx context.Context, stream, after string, limit int) ([]Entry, error)
+}
+
+// ErrInvalidName is returned by Log methods for a malformed stream or key.
+var ErrInvalidName = errors.New("invalid log stream or key")
+
+// ValidateStream checks a stream name: one or more non-empty segments
+// separated by "/". Streams nest by name ("ns/t/thread" and
+// "ns/t/thread/files" are two streams), but Read on one never returns the
+// other's entries.
+func ValidateStream(stream string) error {
+	if stream == "" || slices.Contains(strings.Split(stream, "/"), "") {
+		return fmt.Errorf("stream %q: %w", stream, ErrInvalidName)
+	}
+	return nil
+}
+
+// ValidateKey checks an entry key: non-empty and without "/".
+func ValidateKey(key string) error {
+	if key == "" || strings.Contains(key, "/") {
+		return fmt.Errorf("key %q: %w", key, ErrInvalidName)
+	}
+	return nil
 }
 
 // SeqKey formats a sequence number as a log key that sorts numerically.

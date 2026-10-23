@@ -51,6 +51,7 @@ func Run(t *testing.T, f Factory) {
 		{"IndexQuery", testIndexQuery},
 		{"IndexRejectsInvalidQueries", testIndexRejectsInvalidQueries},
 		{"LogAppend", testLogAppend},
+		{"LogNestedStreams", testLogNestedStreams},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {

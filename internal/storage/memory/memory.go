@@ -5,6 +5,7 @@ package memory
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"slices"
 	"sort"
@@ -188,6 +189,9 @@ func (d *Driver) UpdateTeamStatus(_ context.Context, team *v1alpha1.Team) error 
 
 // Append implements storage.Log.
 func (d *Driver) Append(_ context.Context, stream, key string, data []byte) error {
+	if err := errors.Join(storage.ValidateStream(stream), storage.ValidateKey(key)); err != nil {
+		return err
+	}
 	d.b.mu.Lock()
 	defer d.b.mu.Unlock()
 	s := d.b.logs[stream]
@@ -204,6 +208,9 @@ func (d *Driver) Append(_ context.Context, stream, key string, data []byte) erro
 
 // Read implements storage.Log.
 func (d *Driver) Read(_ context.Context, stream, after string, limit int) ([]storage.Entry, error) {
+	if err := storage.ValidateStream(stream); err != nil {
+		return nil, err
+	}
 	d.b.mu.Lock()
 	defer d.b.mu.Unlock()
 	var out []storage.Entry
