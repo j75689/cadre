@@ -10,6 +10,7 @@ import (
 	"slices"
 	"sort"
 	"strconv"
+	"strings"
 	"sync"
 
 	v1alpha1 "github.com/j75689/cadre/api/v1alpha1"
@@ -223,6 +224,18 @@ func (d *Driver) Read(_ context.Context, stream, after string, limit int) ([]sto
 	if limit > 0 && len(out) > limit {
 		out = out[:limit]
 	}
+	return out, nil
+}
+
+// ListTeams implements storage.Index.
+func (d *Driver) ListTeams(context.Context) ([]v1alpha1.Team, error) {
+	d.b.mu.Lock()
+	defer d.b.mu.Unlock()
+	out := make([]v1alpha1.Team, 0, len(d.b.teams))
+	for _, team := range d.b.teams {
+		out = append(out, *team.DeepCopy())
+	}
+	slices.SortFunc(out, func(a, b v1alpha1.Team) int { return strings.Compare(a.Namespace, b.Namespace) })
 	return out, nil
 }
 

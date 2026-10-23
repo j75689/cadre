@@ -1,0 +1,144 @@
+// Package manager is the Task Manager: the only place that changes task
+// state. Every method reads the task fresh, runs one transition of the pure
+// state machine in internal/task and writes the result with one conditional
+// write. It is stateless, so any number of instances can run at once.
+package manager
+
+import (
+	"context"
+	"errors"
+	"fmt"
+	"time"
+
+	"github.com/oklog/ulid/v2"
+
+	v1alpha1 "github.com/j75689/cadre/api/v1alpha1"
+	"github.com/j75689/cadre/internal/storage"
+	"github.com/j75689/cadre/internal/task"
+)
+
+// Config holds the Task Manager's timings.
+type Config struct {
+	// Lease is how long a claim or heartbeat keeps a run alive.
+	Lease time.Duration
+	// Heartbeat is how often runners are told to renew the lease.
+	Heartbeat time.Duration
+}
+
+// DefaultConfig is the configuration used when a field is zero.
+var DefaultConfig = Config{Lease: 30 * time.Second, Heartbeat: 10 * time.Second}
+
+// Manager is a Task Manager instance.
+type Manager struct {
+	store storage.Driver
+	cfg   Config
+	now   func() time.Time
+	newID func() string
+}
+
+// Option configures a Manager.
+type Option func(*Manager)
+
+// WithClock replaces the wall clock, for tests.
+func WithClock(now func() time.Time) Option { return func(m *Manager) { m.now = now } }
+
+// WithIDs replaces the ULID generator, for tests.
+func WithIDs(newID func() string) Option { return func(m *Manager) { m.newID = newID } }
+
+// New returns a Manager on store.
+func New(store storage.Driver, cfg Config, opts ...Option) *Manager {
+	if cfg.Lease <= 0 {
+		cfg.Lease = DefaultConfig.Lease
+	}
+	if cfg.Heartbeat <= 0 {
+		cfg.Heartbeat = DefaultConfig.Heartbeat
+	}
+	m := &Manager{store: store, cfg: cfg, now: time.Now, newID: func() string { return ulid.Make().String() }}
+	for _, o := range opts {
+		o(m)
+	}
+	return m
+}
+
+// maxConflicts bounds the read-apply-write retries of one transition. Each
+// retry means another writer advanced the object; giving up surfaces a
+// retriable error instead of spinning.
+const maxConflicts = 20
+
+// ErrBusy means a transition kept losing conditional writes. It is retriable.
+var ErrBusy = errors.New("object is busy; retry")
+
+// transition reads the task, applies ev and writes the result, retrying on
+// conflicts. On success it returns the written task. A transition that ends
+// a run releases the Team slot after the Task write, which is the commit
+// point; a lost release is tolerated (see ReconcileTeams).
+func (m *Manager) transition(ctx context.Context, key storage.Key, ev task.Event) (*v1alpha1.Task, error) {
+	for range maxConflicts {
+		t, err := m.store.GetTask(ctx, key)
+		if err != nil {
+			return nil, err
+		}
+		res, err := task.Apply(t, ev, m.now())
+		if err != nil {
+			return t, err
+		}
+		t.Status = res.Status
+		err = m.store.UpdateTaskStatus(ctx, t)
+		if errors.Is(err, storage.ErrConflict) {
+			continue
+		}
+		if err != nil {
+			return nil, err
+		}
+		if res.ReleasesSlot {
+			_ = m.writeTeam(ctx, key.Namespace, func(team *v1alpha1.Team) (v1alpha1.TeamStatus, error) {
+				return task.ReleaseSlot(team), nil
+			})
+		}
+		return t, nil
+	}
+	return nil, fmt.Errorf("%s %s: %w", task.KindOf(ev), key, ErrBusy)
+}
+
+// writeTeam reads the namespace's Team, applies change and writes it,
+// retrying on conflicts.
+func (m *Manager) writeTeam(ctx context.Context, namespace string, change func(*v1alpha1.Team) (v1alpha1.TeamStatus, error)) error {
+	for range maxConflicts {
+		team, err := m.store.GetTeam(ctx, namespace)
+		if err != nil {
+			return err
+		}
+		next, err := change(team)
+		if err != nil {
+			return err
+		}
+		team.Status = next
+		err = m.store.UpdateTeamStatus(ctx, team)
+		if !errors.Is(err, storage.ErrConflict) {
+			return err
+		}
+	}
+	return fmt.Errorf("team %s: %w", namespace, ErrBusy)
+}
+
+// Reply is a human answer or approval: a Waiting task goes back to Todo.
+func (m *Manager) Reply(ctx context.Context, key storage.Key) error {
+	_, err := m.transition(ctx, key, task.Reply{})
+	return err
+}
+
+// Cancel cancels a task in any phase. An in-flight run learns on its next
+// heartbeat.
+func (m *Manager) Cancel(ctx context.Context, key storage.Key) error {
+	_, err := m.transition(ctx, key, task.Cancel{})
+	return err
+}
+
+// Heartbeat renews the lease of runID on the task.
+func (m *Manager) Heartbeat(ctx context.Context, key storage.Key, runID string) (time.Time, error) {
+	t, err := m.transition(ctx, key, task.Heartbeat{RunID: runID, Lease: m.cfg.Lease})
+	if err != nil {
+		return time.Time{}, err
+	}
+	return t.Status.Run.LeaseUntil.Time, nil
+}

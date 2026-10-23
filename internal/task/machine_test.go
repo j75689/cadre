@@ -288,6 +288,10 @@ func TestReclaim(t *testing.T) {
 	live.Status.Run.LeaseUntil = metav1.NewTime(now)
 	wantErr(t, live, Reclaim{}, ErrLeaseNotExpired)
 
+	// The lease expired a minute ago, but not by more than the grace.
+	wantErr(t, taskIn(v1alpha1.PhaseRunning, runtime), Reclaim{Grace: time.Minute}, ErrLeaseNotExpired)
+	apply(t, taskIn(v1alpha1.PhaseRunning, runtime), Reclaim{Grace: time.Minute - time.Second})
+
 	corrupt := taskIn(v1alpha1.PhaseRunning, runtime)
 	corrupt.Status.Run = nil
 	wantErr(t, corrupt, Reclaim{}, ErrInvalidTransition)
