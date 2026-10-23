@@ -19,6 +19,9 @@ var (
 	ErrNotFound      = errors.New("not found")
 	ErrConflict      = errors.New("conflict: the object changed since it was read")
 	ErrAlreadyExists = errors.New("already exists")
+	// ErrInvalid means the store refused an object as malformed, as the
+	// Kubernetes API server does when a CRD validation rule fails.
+	ErrInvalid = errors.New("invalid object")
 )
 
 // Driver is a storage backend.

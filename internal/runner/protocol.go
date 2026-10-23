@@ -7,6 +7,7 @@ import (
 	"time"
 
 	v1alpha1 "github.com/j75689/cadre/api/v1alpha1"
+	"github.com/j75689/cadre/internal/httpjson"
 )
 
 // Paths of the protocol's endpoints.
@@ -117,24 +118,19 @@ type FinishResponse struct {
 	AlreadyFinished bool           `json:"alreadyFinished,omitempty"`
 }
 
-// Error codes in an ErrorResponse. A runner that gets run_mismatch, or
+// Error codes /runner/v1 returns. A runner that gets run_mismatch, or
 // not_found for its task, stops working on that task at once.
 const (
-	CodeInvalid           = "invalid"            // 400: the request is malformed
-	CodeNotFound          = "not_found"          // 404: the task does not exist
-	CodeRunMismatch       = "run_mismatch"       // 409: the run lost its task; stop
-	CodeStepMismatch      = "step_mismatch"      // 409: step mode; drop this result
-	CodeInvalidTransition = "invalid_transition" // 409: not allowed from the task's phase; a runner bug
-	CodeUnavailable       = "unavailable"        // 503: retry later
+	CodeInvalid           = httpjson.CodeInvalid
+	CodeNotFound          = httpjson.CodeNotFound
+	CodeRunMismatch       = httpjson.CodeRunMismatch
+	CodeStepMismatch      = httpjson.CodeStepMismatch
+	CodeInvalidTransition = httpjson.CodeInvalidTransition
+	CodeUnavailable       = httpjson.CodeUnavailable
 )
 
 // ErrorResponse is the body of every error.
-type ErrorResponse struct {
-	Error ErrorBody `json:"error"`
-}
+type ErrorResponse = httpjson.ErrorResponse
 
 // ErrorBody describes an error.
-type ErrorBody struct {
-	Code    string `json:"code"`
-	Message string `json:"message"`
-}
+type ErrorBody = httpjson.ErrorBody

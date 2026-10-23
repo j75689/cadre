@@ -2,6 +2,7 @@ package kubernetes_test
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -16,6 +17,7 @@ import (
 
 	"github.com/oklog/ulid/v2"
 
+	v1alpha1 "github.com/j75689/cadre/api/v1alpha1"
 	"github.com/j75689/cadre/internal/s3fake"
 	"github.com/j75689/cadre/internal/storage"
 	"github.com/j75689/cadre/internal/storage/conformance"
@@ -91,4 +93,23 @@ func TestConformance(t *testing.T) {
 			},
 		}
 	})
+}
+
+// Objects the API server rejects come back as storage.ErrInvalid, so callers
+// can answer 400 instead of "unavailable".
+func TestInvalidObjectsMapToErrInvalid(t *testing.T) {
+	cfg := startAPIServer(t)
+	d, err := kubernetes.Open(context.Background(), kubernetes.Config{REST: cfg, S3: s3Config(t)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = d.Close() }()
+	for name, tk := range map[string]*v1alpha1.Task{
+		"bad priority": {ObjectMeta: metav1.ObjectMeta{Name: "t", Namespace: "default"}, Spec: v1alpha1.TaskSpec{Title: "t", Priority: "whenever"}},
+		"bad name":     {ObjectMeta: metav1.ObjectMeta{Name: "Not_A_Name", Namespace: "default"}, Spec: v1alpha1.TaskSpec{Title: "t"}},
+	} {
+		if err := d.CreateTask(context.Background(), tk); !errors.Is(err, storage.ErrInvalid) {
+			t.Errorf("%s: %v, want storage.ErrInvalid", name, err)
+		}
+	}
 }

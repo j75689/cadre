@@ -105,6 +105,8 @@ func mapError(err error, what string) error {
 		return fmt.Errorf("%s: %w", what, storage.ErrConflict)
 	case apierrors.IsAlreadyExists(err):
 		return fmt.Errorf("%s: %w", what, storage.ErrAlreadyExists)
+	case apierrors.IsInvalid(err), apierrors.IsBadRequest(err):
+		return fmt.Errorf("%s: %w: %w", what, storage.ErrInvalid, err)
 	default:
 		return fmt.Errorf("%s: %w", what, err)
 	}

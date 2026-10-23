@@ -1,6 +1,7 @@
-// Command cadre-server runs the Task Manager: the /runner/v1 endpoints and
-// the background loops (numbering, outbox dispatch, lease reclaim). Any number
-// of replicas may run against the same cluster and object store.
+// Command cadre-server runs the Task Manager: the /api/v1 and /runner/v1
+// endpoints and the background loops (numbering, outbox dispatch, lease
+// reclaim). Any number of replicas may run against the same cluster and
+// object store.
 package main
 
 import (
@@ -19,6 +20,7 @@ import (
 	ctrl "sigs.k8s.io/controller-runtime/pkg/client/config"
 	ctrllog "sigs.k8s.io/controller-runtime/pkg/log"
 
+	"github.com/j75689/cadre/internal/api"
 	"github.com/j75689/cadre/internal/manager"
 	"github.com/j75689/cadre/internal/runner"
 	"github.com/j75689/cadre/internal/storage/kubernetes"
@@ -33,7 +35,7 @@ func main() {
 
 func run() error {
 	var (
-		listen    = flag.String("listen", ":8080", "address to serve /runner/v1 and /healthz on")
+		listen    = flag.String("listen", ":8080", "address to serve /api/v1, /runner/v1 and /healthz on")
 		lease     = flag.Duration("lease", manager.DefaultConfig.Lease, "how long a claim or heartbeat keeps a run alive")
 		heartbeat = flag.Duration("heartbeat", manager.DefaultConfig.Heartbeat, "how often runners renew; also the reclaim grace")
 		reclaim   = flag.Duration("reclaim-interval", manager.DefaultLoopConfig.Reclaim, "how often expired leases are reclaimed")
@@ -74,6 +76,7 @@ func run() error {
 	m := manager.New(store, manager.Config{Lease: *lease, Heartbeat: *heartbeat})
 	mux := http.NewServeMux()
 	runner.NewServer(m, log).Register(mux)
+	api.NewServer(m, log).Register(mux)
 	mux.HandleFunc("GET /healthz", func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(http.StatusOK) })
 	mux.HandleFunc("GET /readyz", func(w http.ResponseWriter, r *http.Request) {
 		if err := m.Ready(r.Context()); err != nil {

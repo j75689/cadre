@@ -42,9 +42,19 @@ func TestCreateTaskNumbersAtOnce(t *testing.T) {
 		"unknown assignee":  {Title: "x", Assignee: &v1alpha1.Assignee{Kind: "Robot", Name: "r"}},
 		"nameless assignee": {Title: "x", Assignee: &v1alpha1.Assignee{Kind: v1alpha1.AssigneeAgent}},
 		"nameless parent":   {Title: "x", ParentRef: &v1alpha1.TaskReference{}},
+		"own parent":        {Title: "x", ParentRef: &v1alpha1.TaskReference{Name: "self"}},
 	} {
-		if _, err := e.m.CreateTask(ctx, ns, "", spec); !errors.Is(err, ErrInvalid) {
+		if _, err := e.m.CreateTask(ctx, ns, "self", spec); !errors.Is(err, ErrInvalid) {
 			t.Errorf("%s: %v, want ErrInvalid", name, err)
+		}
+	}
+}
+
+func TestCreateTaskRejectsBadNames(t *testing.T) {
+	e := newEnv(t, 1)
+	for _, name := range []string{"Fix_Login", "-x", strings.Repeat("a", 254), "a/b"} {
+		if _, err := e.m.CreateTask(ctx, ns, name, v1alpha1.TaskSpec{Title: "x"}); !errors.Is(err, ErrInvalid) {
+			t.Errorf("name %.20q: %v, want ErrInvalid", name, err)
 		}
 	}
 }
