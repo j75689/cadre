@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log/slog"
 	"net/http"
 	"net/url"
 	"regexp"
@@ -17,6 +18,7 @@ import (
 	sdk "github.com/modelcontextprotocol/go-sdk/mcp"
 
 	v1alpha1 "github.com/j75689/cadre/api/v1alpha1"
+	"github.com/j75689/cadre/internal/manager"
 	"github.com/j75689/cadre/internal/storage"
 )
 
@@ -105,21 +107,36 @@ type forwarded struct {
 	server *v1alpha1.ToolServer
 	remote *sdk.Tool
 	schema map[string]any // the remote input schema, checked
+	ask    bool           // the call must ask a human first
+}
+
+// Forwarder reaches an agent's ToolServers: it lists their tools for the
+// per-run endpoint and makes the calls, both those a run makes and those a
+// human approves.
+type Forwarder struct {
+	sources   Sources
+	log       *slog.Logger
+	discovery discovery
+}
+
+// NewForwarder returns a Forwarder reading Agents, ToolServers and their
+// credentials from src.
+func NewForwarder(src Sources, log *slog.Logger) *Forwarder {
+	return &Forwarder{sources: src, log: log}
 }
 
 // forwardedTools returns the agent's ToolServers' tools this run may call.
 // A ToolServer that is missing, not Ready, managed or unreachable
 // contributes none; that is logged, never fatal for the core tools. The
-// ToolServers are listed concurrently, within discoveryTimeout in all. In M1
-// tools that must ask a human first are not offered.
-func (s *Server) forwardedTools(ctx context.Context, t *v1alpha1.Task) map[string]forwarded {
+// ToolServers are listed concurrently, within discoveryTimeout in all.
+func (f *Forwarder) forwardedTools(ctx context.Context, t *v1alpha1.Task) map[string]forwarded {
 	out := map[string]forwarded{}
-	if s.sources == nil || t.Spec.Assignee == nil {
+	if f.sources == nil || t.Spec.Assignee == nil {
 		return out
 	}
-	agent, err := s.sources.CachedAgent(ctx, t.Namespace, t.Spec.Assignee.Name)
+	agent, err := f.sources.CachedAgent(ctx, t.Namespace, t.Spec.Assignee.Name)
 	if err != nil {
-		s.log.Warn("forward tools: read agent", "task", t.Namespace+"/"+t.Name, "err", err)
+		f.log.Warn("forward tools: read agent", "task", t.Namespace+"/"+t.Name, "err", err)
 		return out
 	}
 	ctx, cancel := context.WithTimeout(ctx, discoveryTimeout)
@@ -131,44 +148,45 @@ func (s *Server) forwardedTools(ctx context.Context, t *v1alpha1.Task) map[strin
 	lists := make([]listed, len(agent.Spec.ToolRefs))
 	var wg sync.WaitGroup
 	for i, ref := range agent.Spec.ToolRefs {
-		ts, err := s.sources.CachedToolServer(ctx, t.Namespace, ref)
+		ts, err := f.sources.CachedToolServer(ctx, t.Namespace, ref)
 		if err != nil || ts.Spec.URL == "" || !ts.Status.ReadyFor(ts.Generation) {
 			if err != nil && !isNotFound(err) {
-				s.log.Warn("forward tools: read ToolServer", "toolServer", t.Namespace+"/"+ref, "err", err)
+				f.log.Warn("forward tools: read ToolServer", "toolServer", t.Namespace+"/"+ref, "err", err)
 			}
 			continue
 		}
-		wg.Go(func() { lists[i] = listed{ts: ts, tools: s.discover(ctx, ts)} })
+		wg.Go(func() { lists[i] = listed{ts: ts, tools: f.discover(ctx, ts)} })
 	}
 	wg.Wait()
 
 	collided := map[string]bool{}
 	for _, l := range lists {
 		for _, tool := range l.tools {
-			if permissionFor(l.ts.Spec.Permissions, tool.Name) != v1alpha1.PermissionAllow {
+			perm := permissionFor(l.ts.Spec.Permissions, tool.Name)
+			if perm == v1alpha1.PermissionDeny {
 				continue
 			}
 			name := exposedName(l.ts.Name, tool.Name)
 			switch {
 			case len(name) > maxToolName || !toolName.MatchString(name):
-				s.log.Warn("forward tools: exposed name over 64 characters, skipped", "toolServer", l.ts.Name, "tool", tool.Name)
+				f.log.Warn("forward tools: exposed name over 64 characters, skipped", "toolServer", l.ts.Name, "tool", tool.Name)
 				continue
 			case collided[name]:
 				continue
 			}
 			if _, dup := out[name]; dup {
 				// Neither is offered: which one a call means would be a guess.
-				s.log.Warn("forward tools: name collision, skipped", "toolServer", l.ts.Name, "tool", tool.Name, "as", name)
+				f.log.Warn("forward tools: name collision, skipped", "toolServer", l.ts.Name, "tool", tool.Name, "as", name)
 				delete(out, name)
 				collided[name] = true
 				continue
 			}
 			schema, err := objectSchema(tool.InputSchema)
 			if err != nil {
-				s.log.Warn("forward tools: unusable input schema, skipped", "toolServer", l.ts.Name, "tool", tool.Name, "err", err)
+				f.log.Warn("forward tools: unusable input schema, skipped", "toolServer", l.ts.Name, "tool", tool.Name, "err", err)
 				continue
 			}
-			out[name] = forwarded{server: l.ts, remote: tool, schema: schema}
+			out[name] = forwarded{server: l.ts, remote: tool, schema: schema, ask: perm == v1alpha1.PermissionAsk}
 		}
 	}
 	return out
@@ -198,35 +216,35 @@ func objectSchema(schema any) (map[string]any, error) {
 func isNotFound(err error) bool { return errors.Is(err, storage.ErrNotFound) }
 
 // discover returns a ToolServer's tools, from the cache when fresh.
-func (s *Server) discover(ctx context.Context, ts *v1alpha1.ToolServer) []*sdk.Tool {
+func (f *Forwarder) discover(ctx context.Context, ts *v1alpha1.ToolServer) []*sdk.Tool {
 	key := ts.Namespace + "/" + ts.Name
-	s.discovery.mu.Lock()
-	d, ok := s.discovery.lists[key]
-	s.discovery.mu.Unlock()
+	f.discovery.mu.Lock()
+	d, ok := f.discovery.lists[key]
+	f.discovery.mu.Unlock()
 	if ok && d.fresh(ts.Generation, time.Now()) {
 		return d.tools
 	}
-	tools, err := s.listRemote(ctx, ts)
+	tools, err := f.listRemote(ctx, ts)
 	if err != nil {
-		s.log.Warn("forward tools: list tools", "toolServer", key, "err", err)
+		f.log.Warn("forward tools: list tools", "toolServer", key, "err", err)
 	}
 	now := time.Now()
-	s.discovery.mu.Lock()
-	if s.discovery.lists == nil {
-		s.discovery.lists = map[string]discovered{}
+	f.discovery.mu.Lock()
+	if f.discovery.lists == nil {
+		f.discovery.lists = map[string]discovered{}
 	}
-	for k, old := range s.discovery.lists {
+	for k, old := range f.discovery.lists {
 		if now.Sub(old.at) >= discoveryTTL {
-			delete(s.discovery.lists, k) // ToolServers no run lists any more
+			delete(f.discovery.lists, k) // ToolServers no run lists any more
 		}
 	}
-	s.discovery.lists[key] = discovered{generation: ts.Generation, tools: tools, failed: err != nil, at: now}
-	s.discovery.mu.Unlock()
+	f.discovery.lists[key] = discovered{generation: ts.Generation, tools: tools, failed: err != nil, at: now}
+	f.discovery.mu.Unlock()
 	return tools
 }
 
-func (s *Server) listRemote(ctx context.Context, ts *v1alpha1.ToolServer) ([]*sdk.Tool, error) {
-	session, err := s.connect(ctx, ts)
+func (f *Forwarder) listRemote(ctx context.Context, ts *v1alpha1.ToolServer) ([]*sdk.Tool, error) {
+	session, err := f.connect(ctx, ts)
 	if err != nil {
 		return nil, err
 	}
@@ -245,10 +263,10 @@ func (s *Server) listRemote(ctx context.Context, ts *v1alpha1.ToolServer) ([]*sd
 // fresh from its Secret. Every request of the session ends with ctx, even
 // those the SDK makes on its own context, such as the DELETE that closes a
 // failed session: a ToolServer that does not answer costs no more than ctx.
-func (s *Server) connect(ctx context.Context, ts *v1alpha1.ToolServer) (*sdk.ClientSession, error) {
+func (f *Forwarder) connect(ctx context.Context, ts *v1alpha1.ToolServer) (*sdk.ClientSession, error) {
 	var transport http.RoundTripper = within{ctx: ctx, next: http.DefaultTransport}
 	if a := ts.Spec.Auth; a != nil {
-		value, err := s.sources.SecretValue(ctx, ts.Namespace, a.SecretRef)
+		value, err := f.sources.SecretValue(ctx, ts.Namespace, a.SecretRef)
 		if err != nil {
 			return nil, fmt.Errorf("read the ToolServer's credential: %w", err)
 		}
@@ -329,47 +347,112 @@ func (c credential) RoundTrip(r *http.Request) (*http.Response, error) {
 
 // addForwarded registers the run's forwarded tools on server. A tool the
 // SDK refuses is skipped with a log; it never costs the run its other tools.
-// A call reads its ToolServer fresh: one that is gone, not Ready, or no
-// longer allows the tool since the list was built gets no call.
+// A tool that must ask first records the call and ends the run; a human's
+// approval makes it later (see manager.Approve).
 func (s *Server) addForwarded(server *sdk.Server, t *v1alpha1.Task, tools map[string]forwarded) {
 	runID := t.Status.Run.ID
 	key := storage.Key{Namespace: t.Namespace, Name: t.Name}
-	for name, f := range tools {
+	for name, fw := range tools {
+		description := fw.remote.Description
+		if fw.ask {
+			description = strings.TrimSpace(description + "\n\n" + askNote)
+		}
 		var handler sdk.ToolHandler = func(ctx context.Context, req *sdk.CallToolRequest) (*sdk.CallToolResult, error) {
 			if err := s.m.CheckRun(ctx, key, runID); err != nil {
 				return s.fail(err), nil
 			}
-			ts, err := s.sources.ToolServer(ctx, t.Namespace, f.server.Name)
-			switch {
-			case err != nil && !isNotFound(err):
-				s.log.Warn("forward call: read ToolServer", "toolServer", t.Namespace+"/"+f.server.Name, "err", err)
-				return toolError(msgUnreachable), nil
-			case err != nil || ts.Spec.URL == "" || !ts.Status.ReadyFor(ts.Generation) ||
-				permissionFor(ts.Spec.Permissions, f.remote.Name) != v1alpha1.PermissionAllow:
-				return toolError("This tool is no longer available to this run."), nil
+			// What the ToolServer permits now decides, not the list the
+			// tool was offered from: a tool denied since is refused
+			// without paging a human, and the run goes on.
+			ts, perm, why := s.fwd.callable(ctx, t.Namespace, fw.server.Name, fw.remote.Name)
+			if ts == nil {
+				return toolError(why), nil
 			}
-			return s.forward(ctx, ts, f.remote.Name, req.Params.Arguments), nil
+			if perm == v1alpha1.PermissionAsk {
+				_, err := s.m.RunToolCall(ctx, key, runID, manager.ToolCall{
+					Name: name, ToolServer: fw.server.Name, Tool: fw.remote.Name, Arguments: req.Params.Arguments,
+				})
+				if err != nil {
+					return s.fail(err), nil
+				}
+				return &sdk.CallToolResult{Content: []sdk.Content{&sdk.TextContent{Text: msgApprovalEnded}}}, nil
+			}
+			return s.fwd.forward(ctx, ts, fw.remote.Name, req.Params.Arguments), nil
 		}
 		func() {
 			defer func() {
 				if r := recover(); r != nil {
-					s.log.Warn("forward tools: tool refused, skipped", "toolServer", f.server.Name, "tool", f.remote.Name, "err", r)
+					s.log.Warn("forward tools: tool refused, skipped", "toolServer", fw.server.Name, "tool", fw.remote.Name, "err", r)
 				}
 			}()
-			server.AddTool(&sdk.Tool{Name: name, Description: f.remote.Description, InputSchema: f.schema}, handler)
+			server.AddTool(&sdk.Tool{Name: name, Description: description, InputSchema: fw.schema}, handler)
 		}()
 	}
+}
+
+// askNote tells the agent what calling a tool that asks first does.
+const askNote = "Calling this tool needs a human's approval: the call is recorded and the run ends. Stop working once you call it; a new run continues with its result once a human decides."
+
+// callable reads a ToolServer fresh for a call of tool: it must exist, be
+// Ready and permit the tool, by allow or ask, which it returns. Otherwise it
+// returns nil and what to tell the agent.
+func (f *Forwarder) callable(ctx context.Context, namespace, server, tool string) (*v1alpha1.ToolServer, v1alpha1.Permission, string) {
+	if f == nil || f.sources == nil {
+		return nil, "", "This server forwards no ToolServers."
+	}
+	ts, err := f.sources.ToolServer(ctx, namespace, server)
+	if err != nil && !isNotFound(err) {
+		f.log.Warn("forward call: read ToolServer", "toolServer", namespace+"/"+server, "err", err)
+		return nil, "", msgUnreachable
+	}
+	if err != nil || ts.Spec.URL == "" || !ts.Status.ReadyFor(ts.Generation) {
+		return nil, "", "This tool's server is gone or not Ready."
+	}
+	perm := permissionFor(ts.Spec.Permissions, tool)
+	if perm != v1alpha1.PermissionAllow && perm != v1alpha1.PermissionAsk {
+		return nil, perm, "This tool is no longer available to this run."
+	}
+	return ts, perm, ""
+}
+
+// CallTimeout is the longest a forwarded call may take.
+func (f *Forwarder) CallTimeout() time.Duration { return forwardTimeout }
+
+// CallTool makes a call a human approved, on its ToolServer read fresh. A
+// call its ToolServer no longer permits is not made, and the result says
+// so. The result's text is what the agent reads next.
+func (f *Forwarder) CallTool(ctx context.Context, namespace string, call manager.ToolCall) manager.ToolResult {
+	ts, _, why := f.callable(ctx, namespace, call.ToolServer, call.Tool)
+	if ts == nil {
+		return manager.ToolResult{Body: "The call was not made. " + why, IsError: true}
+	}
+	res := f.forward(ctx, ts, call.Tool, call.Arguments)
+	var b strings.Builder
+	for _, c := range res.Content {
+		if tc, ok := c.(*sdk.TextContent); ok {
+			if b.Len() > 0 {
+				b.WriteString("\n")
+			}
+			b.WriteString(tc.Text)
+		}
+	}
+	if b.Len() == 0 && res.StructuredContent != nil {
+		if data, err := json.Marshal(res.StructuredContent); err == nil {
+			b.Write(data)
+		}
+	}
+	return manager.ToolResult{Body: b.String(), IsError: res.IsError}
 }
 
 // forward makes the call on the ToolServer and shapes its result for the
 // model: text and structured content up to 1 MiB; images and other media
 // are dropped with a note in M1.
-func (s *Server) forward(ctx context.Context, ts *v1alpha1.ToolServer, tool string, args json.RawMessage) *sdk.CallToolResult {
+func (f *Forwarder) forward(ctx context.Context, ts *v1alpha1.ToolServer, tool string, args json.RawMessage) *sdk.CallToolResult {
 	ctx, cancel := context.WithTimeout(ctx, forwardTimeout)
 	defer cancel()
-	session, err := s.connect(ctx, ts)
+	session, err := f.connect(ctx, ts)
 	if err != nil {
-		s.log.Warn("forward call: connect", "toolServer", ts.Name, "err", err)
+		f.log.Warn("forward call: connect", "toolServer", ts.Name, "err", err)
 		return toolError(msgUnreachable)
 	}
 	defer func() { _ = session.Close() }()
@@ -379,7 +462,7 @@ func (s *Server) forward(ctx context.Context, ts *v1alpha1.ToolServer, tool stri
 	}
 	res, err := session.CallTool(ctx, &sdk.CallToolParams{Name: tool, Arguments: arguments})
 	if err != nil {
-		s.log.Warn("forward call", "toolServer", ts.Name, "tool", tool, "err", err)
+		f.log.Warn("forward call", "toolServer", ts.Name, "tool", tool, "err", err)
 		return toolError("The tool call failed: " + err.Error())
 	}
 	return shapeResult(res)

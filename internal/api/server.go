@@ -7,6 +7,7 @@ import (
 	"net/url"
 	"slices"
 	"strconv"
+	"strings"
 
 	v1alpha1 "github.com/j75689/cadre/api/v1alpha1"
 	"github.com/j75689/cadre/internal/httpjson"
@@ -34,6 +35,7 @@ func (s *Server) Register(mux *http.ServeMux) {
 	mux.HandleFunc("POST "+one+"/comments", s.comment)
 	mux.HandleFunc("GET "+one+"/thread", s.thread)
 	mux.HandleFunc("POST "+one+"/reply", s.reply)
+	mux.HandleFunc("POST "+one+approveSuffix, s.approve)
 	mux.HandleFunc("GET "+one+"/runs", s.runs)
 	mux.HandleFunc("GET "+one+"/runs/{run}/events", s.events)
 	mux.HandleFunc("PUT "+Base+"/namespaces/{ns}/team", s.initTeam)
@@ -161,6 +163,32 @@ func (s *Server) reply(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	httpjson.Write(w, http.StatusOK, ReplyResponse{Task: t, Entry: entry})
+}
+
+const approveSuffix = "/approve"
+
+// IsApproval reports whether r approves or denies a tool call, which may
+// make the call and so needs the longer request bound.
+func IsApproval(r *http.Request) bool {
+	return r.Method == http.MethodPost && strings.HasPrefix(r.URL.Path, Base+"/namespaces/") && strings.HasSuffix(r.URL.Path, approveSuffix)
+}
+
+// approve decides the tool call a task waits on; see manager.Approve.
+func (s *Server) approve(w http.ResponseWriter, r *http.Request) {
+	var req ApproveRequest
+	if !httpjson.Decode(w, r, &req) {
+		return
+	}
+	if req.Approve == nil {
+		httpjson.WriteError(w, http.StatusBadRequest, httpjson.CodeInvalid, "approve is required: true to approve, false to deny")
+		return
+	}
+	a, err := s.m.Approve(r.Context(), taskKey(r), manager.Author{Kind: manager.AuthorUser, Name: req.Author}, *req.Approve, req.Note)
+	if err != nil {
+		httpjson.Fail(w, s.log, err)
+		return
+	}
+	httpjson.Write(w, http.StatusOK, ApproveResponse{Task: a.Task, Decision: a.Decision, Result: a.Result})
 }
 
 func (s *Server) runs(w http.ResponseWriter, r *http.Request) {

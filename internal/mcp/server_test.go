@@ -42,16 +42,29 @@ type env struct {
 	clk *clock
 }
 
-func start(t *testing.T, opts ...mcp.Option) *env {
+func start(t *testing.T) *env {
 	t.Helper()
-	return startOn(t, memory.NewBackend().Open(), opts...)
+	return startOn(t, memory.NewBackend().Open())
 }
 
 // startOn runs the endpoint on store.
-func startOn(t *testing.T, store storage.Driver, opts ...mcp.Option) *env {
+func startOn(t *testing.T, store storage.Driver) *env {
+	t.Helper()
+	return startWith(t, store, nil)
+}
+
+// startWith runs the endpoint on store, forwarding ToolServers through fwd
+// when it is not nil.
+func startWith(t *testing.T, store storage.Driver, fwd *mcp.Forwarder) *env {
 	t.Helper()
 	clk := &clock{t: time.Date(2026, 10, 24, 9, 0, 0, 0, time.UTC)}
-	m := manager.New(store, manager.Config{Agents: manager.ReadyBuiltin(ns, "coder", "claude")}, manager.WithClock(clk.now))
+	cfg := manager.Config{Agents: manager.ReadyBuiltin(ns, "coder", "claude")}
+	var opts []mcp.Option
+	if fwd != nil {
+		cfg.Tools = fwd
+		opts = append(opts, mcp.WithForwarder(fwd))
+	}
+	m := manager.New(store, cfg, manager.WithClock(clk.now))
 	if _, err := m.InitTeam(ctx, ns, v1alpha1.TeamSpec{MaxConcurrentRuns: 1}); err != nil {
 		t.Fatal(err)
 	}

@@ -87,13 +87,14 @@ func run() error {
 		return fmt.Errorf("controllers: %w", err)
 	}
 
-	m := manager.New(store, manager.Config{Lease: *lease, Heartbeat: *heartbeat, Agents: controller.Agents(ctrls)})
+	forwarder := mcp.NewForwarder(controller.ToolServerSources(ctrls), log)
+	m := manager.New(store, manager.Config{Lease: *lease, Heartbeat: *heartbeat, Agents: controller.Agents(ctrls), Tools: forwarder})
 	mux := http.NewServeMux()
 	if *publicURL, err = resolvePublicURL(*publicURL, *listen, os.Getenv("KUBERNETES_SERVICE_HOST") != ""); err != nil {
 		return err
 	}
 	runner.NewServer(m, log, *publicURL).Register(mux)
-	mcp.NewServer(m, log, mcp.WithToolServers(controller.ToolServerSources(ctrls))).Register(mux)
+	mcp.NewServer(m, log, mcp.WithForwarder(forwarder)).Register(mux)
 	api.NewServer(m, log).Register(mux)
 	mux.HandleFunc("GET /healthz", func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(http.StatusOK) })
 	mux.HandleFunc("GET /readyz", func(w http.ResponseWriter, r *http.Request) {
@@ -149,19 +150,20 @@ func run() error {
 
 // requestTimeout bounds one request's work, comfortably above the Task
 // Manager's conflict-retry budget, so a hung API server cannot pin every
-// connection. Per-run MCP requests get longer: a forwarded tool call may
-// take up to a minute on its ToolServer.
+// connection. Requests that may make a forwarded tool call, on the per-run
+// MCP endpoint or approving a call, get longer: the call may take up to a
+// minute on its ToolServer.
 const (
 	requestTimeout    = 30 * time.Second
 	mcpRequestTimeout = 90 * time.Second
 )
 
 // boundRequests gives every request a context that ends after d, or after
-// mcp for the per-run MCP endpoint.
+// mcpBound for one that may make a tool call.
 func boundRequests(next http.Handler, d, mcpBound time.Duration) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		bound := d
-		if r.URL.Path == mcp.Path {
+		if r.URL.Path == mcp.Path || api.IsApproval(r) {
 			bound = mcpBound
 		}
 		ctx, cancel := context.WithTimeout(r.Context(), bound)

@@ -6,6 +6,7 @@ import (
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 
 	v1alpha1 "github.com/j75689/cadre/api/v1alpha1"
@@ -14,6 +15,7 @@ import (
 	"github.com/j75689/cadre/internal/httpjson"
 	"github.com/j75689/cadre/internal/manager"
 	"github.com/j75689/cadre/internal/runner"
+	"github.com/j75689/cadre/internal/storage"
 	"github.com/j75689/cadre/internal/storage/memory"
 )
 
@@ -194,5 +196,47 @@ func TestClientIgnoresATrailingSlash(t *testing.T) {
 	}
 	if len(paths) != 1 || paths[0] != api.Base+"/namespaces/"+ns+"/tasks" {
 		t.Fatalf("requested %v, want one request to the clean path", paths)
+	}
+}
+
+func TestApproveThroughTheAPI(t *testing.T) {
+	c, m, base := startURL(t)
+	if _, err := c.InitTeam(ctx, ns, api.TeamRequest{}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := c.CreateTask(ctx, ns, "open-pr", v1alpha1.TaskSpec{Title: "Open a PR", Assignee: agent()}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := c.Approve(ctx, ns, "open-pr", "alice", true, ""); !client.IsCode(err, httpjson.CodeInvalidTransition) {
+		t.Fatalf("approve a Todo task: %v", err)
+	}
+	claim, err := c.Claim(ctx, runner.ClaimRequest{Runner: "r", Labels: map[string]string{v1alpha1.LabelRuntime: string(v1alpha1.RuntimeBuiltin)}})
+	if err != nil || claim == nil {
+		t.Fatalf("claim: %+v, %v", claim, err)
+	}
+	key := storage.Key{Namespace: ns, Name: "open-pr"}
+	if _, err := m.RunToolCall(ctx, key, claim.RunID, manager.ToolCall{Name: "github__create_pull_request", ToolServer: "github", Tool: "create_pull_request"}); err != nil {
+		t.Fatal(err)
+	}
+
+	// Leaving approve out must not deny.
+	res, err := http.Post(base+api.Base+"/namespaces/"+ns+"/tasks/open-pr/approve", "application/json", strings.NewReader(`{"author":"alice"}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = res.Body.Close()
+	if res.StatusCode != http.StatusBadRequest {
+		t.Fatalf("approve without a decision: %d, want 400", res.StatusCode)
+	}
+	if _, _, err := m.Answer(ctx, key, manager.Author{Kind: manager.AuthorUser, Name: "alice"}, "yes"); err == nil {
+		t.Fatal("a reply must not end a tool approval")
+	}
+
+	out, err := c.Approve(ctx, ns, "open-pr", "alice", false, "not yet")
+	if err != nil || out.Decision.Kind != manager.EntryDenied || out.Decision.Body != "not yet" || out.Result != nil || out.Task.Status.Phase != v1alpha1.PhaseTodo {
+		t.Fatalf("deny: %+v, %v", out, err)
+	}
+	if _, err := c.Approve(ctx, ns, "open-pr", "alice", true, ""); !client.IsCode(err, httpjson.CodeInvalidTransition) {
+		t.Fatalf("approve after the deny: %v", err)
 	}
 }

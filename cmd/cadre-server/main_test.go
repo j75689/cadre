@@ -40,6 +40,10 @@ func TestBoundRequests(t *testing.T) {
 	if until := time.Until(deadline); until <= time.Minute || until > 2*time.Minute {
 		t.Fatalf("MCP request deadline in %s, want the longer bound", until)
 	}
+	h.ServeHTTP(httptest.NewRecorder(), httptest.NewRequestWithContext(context.Background(), http.MethodPost, "/api/v1/namespaces/team-a/tasks/fix-login/approve", nil))
+	if until := time.Until(deadline); until <= time.Minute || until > 2*time.Minute {
+		t.Fatalf("approval deadline in %s, want the longer bound", until)
+	}
 }
 
 func TestResolvePublicURL(t *testing.T) {

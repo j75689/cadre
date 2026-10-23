@@ -17,6 +17,8 @@ import (
 const (
 	msgRunGone  = "This run is no longer active (the task was cancelled, reclaimed or finished). Stop working on this task now."
 	msgAskEnded = "Your question has been posted and this run has ended; the task now waits for a human. Stop working on this task now and do not call finish."
+	// msgApprovalEnded answers a call that must ask first.
+	msgApprovalEnded = "This call needs a human's approval. It has been recorded and this run has ended; a new run continues with the call's result, or its denial, once a human decides. Stop working on this task now and do not call finish."
 )
 
 // Tool inputs and outputs.

@@ -49,6 +49,22 @@ type ReplyResponse struct {
 	Entry *manager.ThreadEntry `json:"entry"`
 }
 
+// ApproveRequest approves or denies the tool call a task waits on. Approve
+// is required, so a request cannot deny by leaving it out.
+type ApproveRequest struct {
+	Author  string `json:"author"`
+	Approve *bool  `json:"approve"`
+	Note    string `json:"note,omitempty"`
+}
+
+// ApproveResponse is the task after the decision, the decision entry, and
+// the call's result entry (none for a denied call).
+type ApproveResponse struct {
+	Task     *v1alpha1.Task       `json:"task"`
+	Decision *manager.ThreadEntry `json:"decision"`
+	Result   *manager.ThreadEntry `json:"result,omitempty"`
+}
+
 // Runs is a task's run history, oldest first.
 type Runs struct {
 	Items []v1alpha1.RunRecord `json:"items"`

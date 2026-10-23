@@ -147,8 +147,12 @@ type Finish struct {
 	Outbox    []v1alpha1.OutboxItem
 }
 
-// Reply is a human answer or approval that ends the wait.
-type Reply struct{}
+// Reply is a human answer or approval that ends the wait. A non-zero
+// ThreadSeq names the wait it ends: the reply is refused if the task now
+// waits on another entry, so a late reply cannot end a newer wait.
+type Reply struct {
+	ThreadSeq int64
+}
 
 // Reclaim takes back a run whose lease has passed by more than Grace. The
 // grace absorbs clock skew between the replica that renewed the lease and the
@@ -308,6 +312,9 @@ func Apply(t *v1alpha1.Task, ev Event, now time.Time) (Result, error) {
 		endRun(&res, v1alpha1.RunFinished, ev.Outcome, now)
 
 	case Reply:
+		if ev.ThreadSeq != 0 && (s.Waiting == nil || s.Waiting.ThreadSeq != ev.ThreadSeq) {
+			return Result{}, fmt.Errorf("reply to thread entry %d, but the task waits on another: %w", ev.ThreadSeq, ErrInvalidTransition)
+		}
 		s.Waiting = nil
 		s.Phase = v1alpha1.PhaseTodo
 

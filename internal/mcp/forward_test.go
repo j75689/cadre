@@ -3,6 +3,8 @@ package mcp_test
 import (
 	"context"
 	"fmt"
+	"io"
+	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"slices"
@@ -19,6 +21,7 @@ import (
 	"github.com/j75689/cadre/internal/manager"
 	"github.com/j75689/cadre/internal/mcp"
 	"github.com/j75689/cadre/internal/storage"
+	"github.com/j75689/cadre/internal/storage/memory"
 )
 
 // sources serves fixed Agents, ToolServers and Secret values.
@@ -83,7 +86,11 @@ func newUpstream(t *testing.T) *upstream {
 		u.lastArg.Store(in.Query)
 		return &sdk.CallToolResult{Content: []sdk.Content{&sdk.TextContent{Text: "found " + in.Query}}}, nil, nil
 	})
-	for _, name := range []string{"delete_repo", "create_pull_request", "weird.name/v2", strings.Repeat("x", 70), "dup.x", "dup/x", "dup_x"} {
+	sdk.AddTool(server, &sdk.Tool{Name: "create_pull_request"}, func(_ context.Context, _ *sdk.CallToolRequest, in q) (*sdk.CallToolResult, any, error) {
+		u.lastArg.Store(in.Query)
+		return &sdk.CallToolResult{Content: []sdk.Content{&sdk.TextContent{Text: "opened " + in.Query}}}, nil, nil
+	})
+	for _, name := range []string{"delete_repo", "weird.name/v2", strings.Repeat("x", 70), "dup.x", "dup/x", "dup_x"} {
 		sdk.AddTool(server, &sdk.Tool{Name: name}, func(context.Context, *sdk.CallToolRequest, struct{}) (*sdk.CallToolResult, any, error) {
 			return &sdk.CallToolResult{Content: []sdk.Content{&sdk.TextContent{Text: "done"}}}, nil, nil
 		})
@@ -156,7 +163,7 @@ func forwardingEnv(t *testing.T) (*env, *upstream, *sources) {
 		secrets: map[string]string{"github/token": "not-a-real-key\n"}, // as a Secret written from a file
 	}
 	src.agent.Spec.ToolRefs = []string{"github", "offline", "missing"}
-	return start(t, mcp.WithToolServers(src)), up, src
+	return startWith(t, memory.NewBackend().Open(), mcp.NewForwarder(src, slog.New(slog.NewTextHandler(io.Discard, nil)))), up, src
 }
 
 func TestForwardedTools(t *testing.T) {
@@ -175,11 +182,10 @@ func TestForwardedTools(t *testing.T) {
 		}
 	}
 	slices.Sort(forwarded)
-	// delete_repo is denied, create_pull_request must ask (not offered in
-	// M1), the 70-character name would exceed 64, the three dup tools all
+	// delete_repo is denied, the 70-character name would exceed 64, the three dup tools all
 	// become github__dup_x so none is offered, and the offline and missing
 	// servers contribute nothing.
-	if want := []string{"github__big", "github__picture", "github__runes", "github__search", "github__weird_name_v2"}; !slices.Equal(forwarded, want) {
+	if want := []string{"github__big", "github__create_pull_request", "github__picture", "github__runes", "github__search", "github__weird_name_v2"}; !slices.Equal(forwarded, want) {
 		t.Fatalf("forwarded tools %v, want %v", forwarded, want)
 	}
 	if len(tools.Tools) != 6+len(forwarded) {
@@ -213,11 +219,8 @@ func TestForwardedTools(t *testing.T) {
 		t.Fatalf("picture result: %v, %+v", err, res)
 	}
 
-	for _, refused := range []string{"github__delete_repo", "github__create_pull_request"} {
-		res, err := s.CallTool(ctx, &sdk.CallToolParams{Name: refused})
-		if err == nil && !res.IsError {
-			t.Errorf("%s was called", refused)
-		}
+	if res, err := s.CallTool(ctx, &sdk.CallToolParams{Name: "github__delete_repo"}); err == nil && !res.IsError {
+		t.Error("a denied tool was called")
 	}
 }
 
@@ -371,5 +374,99 @@ func TestInputSchemas(t *testing.T) {
 		if err := mcp.ObjectSchemaForTest(tc.schema); (err == nil) != tc.ok {
 			t.Errorf("schema %v: %v, want ok=%v", tc.schema, err, tc.ok)
 		}
+	}
+}
+
+// A tool that must ask first records the call and ends the run; approving
+// makes the call Cadre-side and records its result for the next run.
+func TestAskApproveAndDeny(t *testing.T) {
+	e, up, src := forwardingEnv(t)
+	key := storage.Key{Namespace: ns, Name: "t"}
+	human := manager.Author{Kind: manager.AuthorUser, Name: "alice"}
+	ask := func(query string) *sdk.CallToolResult {
+		t.Helper()
+		c := e.claim(t)
+		s := e.session(t, c.MCPToken)
+		res, err := s.CallTool(ctx, &sdk.CallToolParams{Name: "github__create_pull_request", Arguments: map[string]any{"query": query}})
+		if err != nil {
+			t.Fatal(err)
+		}
+		return res
+	}
+
+	res := ask("fix login")
+	if res.IsError || !strings.Contains(res.Content[0].(*sdk.TextContent).Text, "approval") {
+		t.Fatalf("ask: %+v", res)
+	}
+	got, err := e.m.GetTask(ctx, key)
+	if err != nil || got.Status.Phase != v1alpha1.PhaseWaiting || got.Status.Waiting.Reason != v1alpha1.WaitingToolApproval {
+		t.Fatalf("after an ask: %+v, %v", got.Status, err)
+	}
+	entries, err := e.m.ReadThread(ctx, key, got.Status.Waiting.ThreadSeq-1, 1)
+	if err != nil || len(entries) != 1 || entries[0].Kind != manager.EntryToolCall || entries[0].Call.Tool != "create_pull_request" ||
+		entries[0].Call.ToolServer != "github" || string(entries[0].Call.Arguments) != `{"query":"fix login"}` {
+		t.Fatalf("ToolCall entry: %+v, %v", entries, err)
+	}
+
+	a, err := e.m.Approve(ctx, key, human, true, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if a.Task.Status.Phase != v1alpha1.PhaseTodo || a.Decision.Kind != manager.EntryApproved || a.Result == nil ||
+		a.Result.Body != "opened fix login" || a.Result.Call.IsError || a.Result.Author.Kind != manager.AuthorSystem {
+		t.Fatalf("approval: %+v / %+v / %+v", a.Task.Status, a.Decision, a.Result)
+	}
+
+	// A tool denied since it was asked is not called, even when approved.
+	ask("again")
+	denied := src.toolServers["github"].DeepCopy()
+	denied.Spec.Permissions["create_pull_request"] = v1alpha1.PermissionDeny
+	src.changed = map[string]*v1alpha1.ToolServer{"github": denied}
+	if a, err = e.m.Approve(ctx, key, human, true, ""); err != nil || !a.Result.Call.IsError || !strings.Contains(a.Result.Body, "not made") {
+		t.Fatalf("approving a tool denied since: %+v, %v", a, err)
+	}
+	src.changed = nil
+
+	ask("third")
+	if a, err = e.m.Approve(ctx, key, human, false, "not now"); err != nil || a.Decision.Kind != manager.EntryDenied || a.Decision.Body != "not now" || a.Result != nil {
+		t.Fatalf("deny: %+v, %v", a, err)
+	}
+	if up.lastArg.Load() != "fix login" {
+		t.Fatalf("the upstream saw %v; only the first, approved call may reach it", up.lastArg.Load())
+	}
+}
+
+// An ask tool denied since the list was built is refused without recording
+// a call, and the run goes on.
+func TestAskDeniedSinceListingKeepsTheRun(t *testing.T) {
+	e, _, src := forwardingEnv(t)
+	c := e.claim(t)
+	s := e.session(t, c.MCPToken)
+	if _, err := s.ListTools(ctx, nil); err != nil {
+		t.Fatal(err)
+	}
+	denied := src.toolServers["github"].DeepCopy()
+	denied.Spec.Permissions["create_pull_request"] = v1alpha1.PermissionDeny
+	src.changed = map[string]*v1alpha1.ToolServer{"github": denied}
+	res, err := s.CallTool(ctx, &sdk.CallToolParams{Name: "github__create_pull_request", Arguments: map[string]any{"query": "x"}})
+	if err != nil || !res.IsError {
+		t.Fatalf("an ask tool denied since: %+v, %v", res, err)
+	}
+	key := storage.Key{Namespace: ns, Name: "t"}
+	got, err := e.m.GetTask(ctx, key)
+	if err != nil || got.Status.Phase != v1alpha1.PhaseRunning {
+		t.Fatalf("after the refused call: %+v, %v", got.Status, err)
+	}
+	if thread, _ := e.m.ReadThread(ctx, key, 0, 0); len(thread) != 0 {
+		t.Fatalf("a refused call was recorded: %+v", thread)
+	}
+}
+
+// A Forwarder without Sources makes no call and does not panic.
+func TestForwarderWithoutSources(t *testing.T) {
+	f := mcp.NewForwarder(nil, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	res := f.CallTool(ctx, ns, manager.ToolCall{ID: "x", Name: "github__search", ToolServer: "github", Tool: "search"})
+	if !res.IsError || !strings.Contains(res.Body, "not made") {
+		t.Fatalf("a call without sources: %+v", res)
 	}
 }

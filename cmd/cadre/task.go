@@ -13,11 +13,12 @@ import (
 	v1alpha1 "github.com/j75689/cadre/api/v1alpha1"
 	"github.com/j75689/cadre/internal/client"
 	"github.com/j75689/cadre/internal/httpjson"
+	"github.com/j75689/cadre/internal/manager"
 )
 
 func newTaskCmd(g *globals) *cobra.Command {
 	cmd := &cobra.Command{Use: "task", Short: "Create, inspect and steer tasks"}
-	cmd.AddCommand(newTaskCreate(g), newTaskList(g), newTaskGet(g), newTaskComment(g), newTaskReply(g), newTaskCancel(g))
+	cmd.AddCommand(newTaskCreate(g), newTaskList(g), newTaskGet(g), newTaskComment(g), newTaskReply(g), newTaskDecide(g, true), newTaskDecide(g, false), newTaskCancel(g))
 	return cmd
 }
 
@@ -126,6 +127,9 @@ func newTaskGet(g *globals) *cobra.Command {
 				outln(out, "\nThread:")
 				for _, e := range thread.Items {
 					outf(out, "  %d  %s  %s %s (%s): %s\n", e.Seq, e.At.Format("2006-01-02 15:04"), strings.ToLower(string(e.Author.Kind)), e.Author.Name, e.Kind, e.Body)
+					if e.Kind == manager.EntryToolCall && e.Call != nil && len(e.Call.Arguments) > 0 {
+						outf(out, "      arguments: %s\n", clip(string(e.Call.Arguments), maxShownArguments))
+					}
 				}
 			}
 			runs, err := c.Runs(ctx, g.namespace, name)
@@ -212,6 +216,10 @@ func newTaskReply(g *globals) *cobra.Command {
 			}
 			res, err := c.Reply(cmd.Context(), g.namespace, name, g.as, msg)
 			if client.IsCode(err, httpjson.CodeInvalidTransition) {
+				if t, gerr := c.GetTask(cmd.Context(), g.namespace, name); gerr == nil && t.Status.Waiting != nil &&
+					t.Status.Waiting.Reason == v1alpha1.WaitingToolApproval {
+					return fmt.Errorf("%s is waiting for a tool approval; use approve or deny instead", name)
+				}
 				return fmt.Errorf("%s is not waiting for an answer; use comment instead", name)
 			}
 			if err != nil {
@@ -223,6 +231,56 @@ func newTaskReply(g *globals) *cobra.Command {
 	}
 	cmd.Flags().StringVarP(&msg, "message", "m", "", "the answer")
 	_ = cmd.MarkFlagRequired("message")
+	return cmd
+}
+
+// maxShownArguments is how much of a call's arguments "task get" shows.
+const maxShownArguments = 2000
+
+func clip(s string, n int) string {
+	if len(s) <= n {
+		return s
+	}
+	return strings.ToValidUTF8(s[:n], "") + "…"
+}
+
+// newTaskDecide is "task approve" or, with approve false, "task deny".
+func newTaskDecide(g *globals, approve bool) *cobra.Command {
+	use, short := "approve", "Approve the tool call a task waits on: Cadre makes the call, then the agent continues"
+	if !approve {
+		use, short = "deny", "Deny the tool call a task waits on: the agent continues without it"
+	}
+	var note string
+	cmd := &cobra.Command{
+		Use:   use + " NAME|#NUMBER",
+		Short: short,
+		Args:  cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			c := g.client()
+			name, err := resolve(cmd.Context(), c, g.namespace, args[0])
+			if err != nil {
+				return err
+			}
+			res, err := c.Approve(cmd.Context(), g.namespace, name, g.as, approve, note)
+			switch {
+			case client.IsCode(err, httpjson.CodeInvalidTransition):
+				return fmt.Errorf("%s is not waiting for a tool approval, or its call was already decided otherwise", name)
+			case err != nil:
+				return err
+			}
+			out := cmd.OutOrStdout()
+			if r := res.Result; r != nil {
+				status := "returned"
+				if r.Call != nil && r.Call.IsError {
+					status = "failed"
+				}
+				outf(out, "The call %s: %s\n", status, clip(r.Body, maxShownArguments))
+			}
+			outf(out, "#%d is %s\n", res.Task.Status.Number, res.Task.Status.Phase)
+			return nil
+		},
+	}
+	cmd.Flags().StringVarP(&note, "message", "m", "", "a note for the agent")
 	return cmd
 }
 

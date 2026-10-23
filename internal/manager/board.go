@@ -96,11 +96,19 @@ const (
 	EntryComment  EntryKind = "Comment"
 	EntryQuestion EntryKind = "Question"
 	EntryAnswer   EntryKind = "Answer"
+	// A forwarded tool call that must ask first, the human's decision on
+	// it, and what the call returned.
+	EntryToolCall   EntryKind = "ToolCall"
+	EntryApproved   EntryKind = "Approved"
+	EntryDenied     EntryKind = "Denied"
+	EntryToolResult EntryKind = "ToolResult"
 )
 
 var (
 	authorKinds = []AuthorKind{AuthorUser, AuthorAgent, AuthorSystem}
-	entryKinds  = []EntryKind{EntryComment, EntryQuestion, EntryAnswer}
+	entryKinds  = []EntryKind{EntryComment, EntryQuestion, EntryAnswer, EntryToolCall, EntryApproved, EntryDenied, EntryToolResult}
+	// callKinds are the entry kinds that carry a ToolCall, and only they do.
+	callKinds = []EntryKind{EntryToolCall, EntryApproved, EntryDenied, EntryToolResult}
 )
 
 // ThreadEntry is one entry of a task's thread.
@@ -112,6 +120,9 @@ type ThreadEntry struct {
 	At     time.Time `json:"at"`
 	// RunID is the run that wrote an agent's entry.
 	RunID string `json:"runId,omitempty"`
+	// Call is the tool call a ToolCall, Approved, Denied or ToolResult
+	// entry is about.
+	Call *ToolCall `json:"call,omitempty"`
 }
 
 // ThreadStream is the log stream holding a task's thread.
@@ -132,13 +143,21 @@ func (m *Manager) AppendThread(ctx context.Context, key storage.Key, author Auth
 
 // appendThread is AppendThread, recording the run that wrote the entry.
 func (m *Manager) appendThread(ctx context.Context, key storage.Key, author Author, kind EntryKind, body, runID string) (*ThreadEntry, error) {
+	return m.appendEntry(ctx, key, &ThreadEntry{Author: author, Kind: kind, Body: body, RunID: runID})
+}
+
+// appendEntry appends entry under the next sequence number, setting its Seq
+// and time.
+func (m *Manager) appendEntry(ctx context.Context, key storage.Key, entry *ThreadEntry) (*ThreadEntry, error) {
 	switch {
-	case author.Name == "" || strings.TrimSpace(body) == "":
+	case entry.Author.Name == "" || strings.TrimSpace(entry.Body) == "":
 		return nil, fmt.Errorf("author and body are required: %w", ErrInvalid)
-	case !slices.Contains(authorKinds, author.Kind):
-		return nil, fmt.Errorf("author kind %q: %w", author.Kind, ErrInvalid)
-	case !slices.Contains(entryKinds, kind):
-		return nil, fmt.Errorf("entry kind %q: %w", kind, ErrInvalid)
+	case !slices.Contains(authorKinds, entry.Author.Kind):
+		return nil, fmt.Errorf("author kind %q: %w", entry.Author.Kind, ErrInvalid)
+	case !slices.Contains(entryKinds, entry.Kind):
+		return nil, fmt.Errorf("entry kind %q: %w", entry.Kind, ErrInvalid)
+	case slices.Contains(callKinds, entry.Kind) != (entry.Call != nil):
+		return nil, fmt.Errorf("a %s entry and its call: %w", entry.Kind, ErrInvalid)
 	}
 	t, err := m.store.GetTask(ctx, key)
 	if err != nil {
@@ -149,7 +168,7 @@ func (m *Manager) appendThread(ctx context.Context, key storage.Key, author Auth
 	if t.Status.Thread != nil {
 		rev = t.Status.Thread.Revision
 	}
-	entry := &ThreadEntry{Seq: rev + 1, Author: author, Kind: kind, Body: body, At: m.now().UTC().Truncate(time.Second), RunID: runID}
+	entry.Seq, entry.At = rev+1, m.now().UTC().Truncate(time.Second)
 	for range maxSeqRaces {
 		data, err := json.Marshal(entry)
 		if err != nil {
@@ -254,6 +273,9 @@ func (m *Manager) Answer(ctx context.Context, key storage.Key, author Author, bo
 	if t.Status.Phase != v1alpha1.PhaseWaiting || w == nil {
 		return nil, nil, fmt.Errorf("reply to a %s task: %w", t.Status.Phase, task.ErrInvalidTransition)
 	}
+	if w.Reason == v1alpha1.WaitingToolApproval {
+		return nil, nil, fmt.Errorf("the task waits for a tool approval; approve or deny it: %w", task.ErrInvalidTransition)
+	}
 	since, err := m.ReadThread(ctx, key, w.ThreadSeq, 0)
 	if err != nil {
 		return nil, nil, err
@@ -265,7 +287,7 @@ func (m *Manager) Answer(ctx context.Context, key storage.Key, author Author, bo
 	} else if entry, err = m.AppendThread(ctx, key, author, EntryAnswer, body); err != nil {
 		return nil, nil, err
 	}
-	t, err = m.transition(ctx, key, task.Reply{})
+	t, err = m.transition(ctx, key, task.Reply{ThreadSeq: w.ThreadSeq})
 	if err != nil {
 		return nil, entry, err
 	}
