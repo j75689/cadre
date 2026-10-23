@@ -9,6 +9,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"slices"
 	"strings"
 	"time"
 
@@ -81,8 +82,40 @@ type Result struct {
 	Phase v1alpha1.Phase
 }
 
+// Validate checks a plan before anything is claimed with it.
+func (p Plan) Validate() error {
+	switch {
+	case p.Outcome != "" && !slices.Contains(outcomes, p.Outcome):
+		return fmt.Errorf("outcome %q: want one of %v", p.Outcome, outcomes)
+	case p.Reason != "" && !slices.Contains(reasons, p.Reason):
+		return fmt.Errorf("waiting reason %q: want one of %v", p.Reason, reasons)
+	case p.Subtasks < 0:
+		return fmt.Errorf("subtasks %d: must not be negative", p.Subtasks)
+	case p.Work < 0:
+		return fmt.Errorf("work %s: must not be negative", p.Work)
+	}
+	return nil
+}
+
+var (
+	outcomes = []v1alpha1.RunOutcome{v1alpha1.RunOutcomeDone, v1alpha1.RunOutcomeReview, v1alpha1.RunOutcomeFailed, v1alpha1.RunOutcomeWaiting}
+	reasons  = []v1alpha1.WaitingReason{v1alpha1.WaitingQuestion, v1alpha1.WaitingToolApproval, v1alpha1.WaitingReview}
+)
+
+// lostTask reports whether err means the run no longer holds its task: the
+// protocol tells a runner to stop on run_mismatch and on not_found alike.
+func lostTask(err error) bool {
+	return client.IsCode(err, httpjson.CodeRunMismatch) || client.IsCode(err, httpjson.CodeNotFound)
+}
+
 // Run claims and works tasks until ctx is done, or after one run with Once.
+// A plan is validated before any task is claimed with it.
 func Run(ctx context.Context, c *client.Client, o Options) ([]Result, error) {
+	if o.Decide == nil {
+		if err := o.Validate(); err != nil {
+			return nil, err
+		}
+	}
 	if o.Poll <= 0 {
 		o.Poll = time.Second
 	}
@@ -94,6 +127,9 @@ func Run(ctx context.Context, c *client.Client, o Options) ([]Result, error) {
 	}
 	var results []Result
 	for {
+		// The lease is counted from before the request, so the claim's
+		// round trip can only make the runner stop earlier.
+		sent := time.Now()
 		claim, err := c.Claim(ctx, runner.ClaimRequest{Runner: o.Runner, Namespaces: o.Namespaces})
 		if err != nil && ctx.Err() == nil {
 			logf(o.Log, "claim failed: %v\n", err)
@@ -109,8 +145,11 @@ func Run(ctx context.Context, c *client.Client, o Options) ([]Result, error) {
 		plan := o.Plan
 		if o.Decide != nil {
 			plan = o.Decide(claim.Task)
+			if err := plan.Validate(); err != nil {
+				return results, err
+			}
 		}
-		res, err := work(ctx, c, o, plan, claim)
+		res, err := work(ctx, c, o, plan, claim, sent)
 		if err != nil {
 			return results, err
 		}
@@ -121,7 +160,7 @@ func Run(ctx context.Context, c *client.Client, o Options) ([]Result, error) {
 	}
 }
 
-func work(ctx context.Context, c *client.Client, o Options, plan Plan, claim *runner.ClaimResponse) (Result, error) {
+func work(ctx context.Context, c *client.Client, o Options, plan Plan, claim *runner.ClaimResponse, claimSent time.Time) (Result, error) {
 	ref := runner.TaskRef{Namespace: claim.Task.Namespace, Name: claim.Task.Name}
 	res := Result{Task: ref, RunID: claim.RunID}
 	observe := func(ob Observation) {
@@ -134,12 +173,15 @@ func work(ctx context.Context, c *client.Client, o Options, plan Plan, claim *ru
 
 	// The run may act only while its lease is known to be held. The lease
 	// is counted from before each request, so a slow response can only
-	// make the runner stop earlier.
+	// make the runner stop earlier, and no request may outlive it.
 	lease := time.Duration(claim.LeaseSeconds) * time.Second
-	heldUntil := time.Now().Add(lease)
+	heldUntil := claimSent.Add(lease)
 	every := time.Duration(claim.HeartbeatSeconds) * time.Second
 	if every <= 0 {
 		every = lease / 3
+	}
+	if every <= 0 {
+		every = time.Second
 	}
 	lost := func(kind ObservationKind, why string) (Result, error) {
 		logf(o.Log, "run %s %s; stopping\n", claim.RunID, why)
@@ -159,9 +201,13 @@ func work(ctx context.Context, c *client.Client, o Options, plan Plan, claim *ru
 			return res, nil
 		case <-beat.C:
 			sent := time.Now()
-			hb, err := c.Heartbeat(ctx, runner.HeartbeatRequest{Task: ref, RunID: claim.RunID})
+			hbCtx, cancel := context.WithDeadline(ctx, heldUntil)
+			hb, err := c.Heartbeat(hbCtx, runner.HeartbeatRequest{Task: ref, RunID: claim.RunID})
+			cancel()
 			switch {
-			case client.IsCode(err, httpjson.CodeRunMismatch):
+			case ctx.Err() != nil:
+				return res, nil // killed mid-run
+			case lostTask(err):
 				return lost(Rejected, "lost its task")
 			case err == nil:
 				heldUntil = sent.Add(lease)
@@ -204,15 +250,21 @@ func work(ctx context.Context, c *client.Client, o Options, plan Plan, claim *ru
 		})
 	}
 	observe(Observation{Kind: FinishSent, Outcome: req.Outcome, Subtasks: ids})
-	fin, err := finish(ctx, c, req)
+	finCtx, cancel := context.WithDeadline(ctx, heldUntil)
+	defer cancel()
+	fin, err := finish(finCtx, c, req)
 	switch {
-	case client.IsCode(err, httpjson.CodeRunMismatch):
+	case lostTask(err):
 		observe(Observation{Kind: Rejected, Outcome: req.Outcome, Subtasks: ids})
 		logf(o.Log, "run %s lost its task before finishing\n", claim.RunID)
 		res.Lost = true
 		return res, nil
 	case err != nil && ctx.Err() != nil:
 		return res, nil // killed while finishing; the finish may or may not have landed
+	case err != nil && finCtx.Err() != nil:
+		// The lease ran out before the finish was confirmed. It may or may
+		// not have landed; the run stops either way.
+		return lost(Expired, "could not finish within its lease")
 	case err != nil:
 		return res, fmt.Errorf("finish %s/%s: %w", ref.Namespace, ref.Name, err)
 	}

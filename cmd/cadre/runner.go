@@ -26,16 +26,17 @@ func newRunnerCmd(g *globals) *cobra.Command {
 		Short: "Claim tasks and finish them with a chosen outcome, without doing any work",
 		Long: `Claim tasks and finish them with a chosen outcome, without doing any work.
 
-The runner claims from every Team namespace unless -n is given. It renews
+The runner claims from every Team namespace unless -n or CADRE_NAMESPACE is
+given. It renews
 its lease while it "works", stops a run at once if the run loses its task
 (cancelled or reclaimed), and retries a finish safely.`,
 		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			o.Outcome = v1alpha1.RunOutcome(outcome)
 			o.Reason = v1alpha1.WaitingReason(reason)
-			// Only an explicit -n limits the runner; by default it takes
-			// work from every Team namespace.
-			if cmd.Flags().Changed("namespace") {
+			// Only an explicit -n or CADRE_NAMESPACE limits the runner; by
+			// default it takes work from every Team namespace.
+			if cmd.Flags().Changed("namespace") || os.Getenv("CADRE_NAMESPACE") != "" {
 				o.Namespaces = []string{g.namespace}
 			}
 			o.Log = cmd.ErrOrStderr()

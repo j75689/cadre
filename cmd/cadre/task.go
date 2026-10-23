@@ -247,20 +247,20 @@ func newTaskCancel(g *globals) *cobra.Command {
 	}
 }
 
-// resolve turns "#123" into a task name by scanning the board; anything else
-// is a name already.
+// resolve turns "#123" into a task name by scanning the board, a page at a
+// time with the page size the server applies; anything else is a name
+// already. Unnumbered tasks have number 0, so #0 names nothing.
 func resolve(ctx context.Context, c *client.Client, ns, ref string) (string, error) {
 	digits, ok := strings.CutPrefix(ref, "#")
 	if !ok {
 		return ref, nil
 	}
 	n, err := strconv.ParseInt(digits, 10, 64)
-	if err != nil {
+	if err != nil || n < 1 {
 		return "", fmt.Errorf("%q is not a task number", ref)
 	}
-	const page = 500
-	for offset := 0; ; offset += page {
-		list, err := c.ListTasks(ctx, ns, nil, offset, page)
+	for offset := 0; ; {
+		list, err := c.ListTasks(ctx, ns, nil, offset, 0)
 		if err != nil {
 			return "", err
 		}
@@ -269,15 +269,16 @@ func resolve(ctx context.Context, c *client.Client, ns, ref string) (string, err
 				return t.Name, nil
 			}
 		}
-		if len(list.Items) < page {
+		if list.Limit == 0 || len(list.Items) < list.Limit {
 			return "", fmt.Errorf("no task #%d in %s", n, ns)
 		}
+		offset += len(list.Items)
 	}
 }
 
 func phaseOf(t *v1alpha1.Task) string {
 	if t.Status.Phase == "" {
-		return "New"
+		return "-" // not numbered yet
 	}
 	return string(t.Status.Phase)
 }

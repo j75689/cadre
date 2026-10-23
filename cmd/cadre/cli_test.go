@@ -3,12 +3,14 @@ package main
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"io"
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/j75689/cadre/internal/api"
 	"github.com/j75689/cadre/internal/manager"
@@ -98,5 +100,29 @@ func TestTaskLifeFromTheCLI(t *testing.T) {
 	mustContain(t, cadre(t, srv.URL, "task", "cancel", "#2"), "#2 is Cancelled")
 	if err := cadreFails(t, srv.URL, "task", "get", "#99"); !strings.Contains(err.Error(), "no task #99") {
 		t.Fatalf("get #99: %v", err)
+	}
+	if err := cadreFails(t, srv.URL, "task", "get", "#0"); !strings.Contains(err.Error(), "not a task number") {
+		t.Fatalf("get #0: %v", err)
+	}
+}
+
+// CADRE_NAMESPACE limits the fake runner as -n does.
+func TestRunnerFakeHonoursCadreNamespace(t *testing.T) {
+	var got runner.ClaimRequest
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_ = json.NewDecoder(r.Body).Decode(&got)
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	defer srv.Close()
+	t.Setenv("CADRE_NAMESPACE", "team-b")
+	root := newRoot()
+	root.SetOut(io.Discard)
+	root.SetErr(io.Discard)
+	root.SetArgs([]string{"--server", srv.URL, "runner", "fake", "--poll", "10ms"})
+	ctx, cancel := context.WithTimeout(context.Background(), 200*time.Millisecond)
+	defer cancel()
+	_ = root.ExecuteContext(ctx)
+	if len(got.Namespaces) != 1 || got.Namespaces[0] != "team-b" {
+		t.Fatalf("claimed in %v, want only team-b", got.Namespaces)
 	}
 }
