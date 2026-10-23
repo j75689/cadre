@@ -50,6 +50,7 @@ func Run(t *testing.T, f Factory) {
 		{"IndexRebuildsAfterRestart", testIndexRebuilds},
 		{"IndexQuery", testIndexQuery},
 		{"IndexRejectsInvalidQueries", testIndexRejectsInvalidQueries},
+		{"IndexListsTeams", testIndexListsTeams},
 		{"LogAppend", testLogAppend},
 		{"LogNestedStreams", testLogNestedStreams},
 	}

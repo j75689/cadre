@@ -139,8 +139,12 @@ type Finish struct {
 // Reply is a human answer or approval that ends the wait.
 type Reply struct{}
 
-// Reclaim takes back a run whose lease has passed.
-type Reclaim struct{}
+// Reclaim takes back a run whose lease has passed by more than Grace. The
+// grace absorbs clock skew between the replica that renewed the lease and the
+// one reclaiming it, so a live run is never reclaimed.
+type Reclaim struct {
+	Grace time.Duration
+}
 
 // Cancel is a human cancelling the task.
 type Cancel struct{}
@@ -284,7 +288,7 @@ func Apply(t *v1alpha1.Task, ev Event, now time.Time) (Result, error) {
 		if s.Run == nil {
 			return Result{}, fmt.Errorf("running task has no run: %w", ErrInvalidTransition)
 		}
-		if !now.After(s.Run.LeaseUntil.Time) {
+		if !now.After(s.Run.LeaseUntil.Add(ev.Grace)) {
 			return Result{}, ErrLeaseNotExpired
 		}
 		s.Phase = v1alpha1.PhaseTodo
