@@ -27,6 +27,14 @@ type Plan struct {
 	Outcome  v1alpha1.RunOutcome // Done, Review, Failed or Waiting
 	Reason   v1alpha1.WaitingReason
 	Subtasks int // subtasks the run asks for when it finishes
+
+	// Stall, if positive, makes the run behave like a process that freezes:
+	// after StallAfter heartbeats it stops renewing for Stall, then wakes
+	// unaware of the time lost and sends one more heartbeat and its finish
+	// anyway, with no lease check and no deadline. Fencing must reject them
+	// if the task was reclaimed meanwhile.
+	Stall      time.Duration
+	StallAfter int
 }
 
 // Options configures a fake runner.
@@ -70,6 +78,8 @@ type Observation struct {
 	Outcome  v1alpha1.RunOutcome
 	Subtasks []string
 	Phase    v1alpha1.Phase // Finished only
+	// Late marks what a stalled run sent after it woke up.
+	Late bool
 }
 
 // Result is what happened to one run.
@@ -93,6 +103,8 @@ func (p Plan) Validate() error {
 		return fmt.Errorf("subtasks %d: must not be negative", p.Subtasks)
 	case p.Work < 0:
 		return fmt.Errorf("work %s: must not be negative", p.Work)
+	case p.Stall < 0 || p.StallAfter < 0:
+		return fmt.Errorf("stall %s after %d heartbeats: must not be negative", p.Stall, p.StallAfter)
 	}
 	return nil
 }
@@ -193,6 +205,7 @@ func work(ctx context.Context, c *client.Client, o Options, plan Plan, claim *ru
 	beat := time.NewTicker(every)
 	defer beat.Stop()
 	done := time.After(plan.Work)
+	beats := 0
 	for working := true; working; {
 		select {
 		case <-ctx.Done():
@@ -200,6 +213,10 @@ func work(ctx context.Context, c *client.Client, o Options, plan Plan, claim *ru
 			// the server reclaims the task.
 			return res, nil
 		case <-beat.C:
+			if plan.Stall > 0 && beats == plan.StallAfter {
+				return stalled(ctx, c, plan, claim, observe, res)
+			}
+			beats++
 			sent := time.Now()
 			hbCtx, cancel := context.WithDeadline(ctx, heldUntil)
 			hb, err := c.Heartbeat(hbCtx, runner.HeartbeatRequest{Task: ref, RunID: claim.RunID})
@@ -271,6 +288,62 @@ func work(ctx context.Context, c *client.Client, o Options, plan Plan, claim *ru
 	res.Phase = fin.Phase
 	observe(Observation{Kind: Finished, Outcome: req.Outcome, Subtasks: ids, Phase: fin.Phase})
 	logf(o.Log, "finished #%d %s/%s: %s\n", claim.Task.Number, ref.Namespace, ref.Name, strings.ToLower(string(fin.Phase)))
+	return res, nil
+}
+
+// stalled freezes the run for plan.Stall, then sends a late heartbeat and a
+// late finish as if no time had passed.
+func stalled(ctx context.Context, c *client.Client, plan Plan, claim *runner.ClaimResponse, observe func(Observation), res Result) (Result, error) {
+	select {
+	case <-ctx.Done():
+		return res, nil
+	case <-time.After(plan.Stall):
+	}
+	ref := runner.TaskRef{Namespace: claim.Task.Namespace, Name: claim.Task.Name}
+	// A woken run's requests may succeed (the task was never reclaimed) or
+	// be turned away as lost; anything else is a protocol surprise.
+	late := func(err error, ok Observation) (bool, error) {
+		switch {
+		case err == nil:
+			ok.Late = true
+			observe(ok)
+			return true, nil
+		case lostTask(err):
+			observe(Observation{Kind: Rejected, Late: true})
+			return false, nil
+		case ctx.Err() != nil:
+			return false, nil
+		default:
+			return false, fmt.Errorf("late request of stalled run %s: %w", claim.RunID, err)
+		}
+	}
+	hb, err := c.Heartbeat(ctx, runner.HeartbeatRequest{Task: ref, RunID: claim.RunID})
+	renewed := Observation{Kind: Renewed}
+	if hb != nil {
+		renewed.LeaseUntil = hb.LeaseUntil
+	}
+	if _, err := late(err, renewed); err != nil {
+		return res, err
+	}
+	outcome := plan.Outcome
+	if outcome == "" || outcome == v1alpha1.RunOutcomeWaiting {
+		outcome = v1alpha1.RunOutcomeDone
+	}
+	observe(Observation{Kind: FinishSent, Outcome: outcome, Late: true})
+	fin, err := c.Finish(ctx, runner.FinishRequest{Task: ref, RunID: claim.RunID, Outcome: outcome})
+	finished := Observation{Kind: Finished, Outcome: outcome}
+	if fin != nil {
+		finished.Phase = fin.Phase
+	}
+	ok, err := late(err, finished)
+	if err != nil {
+		return res, err
+	}
+	if ok {
+		res.Phase = fin.Phase
+	} else {
+		res.Lost = true
+	}
 	return res, nil
 }
 
