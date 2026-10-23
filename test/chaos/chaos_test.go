@@ -27,10 +27,12 @@ import (
 	ctrlclient "sigs.k8s.io/controller-runtime/pkg/client"
 
 	v1alpha1 "github.com/j75689/cadre/api/v1alpha1"
+	"github.com/j75689/cadre/internal/api"
 	"github.com/j75689/cadre/internal/client"
 	"github.com/j75689/cadre/internal/fakerunner"
 	"github.com/j75689/cadre/internal/runner"
 	"github.com/j75689/cadre/internal/storage/kubernetes"
+	"github.com/j75689/cadre/internal/testenv"
 )
 
 // teams are the namespaces under test and their concurrency limits.
@@ -43,12 +45,18 @@ type recorder struct {
 	mu        sync.Mutex
 	obs       map[string][]fakerunner.Observation // by run id, in order
 	cancelled map[string]bool                     // "ns/name" of tasks a human sent a cancel for
-	overshoot []string                            // semaphore violations seen by the sampler
+	overshoot []string                            // the first sample of each semaphore violation episode
+	inExcess  map[string]bool                     // whether the last sample of a namespace was over its limit
 	maxSeen   map[string]int                      // highest Running count seen per namespace
+	stalled   map[string]bool                     // run ids planned to stall
+	runnerErr []string                            // errors a runner gave up on while the chaos ran
 }
 
 func newRecorder() *recorder {
-	return &recorder{obs: map[string][]fakerunner.Observation{}, cancelled: map[string]bool{}, maxSeen: map[string]int{}}
+	return &recorder{
+		obs: map[string][]fakerunner.Observation{}, cancelled: map[string]bool{},
+		inExcess: map[string]bool{}, maxSeen: map[string]int{}, stalled: map[string]bool{},
+	}
 }
 
 func (r *recorder) observe(o fakerunner.Observation) {
@@ -78,8 +86,8 @@ func TestChaos(t *testing.T) {
 	t.Logf("seed %d (replay with CADRE_CHAOS_SEED=%d), duration %s", seed, seed, duration)
 	rnd := &lockedRand{r: rand.New(rand.NewPCG(seed, seed))}
 
-	restCfg := startAPIServer(t)
-	cfg := kubernetes.Config{REST: restCfg, S3: s3Config(t)}
+	restCfg := testenv.APIServer(t)
+	cfg := kubernetes.Config{REST: restCfg, S3: testenv.S3(t)}
 	admin := adminClient(t, restCfg)
 	ctx := context.Background()
 	for ns, maxRuns := range teams {
@@ -159,6 +167,9 @@ func TestChaos(t *testing.T) {
 	spawn(func() {
 		for chaos.Err() == nil {
 			sleep(chaos, rnd.between(2*time.Second, 5*time.Second))
+			if chaos.Err() != nil {
+				return // never kill a server once quiescence has begun
+			}
 			name := fmt.Sprintf("server-%d", 1+rnd.IntN(2))
 			kill(name)
 			sleep(context.Background(), rnd.between(300*time.Millisecond, 2*time.Second))
@@ -195,13 +206,18 @@ func TestChaos(t *testing.T) {
 // moments, often in the middle of a run.
 func runnerSlot(chaos context.Context, cl *client.Client, rnd *lockedRand, rec *recorder, name string) {
 	for chaos.Err() == nil {
-		life, kill := context.WithTimeout(chaos, rnd.between(2*time.Second, 10*time.Second))
-		_, _ = fakerunner.Run(life, cl, fakerunner.Options{
+		life, kill := context.WithTimeout(chaos, rnd.between(4*time.Second, 20*time.Second))
+		_, err := fakerunner.Run(life, cl, fakerunner.Options{
 			Runner:  name,
 			Poll:    50 * time.Millisecond,
 			Observe: rec.observe,
 			Decide:  func(task runner.ClaimedTask) fakerunner.Plan { return plan(rnd, task) },
 		})
+		if err != nil && life.Err() == nil {
+			rec.mu.Lock()
+			rec.runnerErr = append(rec.runnerErr, fmt.Sprintf("%s: %v", name, err))
+			rec.mu.Unlock()
+		}
 		kill()
 		sleep(chaos, rnd.between(0, 500*time.Millisecond))
 	}
@@ -224,23 +240,36 @@ func plan(rnd *lockedRand, task runner.ClaimedTask) fakerunner.Plan {
 	if task.ParentRef == nil && rnd.Float64() < 0.25 {
 		p.Subtasks = 1 + rnd.IntN(2)
 	}
-	// Now and then a run outlives its lease without renewing, as a runner
-	// that stalls would.
-	if rnd.Float64() < 0.05 {
-		p.Work = 6 * time.Second
+	// Now and then a runner freezes: it stops renewing for well past the
+	// lease plus the reclaim grace, then wakes and sends a heartbeat and a
+	// finish anyway. Fencing must reject them once the task was reclaimed.
+	if rnd.Float64() < 0.1 {
+		p.Work = 30 * time.Second
+		p.Stall = 2*managerConfig.Lease + 2*time.Second
+		p.StallAfter = rnd.IntN(2)
 	}
 	return p
 }
 
-// human answers waiting tasks and cancels a few tasks.
+// human answers waiting tasks and cancels a few tasks. It pages through
+// every live task, so the board outgrowing one page changes nothing.
 func human(chaos context.Context, cl *client.Client, rnd *lockedRand, rec *recorder) {
+	live := []v1alpha1.Phase{v1alpha1.PhaseWaiting, v1alpha1.PhaseTodo, v1alpha1.PhaseRunning}
 	for chaos.Err() == nil {
 		for ns := range teams {
-			list, err := cl.ListTasks(chaos, ns, nil, 0, 0)
-			if err != nil {
-				continue
+			var tasks []v1alpha1.Task
+			for offset := 0; ; {
+				page, err := cl.ListTasks(chaos, ns, live, offset, api.MaxLimit)
+				if err != nil {
+					break
+				}
+				tasks = append(tasks, page.Items...)
+				if len(page.Items) < page.Limit {
+					break
+				}
+				offset += len(page.Items)
 			}
-			for _, t := range list.Items {
+			for _, t := range tasks {
 				switch {
 				case t.Status.Phase == v1alpha1.PhaseWaiting:
 					_, _ = cl.Reply(chaos, ns, t.Name, "human", "carry on")
@@ -279,9 +308,11 @@ func sampleSemaphore(chaos context.Context, admin ctrlclient.Client, rec *record
 			}
 			rec.mu.Lock()
 			rec.maxSeen[ns] = max(rec.maxSeen[ns], running)
-			if running > int(maxRuns) {
-				rec.overshoot = append(rec.overshoot, fmt.Sprintf("%s: %d Running, limit %d, at %s", ns, running, maxRuns, time.Now().Format(time.RFC3339Nano)))
+			over := running > int(maxRuns)
+			if over && !rec.inExcess[ns] {
+				rec.overshoot = append(rec.overshoot, fmt.Sprintf("%s: %d Running, limit %d, from %s", ns, running, maxRuns, time.Now().Format(time.RFC3339Nano)))
 			}
+			rec.inExcess[ns] = over
 			rec.mu.Unlock()
 		}
 		sleep(chaos, 20*time.Millisecond)

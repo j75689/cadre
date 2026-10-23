@@ -10,68 +10,18 @@ import (
 	"net/http/httptest"
 	"net/http/httputil"
 	"net/url"
-	"os"
-	"path/filepath"
 	"sync"
 	"sync/atomic"
-	"testing"
 	"time"
-
-	"github.com/go-logr/logr"
-	"github.com/oklog/ulid/v2"
-	"k8s.io/client-go/rest"
-	"sigs.k8s.io/controller-runtime/pkg/envtest"
-	ctrllog "sigs.k8s.io/controller-runtime/pkg/log"
 
 	v1alpha1 "github.com/j75689/cadre/api/v1alpha1"
 	"github.com/j75689/cadre/internal/api"
 	"github.com/j75689/cadre/internal/httpjson"
 	"github.com/j75689/cadre/internal/manager"
 	"github.com/j75689/cadre/internal/runner"
-	"github.com/j75689/cadre/internal/s3fake"
 	"github.com/j75689/cadre/internal/storage"
 	"github.com/j75689/cadre/internal/storage/kubernetes"
 )
-
-// startAPIServer starts envtest with the CRDs. Outside CI it skips when the
-// envtest binaries are not installed; `make test` installs them.
-func startAPIServer(t *testing.T) *rest.Config {
-	t.Helper()
-	// controller-runtime complains with a stack trace if no logger is set.
-	ctrllog.SetLogger(logr.Discard())
-	if os.Getenv("KUBEBUILDER_ASSETS") == "" {
-		if os.Getenv("CI") != "" {
-			t.Fatal("KUBEBUILDER_ASSETS is not set in CI; run make test")
-		}
-		t.Skip("KUBEBUILDER_ASSETS is not set; run make test")
-	}
-	env := &envtest.Environment{
-		CRDDirectoryPaths:     []string{filepath.Join("..", "..", "config", "crd", "bases")},
-		ErrorIfCRDPathMissing: true,
-	}
-	cfg, err := env.Start()
-	if err != nil {
-		t.Fatalf("start envtest: %v", err)
-	}
-	t.Cleanup(func() { _ = env.Stop() })
-	return cfg
-}
-
-// s3Config returns a real S3-compatible endpoint when CADRE_TEST_S3_* is set,
-// and an in-process fake otherwise. The prefix is fresh per run.
-func s3Config(t *testing.T) kubernetes.S3Config {
-	prefix := "chaos-" + ulid.Make().String() + "/"
-	if ep := os.Getenv("CADRE_TEST_S3_ENDPOINT"); ep != "" {
-		return kubernetes.S3Config{
-			Endpoint: ep, Bucket: os.Getenv("CADRE_TEST_S3_BUCKET"), Prefix: prefix, PathStyle: true,
-			AccessKey: os.Getenv("CADRE_TEST_S3_ACCESS_KEY"), SecretKey: os.Getenv("CADRE_TEST_S3_SECRET_KEY"),
-		}
-	}
-	fake := s3fake.New()
-	t.Cleanup(fake.Close)
-	fake.CreateBucket("chaos")
-	return kubernetes.S3Config{Endpoint: fake.URL, Bucket: "chaos", Prefix: prefix, PathStyle: true, AccessKey: "fake", SecretKey: "fake"}
-}
 
 // lockedRand is a seeded source shared by goroutines.
 type lockedRand struct {
@@ -97,20 +47,36 @@ type chaosStore struct {
 }
 
 func (c *chaosStore) UpdateTaskStatus(ctx context.Context, t *v1alpha1.Task) error {
+	return c.fault(func() error { return c.Driver.UpdateTaskStatus(ctx, t) })
+}
+
+// CreateTask and Append get the same faults: an ambiguous create or append
+// is how a duplicate history entry or an orphaned subtask would arise.
+func (c *chaosStore) CreateTask(ctx context.Context, t *v1alpha1.Task) error {
+	return c.fault(func() error { return c.Driver.CreateTask(ctx, t) })
+}
+
+func (c *chaosStore) Append(ctx context.Context, stream, key string, data []byte) error {
+	return c.fault(func() error { return c.Driver.Append(ctx, stream, key, data) })
+}
+
+// fault delays some writes, fails some before they happen, and reports some
+// as failed after they happened.
+func (c *chaosStore) fault(write func() error) error {
 	r := c.rnd.Float64()
 	if r < 0.25 {
 		time.Sleep(c.rnd.between(0, 300*time.Millisecond))
 	}
 	switch {
 	case r >= 0.25 && r < 0.29:
-		return errInjected // never reaches the server
+		return errInjected
 	case r >= 0.29 && r < 0.34:
-		if err := c.Driver.UpdateTaskStatus(ctx, t); err != nil {
+		if err := write(); err != nil {
 			return err
 		}
-		return errInjected // landed, but the caller cannot tell
+		return errInjected
 	}
-	return c.Driver.UpdateTaskStatus(ctx, t)
+	return write()
 }
 
 func (c *chaosStore) UpdateTeamStatus(ctx context.Context, team *v1alpha1.Team) error {

@@ -104,6 +104,7 @@ func check(t *testing.T, admin ctrlclient.Client, cfg kubernetes.Config, rec *re
 	}
 
 	windows := map[string][]window{} // by task
+	stalledRuns, lateRejections := 0, 0
 	for runID, obs := range rec.obs {
 		claim := obs[0]
 		if claim.Kind != fakerunner.Claimed {
@@ -112,7 +113,7 @@ func check(t *testing.T, admin ctrlclient.Client, cfg kubernetes.Config, rec *re
 		}
 		key := claim.Task.Namespace + "/" + claim.Task.Name
 		w := window{run: runID, from: claim.At, till: claim.LeaseUntil}
-		rejected, finished := false, false
+		rejected, finished, lateRejected := false, false, false
 		var outcome v1alpha1.RunOutcome
 		var subtasks []string
 		for _, o := range obs[1:] {
@@ -135,6 +136,7 @@ func check(t *testing.T, admin ctrlclient.Client, cfg kubernetes.Config, rec *re
 				finished = true
 			case fakerunner.Rejected:
 				rejected = true
+				lateRejected = lateRejected || o.Late
 			}
 		}
 		windows[key] = append(windows[key], w)
@@ -152,14 +154,23 @@ func check(t *testing.T, admin ctrlclient.Client, cfg kubernetes.Config, rec *re
 			t.Errorf("run %s on %s ended Cancelled, but nobody cancelled the task", runID, key)
 		case !finished && end.Reason == v1alpha1.RunFinished && rejected:
 			t.Errorf("run %s on %s: its finish was rejected, history says Finished", runID, key)
+		case lateRejected && end.Reason == v1alpha1.RunFinished:
+			t.Errorf("run %s on %s: stalled and rejected on waking, yet history says Finished", runID, key)
+		}
+		if lateRejected {
+			lateRejections++
+		}
+		if hasLate(obs) {
+			stalledRuns++
 		}
 
-		// A 2xx finish commits the subtasks' intent to the outbox, not the
-		// subtasks themselves, and cancelling a task drops intents not yet
-		// applied. So, judged on the final state: every subtask exists with
-		// this task as its parent, or the task ended Cancelled and those
-		// that exist have this task as their parent. Nothing else.
-		if finished {
+		// A finish that landed (whether or not its response arrived) commits
+		// the subtasks' intent to the outbox, not the subtasks themselves,
+		// and cancelling a task drops intents not yet applied. So, judged on
+		// the final state: every subtask exists with this task as its
+		// parent, or the task ended Cancelled and those that exist have
+		// this task as their parent. Nothing else.
+		if ok && end.Reason == v1alpha1.RunFinished {
 			ns := claim.Task.Namespace
 			parent := tasks[key]
 			for _, id := range subtasks {
@@ -173,6 +184,16 @@ func check(t *testing.T, admin ctrlclient.Client, cfg kubernetes.Config, rec *re
 				}
 			}
 		}
+	}
+
+	// The stall fault must have done its job in a full run: woken runs
+	// were turned away by fencing.
+	t.Logf("%d stalled runs woke up, %d were rejected by fencing", stalledRuns, lateRejections)
+	if !testing.Short() && lateRejections == 0 {
+		t.Error("no stalled run was rejected on waking; fencing after a reclaim went untested")
+	}
+	for _, e := range rec.runnerErr {
+		t.Errorf("a runner gave up: %s", e)
 	}
 
 	// No task ever ran twice: the belief windows of its runs never overlap.
@@ -212,4 +233,13 @@ func earlier(a, b time.Time) time.Time {
 		return b
 	}
 	return a
+}
+
+func hasLate(obs []fakerunner.Observation) bool {
+	for _, o := range obs {
+		if o.Late {
+			return true
+		}
+	}
+	return false
 }

@@ -2,6 +2,7 @@ package fakerunner
 
 import (
 	"context"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"sync"
@@ -118,5 +119,41 @@ func TestBadPlansAreRefusedBeforeClaiming(t *testing.T) {
 		if n := s.claims.Load(); n != 0 {
 			t.Errorf("plan %+v: %d claims made before refusing it", p, n)
 		}
+	}
+}
+
+// A stalled run stops renewing, then wakes and sends a heartbeat and a
+// finish without checking its lease; both are marked late.
+func TestStalledRunSendsLateRequests(t *testing.T) {
+	var beats atomic.Int32
+	s := &stub{
+		heartbeat: func(w http.ResponseWriter, _ *http.Request) {
+			if beats.Add(1) > 1 {
+				httpjson.WriteError(w, http.StatusConflict, httpjson.CodeRunMismatch, "gone")
+				return
+			}
+			httpjson.Write(w, http.StatusOK, runner.HeartbeatResponse{LeaseUntil: time.Now().Add(2 * time.Second), LeaseSeconds: 2})
+		},
+		finish: func(w http.ResponseWriter, _ *http.Request) {
+			httpjson.WriteError(w, http.StatusConflict, httpjson.CodeRunMismatch, "gone")
+		},
+	}
+	rec := &recorder{}
+	plan := Plan{Work: time.Minute, Stall: 3 * time.Second, StallAfter: 1}
+	results, err := Run(context.Background(), s.start(t), Options{Runner: "r", Once: true, Observe: rec.observe, Plan: plan})
+	if err != nil || len(results) != 1 || !results[0].Lost {
+		t.Fatalf("results %+v, %v", results, err)
+	}
+	var late []ObservationKind
+	for _, o := range rec.obs {
+		if o.Late {
+			late = append(late, o.Kind)
+		}
+	}
+	if want := []ObservationKind{Rejected, FinishSent, Rejected}; fmt.Sprint(late) != fmt.Sprint(want) {
+		t.Fatalf("late observations %v, want %v", late, want)
+	}
+	if n := beats.Load(); n != 2 {
+		t.Fatalf("%d heartbeats, want one before the stall and one late", n)
 	}
 }
