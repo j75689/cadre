@@ -108,9 +108,16 @@ func TestTaskLifeFromTheCLI(t *testing.T) {
 
 // CADRE_NAMESPACE limits the fake runner as -n does.
 func TestRunnerFakeHonoursCadreNamespace(t *testing.T) {
-	var got runner.ClaimRequest
+	// The handler may still be running when the command returns, so the
+	// first claim is handed over through a channel, not a shared variable.
+	claims := make(chan runner.ClaimRequest, 1)
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		_ = json.NewDecoder(r.Body).Decode(&got)
+		var req runner.ClaimRequest
+		_ = json.NewDecoder(r.Body).Decode(&req)
+		select {
+		case claims <- req:
+		default:
+		}
 		w.WriteHeader(http.StatusNoContent)
 	}))
 	defer srv.Close()
@@ -122,6 +129,7 @@ func TestRunnerFakeHonoursCadreNamespace(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 200*time.Millisecond)
 	defer cancel()
 	_ = root.ExecuteContext(ctx)
+	got := <-claims
 	if len(got.Namespaces) != 1 || got.Namespaces[0] != "team-b" {
 		t.Fatalf("claimed in %v, want only team-b", got.Namespaces)
 	}
