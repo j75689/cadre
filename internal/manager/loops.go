@@ -42,7 +42,12 @@ func (m *Manager) forEachTeam(ctx context.Context, fn func(ns string) error) err
 func (m *Manager) NumberNew(ctx context.Context) error {
 	return m.forEachTeam(ctx, func(ns string) error {
 		unborn, err := m.store.ListTasks(ctx, storage.Query{Namespace: ns, Phases: []v1alpha1.Phase{""}})
-		if err != nil {
+		if err != nil || len(unborn) == 0 {
+			return err
+		}
+		// A failing Team would fail every task the same way, and a missing
+		// one would leave them all silently unborn: report it once.
+		if _, err := m.store.GetTeam(ctx, ns); err != nil {
 			return err
 		}
 		// One failing task must not hold up the ones after it.

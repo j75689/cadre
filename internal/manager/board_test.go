@@ -1,6 +1,7 @@
 package manager
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"slices"
@@ -9,8 +10,11 @@ import (
 	"testing"
 	"time"
 
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+
 	v1alpha1 "github.com/j75689/cadre/api/v1alpha1"
 	"github.com/j75689/cadre/internal/storage"
+	"github.com/j75689/cadre/internal/storage/memory"
 	"github.com/j75689/cadre/internal/task"
 )
 
@@ -56,7 +60,7 @@ func TestThreadAppendsRaceForSequenceNumbers(t *testing.T) {
 		go func() {
 			defer wg.Done()
 			for i := range each {
-				if _, err := m.AppendThread(ctx, key, Author{Name: fmt.Sprintf("w%d", w)}, EntryComment, fmt.Sprintf("comment %d", i)); err != nil {
+				if _, err := m.AppendThread(ctx, key, Author{Kind: AuthorAgent, Name: fmt.Sprintf("w%d", w)}, EntryComment, fmt.Sprintf("comment %d", i)); err != nil {
 					t.Errorf("append: %v", err)
 				}
 			}
@@ -176,4 +180,149 @@ func TestInitTeam(t *testing.T) {
 	if len(teams) != 2 {
 		t.Fatalf("%d teams, want 2", len(teams))
 	}
+}
+
+// A reply whose Reply transition failed is retried: the thread keeps one
+// answer, and the retry moves the task on.
+func TestAnswerRetryWritesOneAnswer(t *testing.T) {
+	e := newEnv(t, 1)
+	key := e.addTask(t, "t", v1alpha1.AssigneeAgent)
+	c := e.claim(t)
+	if _, _, err := e.m.Finish(ctx, key, FinishRequest{RunID: c.RunID, Outcome: task.OutcomeWaiting, Reason: v1alpha1.WaitingQuestion}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := e.m.AppendThread(ctx, key, alice, EntryComment, "looking"); err != nil {
+		t.Fatal(err)
+	}
+	// The answer's revision advance lands; the Reply write after it fails.
+	m := e.manager(&failSecondWrite{Driver: e.store})
+	if _, _, err := m.Answer(ctx, key, alice, "use staging"); !errors.Is(err, errTimeout) {
+		t.Fatalf("first answer: %v, want the injected failure", err)
+	}
+	tk, entry, err := e.m.Answer(ctx, key, alice, "use staging")
+	if err != nil || tk.Status.Phase != v1alpha1.PhaseTodo || entry.Seq != 2 {
+		t.Fatalf("retried answer: %+v %+v %v", tk, entry, err)
+	}
+	entries, _ := e.m.ReadThread(ctx, key, 0, 0)
+	answers := 0
+	for _, en := range entries {
+		if en.Kind == EntryAnswer {
+			answers++
+		}
+	}
+	if answers != 1 {
+		t.Fatalf("%d answers in the thread, want 1: %+v", answers, entries)
+	}
+
+	// The next wait gets its own answer.
+	c = e.claim(t)
+	if _, _, err := e.m.Finish(ctx, key, FinishRequest{RunID: c.RunID, Outcome: task.OutcomeWaiting, Reason: v1alpha1.WaitingQuestion, ThreadSeq: 2}); err != nil {
+		t.Fatal(err)
+	}
+	if _, entry, err := e.m.Answer(ctx, key, alice, "and now production"); err != nil || entry.Seq != 3 {
+		t.Fatalf("answer to the next wait: %+v %v", entry, err)
+	}
+}
+
+// failSecondWrite lets the first task status write through and fails the
+// second, without effect: the answer's revision advance lands, the Reply
+// does not.
+type failSecondWrite struct {
+	storage.Driver
+	n int
+}
+
+func (f *failSecondWrite) UpdateTaskStatus(c context.Context, t *v1alpha1.Task) error {
+	f.n++
+	if f.n == 2 {
+		return errTimeout
+	}
+	return f.Driver.UpdateTaskStatus(c, t)
+}
+
+// A run that just ended is in the history before the dispatcher moves it out
+// of the outbox.
+func TestRunsIncludePendingRunEnded(t *testing.T) {
+	e := newEnv(t, 1)
+	key := e.addTask(t, "t", v1alpha1.AssigneeAgent)
+	c := e.claim(t)
+	if _, _, err := e.m.Finish(ctx, key, FinishRequest{RunID: c.RunID, Outcome: task.OutcomeDone}); err != nil {
+		t.Fatal(err)
+	}
+	for _, dispatched := range []bool{false, true} {
+		if dispatched {
+			if err := e.m.Dispatch(ctx); err != nil {
+				t.Fatal(err)
+			}
+		}
+		runs, err := e.m.Runs(ctx, key)
+		if err != nil || len(runs) != 1 || runs[0].ID != c.RunID || runs[0].Outcome != task.OutcomeDone {
+			t.Fatalf("runs (dispatched %v): %+v, %v", dispatched, runs, err)
+		}
+	}
+	// Events are found by a lowercase run id too, and only for runs the task
+	// had.
+	if _, err := e.m.RunEvents(ctx, key, strings.ToLower(c.RunID)); err != nil {
+		t.Fatalf("events by lowercase run id: %v", err)
+	}
+	if _, err := e.m.RunEvents(ctx, key, "01JB0000000000000000000000"); !errors.Is(err, storage.ErrNotFound) {
+		t.Fatalf("events of a run the task never had: %v", err)
+	}
+}
+
+func TestAppendThreadKinds(t *testing.T) {
+	e := newEnv(t, 1)
+	key := e.addTask(t, "t", v1alpha1.AssigneeAgent)
+	for name, tc := range map[string]struct {
+		author Author
+		kind   EntryKind
+	}{
+		"no author kind":      {Author{Name: "a"}, EntryComment},
+		"unknown author kind": {Author{Kind: "Robot", Name: "a"}, EntryComment},
+		"unknown entry kind":  {alice, "Shout"},
+	} {
+		if _, err := e.m.AppendThread(ctx, key, tc.author, tc.kind, "x"); !errors.Is(err, ErrInvalid) {
+			t.Errorf("%s: %v, want ErrInvalid", name, err)
+		}
+	}
+}
+
+// A transition that changes nothing writes nothing.
+func TestNoOpTransitionDoesNotWrite(t *testing.T) {
+	e := newEnv(t, 1)
+	key := e.addTask(t, "t", v1alpha1.AssigneeAgent)
+	if _, err := e.m.AppendThread(ctx, key, alice, EntryComment, "x"); err != nil {
+		t.Fatal(err)
+	}
+	before := e.get(t, key).ResourceVersion
+	if _, err := e.m.transition(ctx, key, task.ThreadAdvanced{Seq: 1}); err != nil {
+		t.Fatal(err)
+	}
+	if after := e.get(t, key).ResourceVersion; after != before {
+		t.Fatalf("a no-op transition wrote: version %s → %s", before, after)
+	}
+}
+
+// Unnumbered tasks in a namespace whose Team is gone are reported.
+func TestNumberNewReportsAMissingTeam(t *testing.T) {
+	b := memory.NewBackend()
+	store := b.Open()
+	if err := store.CreateTeam(ctx, &v1alpha1.Team{ObjectMeta: metav1.ObjectMeta{Name: v1alpha1.TeamName, Namespace: ns}}); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.CreateTask(ctx, &v1alpha1.Task{ObjectMeta: metav1.ObjectMeta{Name: "t", Namespace: ns}, Spec: v1alpha1.TaskSpec{Title: "t"}}); err != nil {
+		t.Fatal(err)
+	}
+	m := New(&teamGone{Driver: store}, Config{})
+	if err := m.NumberNew(ctx); !errors.Is(err, storage.ErrNotFound) {
+		t.Fatalf("NumberNew with the Team gone: %v", err)
+	}
+}
+
+// teamGone lists the Team but cannot read it, as after a deletion the index
+// has not seen yet.
+type teamGone struct{ storage.Driver }
+
+func (teamGone) GetTeam(context.Context, string) (*v1alpha1.Team, error) {
+	return nil, storage.ErrNotFound
 }

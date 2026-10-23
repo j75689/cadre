@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -22,13 +23,21 @@ import (
 
 // CreateTask creates a task and numbers it right away, so the caller can show
 // its number. Without a name the task is named after a fresh lowercase ULID.
-// If numbering fails the task still exists and NumberNew numbers it later.
+// The spec is checked as the API server would check it, so every driver
+// stores the same thing. If numbering fails the task still exists and
+// NumberNew numbers it later.
 func (m *Manager) CreateTask(ctx context.Context, namespace, name string, spec v1alpha1.TaskSpec) (*v1alpha1.Task, error) {
 	if err := task.ValidateSpec(&spec); err != nil {
 		return nil, fmt.Errorf("%w: %w", ErrInvalid, err)
 	}
+	if spec.ParentRef != nil && name != "" && spec.ParentRef.Name == name {
+		return nil, fmt.Errorf("a task cannot be its own parent: %w", ErrInvalid)
+	}
 	if _, err := m.store.GetTeam(ctx, namespace); err != nil {
-		return nil, fmt.Errorf("namespace %s has no Team: %w", namespace, err)
+		if errors.Is(err, storage.ErrNotFound) {
+			return nil, fmt.Errorf("namespace %s has no Team: %w", namespace, err)
+		}
+		return nil, err
 	}
 	if name == "" {
 		name = strings.ToLower(m.newID())
@@ -80,6 +89,11 @@ const (
 	EntryAnswer   EntryKind = "Answer"
 )
 
+var (
+	authorKinds = []AuthorKind{AuthorUser, AuthorAgent, AuthorSystem}
+	entryKinds  = []EntryKind{EntryComment, EntryQuestion, EntryAnswer}
+)
+
 // ThreadEntry is one entry of a task's thread.
 type ThreadEntry struct {
 	Seq    int64     `json:"seq"`
@@ -99,13 +113,16 @@ const maxSeqRaces = 20
 // next sequence number with a create-only append, which is the commit; the
 // Task's thread revision is then advanced as a hint for watchers (see
 // task.ThreadAdvanced). A revision left behind by a crashed appender is
-// skipped by reading the log past it.
+// skipped by reading the log past it. Author and entry kinds are required:
+// nobody is recorded as a human by default.
 func (m *Manager) AppendThread(ctx context.Context, key storage.Key, author Author, kind EntryKind, body string) (*ThreadEntry, error) {
-	if author.Name == "" || strings.TrimSpace(body) == "" {
+	switch {
+	case author.Name == "" || strings.TrimSpace(body) == "":
 		return nil, fmt.Errorf("author and body are required: %w", ErrInvalid)
-	}
-	if author.Kind == "" {
-		author.Kind = AuthorUser
+	case !slices.Contains(authorKinds, author.Kind):
+		return nil, fmt.Errorf("author kind %q: %w", author.Kind, ErrInvalid)
+	case !slices.Contains(entryKinds, kind):
+		return nil, fmt.Errorf("entry kind %q: %w", kind, ErrInvalid)
 	}
 	t, err := m.store.GetTask(ctx, key)
 	if err != nil {
@@ -159,6 +176,23 @@ func (m *Manager) lastSeq(ctx context.Context, stream string, taken int64) (int6
 	return last, nil
 }
 
+// readStream reads a log stream after the key after, decoding each entry.
+func readStream[T any](ctx context.Context, store storage.Driver, stream, after string, limit int) ([]T, error) {
+	entries, err := store.Read(ctx, stream, after, limit)
+	if err != nil {
+		return nil, err
+	}
+	out := make([]T, 0, len(entries))
+	for _, e := range entries {
+		var v T
+		if err := json.Unmarshal(e.Data, &v); err != nil {
+			return nil, fmt.Errorf("%s entry %s: %w", stream, e.Key, err)
+		}
+		out = append(out, v)
+	}
+	return out, nil
+}
+
 // ReadThread returns up to limit entries after sequence number after.
 func (m *Manager) ReadThread(ctx context.Context, key storage.Key, after int64, limit int) ([]ThreadEntry, error) {
 	if _, err := m.store.GetTask(ctx, key); err != nil {
@@ -168,39 +202,39 @@ func (m *Manager) ReadThread(ctx context.Context, key storage.Key, after int64, 
 	if after > 0 {
 		from = storage.SeqKey(after)
 	}
-	entries, err := m.store.Read(ctx, ThreadStream(key), from, limit)
-	if err != nil {
-		return nil, err
-	}
-	out := make([]ThreadEntry, 0, len(entries))
-	for _, e := range entries {
-		var te ThreadEntry
-		if err := json.Unmarshal(e.Data, &te); err != nil {
-			return nil, fmt.Errorf("thread entry %s: %w", e.Key, err)
-		}
-		out = append(out, te)
-	}
-	return out, nil
+	return readStream[ThreadEntry](ctx, m.store, ThreadStream(key), from, limit)
 }
 
-// Answer is a human's reply to a waiting task: an Answer entry in the thread,
-// then the task goes back to Todo.
+// Answer is a human's reply to a waiting task: an Answer entry in the
+// thread, then the task goes back to Todo.
 //
 // It refuses before writing anything when a fresh read shows the task is not
 // Waiting. If the phase changes between that read and the transition, the
 // entry stands as an ordinary comment and the call still fails with
 // ErrInvalidTransition: the log is append-only, so the entry cannot be taken
 // back.
+//
+// There is at most one Answer per wait. If the latest entry written since
+// the task started waiting is already an Answer (a retry after the Reply
+// transition failed, say), it is reused and only the transition is applied.
 func (m *Manager) Answer(ctx context.Context, key storage.Key, author Author, body string) (*v1alpha1.Task, *ThreadEntry, error) {
 	t, err := m.store.GetTask(ctx, key)
 	if err != nil {
 		return nil, nil, err
 	}
-	if t.Status.Phase != v1alpha1.PhaseWaiting {
+	w := t.Status.Waiting
+	if t.Status.Phase != v1alpha1.PhaseWaiting || w == nil {
 		return nil, nil, fmt.Errorf("reply to a %s task: %w", t.Status.Phase, task.ErrInvalidTransition)
 	}
-	entry, err := m.AppendThread(ctx, key, author, EntryAnswer, body)
+	since, err := m.ReadThread(ctx, key, w.ThreadSeq, 0)
 	if err != nil {
+		return nil, nil, err
+	}
+	since = slices.DeleteFunc(since, func(e ThreadEntry) bool { return e.At.Before(w.Since.Time) })
+	var entry *ThreadEntry
+	if n := len(since); n > 0 && since[n-1].Kind == EntryAnswer {
+		entry = &since[n-1]
+	} else if entry, err = m.AppendThread(ctx, key, author, EntryAnswer, body); err != nil {
 		return nil, nil, err
 	}
 	t, err = m.transition(ctx, key, task.Reply{})
@@ -210,52 +244,48 @@ func (m *Manager) Answer(ctx context.Context, key storage.Key, author Author, bo
 	return t, entry, nil
 }
 
-// CancelTask cancels a task and returns it.
-func (m *Manager) CancelTask(ctx context.Context, key storage.Key) (*v1alpha1.Task, error) {
-	return m.transition(ctx, key, task.Cancel{})
-}
-
-// Runs returns the task's run history, oldest first.
+// Runs returns the task's run history, oldest first, including runs whose
+// end the dispatcher has not yet moved out of the outbox.
 func (m *Manager) Runs(ctx context.Context, key storage.Key) ([]v1alpha1.RunRecord, error) {
-	if _, err := m.store.GetTask(ctx, key); err != nil {
-		return nil, err
-	}
-	entries, err := m.store.Read(ctx, RunsStream(key), "", 0)
+	t, err := m.store.GetTask(ctx, key)
 	if err != nil {
 		return nil, err
 	}
-	out := make([]v1alpha1.RunRecord, 0, len(entries))
-	for _, e := range entries {
-		var rec v1alpha1.RunRecord
-		if err := json.Unmarshal(e.Data, &rec); err != nil {
-			return nil, fmt.Errorf("run history entry %s: %w", e.Key, err)
-		}
-		out = append(out, rec)
-	}
-	return out, nil
-}
-
-// RunEvents returns the progress events of one run, in order.
-func (m *Manager) RunEvents(ctx context.Context, key storage.Key, runID string) ([]Event, error) {
-	if _, err := m.store.GetTask(ctx, key); err != nil {
+	runs, err := readStream[v1alpha1.RunRecord](ctx, m.store, RunsStream(key), "", 0)
+	if err != nil {
 		return nil, err
 	}
+	for _, it := range t.Status.Outbox {
+		if it.Kind == v1alpha1.OutboxRunEnded && it.Run != nil &&
+			!slices.ContainsFunc(runs, func(r v1alpha1.RunRecord) bool { return r.ID == it.ID }) {
+			runs = append(runs, *it.Run.DeepCopy())
+		}
+	}
+	slices.SortFunc(runs, func(a, b v1alpha1.RunRecord) int { return strings.Compare(a.ID, b.ID) })
+	return runs, nil
+}
+
+// RunEvents returns the progress events of one run, in order. The run must
+// be the task's current run or one in its history.
+func (m *Manager) RunEvents(ctx context.Context, key storage.Key, runID string) ([]Event, error) {
+	runID = strings.ToUpper(runID)
 	if _, err := ulid.ParseStrict(runID); err != nil {
 		return nil, fmt.Errorf("run id %q: %w", runID, ErrInvalid)
 	}
-	entries, err := m.store.Read(ctx, EventsStream(key, runID), "", 0)
+	t, err := m.store.GetTask(ctx, key)
 	if err != nil {
 		return nil, err
 	}
-	out := make([]Event, 0, len(entries))
-	for _, e := range entries {
-		var ev Event
-		if err := json.Unmarshal(e.Data, &ev); err != nil {
-			return nil, fmt.Errorf("event %s: %w", e.Key, err)
+	if t.Status.Run == nil || t.Status.Run.ID != runID {
+		runs, err := m.Runs(ctx, key)
+		if err != nil {
+			return nil, err
 		}
-		out = append(out, ev)
+		if !slices.ContainsFunc(runs, func(r v1alpha1.RunRecord) bool { return r.ID == runID }) {
+			return nil, fmt.Errorf("run %s of %s: %w", runID, key, storage.ErrNotFound)
+		}
 	}
-	return out, nil
+	return readStream[Event](ctx, m.store, EventsStream(key, runID), "", 0)
 }
 
 // InitTeam opts a namespace in to Cadre. It fails with ErrAlreadyExists if
