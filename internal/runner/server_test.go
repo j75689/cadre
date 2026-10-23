@@ -9,6 +9,7 @@ import (
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -144,7 +145,8 @@ func TestRunnerErrors(t *testing.T) {
 		code   string
 	}{
 		"not json":            {PathClaim, "{", 400, CodeInvalid},
-		"unknown field":       {PathClaim, `{"runner":"r","colour":"red"}`, 400, CodeInvalid},
+		"two JSON values":     {PathClaim, `{"runner":"r"} {"runner":"s"}`, 400, CodeInvalid},
+		"oversized body":      {PathClaim, `{"runner":"` + strings.Repeat("r", maxBody) + `"}`, 413, CodeInvalid},
 		"claim without name":  {PathClaim, ClaimRequest{}, 400, CodeInvalid},
 		"heartbeat no run":    {PathHeartbeat, HeartbeatRequest{Task: ref}, 400, CodeInvalid},
 		"missing task":        {PathHeartbeat, HeartbeatRequest{Task: TaskRef{Namespace: ns, Name: "nope"}, RunID: claim.RunID}, 404, CodeNotFound},
@@ -161,10 +163,18 @@ func TestRunnerErrors(t *testing.T) {
 		}
 	}
 
-	if resp, err := http.Get(e.srv.URL + PathClaim); err != nil || resp.StatusCode != http.StatusMethodNotAllowed {
-		t.Errorf("GET claim: %v %v", resp.StatusCode, err)
-	} else {
-		_ = resp.Body.Close()
+	resp, err := http.Get(e.srv.URL + PathClaim)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = resp.Body.Close()
+	if resp.StatusCode != http.StatusMethodNotAllowed {
+		t.Errorf("GET claim: status %d", resp.StatusCode)
+	}
+
+	// The protocol grows by adding fields: an older server ignores them.
+	if status, _ := e.post(t, PathHeartbeat, `{"task":{"namespace":"`+ns+`","name":"`+ref.Name+`"},"runId":"`+claim.RunID+`","newField":1}`, nil); status != http.StatusOK {
+		t.Errorf("heartbeat with an unknown field: status %d, want 200", status)
 	}
 }
 
@@ -177,16 +187,21 @@ func TestErrorMapping(t *testing.T) {
 		code   string
 	}{
 		task.ErrStepMismatch:       {409, CodeStepMismatch},
+		task.ErrRunMismatch:        {409, CodeRunMismatch},
+		storage.ErrNotFound:        {404, CodeNotFound},
 		task.ErrInvalidTransition:  {409, CodeInvalidTransition},
 		manager.ErrBusy:            {503, CodeUnavailable},
 		fmt.Errorf("etcd timeout"): {503, CodeUnavailable},
 	} {
 		rec := httptest.NewRecorder()
-		s.fail(rec, fmt.Errorf("wrapped: %w", err))
+		s.fail(rec, fmt.Errorf("get https://10.0.0.1/apis/x: bucket secret-bucket: %w", err))
 		var er ErrorResponse
 		_ = json.NewDecoder(rec.Body).Decode(&er)
 		if rec.Code != want.status || er.Error.Code != want.code {
 			t.Errorf("%v: %d %s, want %d %s", err, rec.Code, er.Error.Code, want.status, want.code)
+		}
+		if strings.Contains(er.Error.Message, "10.0.0.1") || strings.Contains(er.Error.Message, "secret-bucket") {
+			t.Errorf("%v: the response leaks internal details: %q", err, er.Error.Message)
 		}
 	}
 }

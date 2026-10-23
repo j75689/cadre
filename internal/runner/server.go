@@ -4,7 +4,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"io"
 	"log/slog"
 	"net/http"
 
@@ -54,7 +53,7 @@ func (s *Server) claim(w http.ResponseWriter, r *http.Request) {
 		Task: ClaimedTask{
 			Namespace: t.Namespace, Name: t.Name, Number: t.Status.Number,
 			Title: t.Spec.Title, Description: t.Spec.Description, Assignee: t.Spec.Assignee,
-			Priority: t.Spec.Priority, ParentRef: t.Spec.ParentRef,
+			Priority: t.Spec.Priority, ParentRef: t.Spec.ParentRef, Labels: t.Spec.Labels,
 		},
 		RunID:            c.RunID,
 		Mode:             c.Mode,
@@ -128,33 +127,46 @@ func validRef(w http.ResponseWriter, ref TaskRef, runID string) bool {
 	return true
 }
 
+// decode reads one JSON value from the body. Unknown fields are ignored, so
+// the protocol can grow by adding fields without breaking older servers.
 func decode(w http.ResponseWriter, r *http.Request, v any) bool {
-	dec := json.NewDecoder(io.LimitReader(r.Body, maxBody))
-	dec.DisallowUnknownFields()
-	if err := dec.Decode(v); err != nil {
+	dec := json.NewDecoder(http.MaxBytesReader(w, r.Body, maxBody))
+	err := dec.Decode(v)
+	if err == nil && dec.More() {
+		err = errors.New("more than one JSON value")
+	}
+	var tooLarge *http.MaxBytesError
+	switch {
+	case errors.As(err, &tooLarge):
+		writeError(w, http.StatusRequestEntityTooLarge, CodeInvalid, fmt.Sprintf("request body over %d bytes", maxBody))
+		return false
+	case err != nil:
 		writeError(w, http.StatusBadRequest, CodeInvalid, fmt.Sprintf("decode request: %v", err))
 		return false
 	}
 	return true
 }
 
-// fail maps a Task Manager error to the protocol's status and code.
+// fail maps a Task Manager error to the protocol's status and code. Only
+// validation errors, which describe the request itself, are sent in full;
+// everything else is answered with its sentinel's text or a fixed message,
+// so storage details never reach an unauthenticated client.
 func (s *Server) fail(w http.ResponseWriter, err error) {
 	switch {
 	case errors.Is(err, task.ErrRunMismatch):
-		writeError(w, http.StatusConflict, CodeRunMismatch, err.Error())
+		writeError(w, http.StatusConflict, CodeRunMismatch, task.ErrRunMismatch.Error())
 	case errors.Is(err, task.ErrStepMismatch):
-		writeError(w, http.StatusConflict, CodeStepMismatch, err.Error())
+		writeError(w, http.StatusConflict, CodeStepMismatch, task.ErrStepMismatch.Error())
 	case errors.Is(err, task.ErrInvalidTransition):
-		writeError(w, http.StatusConflict, CodeInvalidTransition, err.Error())
+		writeError(w, http.StatusConflict, CodeInvalidTransition, task.ErrInvalidTransition.Error())
 	case errors.Is(err, manager.ErrInvalid), errors.Is(err, task.ErrInvalidEvent):
 		writeError(w, http.StatusBadRequest, CodeInvalid, err.Error())
 	case errors.Is(err, storage.ErrNotFound):
-		writeError(w, http.StatusNotFound, CodeNotFound, err.Error())
+		writeError(w, http.StatusNotFound, CodeNotFound, "task not found")
 	default:
 		// Busy objects and storage failures are worth retrying.
 		s.log.Warn("runner request failed", "err", err)
-		writeError(w, http.StatusServiceUnavailable, CodeUnavailable, err.Error())
+		writeError(w, http.StatusServiceUnavailable, CodeUnavailable, "temporarily unavailable; retry")
 	}
 }
 

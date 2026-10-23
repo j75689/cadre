@@ -43,6 +43,7 @@ type ClaimedTask struct {
 	Assignee    *v1alpha1.Assignee      `json:"assignee,omitempty"`
 	Priority    v1alpha1.Priority       `json:"priority,omitempty"`
 	ParentRef   *v1alpha1.TaskReference `json:"parentRef,omitempty"`
+	Labels      []string                `json:"labels,omitempty"`
 }
 
 // ClaimResponse is the 200 body of a claim; 204 means there is no work.
@@ -116,7 +117,8 @@ type FinishResponse struct {
 	AlreadyFinished bool           `json:"alreadyFinished,omitempty"`
 }
 
-// Error codes in an ErrorResponse.
+// Error codes in an ErrorResponse. A runner that gets run_mismatch, or
+// not_found for its task, stops working on that task at once.
 const (
 	CodeInvalid           = "invalid"            // 400: the request is malformed
 	CodeNotFound          = "not_found"          // 404: the task does not exist

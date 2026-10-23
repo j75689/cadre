@@ -171,13 +171,32 @@ func (m *Manager) Cancel(ctx context.Context, key storage.Key) error {
 	return err
 }
 
+// requireRunID rejects an empty run id as a malformed request rather than a
+// run mismatch.
+func requireRunID(runID string) error {
+	if runID == "" {
+		return fmt.Errorf("runId is required: %w", ErrInvalid)
+	}
+	return nil
+}
+
 // Heartbeat renews the lease of runID on the task.
 func (m *Manager) Heartbeat(ctx context.Context, key storage.Key, runID string) (time.Time, error) {
+	if err := requireRunID(runID); err != nil {
+		return time.Time{}, err
+	}
 	t, err := m.transition(ctx, key, task.Heartbeat{RunID: runID, Lease: m.cfg.Lease})
 	if err != nil {
 		return time.Time{}, err
 	}
 	return t.Status.Run.LeaseUntil.Time, nil
+}
+
+// Ready reports whether the store can serve the Task Manager: the index
+// answers a cheap query.
+func (m *Manager) Ready(ctx context.Context) error {
+	_, err := m.store.ListTeams(ctx)
+	return err
 }
 
 // Config returns the manager's effective configuration.

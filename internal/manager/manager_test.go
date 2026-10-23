@@ -279,6 +279,21 @@ func TestReclaimWaitsForTheGrace(t *testing.T) {
 	}
 }
 
+func TestEmptyRunIDIsInvalid(t *testing.T) {
+	e := newEnv(t, 1)
+	key := e.addTask(t, "t", v1alpha1.AssigneeAgent)
+	e.claim(t)
+	if _, err := e.m.Heartbeat(ctx, key, ""); !errors.Is(err, ErrInvalid) {
+		t.Errorf("heartbeat: %v", err)
+	}
+	if _, _, err := e.m.Finish(ctx, key, FinishRequest{Outcome: task.OutcomeDone}); !errors.Is(err, ErrInvalid) {
+		t.Errorf("finish: %v", err)
+	}
+	if err := e.m.RecordEvent(ctx, key, Event{Seq: 1}); !errors.Is(err, ErrInvalid) {
+		t.Errorf("event: %v", err)
+	}
+}
+
 func TestRecordEvent(t *testing.T) {
 	e := newEnv(t, 1)
 	key := e.addTask(t, "t", v1alpha1.AssigneeAgent)

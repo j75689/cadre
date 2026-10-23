@@ -227,9 +227,12 @@ func (r *teamReconciler) reconcile(ctx context.Context, m *Manager) error {
 
 // LoopConfig sets how often the background loops run.
 type LoopConfig struct {
-	Reclaim  time.Duration // default 5s
-	Dispatch time.Duration // default 10s; also numbers new tasks and reconciles Team counts
+	Reclaim  time.Duration // how often expired leases are reclaimed
+	Dispatch time.Duration // how often the outbox is applied, new tasks numbered and Team counts reconciled
 }
+
+// DefaultLoopConfig is used for any zero field of a LoopConfig.
+var DefaultLoopConfig = LoopConfig{Reclaim: 5 * time.Second, Dispatch: 10 * time.Second}
 
 // Run runs the background loops until ctx is done. A nil log logs to
 // slog.Default().
@@ -238,10 +241,10 @@ func (m *Manager) Run(ctx context.Context, cfg LoopConfig, log *slog.Logger) {
 		log = slog.Default()
 	}
 	if cfg.Reclaim <= 0 {
-		cfg.Reclaim = 5 * time.Second
+		cfg.Reclaim = DefaultLoopConfig.Reclaim
 	}
 	if cfg.Dispatch <= 0 {
-		cfg.Dispatch = 10 * time.Second
+		cfg.Dispatch = DefaultLoopConfig.Dispatch
 	}
 	reclaim := time.NewTicker(cfg.Reclaim)
 	dispatch := time.NewTicker(cfg.Dispatch)
