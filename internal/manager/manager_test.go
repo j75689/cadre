@@ -170,7 +170,7 @@ func TestTaskLife(t *testing.T) {
 		if c == nil {
 			t.Fatal("nothing to claim")
 		}
-		if err := e.m.Cancel(ctx, storage.Key{Namespace: ns, Name: c.Task.Name}); err != nil {
+		if _, err := e.m.Cancel(ctx, storage.Key{Namespace: ns, Name: c.Task.Name}); err != nil {
 			t.Fatal(err)
 		}
 		if _, err := e.m.Heartbeat(ctx, storage.Key{Namespace: ns, Name: c.Task.Name}, c.RunID); !errors.Is(err, task.ErrRunMismatch) {
@@ -241,7 +241,7 @@ func TestFinishRetry(t *testing.T) {
 	}
 	key2 := e.addTask(t, "t2", v1alpha1.AssigneeAgent)
 	c2 := e.claim(t)
-	if err := e.m.Cancel(ctx, key2); err != nil {
+	if _, err := e.m.Cancel(ctx, key2); err != nil {
 		t.Fatal(err)
 	}
 	if _, _, err := e.m.Finish(ctx, key2, FinishRequest{RunID: c2.RunID, Outcome: task.OutcomeDone}); !errors.Is(err, task.ErrRunMismatch) {

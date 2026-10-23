@@ -66,6 +66,7 @@ var validEvents = []struct {
 	{Reclaim{}, step},
 	{Cancel{}, step},
 	{AckOutbox{}, step},
+	{ThreadAdvanced{Seq: 1}, step},
 }
 
 func TestTableIsExhaustive(t *testing.T) {
@@ -346,6 +347,20 @@ func TestCancel(t *testing.T) {
 	if rec := runEnded(s); rec == nil || rec.Reason != v1alpha1.RunFinished {
 		t.Fatalf("cancel dropped the run record: %+v", s.Outbox)
 	}
+}
+
+func TestThreadAdvanced(t *testing.T) {
+	tk := taskIn(v1alpha1.PhaseDone, step)
+	tk.Status = apply(t, tk, ThreadAdvanced{Seq: 3}).Status
+	if tk.Status.Thread.Revision != 3 || tk.Status.Phase != v1alpha1.PhaseDone {
+		t.Fatalf("after advancing to 3: %+v", tk.Status)
+	}
+	// A late writer of an older entry never moves the revision back.
+	tk.Status = apply(t, tk, ThreadAdvanced{Seq: 2}).Status
+	if tk.Status.Thread.Revision != 3 {
+		t.Fatalf("revision moved back to %d", tk.Status.Thread.Revision)
+	}
+	wantErr(t, tk, ThreadAdvanced{}, ErrInvalidEvent)
 }
 
 func TestTeam(t *testing.T) {

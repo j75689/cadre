@@ -41,6 +41,7 @@ const (
 	KindReclaim   Kind = "Reclaim"
 	KindCancel    Kind = "Cancel"
 	KindAckOutbox Kind = "AckOutbox"
+	KindThread    Kind = "ThreadAdvanced"
 )
 
 // unborn is the phase of a Task object that exists but has not been numbered.
@@ -63,6 +64,7 @@ var From = map[Kind][]v1alpha1.Phase{
 	KindReclaim:   {v1alpha1.PhaseRunning},
 	KindCancel:    allPhases,
 	KindAckOutbox: allPhases,
+	KindThread:    append([]v1alpha1.Phase{unborn}, allPhases...),
 }
 
 // Event is one input to the state machine.
@@ -156,6 +158,21 @@ type Cancel struct{}
 type AckOutbox struct {
 	IDs []string
 }
+
+// ThreadAdvanced records that the thread entry Seq was appended: the thread
+// revision becomes at least Seq, so watchers of the Task learn the thread
+// changed.
+//
+// The log entry is the commit and the revision is only a hint. An appender
+// that dies between its append and this write leaves the revision behind;
+// the next appender finds the taken sequence numbers in the log, appends
+// after them and advances the revision past both. The revision never moves
+// backwards.
+type ThreadAdvanced struct {
+	Seq int64
+}
+
+func (ThreadAdvanced) kind() Kind { return KindThread }
 
 func (Create) kind() Kind    { return KindCreate }
 func (Claim) kind() Kind     { return KindClaim }
@@ -309,6 +326,15 @@ func Apply(t *v1alpha1.Task, ev Event, now time.Time) (Result, error) {
 		s.Waiting = nil
 		s.Phase = v1alpha1.PhaseCancelled
 
+	case ThreadAdvanced:
+		if ev.Seq < 1 {
+			return Result{}, fmt.Errorf("thread sequence %d: %w", ev.Seq, ErrInvalidEvent)
+		}
+		if s.Thread == nil {
+			s.Thread = &v1alpha1.ThreadStatus{}
+		}
+		s.Thread.Revision = max(s.Thread.Revision, ev.Seq)
+
 	case AckOutbox:
 		s.Outbox = slices.DeleteFunc(s.Outbox, func(it v1alpha1.OutboxItem) bool {
 			return slices.Contains(ev.IDs, it.ID)
@@ -362,7 +388,7 @@ func appendOutbox(s *v1alpha1.TaskStatus, items []v1alpha1.OutboxItem) error {
 		if it.ID == "" || it.Kind != v1alpha1.OutboxCreateSubtask || it.Spec == nil {
 			return fmt.Errorf("outbox item %q: %w", it.ID, ErrInvalidEvent)
 		}
-		if err := validSpec(it.Spec); err != nil {
+		if err := ValidateSpec(it.Spec); err != nil {
 			return fmt.Errorf("outbox item %q: %w", it.ID, err)
 		}
 		if slices.ContainsFunc(s.Outbox, func(o v1alpha1.OutboxItem) bool { return o.ID == it.ID }) {
@@ -378,11 +404,14 @@ var (
 	assigneeKinds = []v1alpha1.AssigneeKind{v1alpha1.AssigneeAgent, v1alpha1.AssigneeUser}
 )
 
-// validSpec checks what the Task CRD validates on a spec.
-func validSpec(spec *v1alpha1.TaskSpec) error {
+// ValidateSpec checks what the Task CRD validates on a spec, for every path
+// that creates a task: a driver without an API server behind it (memory,
+// postgres) would otherwise store what Kubernetes would reject. It fails
+// with ErrInvalidEvent.
+func ValidateSpec(spec *v1alpha1.TaskSpec) error {
 	switch {
 	case strings.TrimSpace(spec.Title) == "":
-		return fmt.Errorf("subtask without a title: %w", ErrInvalidEvent)
+		return fmt.Errorf("title is required: %w", ErrInvalidEvent)
 	case !slices.Contains(priorities, spec.Priority):
 		return fmt.Errorf("priority %q: %w", spec.Priority, ErrInvalidEvent)
 	case spec.Assignee != nil && (!slices.Contains(assigneeKinds, spec.Assignee.Kind) || spec.Assignee.Name == ""):

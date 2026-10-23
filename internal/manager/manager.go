@@ -100,6 +100,11 @@ func (m *Manager) transition(ctx context.Context, key storage.Key, ev task.Event
 		if err != nil {
 			return t, err
 		}
+		if !res.ReleasesSlot && equality.Semantic.DeepEqual(&t.Status, &res.Status) {
+			// Nothing changed (a thread revision already past this entry,
+			// say): no write, and no watch event telling anyone otherwise.
+			return t, nil
+		}
 		t.Status = res.Status
 		err = m.store.UpdateTaskStatus(ctx, t)
 		if errors.Is(err, storage.ErrConflict) {
@@ -187,11 +192,10 @@ func (m *Manager) Reply(ctx context.Context, key storage.Key) error {
 	return err
 }
 
-// Cancel cancels a task in any phase. An in-flight run learns on its next
-// heartbeat.
-func (m *Manager) Cancel(ctx context.Context, key storage.Key) error {
-	_, err := m.transition(ctx, key, task.Cancel{})
-	return err
+// Cancel cancels a task in any phase and returns it. An in-flight run learns
+// on its next heartbeat.
+func (m *Manager) Cancel(ctx context.Context, key storage.Key) (*v1alpha1.Task, error) {
+	return m.transition(ctx, key, task.Cancel{})
 }
 
 // requireRunID rejects an empty run id as a malformed request rather than a
