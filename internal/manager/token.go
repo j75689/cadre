@@ -11,11 +11,14 @@ import (
 	"fmt"
 	"strings"
 
+	"k8s.io/apimachinery/pkg/util/validation"
+
 	v1alpha1 "github.com/j75689/cadre/api/v1alpha1"
 	"github.com/j75689/cadre/internal/storage"
 )
 
-// A per-run MCP token is base64url("<namespace>/<task>") + "." +
+// A per-run MCP token, sent as "Authorization: Bearer <token>", is
+// base64url("<namespace>/<task>") + "." +
 // base64url(32 random bytes). The first part locates the task without an
 // index; the task's status.run holds the SHA-256 of the whole token, written
 // with the claim. The token is bound to that run: when the run ends,
@@ -55,11 +58,11 @@ func (m *Manager) RunByToken(ctx context.Context, token string) (*v1alpha1.Task,
 		return nil, ErrBadToken
 	}
 	ns, name, ok := strings.Cut(string(raw), "/")
-	if !ok || ns == "" || name == "" {
+	if !ok || len(validation.IsDNS1123Label(ns)) > 0 || len(validation.IsDNS1123Subdomain(name)) > 0 {
 		return nil, ErrBadToken
 	}
 	t, err := m.store.GetTask(ctx, storage.Key{Namespace: ns, Name: name})
-	if errors.Is(err, storage.ErrNotFound) {
+	if errors.Is(err, storage.ErrNotFound) || errors.Is(err, storage.ErrInvalid) {
 		return nil, ErrBadToken
 	}
 	if err != nil {

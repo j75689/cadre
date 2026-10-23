@@ -132,6 +132,11 @@ func (m *Manager) claimIn(ctx context.Context, ns, runner string, labels map[str
 		// The run id is minted first, so the slot is the run's from the start
 		// and every release names it.
 		runID := m.newID()
+		key := storage.Key{Namespace: ns, Name: cand.Name}
+		token, tokenHash, err := mintToken(key)
+		if err != nil {
+			return nil, err
+		}
 		err = m.writeTeam(ctx, ns, func(team *v1alpha1.Team) (v1alpha1.TeamStatus, error) {
 			return task.AcquireSlot(team, runID, cand.Name, m.now())
 		})
@@ -139,12 +144,6 @@ func (m *Manager) claimIn(ctx context.Context, ns, runner string, labels map[str
 			return nil, nil // the team is full or gone: try the next namespace
 		}
 		if err != nil {
-			return nil, err
-		}
-		key := storage.Key{Namespace: ns, Name: cand.Name}
-		token, tokenHash, err := mintToken(key)
-		if err != nil {
-			_ = m.releaseSlot(ctx, ns, runID)
 			return nil, err
 		}
 		t, err := m.transition(ctx, key, task.Claim{

@@ -2,6 +2,7 @@ package mcp_test
 
 import (
 	"context"
+	"encoding/base64"
 	"io"
 	"log/slog"
 	"net/http"
@@ -68,10 +69,31 @@ func (e *env) claim(t *testing.T) *manager.Claimed {
 	return c
 }
 
+// bearer adds the run's token to every request, as a runner does.
+type bearer struct {
+	token string
+	next  http.RoundTripper
+}
+
+func (b bearer) RoundTrip(r *http.Request) (*http.Response, error) {
+	r = r.Clone(r.Context())
+	r.Header.Set("Authorization", "Bearer "+b.token)
+	return b.next.RoundTrip(r)
+}
+
+// transport is an MCP client transport for the run's endpoint.
+func (e *env) transport(token string) *sdk.StreamableClientTransport {
+	return &sdk.StreamableClientTransport{
+		Endpoint:   e.srv.URL + mcp.Path,
+		HTTPClient: &http.Client{Transport: bearer{token: token, next: http.DefaultTransport}},
+		MaxRetries: -1,
+	}
+}
+
 // connect opens an MCP session on the run's endpoint and lists its tools.
 func (e *env) connect(token string) ([]*sdk.Tool, error) {
 	client := sdk.NewClient(&sdk.Implementation{Name: "test", Version: "v0"}, nil)
-	session, err := client.Connect(ctx, &sdk.StreamableClientTransport{Endpoint: e.srv.URL + mcp.PathPrefix + token, MaxRetries: -1}, nil)
+	session, err := client.Connect(ctx, e.transport(token), nil)
 	if err != nil {
 		return nil, err
 	}
@@ -83,13 +105,17 @@ func (e *env) connect(token string) ([]*sdk.Tool, error) {
 	return res.Tools, nil
 }
 
-// status posts an MCP initialize to path and returns the HTTP status.
-func (e *env) status(t *testing.T, path string) int {
+// status posts an MCP initialize with the given Authorization header and
+// returns the HTTP status.
+func (e *env) status(t *testing.T, authorization string) int {
 	t.Helper()
 	body := `{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-06-18","capabilities":{},"clientInfo":{"name":"t","version":"0"}}}`
-	req, _ := http.NewRequest(http.MethodPost, e.srv.URL+path, strings.NewReader(body))
+	req, _ := http.NewRequest(http.MethodPost, e.srv.URL+mcp.Path, strings.NewReader(body))
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Accept", "application/json, text/event-stream")
+	if authorization != "" {
+		req.Header.Set("Authorization", authorization)
+	}
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
 		t.Fatal(err)
@@ -107,14 +133,17 @@ func TestTheTokenOpensItsRunOnly(t *testing.T) {
 
 	where, secret, _ := strings.Cut(c.MCPToken, ".")
 	tampered := where + "." + strings.Repeat("A", len(secret))
-	for name, path := range map[string]string{
-		"no token":        mcp.PathPrefix,
-		"tampered secret": mcp.PathPrefix + tampered,
-		"no secret":       mcp.PathPrefix + where,
-		"garbage":         mcp.PathPrefix + "not-a-token",
-		"extra segment":   mcp.PathPrefix + c.MCPToken + "/x",
+	badNamespace := base64.RawURLEncoding.EncodeToString([]byte("Not_A_Namespace/t")) + "." + secret
+	for name, auth := range map[string]string{
+		"no header":       "",
+		"empty bearer":    "Bearer ",
+		"basic auth":      "Basic " + c.MCPToken,
+		"tampered secret": "Bearer " + tampered,
+		"no secret":       "Bearer " + where,
+		"garbage":         "Bearer not-a-token",
+		"bad namespace":   "Bearer " + badNamespace,
 	} {
-		if got := e.status(t, path); got != http.StatusNotFound {
+		if got := e.status(t, auth); got != http.StatusNotFound {
 			t.Errorf("%s: status %d, want 404", name, got)
 		}
 	}
@@ -132,7 +161,7 @@ func TestTheTokenDiesWithItsRun(t *testing.T) {
 	if err := e.m.ReclaimExpired(ctx); err != nil {
 		t.Fatal(err)
 	}
-	if got := e.status(t, mcp.PathPrefix+first.MCPToken); got != http.StatusNotFound {
+	if got := e.status(t, "Bearer "+first.MCPToken); got != http.StatusNotFound {
 		t.Fatalf("token of a reclaimed run: status %d, want 404", got)
 	}
 	second := e.claim(t)
@@ -145,7 +174,7 @@ func TestTheTokenDiesWithItsRun(t *testing.T) {
 	if _, err := e.m.Cancel(ctx, storage.Key{Namespace: ns, Name: "t"}); err != nil {
 		t.Fatal(err)
 	}
-	if got := e.status(t, mcp.PathPrefix+second.MCPToken); got != http.StatusNotFound {
+	if got := e.status(t, "Bearer "+second.MCPToken); got != http.StatusNotFound {
 		t.Fatalf("token after cancel: status %d, want 404", got)
 	}
 }

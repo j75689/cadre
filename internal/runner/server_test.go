@@ -119,7 +119,7 @@ func TestRunnerProtocol(t *testing.T) {
 		ag.Model.SecretRef == nil || ag.Model.SecretRef.Name != "anthropic" || ag.Model.SecretRef.Key != "api-key" {
 		t.Fatalf("claimed agent: %+v (model %+v)", ag, ag.Model)
 	}
-	if claim.MCP == nil || !strings.HasPrefix(claim.MCP.URL, "https://cadre.test/mcp/run/") || len(claim.MCP.URL) < len("https://cadre.test/mcp/run/")+40 {
+	if claim.MCP == nil || claim.MCP.URL != "https://cadre.test/mcp/run" || len(claim.MCP.Token) < 40 || strings.Contains(claim.MCP.URL, claim.MCP.Token) {
 		t.Fatalf("claimed MCP endpoint: %+v", claim.MCP)
 	}
 	if status, _ := e.post(t, PathClaim, ClaimRequest{Runner: "runner-2", Labels: builtin}, nil); status != http.StatusNoContent {

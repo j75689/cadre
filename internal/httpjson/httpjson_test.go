@@ -49,22 +49,22 @@ func TestFail(t *testing.T) {
 	}
 }
 
-// A path that carries a credential is never logged.
-func TestLogRequestsRedactsSecretPaths(t *testing.T) {
+// Requests are logged; health probes only at debug level.
+func TestLogRequests(t *testing.T) {
 	var buf strings.Builder
-	log := slog.New(slog.NewTextHandler(&buf, nil))
+	log := slog.New(slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelInfo}))
 	h := httpjson.LogRequests(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusTeapot)
-	}), log, "/mcp/run/")
-	h.ServeHTTP(httptest.NewRecorder(), httptest.NewRequest(http.MethodPost, "/mcp/run/c2VjcmV0.dG9rZW4", nil))
-	h.ServeHTTP(httptest.NewRecorder(), httptest.NewRequest(http.MethodGet, "/api/v1/teams", nil))
-	out := buf.String()
-	if strings.Contains(out, "c2VjcmV0") || strings.Contains(out, "dG9rZW4") {
-		t.Fatalf("the token reached the log:\n%s", out)
+		_ = http.NewResponseController(w).Flush() // reaches the real writer through Unwrap
+	}), log)
+	for _, path := range []string{"/api/v1/teams", "/healthz", "/readyz"} {
+		h.ServeHTTP(httptest.NewRecorder(), httptest.NewRequest(http.MethodGet, path, nil))
 	}
-	for _, want := range []string{"path=/mcp/run/<redacted>", "status=418", "path=/api/v1/teams"} {
-		if !strings.Contains(out, want) {
-			t.Errorf("log lacks %q:\n%s", want, out)
-		}
+	out := buf.String()
+	if !strings.Contains(out, "path=/api/v1/teams") || !strings.Contains(out, "status=418") {
+		t.Errorf("request not logged:\n%s", out)
+	}
+	if strings.Contains(out, "healthz") || strings.Contains(out, "readyz") {
+		t.Errorf("health probes logged at info:\n%s", out)
 	}
 }

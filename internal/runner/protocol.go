@@ -76,11 +76,13 @@ type ClaimedModel struct {
 	WorkloadIdentity bool                   `json:"workloadIdentity,omitempty"`
 }
 
-// ClaimedMCP is the run's per-run MCP endpoint. The URL carries the run's
-// token: a credential, bound to this run, that stops working when the run
-// ends. A reclaimed task gets a fresh one with its new run.
+// ClaimedMCP is the run's per-run MCP endpoint. Every request to URL sends
+// "Authorization: Bearer <Token>". The token is a credential bound to this
+// run; it stops working when the run ends, and a reclaimed task gets a fresh
+// one with its new run.
 type ClaimedMCP struct {
-	URL string `json:"url"`
+	URL   string `json:"url"`
+	Token string `json:"token"`
 }
 
 // ClaimResponse is the 200 body of a claim; 204 means there is no work.

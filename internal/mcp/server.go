@@ -1,7 +1,9 @@
-// Package mcp serves the per-run MCP endpoint, /mcp/run/<token>: the tools a
-// run may use, executed on the Cadre side with the run's identity. The token
-// is handed to the runner at claim, is bound to that one run and dies with
-// it; every request resolves it on a fresh read of the task.
+// Package mcp serves the per-run MCP endpoint, /mcp/run: the tools a run may
+// use, executed on the Cadre side with the run's identity. A request carries
+// the run's token as "Authorization: Bearer <token>"; the token is handed to
+// the runner at claim, is bound to that one run and dies with it, and every
+// request resolves it on a fresh read of the task. It is never part of a
+// URL, so it cannot leak into access logs or redirects.
 //
 // The endpoint is stateless: no MCP session is kept between requests, so any
 // cadre-server replica can serve any request, and every tool call is fenced
@@ -21,8 +23,8 @@ import (
 	"github.com/j75689/cadre/internal/manager"
 )
 
-// PathPrefix is where the endpoint is served; the token follows it.
-const PathPrefix = "/mcp/run/"
+// Path is where the endpoint is served.
+const Path = "/mcp/run"
 
 // Server serves the per-run MCP endpoint on a Task Manager.
 type Server struct {
@@ -40,7 +42,7 @@ func NewServer(m *manager.Manager, log *slog.Logger) *Server {
 
 // Register adds the endpoint to mux.
 func (s *Server) Register(mux *http.ServeMux) {
-	mux.Handle(PathPrefix, s)
+	mux.Handle(Path, s)
 }
 
 type runKey struct{}
@@ -51,13 +53,13 @@ func runOf(ctx context.Context) *v1alpha1.Task {
 	return t
 }
 
-// ServeHTTP resolves the token, then hands the request to the MCP handler
-// with the run's task in its context. A token that names no active run is
-// answered 404 whatever the reason, so a caller learns nothing about which
-// part was wrong.
+// ServeHTTP resolves the bearer token, then hands the request to the MCP
+// handler with the run's task in its context. A request whose token names no
+// active run is answered 404 whatever the reason, so a caller learns nothing
+// about which part was wrong.
 func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
-	token := strings.TrimPrefix(r.URL.Path, PathPrefix)
-	if token == "" || strings.Contains(token, "/") {
+	token, ok := strings.CutPrefix(r.Header.Get("Authorization"), "Bearer ")
+	if !ok || token == "" {
 		http.NotFound(w, r)
 		return
 	}
