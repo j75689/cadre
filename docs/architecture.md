@@ -60,6 +60,8 @@ There are two modes, not a list of backends:
 | **step** | Cadre | Cadre's own worker Deployment | one step per message; any worker can take the next step |
 | **runtime** | someone else's agent (an ACP agent such as Claude Code, kagent, a custom container) | a runner process: Kubernetes Job, Agent Sandbox, a user's own machine | the whole run is bound to one runner, managed by lease and run_id fencing |
 
+Step-mode workers always run inside the cluster, as a pool of interchangeable pods that talk to the Task Manager, never to storage directly. Anything that runs outside the cluster is an external runner in runtime mode, whatever loop it contains.
+
 Runtime-mode backends differ only in who starts the runner process. They all speak the same pull-based runner protocol and all call tools through the per-run MCP endpoint. In step mode, Agent Sandbox is the place where tools that need a shell execute: a kind of ToolServer, not an execution backend.
 
 ### Per-run tool server

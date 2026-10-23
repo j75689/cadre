@@ -51,7 +51,7 @@ The loop lives in someone else's process: an ACP agent such as Claude Code, a ka
 - Tool calls still go to Cadre's per-run MCP endpoint.
 - How the runner works internally is not Cadre's business.
 
-Kubernetes Job, Agent Sandbox and a user's own machine are all runtime mode; they differ only in who starts the runner process. The builtin loop first ships as a runtime-mode runner (`cadre-runner`) and becomes step mode later.
+Step-mode workers only run inside the cluster; a process outside the cluster is always a runtime-mode runner. Kubernetes Job, Agent Sandbox and a user's own machine are all runtime mode; they differ only in who starts the runner process. The builtin loop first ships as a runtime-mode runner (`cadre-runner`) and becomes step mode later.
 
 ## Runner protocol
 
