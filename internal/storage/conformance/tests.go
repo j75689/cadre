@@ -471,3 +471,48 @@ func testIndexRejectsInvalidQueries(t *testing.T, s *suite) {
 		}
 	}
 }
+
+// Streams nest by name, but reading one never returns another's entries, and
+// malformed names are rejected the same way by every driver.
+func testLogNestedStreams(t *testing.T, s *suite) {
+	d := s.open()
+	parent, child := s.ns+"/t/thread", s.ns+"/t/thread/files"
+	for _, w := range []struct{ stream, key string }{
+		{parent, storage.SeqKey(1)}, {parent, storage.SeqKey(2)},
+		{child, "a"}, {child, "b"}, {child, "c"},
+	} {
+		if err := d.Append(s.ctx, w.stream, w.key, []byte(w.stream)); err != nil {
+			t.Fatalf("append %s/%s: %v", w.stream, w.key, err)
+		}
+	}
+	for stream, want := range map[string][]string{
+		parent: {storage.SeqKey(1), storage.SeqKey(2)},
+		child:  {"a", "b", "c"},
+	} {
+		got, err := d.Read(s.ctx, stream, "", 0)
+		if err != nil {
+			t.Fatalf("read %s: %v", stream, err)
+		}
+		keys := make([]string, 0, len(got))
+		for _, e := range got {
+			keys = append(keys, e.Key)
+		}
+		if !slices.Equal(keys, want) {
+			t.Errorf("read %s: keys %v, want %v", stream, keys, want)
+		}
+	}
+	if got, err := d.Read(s.ctx, parent, storage.SeqKey(1), 1); err != nil || len(got) != 1 || got[0].Key != storage.SeqKey(2) {
+		t.Errorf("paged read of %s: %+v, %v", parent, got, err)
+	}
+
+	for _, bad := range []struct{ stream, key string }{
+		{"", "k"}, {"/" + parent, "k"}, {parent + "/", "k"}, {s.ns + "//t", "k"}, {parent, ""}, {parent, "a/b"},
+	} {
+		if err := d.Append(s.ctx, bad.stream, bad.key, nil); !errors.Is(err, storage.ErrInvalidName) {
+			t.Errorf("append stream %q key %q: got %v, want ErrInvalidName", bad.stream, bad.key, err)
+		}
+	}
+	if _, err := d.Read(s.ctx, s.ns+"//t", "", 0); !errors.Is(err, storage.ErrInvalidName) {
+		t.Errorf("read a malformed stream: got %v, want ErrInvalidName", err)
+	}
+}

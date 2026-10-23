@@ -1,6 +1,7 @@
 // Package s3fake is an in-process S3 server for tests. It implements only what
 // Cadre's drivers use: path-style buckets, PutObject with If-None-Match: *,
-// GetObject and ListObjectsV2. It is not a general S3 emulator.
+// GetObject, DeleteObject and ListObjectsV2 (prefix, delimiter, start-after,
+// max-keys and continuation). It is not a general S3 emulator.
 package s3fake
 
 import (
@@ -112,7 +113,7 @@ type listResult struct {
 
 func list(w http.ResponseWriter, r *http.Request, bucket string, objects map[string][]byte) {
 	q := r.URL.Query()
-	prefix, after := q.Get("prefix"), q.Get("start-after")
+	prefix, after, delim := q.Get("prefix"), q.Get("start-after"), q.Get("delimiter")
 	if tok := q.Get("continuation-token"); tok != "" {
 		after = tok
 	}
@@ -122,7 +123,11 @@ func list(w http.ResponseWriter, r *http.Request, bucket string, objects map[str
 	}
 	var keys []string
 	for k := range objects {
-		if strings.HasPrefix(k, prefix) && k > after {
+		// With a delimiter, keys below the next delimiter roll up into
+		// CommonPrefixes, which no caller of the fake reads, so they are
+		// simply left out.
+		nested := delim != "" && strings.Contains(strings.TrimPrefix(k, prefix), delim)
+		if strings.HasPrefix(k, prefix) && k > after && !nested {
 			keys = append(keys, k)
 		}
 	}

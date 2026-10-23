@@ -6,13 +6,18 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"math/rand/v2"
 	"strings"
+	"time"
 
 	"github.com/oklog/ulid/v2"
+	"golang.org/x/sync/errgroup"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/config"
 	"github.com/aws/aws-sdk-go-v2/credentials"
 	"github.com/aws/aws-sdk-go-v2/service/s3"
+	"github.com/aws/aws-sdk-go-v2/service/s3/types"
 	"github.com/aws/smithy-go"
 
 	"github.com/j75689/cadre/internal/storage"
@@ -24,9 +29,9 @@ type S3Config struct {
 	Region    string
 	Bucket    string
 	Prefix    string // prepended to every object key, e.g. "cadre/"
-	AccessKey string
-	SecretKey string
-	PathStyle bool // required by most self-hosted S3-compatible servers
+	AccessKey string // with SecretKey; when either is empty the SDK's default
+	SecretKey string // credential chain is used, for workload identity
+	PathStyle bool   // required by most self-hosted S3-compatible servers
 }
 
 // objectLog is the append-only log on object storage: one object per entry,
@@ -37,7 +42,7 @@ type objectLog struct {
 	prefix string
 }
 
-func newObjectLog(cfg S3Config) (*objectLog, error) {
+func newObjectLog(ctx context.Context, cfg S3Config) (*objectLog, error) {
 	if cfg.Bucket == "" {
 		return nil, errors.New("s3: bucket is required")
 	}
@@ -45,15 +50,23 @@ func newObjectLog(cfg S3Config) (*objectLog, error) {
 	if region == "" {
 		region = "us-east-1"
 	}
-	client := s3.New(s3.Options{
-		Region:       region,
-		BaseEndpoint: nonEmpty(cfg.Endpoint),
-		UsePathStyle: cfg.PathStyle,
-		Credentials:  credentials.NewStaticCredentialsProvider(cfg.AccessKey, cfg.SecretKey, ""),
+	// Static keys only when both are given; otherwise the SDK's default
+	// chain applies, which covers workload identity (IRSA, Pod Identity,
+	// instance profiles) and the standard AWS environment variables.
+	awsCfg, err := config.LoadDefaultConfig(ctx, config.WithRegion(region))
+	if err != nil {
+		return nil, fmt.Errorf("s3: load AWS config: %w", err)
+	}
+	if cfg.AccessKey != "" && cfg.SecretKey != "" {
+		awsCfg.Credentials = credentials.NewStaticCredentialsProvider(cfg.AccessKey, cfg.SecretKey, "")
+	}
+	client := s3.NewFromConfig(awsCfg, func(o *s3.Options) {
+		o.BaseEndpoint = nonEmpty(cfg.Endpoint)
+		o.UsePathStyle = cfg.PathStyle
 		// Checksums only where S3 requires them, so S3-compatible servers that
 		// do not implement the newer checksum headers work too.
-		RequestChecksumCalculation: aws.RequestChecksumCalculationWhenRequired,
-		ResponseChecksumValidation: aws.ResponseChecksumValidationWhenRequired,
+		o.RequestChecksumCalculation = aws.RequestChecksumCalculationWhenRequired
+		o.ResponseChecksumValidation = aws.ResponseChecksumValidationWhenRequired
 	})
 	return &objectLog{s3: client, bucket: cfg.Bucket, prefix: cfg.Prefix}, nil
 }
@@ -69,12 +82,26 @@ func (l *objectLog) streamPrefix(stream string) string { return l.prefix + strea
 
 // conditionalRetries bounds retries of S3's 409 ConditionalRequestConflict,
 // which means a concurrent conditional write was in flight and the request
-// should be retried.
-const conditionalRetries = 5
+// should be retried once it settles.
+const conditionalRetries = 6
+
+// conflictBackoff waits a jittered, growing interval before retrying a
+// ConditionalRequestConflict, so the retries outlast the competing write.
+func conflictBackoff(ctx context.Context, attempt int) error {
+	base := 20 * time.Millisecond << attempt
+	timer := time.NewTimer(base/2 + rand.N(base))
+	defer timer.Stop()
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-timer.C:
+		return nil
+	}
+}
 
 func (l *objectLog) Append(ctx context.Context, stream, key string, data []byte) error {
-	if stream == "" || key == "" || strings.Contains(key, "/") {
-		return fmt.Errorf("log entry %q in stream %q: key must be non-empty and contain no slash", key, stream)
+	if err := errors.Join(storage.ValidateStream(stream), storage.ValidateKey(key)); err != nil {
+		return err
 	}
 	objKey := l.streamPrefix(stream) + key
 	for attempt := 0; ; attempt++ {
@@ -90,7 +117,9 @@ func (l *objectLog) Append(ctx context.Context, stream, key string, data []byte)
 		case code == "PreconditionFailed":
 			return fmt.Errorf("log %s entry %s: %w", stream, key, storage.ErrAlreadyExists)
 		case code == "ConditionalRequestConflict" && attempt < conditionalRetries:
-			continue
+			if err := conflictBackoff(ctx, attempt); err != nil {
+				return err
+			}
 		default:
 			return fmt.Errorf("log %s entry %s: %w", stream, key, err)
 		}
@@ -121,20 +150,26 @@ func (l *objectLog) probe(ctx context.Context) error {
 		_, _ = l.s3.DeleteObject(context.WithoutCancel(ctx), &s3.DeleteObjectInput{Bucket: &l.bucket, Key: &key})
 	}()
 	err := put()
-	switch errorCode(err) {
-	case "PreconditionFailed":
+	if err == nil {
+		return fmt.Errorf("probe object store %s: %w", l.bucket, errNotEnforced)
+	}
+	if errorCode(err) == "PreconditionFailed" {
 		return nil
-	case "":
-		if err == nil {
-			return fmt.Errorf("probe object store %s: %w", l.bucket, errNotEnforced)
-		}
 	}
 	return fmt.Errorf("probe object store: second write: %w", err)
 }
 
+// readParallelism bounds the concurrent GETs of one Read.
+const readParallelism = 16
+
 func (l *objectLog) Read(ctx context.Context, stream, after string, limit int) ([]storage.Entry, error) {
+	if err := storage.ValidateStream(stream); err != nil {
+		return nil, err
+	}
 	prefix := l.streamPrefix(stream)
-	in := &s3.ListObjectsV2Input{Bucket: &l.bucket, Prefix: &prefix}
+	// The delimiter keeps nested streams out: their objects are rolled up
+	// into CommonPrefixes, which Read ignores.
+	in := &s3.ListObjectsV2Input{Bucket: &l.bucket, Prefix: &prefix, Delimiter: aws.String("/")}
 	if after != "" {
 		in.StartAfter = aws.String(prefix + after)
 	}
@@ -147,18 +182,34 @@ func (l *objectLog) Read(ctx context.Context, stream, after string, limit int) (
 		if err != nil {
 			return nil, fmt.Errorf("list log %s: %w", stream, err)
 		}
-		for _, obj := range page.Contents {
-			data, err := l.get(ctx, *obj.Key)
-			if err != nil {
-				return nil, err
-			}
-			out = append(out, storage.Entry{Key: strings.TrimPrefix(*obj.Key, prefix), Data: data})
+		entries, err := l.getAll(ctx, prefix, page.Contents)
+		if err != nil {
+			return nil, err
 		}
+		out = append(out, entries...)
 		if !aws.ToBool(page.IsTruncated) || (limit > 0 && len(out) >= limit) {
 			return out, nil
 		}
 		in.ContinuationToken = page.NextContinuationToken
 	}
+}
+
+// getAll fetches the listed objects concurrently, keeping their order.
+func (l *objectLog) getAll(ctx context.Context, prefix string, objs []types.Object) ([]storage.Entry, error) {
+	out := make([]storage.Entry, len(objs))
+	g, ctx := errgroup.WithContext(ctx)
+	g.SetLimit(readParallelism)
+	for i, obj := range objs {
+		g.Go(func() error {
+			data, err := l.get(ctx, *obj.Key)
+			out[i] = storage.Entry{Key: strings.TrimPrefix(*obj.Key, prefix), Data: data}
+			return err
+		})
+	}
+	if err := g.Wait(); err != nil {
+		return nil, err
+	}
+	return out, nil
 }
 
 func (l *objectLog) get(ctx context.Context, key string) ([]byte, error) {

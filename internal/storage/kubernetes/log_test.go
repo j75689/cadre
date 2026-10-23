@@ -14,7 +14,7 @@ func fakeLog(t *testing.T, ignoreIfNoneMatch bool) (*objectLog, *s3fake.Server) 
 	t.Cleanup(fake.Close)
 	fake.IgnoreIfNoneMatch = ignoreIfNoneMatch
 	fake.CreateBucket("probe-test")
-	l, err := newObjectLog(S3Config{Endpoint: fake.URL, Bucket: "probe-test", Prefix: "cadre/", AccessKey: "fake", SecretKey: "fake", PathStyle: true})
+	l, err := newObjectLog(context.Background(), S3Config{Endpoint: fake.URL, Bucket: "probe-test", Prefix: "cadre/", AccessKey: "fake", SecretKey: "fake", PathStyle: true})
 	if err != nil {
 		t.Fatalf("new log: %v", err)
 	}

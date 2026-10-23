@@ -14,6 +14,8 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/envtest"
 
+	"github.com/oklog/ulid/v2"
+
 	"github.com/j75689/cadre/internal/s3fake"
 	"github.com/j75689/cadre/internal/storage"
 	"github.com/j75689/cadre/internal/storage/conformance"
@@ -66,7 +68,9 @@ func TestConformance(t *testing.T) {
 	if err != nil {
 		t.Fatalf("client: %v", err)
 	}
-	run := fmt.Sprintf("run-%d", os.Getpid())
+	// A fresh prefix per run, so runs against a persistent store never see
+	// each other's entries.
+	run := "run-" + ulid.Make().String()
 	var n atomic.Int32
 
 	conformance.Run(t, func(t *testing.T) conformance.Env {

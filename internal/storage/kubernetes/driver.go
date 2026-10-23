@@ -57,7 +57,7 @@ func Open(ctx context.Context, cfg Config) (*Driver, error) {
 	if err != nil {
 		return nil, fmt.Errorf("kubernetes client: %w", err)
 	}
-	log, err := newObjectLog(cfg.S3)
+	log, err := newObjectLog(ctx, cfg.S3)
 	if err != nil {
 		return nil, err
 	}
@@ -120,16 +120,16 @@ func (d *Driver) GetTask(ctx context.Context, key storage.Key) (*v1alpha1.Task, 
 // CreateTask implements storage.Objects. The API server drops status on
 // create, which is the contract.
 func (d *Driver) CreateTask(ctx context.Context, t *v1alpha1.Task) error {
-	return mapError(d.client.Create(ctx, t), "create task "+t.Namespace+"/"+t.Name)
+	return mapError(d.client.Create(ctx, t), "create task "+keyOf(t).String())
 }
 
 // UpdateTaskStatus implements storage.Objects. The status subresource
 // ignores spec, and the object's resourceVersion is the precondition.
 func (d *Driver) UpdateTaskStatus(ctx context.Context, t *v1alpha1.Task) error {
 	if t.ResourceVersion == "" {
-		return fmt.Errorf("update task %s/%s: no resourceVersion: %w", t.Namespace, t.Name, storage.ErrConflict)
+		return fmt.Errorf("update task %s: no resourceVersion: %w", keyOf(t), storage.ErrConflict)
 	}
-	return mapError(d.client.Status().Update(ctx, t), "update task "+t.Namespace+"/"+t.Name)
+	return mapError(d.client.Status().Update(ctx, t), "update task "+keyOf(t).String())
 }
 
 // GetTeam implements storage.Objects.
@@ -164,7 +164,19 @@ func (d *Driver) ListTasks(ctx context.Context, q storage.Query) ([]v1alpha1.Tas
 	if err := d.index.List(ctx, list, client.InNamespace(q.Namespace)); err != nil {
 		return nil, fmt.Errorf("list tasks: %w", err)
 	}
-	out := slices.DeleteFunc(list.Items, func(t v1alpha1.Task) bool { return !q.Matches(&t) })
-	slices.SortFunc(out, func(a, b v1alpha1.Task) int { return storage.CompareTasks(&a, &b) })
-	return storage.Page(q, out), nil
+	matched := make([]*v1alpha1.Task, 0, len(list.Items))
+	for i := range list.Items {
+		if q.Matches(&list.Items[i]) {
+			matched = append(matched, &list.Items[i])
+		}
+	}
+	slices.SortFunc(matched, storage.CompareTasks)
+	page := storage.Page(q, matched)
+	out := make([]v1alpha1.Task, len(page))
+	for i, t := range page {
+		out[i] = *t
+	}
+	return out, nil
 }
+
+func keyOf(t *v1alpha1.Task) storage.Key { return storage.Key{Namespace: t.Namespace, Name: t.Name} }
