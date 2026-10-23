@@ -158,7 +158,34 @@ spec:
 ```
 
 - `runtime.type: builtin` is Cadre's own LLM loop. `runner` hands the task to any runner whose labels match the selector (see [execution.md](execution.md)).
-- `permissions` on a ToolServer decide per tool whether a call is allowed, denied or must ask a human first (`ask` ends the run with `Waiting{ToolApproval}`).
+- `permissions` on a ToolServer decide per tool whether a call is allowed, denied or must ask a human first (`ask` ends the run with `Waiting{ToolApproval}`). Without `permissions` every tool is allowed. With them the list is an allowlist: `"*"` covers tools not listed by name, and a tool matching neither is denied.
+
+| Resource | Field | Rule |
+| --- | --- | --- |
+| ModelProvider | `type` | `anthropic`, `openai` (any OpenAI-compatible endpoint), `bedrock` or `vertex` |
+| ModelProvider | `model` | required |
+| ModelProvider | `auth.secretRef` | required for `anthropic` and `openai`; `bedrock` and `vertex` need it or `workloadIdentity: true` |
+| ModelProvider | `baseURL` | an `http(s)` URL, for `anthropic` and `openai` only |
+| ModelProvider | `workloadIdentity` | for `bedrock` and `vertex` only |
+| ModelProvider | `region` | required for `bedrock`, forbidden otherwise |
+| ModelProvider | `project`, `location` | required for `vertex`, forbidden otherwise |
+| ToolServer | `url`, `managed` | exactly one of them |
+| ToolServer | `transport` | `streamable_http`, the default |
+| ToolServer | `permissions` | tool name or `"*"` → `allow`, `deny` or `ask` |
+| Agent | `modelRef` | required; a ModelProvider in the same namespace |
+| Agent | `toolRefs` | ToolServers in the same namespace, a set |
+| Agent | `runtime.type` | `builtin` (the default) or `runner` |
+| Agent | `runtime.selector` | required, with at least one label, for `runner`; forbidden for `builtin` |
+
+All three report a `Ready` condition and `observedGeneration` in their status:
+
+| Resource | Ready when |
+| --- | --- |
+| ModelProvider | the referenced Secret has the key, or `workloadIdentity` is set |
+| ToolServer | an external server's Secret has its key, when `auth` is set; a managed ToolServer is not Ready (`ManagedNotSupported`) until managed servers arrive in M2 |
+| Agent | its ModelProvider and every ToolServer exist and are Ready; the reason names the first that is not |
+
+Controllers only act in namespaces with a `Team`. Secrets are read one by one when a resource is reconciled, never watched or cached, and the resources that reference them are re-checked every minute.
 - The managed mode of ToolServer creates a Deployment and a Service only. NetworkPolicy and ServiceAccount management may follow.
 
 ## Schedule and Notifier

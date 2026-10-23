@@ -1,0 +1,43 @@
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: cadre-server
+rules:
+- apiGroups:
+  - ""
+  resources:
+  - secrets
+  verbs:
+  - get
+- apiGroups:
+  - cadre.dev
+  resources:
+  - agents
+  - modelproviders
+  - toolservers
+  verbs:
+  - get
+  - list
+  - watch
+- apiGroups:
+  - cadre.dev
+  resources:
+  - agents/status
+  - modelproviders/status
+  - tasks/status
+  - teams/status
+  - toolservers/status
+  verbs:
+  - get
+  - update
+- apiGroups:
+  - cadre.dev
+  resources:
+  - tasks
+  - teams
+  verbs:
+  - create
+  - get
+  - list
+  - watch
