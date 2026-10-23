@@ -6,7 +6,7 @@
 // exactly once, the Team semaphore holds, and the index rebuilds completely.
 //
 // CADRE_CHAOS_SEED replays a seed; CADRE_CHAOS_DURATION sets how long the
-// chaos lasts (60s by default, 10s with -short).
+// chaos lasts (60s by default, 20s with -short).
 package chaos_test
 
 import (
@@ -75,7 +75,7 @@ func TestChaos(t *testing.T) {
 	}
 	duration := 60 * time.Second
 	if testing.Short() {
-		duration = 10 * time.Second
+		duration = 20 * time.Second
 	}
 	if v := os.Getenv("CADRE_CHAOS_DURATION"); v != "" {
 		var err error
