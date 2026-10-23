@@ -1,0 +1,242 @@
+// Package memory is an in-memory storage driver. It backs unit tests and is
+// the reference the conformance suite is first written against; it is not for
+// production use.
+package memory
+
+import (
+	"context"
+	"fmt"
+	"slices"
+	"sort"
+	"strconv"
+	"sync"
+
+	v1alpha1 "github.com/j75689/cadre/api/v1alpha1"
+	"github.com/j75689/cadre/internal/storage"
+)
+
+// Backend is the shared state several Drivers see, like one cluster seen by
+// several server processes.
+type Backend struct {
+	mu      sync.Mutex
+	version int64
+	tasks   map[storage.Key]*v1alpha1.Task
+	teams   map[string]*v1alpha1.Team
+	logs    map[string]map[string][]byte
+	drivers map[*Driver]struct{}
+}
+
+// NewBackend returns an empty backend.
+func NewBackend() *Backend {
+	return &Backend{
+		tasks:   map[storage.Key]*v1alpha1.Task{},
+		teams:   map[string]*v1alpha1.Team{},
+		logs:    map[string]map[string][]byte{},
+		drivers: map[*Driver]struct{}{},
+	}
+}
+
+// Open starts a Driver on the backend. Its index is rebuilt from a full list,
+// as a restarted process would rebuild it, then kept current by watch events.
+func (b *Backend) Open() *Driver {
+	d := &Driver{b: b, index: map[storage.Key]*v1alpha1.Task{}}
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	for k, t := range b.tasks {
+		d.index[k] = t.DeepCopy()
+	}
+	b.drivers[d] = struct{}{}
+	return d
+}
+
+// Driver is one process's view of a Backend.
+type Driver struct {
+	b *Backend
+
+	mu    sync.RWMutex
+	index map[storage.Key]*v1alpha1.Task
+}
+
+var _ storage.Driver = (*Driver)(nil)
+
+// Close stops the driver's watch.
+func (d *Driver) Close() error {
+	d.b.mu.Lock()
+	defer d.b.mu.Unlock()
+	delete(d.b.drivers, d)
+	return nil
+}
+
+// nextVersion must be called with b.mu held.
+func (b *Backend) nextVersion() string {
+	b.version++
+	return strconv.FormatInt(b.version, 10)
+}
+
+// notify delivers a watch event to every open driver. It must be called with
+// b.mu held.
+func (b *Backend) notify(t *v1alpha1.Task) {
+	for d := range b.drivers {
+		d.mu.Lock()
+		d.index[storage.Key{Namespace: t.Namespace, Name: t.Name}] = t.DeepCopy()
+		d.mu.Unlock()
+	}
+}
+
+func notFound(kind string, key fmt.Stringer) error {
+	return fmt.Errorf("%s %s: %w", kind, key, storage.ErrNotFound)
+}
+
+// GetTask implements storage.Objects.
+func (d *Driver) GetTask(_ context.Context, key storage.Key) (*v1alpha1.Task, error) {
+	d.b.mu.Lock()
+	defer d.b.mu.Unlock()
+	t, ok := d.b.tasks[key]
+	if !ok {
+		return nil, notFound("task", key)
+	}
+	return t.DeepCopy(), nil
+}
+
+// CreateTask implements storage.Objects.
+func (d *Driver) CreateTask(_ context.Context, t *v1alpha1.Task) error {
+	key := storage.Key{Namespace: t.Namespace, Name: t.Name}
+	d.b.mu.Lock()
+	defer d.b.mu.Unlock()
+	if _, ok := d.b.tasks[key]; ok {
+		return fmt.Errorf("task %s: %w", key, storage.ErrAlreadyExists)
+	}
+	stored := t.DeepCopy()
+	stored.Status = v1alpha1.TaskStatus{}
+	stored.ResourceVersion = d.b.nextVersion()
+	d.b.tasks[key] = stored
+	d.b.notify(stored)
+	t.ResourceVersion = stored.ResourceVersion
+	t.Status = v1alpha1.TaskStatus{}
+	return nil
+}
+
+// UpdateTaskStatus implements storage.Objects.
+func (d *Driver) UpdateTaskStatus(_ context.Context, t *v1alpha1.Task) error {
+	key := storage.Key{Namespace: t.Namespace, Name: t.Name}
+	d.b.mu.Lock()
+	defer d.b.mu.Unlock()
+	cur, ok := d.b.tasks[key]
+	if !ok {
+		return notFound("task", key)
+	}
+	if cur.ResourceVersion != t.ResourceVersion {
+		return fmt.Errorf("task %s: %w", key, storage.ErrConflict)
+	}
+	stored := cur.DeepCopy()
+	t.Status.DeepCopyInto(&stored.Status)
+	stored.ResourceVersion = d.b.nextVersion()
+	d.b.tasks[key] = stored
+	d.b.notify(stored)
+	t.ResourceVersion = stored.ResourceVersion
+	return nil
+}
+
+// GetTeam implements storage.Objects.
+func (d *Driver) GetTeam(_ context.Context, namespace string) (*v1alpha1.Team, error) {
+	d.b.mu.Lock()
+	defer d.b.mu.Unlock()
+	team, ok := d.b.teams[namespace]
+	if !ok {
+		return nil, notFound("team", storage.Key{Namespace: namespace, Name: v1alpha1.TeamName})
+	}
+	return team.DeepCopy(), nil
+}
+
+// CreateTeam implements storage.Objects.
+func (d *Driver) CreateTeam(_ context.Context, team *v1alpha1.Team) error {
+	if team.Name != v1alpha1.TeamName {
+		return fmt.Errorf("team must be named %q, not %q", v1alpha1.TeamName, team.Name)
+	}
+	d.b.mu.Lock()
+	defer d.b.mu.Unlock()
+	if _, ok := d.b.teams[team.Namespace]; ok {
+		return fmt.Errorf("team %s: %w", team.Namespace, storage.ErrAlreadyExists)
+	}
+	stored := team.DeepCopy()
+	stored.Status = v1alpha1.TeamStatus{}
+	stored.ResourceVersion = d.b.nextVersion()
+	d.b.teams[team.Namespace] = stored
+	team.ResourceVersion = stored.ResourceVersion
+	team.Status = v1alpha1.TeamStatus{}
+	return nil
+}
+
+// UpdateTeamStatus implements storage.Objects.
+func (d *Driver) UpdateTeamStatus(_ context.Context, team *v1alpha1.Team) error {
+	d.b.mu.Lock()
+	defer d.b.mu.Unlock()
+	cur, ok := d.b.teams[team.Namespace]
+	if !ok {
+		return notFound("team", storage.Key{Namespace: team.Namespace, Name: v1alpha1.TeamName})
+	}
+	if cur.ResourceVersion != team.ResourceVersion {
+		return fmt.Errorf("team %s: %w", team.Namespace, storage.ErrConflict)
+	}
+	stored := cur.DeepCopy()
+	stored.Status = team.Status
+	stored.ResourceVersion = d.b.nextVersion()
+	d.b.teams[team.Namespace] = stored
+	team.ResourceVersion = stored.ResourceVersion
+	return nil
+}
+
+// Append implements storage.Log.
+func (d *Driver) Append(_ context.Context, stream, key string, data []byte) error {
+	d.b.mu.Lock()
+	defer d.b.mu.Unlock()
+	s := d.b.logs[stream]
+	if s == nil {
+		s = map[string][]byte{}
+		d.b.logs[stream] = s
+	}
+	if _, ok := s[key]; ok {
+		return fmt.Errorf("log %s entry %s: %w", stream, key, storage.ErrAlreadyExists)
+	}
+	s[key] = slices.Clone(data)
+	return nil
+}
+
+// Read implements storage.Log.
+func (d *Driver) Read(_ context.Context, stream, after string, limit int) ([]storage.Entry, error) {
+	d.b.mu.Lock()
+	defer d.b.mu.Unlock()
+	var out []storage.Entry
+	for k, v := range d.b.logs[stream] {
+		if k > after {
+			out = append(out, storage.Entry{Key: k, Data: slices.Clone(v)})
+		}
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].Key < out[j].Key })
+	if limit > 0 && len(out) > limit {
+		out = out[:limit]
+	}
+	return out, nil
+}
+
+// ListTasks implements storage.Index.
+func (d *Driver) ListTasks(_ context.Context, q storage.Query) ([]v1alpha1.Task, error) {
+	if err := q.Validate(); err != nil {
+		return nil, err
+	}
+	d.mu.RLock()
+	defer d.mu.RUnlock()
+	var matched []*v1alpha1.Task
+	for _, t := range d.index {
+		if q.Matches(t) {
+			matched = append(matched, t)
+		}
+	}
+	slices.SortFunc(matched, storage.CompareTasks)
+	page := storage.Page(q, matched)
+	out := make([]v1alpha1.Task, len(page))
+	for i, t := range page {
+		t.DeepCopyInto(&out[i])
+	}
+	return out, nil
+}
