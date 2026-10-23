@@ -9,8 +9,10 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net"
 	"slices"
 	"strings"
+	"syscall"
 	"time"
 
 	"github.com/oklog/ulid/v2"
@@ -116,6 +118,16 @@ var (
 	outcomes = []v1alpha1.RunOutcome{v1alpha1.RunOutcomeDone, v1alpha1.RunOutcomeReview, v1alpha1.RunOutcomeFailed, v1alpha1.RunOutcomeWaiting}
 	reasons  = []v1alpha1.WaitingReason{v1alpha1.WaitingQuestion, v1alpha1.WaitingToolApproval, v1alpha1.WaitingReview}
 )
+
+// unreachable reports whether err means a request did not get through: a
+// network failure, a connection refused, reset or cut short. A response
+// that arrived but makes no sense is not one.
+func unreachable(err error) bool {
+	var ne net.Error
+	return errors.As(err, &ne) || errors.Is(err, syscall.ECONNREFUSED) || errors.Is(err, syscall.ECONNRESET) ||
+		errors.Is(err, io.EOF) || errors.Is(err, io.ErrUnexpectedEOF) ||
+		errors.Is(err, context.DeadlineExceeded) || errors.Is(err, context.Canceled)
+}
 
 // lostTask reports whether err means the run no longer holds its task: the
 // protocol tells a runner to stop on run_mismatch and on not_found alike.
@@ -303,9 +315,12 @@ func stalled(ctx context.Context, c *client.Client, plan Plan, claim *runner.Cla
 	case <-time.After(plan.Stall):
 	}
 	ref := runner.TaskRef{Namespace: claim.Task.Namespace, Name: claim.Task.Name}
-	// A woken run's requests may succeed (the task was never reclaimed) or
-	// be turned away as lost; anything else is a protocol surprise.
+	// A woken run's requests may succeed (the task was never reclaimed), be
+	// turned away as lost, or not get through (a server unavailable, a cut
+	// connection: the run learns nothing and stops). Any other answer is a
+	// protocol surprise.
 	late := func(err error, ok Observation) (bool, error) {
+		var cerr *client.Error
 		switch {
 		case err == nil:
 			ok.Late = true
@@ -314,7 +329,7 @@ func stalled(ctx context.Context, c *client.Client, plan Plan, claim *runner.Cla
 		case lostTask(err):
 			observe(Observation{Kind: Rejected, Late: true})
 			return false, nil
-		case ctx.Err() != nil:
+		case ctx.Err() != nil, unreachable(err), errors.As(err, &cerr) && cerr.Status >= 500:
 			return false, nil
 		default:
 			return false, fmt.Errorf("late request of stalled run %s: %w", claim.RunID, err)

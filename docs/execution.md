@@ -94,6 +94,13 @@ Core tools:
 
 plus the ToolServers forwarded from the Agent's `toolRefs`. Every tool checks the run_id; a run that has lost its task is always rejected, with a tool error telling the agent to stop.
 
+The agent's ToolServers are forwarded through the same endpoint:
+
+- Each ToolServer in the Agent's `toolRefs` that exists, is Ready and has a `url` offers its tools as `<toolserver>__<tool>`, both names reduced to the model APIs' characters (a `.` in the ToolServer's name becomes `_`). A name over 64 characters, a tool whose input schema is not an object schema, and every tool among several reducing to one name are skipped and logged.
+- The tool list is built from cached reads of the Agent and its ToolServers. Tool lists are discovered with an MCP client, concurrently, within 10 seconds in all, and cached per ToolServer for a minute (a new generation lists again); a failure to list is remembered for 15 seconds. A ToolServer that cannot be reached offers no tools, which is logged and never breaks the core tools.
+- `permissions` decide what is offered: `allow` is forwarded, `deny` is neither offered nor callable. An `ask` tool is not offered yet; approval arrives with the next change.
+- Each call is fenced on the run, then reads its ToolServer fresh: one that is gone, not Ready or no longer allows the tool gets no call. The call is made with the ToolServer's credential, read fresh from its Secret for every call (trailing newlines trimmed) and never cached or logged; it is sent only to the ToolServer's own host, and redirects are not followed. A call may take 60 seconds; results keep text and structured content up to 1 MiB, cut on a character boundary, and media is dropped with a note.
+
 What fencing guarantees for each tool in runtime mode, in M1:
 
 | Tool | Guarantee |

@@ -157,3 +157,47 @@ func TestStalledRunSendsLateRequests(t *testing.T) {
 		t.Fatalf("%d heartbeats, want one before the stall and one late", n)
 	}
 }
+
+// A stalled run whose late requests cannot get through stops quietly; only
+// an unexpected answer is an error.
+func TestStalledRunToleratesAnUnavailableServer(t *testing.T) {
+	var beats atomic.Int32
+	unavailable := func(w http.ResponseWriter, _ *http.Request) {
+		httpjson.WriteError(w, http.StatusServiceUnavailable, httpjson.CodeUnavailable, "down")
+	}
+	s := &stub{
+		heartbeat: func(w http.ResponseWriter, r *http.Request) {
+			if beats.Add(1) > 1 {
+				unavailable(w, r)
+				return
+			}
+			httpjson.Write(w, http.StatusOK, runner.HeartbeatResponse{LeaseUntil: time.Now().Add(2 * time.Second), LeaseSeconds: 2})
+		},
+		finish: unavailable,
+	}
+	plan := Plan{Work: time.Minute, Stall: 3 * time.Second, StallAfter: 1}
+	results, err := Run(context.Background(), s.start(t), Options{Runner: "r", Once: true, Plan: plan})
+	if err != nil || len(results) != 1 || !results[0].Lost {
+		t.Fatalf("results %+v, %v; want the run stopped without an error", results, err)
+	}
+}
+
+// An answer that arrives but makes no sense is a protocol surprise, not a
+// server that could not be reached.
+func TestStalledRunReportsANonsenseAnswer(t *testing.T) {
+	var beats atomic.Int32
+	s := &stub{
+		heartbeat: func(w http.ResponseWriter, _ *http.Request) {
+			if beats.Add(1) > 1 {
+				w.Header().Set("Content-Type", "application/json")
+				_, _ = w.Write([]byte("not json"))
+				return
+			}
+			httpjson.Write(w, http.StatusOK, runner.HeartbeatResponse{LeaseUntil: time.Now().Add(2 * time.Second), LeaseSeconds: 2})
+		},
+	}
+	plan := Plan{Work: time.Minute, Stall: 3 * time.Second, StallAfter: 1}
+	if _, err := Run(context.Background(), s.start(t), Options{Runner: "r", Once: true, Plan: plan}); err == nil {
+		t.Fatal("a late heartbeat answered with nonsense must fail the run")
+	}
+}
