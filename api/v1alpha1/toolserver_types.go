@@ -26,6 +26,25 @@ const (
 	PermissionAsk Permission = "ask"
 )
 
+// ToolServerAuth says how Cadre authenticates to a ToolServer: the Secret
+// key's value, after Prefix, in the Header of every request.
+type ToolServerAuth struct {
+	// SecretRef is the Secret key holding the credential.
+	SecretRef SecretKeyRef `json:"secretRef"`
+
+	// Header is the request header that carries the credential.
+	// +kubebuilder:default=Authorization
+	// +kubebuilder:validation:Pattern=`^[A-Za-z0-9-]+$`
+	// +optional
+	Header string `json:"header,omitempty"`
+
+	// Prefix goes before the credential in the header; empty for a bare
+	// key such as X-API-Key.
+	// +kubebuilder:default="Bearer "
+	// +optional
+	Prefix *string `json:"prefix,omitempty"`
+}
+
 // ManagedServer is a ToolServer Cadre runs itself.
 type ManagedServer struct {
 	// Image is the server's container image.
@@ -60,7 +79,7 @@ type ToolServerSpec struct {
 	// Auth is the credential Cadre sends to the server. It never reaches
 	// the agent.
 	// +optional
-	Auth *Auth `json:"auth,omitempty"`
+	Auth *ToolServerAuth `json:"auth,omitempty"`
 
 	// Permissions decide per tool whether a call is allowed, denied or must
 	// be approved by a human first. "*" applies to tools not listed by name.

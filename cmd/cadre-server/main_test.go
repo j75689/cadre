@@ -31,10 +31,14 @@ func TestBoundRequests(t *testing.T) {
 	var deadline time.Time
 	h := boundRequests(http.HandlerFunc(func(_ http.ResponseWriter, r *http.Request) {
 		deadline, _ = r.Context().Deadline()
-	}), time.Minute)
+	}), time.Minute, 2*time.Minute)
 	h.ServeHTTP(httptest.NewRecorder(), httptest.NewRequestWithContext(context.Background(), http.MethodGet, "/", nil))
 	if until := time.Until(deadline); until <= 0 || until > time.Minute {
 		t.Fatalf("request deadline in %s, want within a minute", until)
+	}
+	h.ServeHTTP(httptest.NewRecorder(), httptest.NewRequestWithContext(context.Background(), http.MethodPost, "/mcp/run", nil))
+	if until := time.Until(deadline); until <= time.Minute || until > 2*time.Minute {
+		t.Fatalf("MCP request deadline in %s, want the longer bound", until)
 	}
 }
 

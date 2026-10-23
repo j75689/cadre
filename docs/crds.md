@@ -172,6 +172,7 @@ spec:
 | ModelProvider | `project`, `location` | required for `vertex`, forbidden otherwise |
 | ToolServer | `url`, `managed` | exactly one of them |
 | ToolServer | `transport` | `streamable_http`, the default |
+| ToolServer | `auth.header`, `auth.prefix` | the request header carrying the Secret's value and what goes before it; default `Authorization` and `Bearer `, an empty prefix for a bare key such as `X-API-Key` |
 | ToolServer | `permissions` | tool name or `"*"` → `allow`, `deny` or `ask` |
 | Agent | `modelRef` | required; a ModelProvider in the same namespace |
 | Agent | `toolRefs` | ToolServers in the same namespace, a set |

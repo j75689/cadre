@@ -30,6 +30,13 @@ func (m *Manager) activeRun(ctx context.Context, key storage.Key, runID string) 
 	return t, nil
 }
 
+// CheckRun fails with task.ErrRunMismatch unless a fresh read shows the
+// task still holding runID.
+func (m *Manager) CheckRun(ctx context.Context, key storage.Key, runID string) error {
+	_, err := m.activeRun(ctx, key, runID)
+	return err
+}
+
 // agentAuthor is the thread author for a run's agent.
 func agentAuthor(t *v1alpha1.Task) Author {
 	name := "agent"

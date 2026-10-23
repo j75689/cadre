@@ -56,6 +56,17 @@ spec:
                   Auth is the credential Cadre sends to the server. It never reaches
                   the agent.
                 properties:
+                  header:
+                    default: Authorization
+                    description: Header is the request header that carries the credential.
+                    pattern: ^[A-Za-z0-9-]+$
+                    type: string
+                  prefix:
+                    default: 'Bearer '
+                    description: |-
+                      Prefix goes before the credential in the header; empty for a bare
+                      key such as X-API-Key.
+                    type: string
                   secretRef:
                     description: SecretRef is the Secret key holding the credential.
                     properties:

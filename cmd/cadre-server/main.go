@@ -93,7 +93,7 @@ func run() error {
 		return err
 	}
 	runner.NewServer(m, log, *publicURL).Register(mux)
-	mcp.NewServer(m, log).Register(mux)
+	mcp.NewServer(m, log, mcp.WithToolServers(controller.ToolServerSources(ctrls))).Register(mux)
 	api.NewServer(m, log).Register(mux)
 	mux.HandleFunc("GET /healthz", func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(http.StatusOK) })
 	mux.HandleFunc("GET /readyz", func(w http.ResponseWriter, r *http.Request) {
@@ -107,10 +107,10 @@ func run() error {
 
 	srv := &http.Server{
 		Addr:              *listen,
-		Handler:           httpjson.LogRequests(boundRequests(mux, requestTimeout), log),
+		Handler:           httpjson.LogRequests(boundRequests(mux, requestTimeout, mcpRequestTimeout), log),
 		ReadHeaderTimeout: 10 * time.Second,
 		ReadTimeout:       30 * time.Second,
-		WriteTimeout:      requestTimeout + 5*time.Second,
+		WriteTimeout:      mcpRequestTimeout + 5*time.Second,
 		IdleTimeout:       2 * time.Minute,
 	}
 	loops := make(chan struct{})
@@ -149,13 +149,22 @@ func run() error {
 
 // requestTimeout bounds one request's work, comfortably above the Task
 // Manager's conflict-retry budget, so a hung API server cannot pin every
-// connection.
-const requestTimeout = 30 * time.Second
+// connection. Per-run MCP requests get longer: a forwarded tool call may
+// take up to a minute on its ToolServer.
+const (
+	requestTimeout    = 30 * time.Second
+	mcpRequestTimeout = 90 * time.Second
+)
 
-// boundRequests gives every request a context that ends after d.
-func boundRequests(next http.Handler, d time.Duration) http.Handler {
+// boundRequests gives every request a context that ends after d, or after
+// mcp for the per-run MCP endpoint.
+func boundRequests(next http.Handler, d, mcpBound time.Duration) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		ctx, cancel := context.WithTimeout(r.Context(), d)
+		bound := d
+		if r.URL.Path == mcp.Path {
+			bound = mcpBound
+		}
+		ctx, cancel := context.WithTimeout(r.Context(), bound)
 		defer cancel()
 		next.ServeHTTP(w, r.WithContext(ctx))
 	})

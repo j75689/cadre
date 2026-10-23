@@ -64,7 +64,9 @@ func TestConfigCRDs(t *testing.T) {
 		spec  v1alpha1.ToolServerSpec
 		valid bool
 	}{
-		"external":           {v1alpha1.ToolServerSpec{URL: "https://api.example.com/mcp/", Auth: key(), Permissions: map[string]v1alpha1.Permission{"create_pull_request": v1alpha1.PermissionAsk, "*": v1alpha1.PermissionAllow}}, true},
+		"external":           {v1alpha1.ToolServerSpec{URL: "https://api.example.com/mcp/", Auth: &v1alpha1.ToolServerAuth{SecretRef: v1alpha1.SecretKeyRef{Name: "github", Key: "token"}}, Permissions: map[string]v1alpha1.Permission{"create_pull_request": v1alpha1.PermissionAsk, "*": v1alpha1.PermissionAllow}}, true},
+		"api key header":     {v1alpha1.ToolServerSpec{URL: "https://x", Auth: &v1alpha1.ToolServerAuth{SecretRef: v1alpha1.SecretKeyRef{Name: "s", Key: "k"}, Header: "X-API-Key", Prefix: new(string)}}, true},
+		"bad header name":    {v1alpha1.ToolServerSpec{URL: "https://x", Auth: &v1alpha1.ToolServerAuth{SecretRef: v1alpha1.SecretKeyRef{Name: "s", Key: "k"}, Header: "X API Key"}}, false},
 		"managed":            {v1alpha1.ToolServerSpec{Managed: &v1alpha1.ManagedServer{Image: "example/search:1.0", Port: 8080}}, true},
 		"both":               {v1alpha1.ToolServerSpec{URL: "https://x", Managed: &v1alpha1.ManagedServer{Image: "i", Port: 1}}, false},
 		"neither":            {v1alpha1.ToolServerSpec{}, false},
@@ -110,5 +112,11 @@ func TestConfigCRDs(t *testing.T) {
 	ts := &v1alpha1.ToolServer{ObjectMeta: metav1.ObjectMeta{Name: "defaults", Namespace: ns}, Spec: v1alpha1.ToolServerSpec{URL: "https://x"}}
 	if err := c.Create(context.Background(), ts); err != nil || ts.Spec.Transport != v1alpha1.TransportStreamableHTTP {
 		t.Errorf("toolserver defaults: %+v, %v", ts.Spec, err)
+	}
+	authed := &v1alpha1.ToolServer{ObjectMeta: metav1.ObjectMeta{Name: "auth-defaults", Namespace: ns}, Spec: v1alpha1.ToolServerSpec{
+		URL: "https://x", Auth: &v1alpha1.ToolServerAuth{SecretRef: v1alpha1.SecretKeyRef{Name: "s", Key: "k"}},
+	}}
+	if err := c.Create(context.Background(), authed); err != nil || authed.Spec.Auth.Header != "Authorization" || authed.Spec.Auth.Prefix == nil || *authed.Spec.Auth.Prefix != "Bearer " {
+		t.Errorf("toolserver auth defaults: %+v, %v", authed.Spec.Auth, err)
 	}
 }

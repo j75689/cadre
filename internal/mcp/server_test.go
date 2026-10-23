@@ -42,13 +42,13 @@ type env struct {
 	clk *clock
 }
 
-func start(t *testing.T) *env {
+func start(t *testing.T, opts ...mcp.Option) *env {
 	t.Helper()
-	return startOn(t, memory.NewBackend().Open())
+	return startOn(t, memory.NewBackend().Open(), opts...)
 }
 
 // startOn runs the endpoint on store.
-func startOn(t *testing.T, store storage.Driver) *env {
+func startOn(t *testing.T, store storage.Driver, opts ...mcp.Option) *env {
 	t.Helper()
 	clk := &clock{t: time.Date(2026, 10, 24, 9, 0, 0, 0, time.UTC)}
 	m := manager.New(store, manager.Config{Agents: manager.ReadyBuiltin(ns, "coder", "claude")}, manager.WithClock(clk.now))
@@ -59,7 +59,7 @@ func startOn(t *testing.T, store storage.Driver) *env {
 		t.Fatal(err)
 	}
 	mux := http.NewServeMux()
-	mcp.NewServer(m, slog.New(slog.NewTextHandler(io.Discard, nil))).Register(mux)
+	mcp.NewServer(m, slog.New(slog.NewTextHandler(io.Discard, nil)), opts...).Register(mux)
 	srv := httptest.NewServer(mux)
 	t.Cleanup(srv.Close)
 	return &env{m: m, srv: srv, clk: clk}
