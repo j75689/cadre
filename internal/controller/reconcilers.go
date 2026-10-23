@@ -3,11 +3,14 @@ package controller
 import (
 	"context"
 	"fmt"
+	"time"
 
 	"k8s.io/apimachinery/pkg/types"
 	ctrl "sigs.k8s.io/controller-runtime"
+	"sigs.k8s.io/controller-runtime/pkg/builder"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/handler"
+	"sigs.k8s.io/controller-runtime/pkg/predicate"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
 	v1alpha1 "github.com/j75689/cadre/api/v1alpha1"
@@ -35,7 +38,11 @@ func setupIndexes(mgr ctrl.Manager) error {
 type modelProviderReconciler struct{ base }
 
 func (r *modelProviderReconciler) setup(mgr ctrl.Manager) error {
-	return ctrl.NewControllerManagedBy(mgr).For(&v1alpha1.ModelProvider{}).Named("modelprovider").Complete(r)
+	// Status writes do not change the generation, so they do not bring the
+	// object back for a second Secret read; the periodic re-check does.
+	return ctrl.NewControllerManagedBy(mgr).
+		For(&v1alpha1.ModelProvider{}, builder.WithPredicates(predicate.GenerationChangedPredicate{})).
+		Named("modelprovider").Complete(r)
 }
 
 func (r *modelProviderReconciler) Reconcile(ctx context.Context, req reconcile.Request) (reconcile.Result, error) {
@@ -43,8 +50,8 @@ func (r *modelProviderReconciler) Reconcile(ctx context.Context, req reconcile.R
 	if err := r.client.Get(ctx, req.NamespacedName, &mp); err != nil {
 		return reconcile.Result{}, client.IgnoreNotFound(err)
 	}
-	if ok, err := r.hasTeam(ctx, req.Namespace); !ok || err != nil {
-		return reconcile.Result{RequeueAfter: r.resync}, err
+	if ok, err := r.hasTeam(ctx, req.Namespace); err != nil || !ok {
+		return noTeam(err, r.resync)
 	}
 	ready, reason, msg := true, "WorkloadIdentity", ""
 	if mp.Spec.Auth != nil {
@@ -59,7 +66,9 @@ func (r *modelProviderReconciler) Reconcile(ctx context.Context, req reconcile.R
 type toolServerReconciler struct{ base }
 
 func (r *toolServerReconciler) setup(mgr ctrl.Manager) error {
-	return ctrl.NewControllerManagedBy(mgr).For(&v1alpha1.ToolServer{}).Named("toolserver").Complete(r)
+	return ctrl.NewControllerManagedBy(mgr).
+		For(&v1alpha1.ToolServer{}, builder.WithPredicates(predicate.GenerationChangedPredicate{})).
+		Named("toolserver").Complete(r)
 }
 
 func (r *toolServerReconciler) Reconcile(ctx context.Context, req reconcile.Request) (reconcile.Result, error) {
@@ -67,8 +76,8 @@ func (r *toolServerReconciler) Reconcile(ctx context.Context, req reconcile.Requ
 	if err := r.client.Get(ctx, req.NamespacedName, &ts); err != nil {
 		return reconcile.Result{}, client.IgnoreNotFound(err)
 	}
-	if ok, err := r.hasTeam(ctx, req.Namespace); !ok || err != nil {
-		return reconcile.Result{RequeueAfter: r.resync}, err
+	if ok, err := r.hasTeam(ctx, req.Namespace); err != nil || !ok {
+		return noTeam(err, r.resync)
 	}
 	ready, reason, msg := true, "External", ""
 	switch {
@@ -113,8 +122,8 @@ func (r *agentReconciler) Reconcile(ctx context.Context, req reconcile.Request) 
 	if err := r.client.Get(ctx, req.NamespacedName, &agent); err != nil {
 		return reconcile.Result{}, client.IgnoreNotFound(err)
 	}
-	if ok, err := r.hasTeam(ctx, req.Namespace); !ok || err != nil {
-		return reconcile.Result{RequeueAfter: r.resync}, err
+	if ok, err := r.hasTeam(ctx, req.Namespace); err != nil || !ok {
+		return noTeam(err, r.resync)
 	}
 	ready, reason, msg, err := r.resolve(ctx, &agent)
 	if err != nil {
@@ -132,7 +141,7 @@ func (r *agentReconciler) resolve(ctx context.Context, agent *v1alpha1.Agent) (b
 		return false, "", "", err
 	case err != nil:
 		return false, "ModelProviderNotFound", fmt.Sprintf("ModelProvider %s does not exist", agent.Spec.ModelRef), nil
-	case !isReady(mp.Status):
+	case !isReady(&mp, mp.Status):
 		return false, "ModelProviderNotReady", fmt.Sprintf("ModelProvider %s is not Ready", agent.Spec.ModelRef), nil
 	}
 	for _, name := range agent.Spec.ToolRefs {
@@ -142,9 +151,19 @@ func (r *agentReconciler) resolve(ctx context.Context, agent *v1alpha1.Agent) (b
 			return false, "", "", err
 		case err != nil:
 			return false, "ToolServerNotFound", fmt.Sprintf("ToolServer %s does not exist", name), nil
-		case !isReady(ts.Status):
+		case !isReady(&ts, ts.Status):
 			return false, "ToolServerNotReady", fmt.Sprintf("ToolServer %s is not Ready", name), nil
 		}
 	}
 	return true, "Resolved", "", nil
+}
+
+// noTeam ends a reconcile in a namespace that has no Team (yet): check again
+// later. An error is returned alone, since controller-runtime ignores a
+// requeue that comes with one.
+func noTeam(err error, resync time.Duration) (reconcile.Result, error) {
+	if err != nil {
+		return reconcile.Result{}, err
+	}
+	return reconcile.Result{RequeueAfter: resync}, nil
 }

@@ -159,6 +159,7 @@ spec:
 
 - `runtime.type: builtin` is Cadre's own LLM loop. `runner` hands the task to any runner whose labels match the selector (see [execution.md](execution.md)).
 - `permissions` on a ToolServer decide per tool whether a call is allowed, denied or must ask a human first (`ask` ends the run with `Waiting{ToolApproval}`). Without `permissions` every tool is allowed. With them the list is an allowlist: `"*"` covers tools not listed by name, and a tool matching neither is denied.
+- The managed mode of ToolServer creates a Deployment and a Service only. NetworkPolicy and ServiceAccount management may follow.
 
 | Resource | Field | Rule |
 | --- | --- | --- |
@@ -186,7 +187,6 @@ All three report a `Ready` condition and `observedGeneration` in their status:
 | Agent | its ModelProvider and every ToolServer exist and are Ready; the reason names the first that is not |
 
 Controllers only act in namespaces with a `Team`. Secrets are read one by one when a resource is reconciled, never watched or cached, and the resources that reference them are re-checked every minute.
-- The managed mode of ToolServer creates a Deployment and a Service only. NetworkPolicy and ServiceAccount management may follow.
 
 ## Schedule and Notifier
 

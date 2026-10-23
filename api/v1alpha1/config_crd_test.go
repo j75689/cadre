@@ -6,6 +6,7 @@ import (
 
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	v1alpha1 "github.com/j75689/cadre/api/v1alpha1"
@@ -87,8 +88,20 @@ func TestConfigCRDs(t *testing.T) {
 		expect(t, c, "Agent "+name, &v1alpha1.Agent{ObjectMeta: meta(), Spec: tc.spec}, tc.valid)
 	}
 
-	// Defaults: an Agent without a runtime is builtin; a ToolServer without
-	// a transport speaks streamable HTTP.
+	// Defaults: an Agent applied without a runtime is builtin (sent as raw
+	// YAML would be: the typed client always sends a runtime object); a
+	// ToolServer without a transport speaks streamable HTTP.
+	raw := &unstructured.Unstructured{Object: map[string]any{
+		"apiVersion": v1alpha1.GroupVersion.String(), "kind": "Agent",
+		"metadata": map[string]any{"name": "no-runtime", "namespace": ns},
+		"spec":     map[string]any{"modelRef": "claude"},
+	}}
+	if err := c.Create(context.Background(), raw); err != nil {
+		t.Fatalf("agent without runtime: %v", err)
+	}
+	if typ, _, _ := unstructured.NestedString(raw.Object, "spec", "runtime", "type"); typ != string(v1alpha1.RuntimeBuiltin) {
+		t.Errorf("agent applied without runtime has runtime type %q, want builtin", typ)
+	}
 	a := &v1alpha1.Agent{ObjectMeta: metav1.ObjectMeta{Name: "defaults", Namespace: ns}, Spec: v1alpha1.AgentSpec{ModelRef: "claude"}}
 	if err := c.Create(context.Background(), a); err != nil || a.Spec.Runtime.Type != v1alpha1.RuntimeBuiltin {
 		t.Errorf("agent defaults: %+v, %v", a.Spec.Runtime, err)

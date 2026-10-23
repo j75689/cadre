@@ -55,7 +55,9 @@ type AgentSpec struct {
 	Instructions string `json:"instructions,omitempty"`
 
 	// Runtime says who runs the agent's tasks; by default Cadre's builtin
-	// loop.
+	// loop. The object default makes an Agent applied without a runtime
+	// builtin too, not typeless.
+	// +kubebuilder:default={type: builtin}
 	// +optional
 	Runtime AgentRuntime `json:"runtime,omitempty"`
 }

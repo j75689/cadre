@@ -116,14 +116,20 @@ func run() error {
 	go func() { served <- srv.ListenAndServe() }()
 	log.Info("cadre-server started", "listen", *listen)
 
+	// Whatever ends the server (a signal, the listener failing, the
+	// controllers stopping), in-flight requests are drained before exit.
 	select {
 	case err = <-served:
-	case err = <-controllers:
-		err = fmt.Errorf("controllers stopped: %w", err)
+	case cerr := <-controllers:
+		if cerr != nil {
+			err = fmt.Errorf("controllers stopped: %w", cerr)
+		}
 	case <-ctx.Done():
-		shutdown, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-		defer cancel()
-		err = srv.Shutdown(shutdown)
+	}
+	shutdown, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	if serr := srv.Shutdown(shutdown); err == nil {
+		err = serr
 	}
 	stop()
 	<-loops

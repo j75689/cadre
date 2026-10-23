@@ -11,9 +11,8 @@
 // cadre-server replicas reconciling the same object only race harmlessly. A
 // Helm chart may later enable leader election for the controllers alone.
 //
-// +kubebuilder:rbac:groups=cadre.dev,resources=tasks;teams;agents;modelproviders;toolservers,verbs=get;list;watch
-// +kubebuilder:rbac:groups=cadre.dev,resources=tasks;teams,verbs=create
-// +kubebuilder:rbac:groups=cadre.dev,resources=tasks/status;teams/status;agents/status;modelproviders/status;toolservers/status,verbs=get;update
+// +kubebuilder:rbac:groups=cadre.dev,resources=teams;agents;modelproviders;toolservers,verbs=get;list;watch
+// +kubebuilder:rbac:groups=cadre.dev,resources=agents/status;modelproviders/status;toolservers/status,verbs=get;update
 // +kubebuilder:rbac:groups="",resources=secrets,verbs=get
 package controller
 
@@ -119,9 +118,12 @@ func (b base) setReady(ctx context.Context, obj client.Object, status *v1alpha1.
 	return err
 }
 
-// isReady reports whether status says Ready.
-func isReady(status v1alpha1.ConfigStatus) bool {
-	return meta.IsStatusConditionTrue(status.Conditions, v1alpha1.ConditionReady)
+// isReady reports whether obj is Ready for its current spec: a Ready
+// condition decided for an older generation does not count.
+func isReady(obj client.Object, status v1alpha1.ConfigStatus) bool {
+	c := meta.FindStatusCondition(status.Conditions, v1alpha1.ConditionReady)
+	gen := obj.GetGeneration()
+	return c != nil && c.Status == metav1.ConditionTrue && c.ObservedGeneration == gen && status.ObservedGeneration == gen
 }
 
 // NewManager returns a controller manager for cadre-server: no metrics or

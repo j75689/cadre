@@ -65,9 +65,12 @@ spec:
                 minLength: 1
                 type: string
               runtime:
+                default:
+                  type: builtin
                 description: |-
                   Runtime says who runs the agent's tasks; by default Cadre's builtin
-                  loop.
+                  loop. The object default makes an Agent applied without a runtime
+                  builtin too, not typeless.
                 properties:
                   selector:
                     additionalProperties:

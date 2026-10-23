@@ -2,6 +2,9 @@
 // state are CRDs written through the status subresource with resourceVersion
 // preconditions; the log is one object per entry in S3-compatible storage; the
 // index is an informer cache of Tasks, indexed in memory.
+//
+// +kubebuilder:rbac:groups=cadre.dev,resources=tasks;teams,verbs=get;list;watch;create
+// +kubebuilder:rbac:groups=cadre.dev,resources=tasks/status;teams/status,verbs=get;update
 package kubernetes
 
 import (
