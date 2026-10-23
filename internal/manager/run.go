@@ -146,6 +146,9 @@ type FinishRequest struct {
 // Finish ends the run. If this same finish already landed (a retry), it
 // reports alreadyFinished instead of a run mismatch.
 func (m *Manager) Finish(ctx context.Context, key storage.Key, req FinishRequest) (phase v1alpha1.Phase, alreadyFinished bool, err error) {
+	if err := requireRunID(req.RunID); err != nil {
+		return "", false, err
+	}
 	items := make([]v1alpha1.OutboxItem, 0, len(req.Subtasks))
 	for _, st := range req.Subtasks {
 		id := st.ID
@@ -232,6 +235,9 @@ type Event struct {
 // sequence number is accepted, so retries are harmless. It never writes the
 // Task.
 func (m *Manager) RecordEvent(ctx context.Context, key storage.Key, ev Event) error {
+	if err := requireRunID(ev.RunID); err != nil {
+		return err
+	}
 	if ev.Seq < 1 {
 		return fmt.Errorf("seq %d: must be at least 1: %w", ev.Seq, ErrInvalid)
 	}
