@@ -97,6 +97,20 @@ func TestChaos(t *testing.T) {
 		if err := admin.Create(ctx, &v1alpha1.Team{ObjectMeta: metav1.ObjectMeta{Name: v1alpha1.TeamName, Namespace: ns}, Spec: v1alpha1.TeamSpec{MaxConcurrentRuns: maxRuns}}); err != nil {
 			t.Fatal(err)
 		}
+		// The agent every task is assigned to, on a model that needs no
+		// Secret, so the controllers find it Ready.
+		for _, obj := range []ctrlclient.Object{
+			&v1alpha1.ModelProvider{ObjectMeta: metav1.ObjectMeta{Name: "claude", Namespace: ns}, Spec: v1alpha1.ModelProviderSpec{
+				Type: v1alpha1.ProviderBedrock, Model: "anthropic.claude", WorkloadIdentity: true, Region: "us-east-1",
+			}},
+			&v1alpha1.Agent{ObjectMeta: metav1.ObjectMeta{Name: "coder", Namespace: ns}, Spec: v1alpha1.AgentSpec{
+				ModelRef: "claude", Runtime: v1alpha1.AgentRuntime{Type: v1alpha1.RuntimeBuiltin},
+			}},
+		} {
+			if err := admin.Create(ctx, obj); err != nil {
+				t.Fatal(err)
+			}
+		}
 	}
 
 	px := newProxy(rnd)
@@ -209,6 +223,7 @@ func runnerSlot(chaos context.Context, cl *client.Client, rnd *lockedRand, rec *
 		life, kill := context.WithTimeout(chaos, rnd.between(4*time.Second, 20*time.Second))
 		_, err := fakerunner.Run(life, cl, fakerunner.Options{
 			Runner:  name,
+			Labels:  map[string]string{v1alpha1.LabelRuntime: string(v1alpha1.RuntimeBuiltin)},
 			Poll:    50 * time.Millisecond,
 			Observe: rec.observe,
 			Decide:  func(task runner.ClaimedTask) fakerunner.Plan { return plan(rnd, task) },

@@ -23,7 +23,7 @@ var ErrInvalid = errors.New("invalid request")
 type ClaimRequest struct {
 	Runner     string
 	Namespaces []string          // empty means every Team namespace
-	Labels     map[string]string // matched against Agent selectors from M1; ignored in M0
+	Labels     map[string]string // decide which agents' tasks the runner may take (see claimableBy)
 }
 
 // Claimed is a task handed to a runner.
@@ -32,6 +32,10 @@ type Claimed struct {
 	RunID      string
 	Mode       v1alpha1.RunMode
 	LeaseUntil time.Time
+	// Agent is the task's assignee, as read for the claim decision, and
+	// ModelProvider its model, when it exists.
+	Agent         *v1alpha1.Agent
+	ModelProvider *v1alpha1.ModelProvider
 }
 
 // rotation spreads claims across namespaces, so one busy team cannot starve
@@ -49,7 +53,7 @@ func (m *Manager) Claim(ctx context.Context, req ClaimRequest) (*Claimed, error)
 	if req.Runner == "" {
 		return nil, fmt.Errorf("runner is required: %w", ErrInvalid)
 	}
-	namespaces, err := m.namespaces(ctx, req.Namespaces)
+	namespaces, err := m.namespaces(ctx, req.Namespaces, true)
 	if err != nil {
 		return nil, err
 	}
@@ -59,7 +63,7 @@ func (m *Manager) Claim(ctx context.Context, req ClaimRequest) (*Claimed, error)
 	start := int(rotation.Add(1) % uint64(len(namespaces)))
 	for i := range namespaces {
 		ns := namespaces[(start+i)%len(namespaces)]
-		claimed, err := m.claimIn(ctx, ns, req.Runner)
+		claimed, err := m.claimIn(ctx, ns, req.Runner, req.Labels)
 		if claimed != nil || err != nil {
 			return claimed, err
 		}
@@ -68,14 +72,19 @@ func (m *Manager) Claim(ctx context.Context, req ClaimRequest) (*Claimed, error)
 }
 
 // namespaces returns the requested namespaces that have a Team, or all of
-// them.
-func (m *Manager) namespaces(ctx context.Context, want []string) ([]string, error) {
+// them. With withRoom, namespaces whose Team the index shows full are left
+// out, so a full team costs no API reads; the conditional slot write still
+// decides.
+func (m *Manager) namespaces(ctx context.Context, want []string, withRoom bool) ([]string, error) {
 	teams, err := m.store.ListTeams(ctx)
 	if err != nil {
 		return nil, err
 	}
 	var out []string
 	for _, t := range teams {
+		if withRoom && len(t.Status.Slots) >= int(max(t.Spec.MaxConcurrentRuns, 1)) {
+			continue
+		}
 		if len(want) == 0 || slices.Contains(want, t.Namespace) {
 			out = append(out, t.Namespace)
 		}
@@ -83,20 +92,44 @@ func (m *Manager) namespaces(ctx context.Context, want []string) ([]string, erro
 	return out, nil
 }
 
-func (m *Manager) claimIn(ctx context.Context, ns, runner string) (*Claimed, error) {
+func (m *Manager) claimIn(ctx context.Context, ns, runner string, labels map[string]string) (*Claimed, error) {
 	todo, err := m.store.ListTasks(ctx, storage.Query{Namespace: ns, Phases: []v1alpha1.Phase{v1alpha1.PhaseTodo}})
 	if err != nil {
 		return nil, err
 	}
 	for _, cand := range todo {
-		// A pre-filter only: the Claim transition decides on a fresh read.
+		// Pre-filters only: the Claim transition decides on a fresh read of
+		// the task, and the agent is read fresh below.
 		if cand.Spec.Assignee == nil || cand.Spec.Assignee.Kind != v1alpha1.AssigneeAgent {
 			continue
+		}
+		// The cache may say no; anything else it says (an error, such as
+		// a cache still syncing) is settled by the fresh read below.
+		cached, err := m.agents.CachedAgent(ctx, ns, cand.Spec.Assignee.Name)
+		if errors.Is(err, storage.ErrNotFound) || (err == nil && !claimableBy(cached, labels)) {
+			continue
+		}
+		// The decision: fresh reads of the agent and its model. A missing
+		// or unready agent, one this runner may not run, or a missing
+		// model makes the task unclaimable for now; the claim moves on.
+		agent, err := m.agents.Agent(ctx, ns, cand.Spec.Assignee.Name)
+		if errors.Is(err, storage.ErrNotFound) || (err == nil && !claimableBy(agent, labels)) {
+			continue
+		}
+		if err != nil {
+			return nil, err
+		}
+		model, err := m.agents.ModelProvider(ctx, ns, agent.Spec.ModelRef)
+		if errors.Is(err, storage.ErrNotFound) {
+			continue
+		}
+		if err != nil {
+			return nil, err
 		}
 		// The run id is minted first, so the slot is the run's from the start
 		// and every release names it.
 		runID := m.newID()
-		err := m.writeTeam(ctx, ns, func(team *v1alpha1.Team) (v1alpha1.TeamStatus, error) {
+		err = m.writeTeam(ctx, ns, func(team *v1alpha1.Team) (v1alpha1.TeamStatus, error) {
 			return task.AcquireSlot(team, runID, cand.Name, m.now())
 		})
 		if errors.Is(err, task.ErrNoSlot) || errors.Is(err, storage.ErrNotFound) {
@@ -106,10 +139,13 @@ func (m *Manager) claimIn(ctx context.Context, ns, runner string) (*Claimed, err
 			return nil, err
 		}
 		t, err := m.transition(ctx, storage.Key{Namespace: ns, Name: cand.Name}, task.Claim{
-			RunID: runID, Mode: v1alpha1.RunModeRuntime, Runner: runner, Lease: m.cfg.Lease,
+			RunID: runID, Mode: v1alpha1.RunModeRuntime, Runner: runner, Lease: m.cfg.Lease, Agent: agent.Name,
 		})
 		if err == nil && t.Status.Run != nil && t.Status.Run.ID == runID {
-			return &Claimed{Task: t, RunID: runID, Mode: v1alpha1.RunModeRuntime, LeaseUntil: t.Status.Run.LeaseUntil.Time}, nil
+			return &Claimed{
+				Task: t, RunID: runID, Mode: v1alpha1.RunModeRuntime, LeaseUntil: t.Status.Run.LeaseUntil.Time,
+				Agent: agent, ModelProvider: model,
+			}, nil
 		}
 		if err == nil {
 			// The claim landed, but the run was ended (cancelled, say)

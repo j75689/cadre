@@ -18,8 +18,12 @@ import (
 	"github.com/j75689/cadre/internal/task"
 )
 
-// Config holds the Task Manager's timings.
+// Config holds the Task Manager's timings and the source of its Agents.
 type Config struct {
+	// Agents decides which tasks a runner may claim. Without it no task is
+	// claimable.
+	Agents Agents
+
 	// Lease is how long a claim or heartbeat keeps a run alive.
 	Lease time.Duration
 	// Heartbeat is how often runners are told to renew the lease.
@@ -31,10 +35,11 @@ var DefaultConfig = Config{Lease: 30 * time.Second, Heartbeat: 10 * time.Second}
 
 // Manager is a Task Manager instance.
 type Manager struct {
-	store storage.Driver
-	cfg   Config
-	now   func() time.Time
-	newID func() string
+	store  storage.Driver
+	cfg    Config
+	agents Agents
+	now    func() time.Time
+	newID  func() string
 }
 
 // Option configures a Manager.
@@ -54,7 +59,10 @@ func New(store storage.Driver, cfg Config, opts ...Option) *Manager {
 	if cfg.Heartbeat <= 0 {
 		cfg.Heartbeat = DefaultConfig.Heartbeat
 	}
-	m := &Manager{store: store, cfg: cfg, now: time.Now, newID: func() string { return ulid.Make().String() }}
+	if cfg.Agents == nil {
+		cfg.Agents = StaticAgents{}
+	}
+	m := &Manager{store: store, cfg: cfg, agents: cfg.Agents, now: time.Now, newID: func() string { return ulid.Make().String() }}
 	for _, o := range opts {
 		o(m)
 	}

@@ -65,7 +65,7 @@ func TestAmbiguousWritesKeepTheSemaphoreRight(t *testing.T) {
 	m := e.manager(f)
 
 	f.commitThenFail.Store(true)
-	c, err := m.Claim(ctx, ClaimRequest{Runner: "r"})
+	c, err := m.Claim(ctx, ClaimRequest{Runner: "r", Labels: builtin})
 	if err != nil || c == nil || e.running(t) != 1 {
 		t.Fatalf("claim whose write landed: %+v, %v, running %d", c, err, e.running(t))
 	}
@@ -85,7 +85,7 @@ func TestFailedAndUncertainClaimWrites(t *testing.T) {
 	// The write failed for sure: the slot goes back.
 	f := &flaky{Driver: e.store}
 	f.failBeforeCommit.Store(true)
-	if c, err := e.manager(f).Claim(ctx, ClaimRequest{Runner: "r"}); c != nil || !errors.Is(err, errTimeout) || e.running(t) != 0 {
+	if c, err := e.manager(f).Claim(ctx, ClaimRequest{Runner: "r", Labels: builtin}); c != nil || !errors.Is(err, errTimeout) || e.running(t) != 0 {
 		t.Fatalf("failed claim: %+v, %v, running %d", c, err, e.running(t))
 	}
 
@@ -93,7 +93,7 @@ func TestFailedAndUncertainClaimWrites(t *testing.T) {
 	f = &flaky{Driver: e.store}
 	f.commitThenFail.Store(true)
 	f.readsFailAfterWrite.Store(true)
-	if c, err := e.manager(f).Claim(ctx, ClaimRequest{Runner: "r"}); c != nil || !errors.Is(err, ErrUncertain) || e.running(t) != 1 {
+	if c, err := e.manager(f).Claim(ctx, ClaimRequest{Runner: "r", Labels: builtin}); c != nil || !errors.Is(err, ErrUncertain) || e.running(t) != 1 {
 		t.Fatalf("uncertain claim: %+v, %v, running %d", c, err, e.running(t))
 	}
 }
@@ -142,11 +142,28 @@ func TestClaimDecidesTheAssigneeOnAFreshRead(t *testing.T) {
 	stale.Spec.Assignee = &v1alpha1.Assignee{Kind: v1alpha1.AssigneeAgent, Name: "coder"}
 
 	m := e.manager(&staleIndex{Driver: e.store, board: []v1alpha1.Task{stale}})
-	if c, err := m.Claim(ctx, ClaimRequest{Runner: "r"}); c != nil || err != nil || e.running(t) != 0 {
+	if c, err := m.Claim(ctx, ClaimRequest{Runner: "r", Labels: builtin}); c != nil || err != nil || e.running(t) != 0 {
 		t.Fatalf("claim of a human's task: %+v, %v, running %d", c, err, e.running(t))
 	}
 	if e.get(t, key).Status.Phase != v1alpha1.PhaseTodo {
 		t.Fatal("the human's task was claimed")
+	}
+}
+
+// The index still shows the task assigned to coder, but it was reassigned to
+// another agent: the claim was decided for coder, so it must not land.
+func TestClaimRefusesATaskReassignedToAnotherAgent(t *testing.T) {
+	e := newEnv(t, 1)
+	key := e.addTask(t, "t", v1alpha1.AssigneeAgent)
+	stale := *e.get(t, key)
+	e.reassign(t, key, "reviewer")
+
+	m := e.manager(&staleIndex{Driver: e.store, board: []v1alpha1.Task{stale}})
+	if c, err := m.Claim(ctx, ClaimRequest{Runner: "r", Labels: builtin}); c != nil || err != nil || e.running(t) != 0 {
+		t.Fatalf("claim of a reassigned task: %+v, %v, running %d", c, err, e.running(t))
+	}
+	if e.get(t, key).Status.Phase != v1alpha1.PhaseTodo {
+		t.Fatal("the reassigned task was claimed for its old agent")
 	}
 }
 
@@ -210,7 +227,7 @@ func TestAmbiguousClaimSurvivesAConcurrentChange(t *testing.T) {
 			t.Errorf("concurrent change: %v", err)
 		}
 	}
-	c, err := e.manager(f).Claim(ctx, ClaimRequest{Runner: "r"})
+	c, err := e.manager(f).Claim(ctx, ClaimRequest{Runner: "r", Labels: builtin})
 	if err != nil || c == nil {
 		t.Fatalf("claim: %+v, %v", c, err)
 	}

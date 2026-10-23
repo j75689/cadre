@@ -77,7 +77,9 @@ spec:
                       type: string
                     description: |-
                       Selector picks the runners that may claim this agent's tasks: every
-                      label must match.
+                      label must match. Labels under the cadre.dev/ prefix are reserved for
+                      Cadre (cadre-runner claims builtin agents with
+                      cadre.dev/runtime: builtin), so a selector may not use them.
                     type: object
                   type:
                     default: builtin
@@ -95,6 +97,8 @@ spec:
                 - message: runtime type runner needs a selector
                   rule: self.type != 'runner' || (has(self.selector) && size(self.selector)
                     > 0)
+                - message: the cadre.dev/ label prefix is reserved
+                  rule: '!has(self.selector) || self.selector.all(k, !k.startsWith(''cadre.dev/''))'
               toolRefs:
                 description: |-
                   ToolRefs are the names of ToolServers in the same namespace that the

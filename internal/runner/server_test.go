@@ -22,6 +22,24 @@ import (
 
 const ns = "team-a"
 
+// agents holds the builtin agent the test task is assigned to, and its
+// model; builtin is the label cadre-runner sends.
+var (
+	agents = manager.StaticAgents{
+		Agents: map[string]*v1alpha1.Agent{ns + "/coder": func() *v1alpha1.Agent {
+			a := manager.ReadyAgent(ns, "coder", "claude", v1alpha1.AgentRuntime{Type: v1alpha1.RuntimeBuiltin})
+			a.Spec.Instructions = "Fix what you are given."
+			a.Spec.ToolRefs = []string{"github"}
+			return a
+		}()},
+		ModelProviders: map[string]*v1alpha1.ModelProvider{ns + "/claude": {Spec: v1alpha1.ModelProviderSpec{
+			Type: v1alpha1.ProviderAnthropic, Model: "claude-opus-5-5",
+			Auth: &v1alpha1.Auth{SecretRef: v1alpha1.SecretKeyRef{Name: "anthropic", Key: "api-key"}},
+		}}},
+	}
+	builtin = map[string]string{v1alpha1.LabelRuntime: string(v1alpha1.RuntimeBuiltin)}
+)
+
 type env struct {
 	srv   *httptest.Server
 	store storage.Driver
@@ -41,7 +59,7 @@ func newEnv(t *testing.T) *env {
 	}); err != nil {
 		t.Fatal(err)
 	}
-	m := manager.New(store, manager.Config{})
+	m := manager.New(store, manager.Config{Agents: agents})
 	if err := m.NumberNew(ctx); err != nil {
 		t.Fatal(err)
 	}
@@ -88,14 +106,20 @@ func TestRunnerProtocol(t *testing.T) {
 	e := newEnv(t)
 
 	var claim ClaimResponse
-	if status, _ := e.post(t, PathClaim, ClaimRequest{Runner: "runner-1"}, &claim); status != http.StatusOK {
+	if status, _ := e.post(t, PathClaim, ClaimRequest{Runner: "runner-1", Labels: builtin}, &claim); status != http.StatusOK {
 		t.Fatalf("claim: status %d", status)
 	}
 	if claim.Task.Name != "fix-login" || claim.Task.Number != 1 || claim.Task.Title != "Fix login" || claim.RunID == "" ||
 		claim.Mode != v1alpha1.RunModeRuntime || claim.LeaseSeconds != 30 || claim.HeartbeatSeconds != 10 || claim.LeaseUntil.IsZero() {
 		t.Fatalf("claim: %+v", claim)
 	}
-	if status, _ := e.post(t, PathClaim, ClaimRequest{Runner: "runner-2"}, nil); status != http.StatusNoContent {
+	ag := claim.Agent
+	if ag == nil || ag.Name != "coder" || ag.Instructions != "Fix what you are given." || len(ag.ToolServers) != 1 || ag.ToolServers[0] != "github" ||
+		ag.Model == nil || ag.Model.Type != v1alpha1.ProviderAnthropic || ag.Model.Model != "claude-opus-5-5" ||
+		ag.Model.SecretRef == nil || ag.Model.SecretRef.Name != "anthropic" || ag.Model.SecretRef.Key != "api-key" {
+		t.Fatalf("claimed agent: %+v (model %+v)", ag, ag.Model)
+	}
+	if status, _ := e.post(t, PathClaim, ClaimRequest{Runner: "runner-2", Labels: builtin}, nil); status != http.StatusNoContent {
 		t.Fatalf("second claim: status %d, want 204", status)
 	}
 
@@ -134,7 +158,7 @@ func TestRunnerProtocol(t *testing.T) {
 func TestRunnerErrors(t *testing.T) {
 	e := newEnv(t)
 	var claim ClaimResponse
-	e.post(t, PathClaim, ClaimRequest{Runner: "r"}, &claim)
+	e.post(t, PathClaim, ClaimRequest{Runner: "r", Labels: builtin}, &claim)
 	ref := TaskRef{Namespace: ns, Name: claim.Task.Name}
 
 	for name, tc := range map[string]struct {

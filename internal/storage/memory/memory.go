@@ -38,6 +38,22 @@ func NewBackend() *Backend {
 	}
 }
 
+// EditSpec changes a task's spec in place, as a human's kubectl edit would;
+// the storage interface has no spec writes, so tests use this.
+func (b *Backend) EditSpec(key storage.Key, edit func(*v1alpha1.TaskSpec)) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	t, ok := b.tasks[key]
+	if !ok {
+		return
+	}
+	t = t.DeepCopy()
+	edit(&t.Spec)
+	t.ResourceVersion = b.nextVersion()
+	b.tasks[key] = t
+	b.notify(t)
+}
+
 // Open starts a Driver on the backend. Its index is rebuilt from a full list,
 // as a restarted process would rebuild it, then kept current by watch events.
 func (b *Backend) Open() *Driver {

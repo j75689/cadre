@@ -58,7 +58,7 @@ func mustContain(t *testing.T, got string, wants ...string) {
 // runner, a question for a human, the answer, a second run that finishes
 // with subtasks, and the board showing all of it.
 func TestTaskLifeFromTheCLI(t *testing.T) {
-	m := manager.New(memory.NewBackend().Open(), manager.Config{})
+	m := manager.New(memory.NewBackend().Open(), manager.Config{Agents: manager.ReadyBuiltin("team-a", "coder", "claude")})
 	log := slog.New(slog.NewTextHandler(io.Discard, nil))
 	mux := http.NewServeMux()
 	api.NewServer(m, log).Register(mux)
@@ -79,7 +79,7 @@ func TestTaskLifeFromTheCLI(t *testing.T) {
 	mustContain(t, cadre(t, srv.URL, "task", "create", "Fix the flaky login test", "--name", "fix-login", "--agent", "coder", "-p", "high"), "created #1 fix-login")
 	mustContain(t, cadre(t, srv.URL, "task", "comment", "#1", "-m", "it fails on Mondays"), "comment 1 on fix-login")
 
-	cadre(t, srv.URL, "runner", "fake", "--once", "--work", "10ms", "--runner", "fake-1", "--outcome", "Waiting")
+	cadre(t, srv.URL, "runner", "fake", "--once", "--work", "10ms", "--runner", "fake-1", "--outcome", "Waiting", "--label", "cadre.dev/runtime=builtin")
 	settle()
 	mustContain(t, cadre(t, srv.URL, "task", "get", "#1"), "Phase:     Waiting", "Waiting:   Question", "alice (Comment): it fails on Mondays", "Finished", "fake-1")
 
@@ -88,7 +88,7 @@ func TestTaskLifeFromTheCLI(t *testing.T) {
 		t.Fatalf("reply to a Todo task: %v", err)
 	}
 
-	cadre(t, srv.URL, "runner", "fake", "--once", "--work", "10ms", "--subtasks", "2")
+	cadre(t, srv.URL, "runner", "fake", "--once", "--work", "10ms", "--subtasks", "2", "-l", "cadre.dev/runtime=builtin")
 	settle()
 	list := cadre(t, srv.URL, "task", "list")
 	mustContain(t, list, "NUMBER", "#1", "fix-login", "Done", "Subtask 1 of Fix the flaky login test", "Subtask 2 of Fix the flaky login test")

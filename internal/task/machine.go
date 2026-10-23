@@ -91,6 +91,9 @@ type Claim struct {
 	Mode   v1alpha1.RunMode
 	Runner string
 	Lease  time.Duration
+	// Agent, if set, is the agent the claim was decided for; the claim is
+	// refused if the fresh task is assigned to anyone else.
+	Agent string
 }
 
 // Heartbeat renews the run's lease.
@@ -222,7 +225,8 @@ func Apply(t *v1alpha1.Task, ev Event, now time.Time) (Result, error) {
 		s.Phase = v1alpha1.PhaseTodo
 
 	case Claim:
-		if t.Spec.Assignee == nil || t.Spec.Assignee.Kind != v1alpha1.AssigneeAgent {
+		if t.Spec.Assignee == nil || t.Spec.Assignee.Kind != v1alpha1.AssigneeAgent ||
+			(ev.Agent != "" && t.Spec.Assignee.Name != ev.Agent) {
 			return Result{}, ErrNotClaimable
 		}
 		if ev.RunID == "" || ev.Lease <= 0 {

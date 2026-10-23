@@ -8,6 +8,12 @@ import (
 // +kubebuilder:validation:Enum=builtin;runner
 type RuntimeType string
 
+// LabelRuntime is the claim label that lets a runner claim builtin agents.
+// cadre-runner always sends it. Any runner sending it may claim them until
+// runners are authenticated; then the label is bound to cadre-runner's
+// ServiceAccount.
+const LabelRuntime = "cadre.dev/runtime"
+
 // Runtime types.
 const (
 	// RuntimeBuiltin is Cadre's own loop, run by cadre-runner.
@@ -21,6 +27,7 @@ const (
 //
 // +kubebuilder:validation:XValidation:rule="self.type == 'runner' || !has(self.selector)",message="selector is for runtime type runner"
 // +kubebuilder:validation:XValidation:rule="self.type != 'runner' || (has(self.selector) && size(self.selector) > 0)",message="runtime type runner needs a selector"
+// +kubebuilder:validation:XValidation:rule="!has(self.selector) || self.selector.all(k, !k.startsWith('cadre.dev/'))",message="the cadre.dev/ label prefix is reserved"
 type AgentRuntime struct {
 	// Type is builtin (Cadre's loop) or runner (any runner whose labels
 	// match the selector).
@@ -28,7 +35,9 @@ type AgentRuntime struct {
 	Type RuntimeType `json:"type,omitempty"`
 
 	// Selector picks the runners that may claim this agent's tasks: every
-	// label must match.
+	// label must match. Labels under the cadre.dev/ prefix are reserved for
+	// Cadre (cadre-runner claims builtin agents with
+	// cadre.dev/runtime: builtin), so a selector may not use them.
 	// +optional
 	Selector map[string]string `json:"selector,omitempty"`
 }

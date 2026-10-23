@@ -158,6 +158,9 @@ func TestCreateAndClaim(t *testing.T) {
 	human := taskIn(v1alpha1.PhaseTodo, step)
 	human.Spec.Assignee.Kind = v1alpha1.AssigneeUser
 	wantErr(t, human, Claim{RunID: runA, Mode: runtime, Lease: time.Minute}, ErrNotClaimable)
+	// Decided for one agent, but the task was reassigned meanwhile.
+	wantErr(t, taskIn(v1alpha1.PhaseTodo, step), Claim{RunID: runA, Mode: runtime, Lease: time.Minute, Agent: "reviewer"}, ErrNotClaimable)
+	apply(t, taskIn(v1alpha1.PhaseTodo, step), Claim{RunID: runA, Mode: runtime, Lease: time.Minute, Agent: "coder"})
 	wantErr(t, taskIn(v1alpha1.PhaseTodo, step), Claim{RunID: runA, Mode: runtime}, ErrInvalidEvent)
 	wantErr(t, taskIn(v1alpha1.PhaseTodo, step), Claim{RunID: runA, Mode: "batch", Lease: time.Minute}, ErrInvalidEvent)
 }

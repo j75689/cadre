@@ -24,6 +24,17 @@ type Auth struct {
 // ConditionReady is the condition type every configuration resource reports.
 const ConditionReady = "Ready"
 
+// ReadyFor reports whether the status says Ready for the given generation of
+// the spec. A Ready condition decided for an older generation does not count.
+func (s ConfigStatus) ReadyFor(generation int64) bool {
+	for _, c := range s.Conditions {
+		if c.Type == ConditionReady {
+			return c.Status == metav1.ConditionTrue && c.ObservedGeneration == generation && s.ObservedGeneration == generation
+		}
+	}
+	return false
+}
+
 // ConfigStatus is the status of a configuration resource: whether it can be
 // used, and for which generation of its spec that was decided.
 type ConfigStatus struct {

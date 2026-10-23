@@ -29,7 +29,7 @@ func start(t *testing.T) (*client.Client, *manager.Manager) {
 func startURL(t *testing.T) (*client.Client, *manager.Manager, string) {
 	t.Helper()
 	store := memory.NewBackend().Open()
-	m := manager.New(store, manager.Config{})
+	m := manager.New(store, manager.Config{Agents: manager.ReadyBuiltin(ns, "coder", "claude")})
 	log := slog.New(slog.NewTextHandler(io.Discard, nil))
 	mux := http.NewServeMux()
 	api.NewServer(m, log).Register(mux)
@@ -81,7 +81,7 @@ func TestBoardThroughTheAPI(t *testing.T) {
 		t.Fatalf("reply to a Todo task: %v", err)
 	}
 
-	claim, err := c.Claim(ctx, runner.ClaimRequest{Runner: "r"})
+	claim, err := c.Claim(ctx, runner.ClaimRequest{Runner: "r", Labels: map[string]string{v1alpha1.LabelRuntime: string(v1alpha1.RuntimeBuiltin)}})
 	if err != nil || claim == nil {
 		t.Fatalf("claim: %+v, %v", claim, err)
 	}
