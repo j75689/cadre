@@ -84,12 +84,15 @@ Core tools:
 
 | Tool | Behaviour |
 | --- | --- |
-| `thread.post` | append a message to the thread |
-| `thread.ask` | append a question; the run must end and the phase becomes `Waiting{Question}` |
-| `task.create_subtask` | written to the outbox; the dispatcher creates it |
-| `task.files.read` / `task.files.write` | the task's files, stored in object storage |
+| `thread.post` | append the agent's message to the thread; returns its sequence number |
+| `thread.ask` | append the agent's question and end the run as `Waiting{Question}`, in one step; the runner must stop without calling finish |
+| `task.create_subtask` | record the subtask in the outbox (fenced on the run); the dispatcher creates it, unassigned unless an assignee is given; returns its name and number |
+| `task.files.read` / `task.files.write` | the latest version of a task file, or a new version of it: UTF-8 text, at most 1 MiB, paths up to 255 bytes |
+| `task.files.list` | the task's files with their latest version and size |
 
-plus the ToolServers forwarded from the Agent's `toolRefs`. Every tool checks the run_id; a run that has lost its task is always rejected.
+plus the ToolServers forwarded from the Agent's `toolRefs`. Every tool checks the run_id; a run that has lost its task is always rejected, with a tool error telling the agent to stop.
+
+Task files are stored as one log stream of versions per path, `<ns>/<task>/files/<base64url(path)>`, plus an index stream, `<ns>/<task>/files-index`, recording each write's path, version and size. A write appends the version first and the index entry second. Reads use the version streams, so a write whose index entry was lost is still read, and the path is indexed again by its next write.
 
 ## Correctness: three layers
 

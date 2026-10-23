@@ -22,6 +22,8 @@ func TestStreamsAreNotNestedUnderEntries(t *testing.T) {
 		{"thread", ThreadStream(key), storage.SeqKey(1)},
 		{"runs", RunsStream(key), runID},
 		{"events", EventsStream(key, runID), storage.SeqKey(1)},
+		{"file", fileStream(key, "notes/plan.md"), storage.SeqKey(1)},
+		{"files index", filesIndexStream(key), storage.SeqKey(1)},
 	}
 	for _, a := range streams {
 		if err := storage.ValidateStream(a.stream); err != nil {

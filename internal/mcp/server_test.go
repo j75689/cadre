@@ -44,7 +44,12 @@ type env struct {
 
 func start(t *testing.T) *env {
 	t.Helper()
-	store := memory.NewBackend().Open()
+	return startOn(t, memory.NewBackend().Open())
+}
+
+// startOn runs the endpoint on store.
+func startOn(t *testing.T, store storage.Driver) *env {
+	t.Helper()
 	clk := &clock{t: time.Date(2026, 10, 24, 9, 0, 0, 0, time.UTC)}
 	m := manager.New(store, manager.Config{Agents: manager.ReadyBuiltin(ns, "coder", "claude")}, manager.WithClock(clk.now))
 	if _, err := m.InitTeam(ctx, ns, v1alpha1.TeamSpec{MaxConcurrentRuns: 1}); err != nil {
@@ -60,13 +65,24 @@ func start(t *testing.T) *env {
 	return &env{m: m, srv: srv, clk: clk}
 }
 
+// claim claims the task, waiting for the index to show it: a driver's index
+// is eventually consistent.
 func (e *env) claim(t *testing.T) *manager.Claimed {
 	t.Helper()
-	c, err := e.m.Claim(ctx, manager.ClaimRequest{Runner: "r", Labels: builtin})
-	if err != nil || c == nil || c.MCPToken == "" {
-		t.Fatalf("claim: %+v, %v", c, err)
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		c, err := e.m.Claim(ctx, manager.ClaimRequest{Runner: "r", Labels: builtin})
+		if err != nil {
+			t.Fatalf("claim: %v", err)
+		}
+		if c != nil && c.MCPToken != "" {
+			return c
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("claim: nothing to claim")
+		}
+		time.Sleep(20 * time.Millisecond)
 	}
-	return c
 }
 
 // bearer adds the run's token to every request, as a runner does.
@@ -127,7 +143,7 @@ func (e *env) status(t *testing.T, authorization string) int {
 func TestTheTokenOpensItsRunOnly(t *testing.T) {
 	e := start(t)
 	c := e.claim(t)
-	if tools, err := e.connect(c.MCPToken); err != nil || len(tools) != 0 {
+	if tools, err := e.connect(c.MCPToken); err != nil || len(tools) != 6 {
 		t.Fatalf("connect with the run's token: %d tools, %v", len(tools), err)
 	}
 
