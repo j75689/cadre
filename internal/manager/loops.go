@@ -202,10 +202,24 @@ func (m *Manager) ReconcileTeams(ctx context.Context) error {
 		if err != nil {
 			return err
 		}
+		running, err := m.store.ListTasks(ctx, storage.Query{Namespace: ns, Phases: []v1alpha1.Phase{v1alpha1.PhaseRunning}})
+		if err != nil {
+			return err
+		}
+		// Index evidence may keep a slot (a stale index only shows an
+		// older state, so it can delay a release by a tick but never cause
+		// an overshoot); only giving a slot back needs a fresh read.
+		liveInIndex := map[string]bool{}
+		for _, t := range running {
+			if t.Status.Run != nil {
+				liveInIndex[t.Status.Run.ID] = true
+			}
+		}
+
 		now := m.now()
 		var errs []error
 		for _, sl := range team.Status.Slots {
-			if now.Sub(sl.AcquiredAt.Time) <= 2*m.cfg.Lease {
+			if now.Sub(sl.AcquiredAt.Time) <= 2*m.cfg.Lease || liveInIndex[sl.RunID] {
 				continue
 			}
 			t, err := m.store.GetTask(ctx, storage.Key{Namespace: ns, Name: sl.Task})
@@ -222,33 +236,42 @@ func (m *Manager) ReconcileTeams(ctx context.Context) error {
 			}
 		}
 
-		running, err := m.store.ListTasks(ctx, storage.Query{Namespace: ns, Phases: []v1alpha1.Phase{v1alpha1.PhaseRunning}})
-		if err != nil {
-			return errors.Join(append(errs, err)...)
-		}
 		for _, cand := range running {
 			if cand.Status.Run == nil || task.HoldsSlot(team, cand.Status.Run.ID) {
 				continue
 			}
-			t, err := m.store.GetTask(ctx, storage.Key{Namespace: ns, Name: cand.Name})
-			if err != nil {
-				if !errors.Is(err, storage.ErrNotFound) {
-					errs = append(errs, err)
-				}
-				continue
-			}
-			if t.Status.Phase != v1alpha1.PhaseRunning || t.Status.Run == nil {
-				continue
-			}
-			runID := t.Status.Run.ID
-			if err := m.writeTeam(ctx, ns, func(team *v1alpha1.Team) (v1alpha1.TeamStatus, error) {
-				return task.AddSlot(team, runID, t.Name, now), nil
-			}); err != nil {
+			if err := m.readdSlot(ctx, storage.Key{Namespace: ns, Name: cand.Name}, cand.Status.Run.ID); err != nil {
 				errs = append(errs, err)
 			}
 		}
 		return errors.Join(errs...)
 	})
+}
+
+// readdSlot gives runID back its slot if a fresh read shows it still
+// running the task. The read is repeated inside every write attempt, so a
+// run that ends meanwhile is not re-added. The slot is dated from the run's
+// own start (its lease minus one lease length), so a slot re-added for a run
+// that ends right after still ages out promptly.
+func (m *Manager) readdSlot(ctx context.Context, key storage.Key, runID string) error {
+	err := m.writeTeam(ctx, key.Namespace, func(team *v1alpha1.Team) (v1alpha1.TeamStatus, error) {
+		if task.HoldsSlot(team, runID) {
+			return team.Status, nil
+		}
+		t, err := m.store.GetTask(ctx, key)
+		if err != nil {
+			return team.Status, err
+		}
+		run := t.Status.Run
+		if t.Status.Phase != v1alpha1.PhaseRunning || run == nil || run.ID != runID {
+			return team.Status, nil // ended meanwhile: nothing to add
+		}
+		return task.AddSlot(team, runID, key.Name, run.LeaseUntil.Add(-m.cfg.Lease)), nil
+	})
+	if errors.Is(err, storage.ErrNotFound) {
+		return nil
+	}
+	return err
 }
 
 // LoopConfig sets how often the background loops run.

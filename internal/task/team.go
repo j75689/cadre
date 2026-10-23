@@ -38,18 +38,17 @@ func AcquireSlot(team *v1alpha1.Team, runID, taskName string, now time.Time) (v1
 	if len(s.Slots) >= int(max(team.Spec.MaxConcurrentRuns, 1)) {
 		return s, ErrNoSlot
 	}
-	s.Slots = append(s.Slots, v1alpha1.Slot{RunID: runID, Task: taskName, AcquiredAt: metaTime(now)})
-	s.Running = int32(len(s.Slots))
-	return s, nil
+	return AddSlot(team, runID, taskName, now), nil
 }
 
-// AddSlot records that runID holds a slot for taskName, past the cap if need
-// be. Only the reconciler uses it, for a run that is visibly Running but
-// whose slot is missing; refusing it would hide a run from the count.
-func AddSlot(team *v1alpha1.Team, runID, taskName string, now time.Time) v1alpha1.TeamStatus {
+// AddSlot records that runID holds a slot for taskName since acquiredAt,
+// past the cap if need be. AcquireSlot uses it once the cap is checked; the
+// reconciler uses it directly, for a run that is visibly Running but whose
+// slot is missing, since refusing would hide a run from the count.
+func AddSlot(team *v1alpha1.Team, runID, taskName string, acquiredAt time.Time) v1alpha1.TeamStatus {
 	s := *team.Status.DeepCopy()
 	if !HoldsSlot(team, runID) {
-		s.Slots = append(s.Slots, v1alpha1.Slot{RunID: runID, Task: taskName, AcquiredAt: metaTime(now)})
+		s.Slots = append(s.Slots, v1alpha1.Slot{RunID: runID, Task: taskName, AcquiredAt: metaTime(acquiredAt)})
 	}
 	s.Running = int32(len(s.Slots))
 	return s

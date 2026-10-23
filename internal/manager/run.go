@@ -108,8 +108,14 @@ func (m *Manager) claimIn(ctx context.Context, ns, runner string) (*Claimed, err
 		t, err := m.transition(ctx, storage.Key{Namespace: ns, Name: cand.Name}, task.Claim{
 			RunID: runID, Mode: v1alpha1.RunModeRuntime, Runner: runner, Lease: m.cfg.Lease,
 		})
-		if err == nil {
+		if err == nil && t.Status.Run != nil && t.Status.Run.ID == runID {
 			return &Claimed{Task: t, RunID: runID, Mode: v1alpha1.RunModeRuntime, LeaseUntil: t.Status.Run.LeaseUntil.Time}, nil
+		}
+		if err == nil {
+			// The claim landed, but the run was ended (cancelled, say)
+			// before it could be handed out. That transition released the
+			// slot; releasing it again below is a no-op.
+			err = fmt.Errorf("claim of %s ended before it was handed out: %w", cand.Name, task.ErrInvalidTransition)
 		}
 		if errors.Is(err, ErrUncertain) {
 			// The claim may have landed: keep the slot. If it did not, the
