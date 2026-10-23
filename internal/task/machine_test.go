@@ -153,7 +153,10 @@ func TestCreateAndClaim(t *testing.T) {
 
 	unassigned := taskIn(v1alpha1.PhaseTodo, step)
 	unassigned.Spec.Assignee = nil
-	wantErr(t, unassigned, Claim{RunID: runA, Mode: runtime, Lease: time.Minute}, ErrUnassigned)
+	wantErr(t, unassigned, Claim{RunID: runA, Mode: runtime, Lease: time.Minute}, ErrNotClaimable)
+	human := taskIn(v1alpha1.PhaseTodo, step)
+	human.Spec.Assignee.Kind = v1alpha1.AssigneeUser
+	wantErr(t, human, Claim{RunID: runA, Mode: runtime, Lease: time.Minute}, ErrNotClaimable)
 	wantErr(t, taskIn(v1alpha1.PhaseTodo, step), Claim{RunID: runA, Mode: runtime}, ErrInvalidEvent)
 	wantErr(t, taskIn(v1alpha1.PhaseTodo, step), Claim{RunID: runA, Mode: "batch", Lease: time.Minute}, ErrInvalidEvent)
 }
@@ -233,6 +236,17 @@ func TestRecordAndOutbox(t *testing.T) {
 	wantErr(t, tk, Record{RunID: runA, Outbox: []v1alpha1.OutboxItem{noSpec}}, ErrInvalidEvent)
 	forged := v1alpha1.OutboxItem{ID: "01JB0000000000000000000004", Kind: v1alpha1.OutboxRunEnded, Run: &v1alpha1.RunRecord{}}
 	wantErr(t, tk, Record{RunID: runA, Outbox: []v1alpha1.OutboxItem{forged}}, ErrInvalidEvent)
+	for name, spec := range map[string]v1alpha1.TaskSpec{
+		"blank title":       {Title: "  "},
+		"unknown priority":  {Title: "x", Priority: "whenever"},
+		"unknown assignee":  {Title: "x", Assignee: &v1alpha1.Assignee{Kind: "Robot", Name: "r"}},
+		"nameless assignee": {Title: "x", Assignee: &v1alpha1.Assignee{Kind: v1alpha1.AssigneeAgent}},
+	} {
+		bad := v1alpha1.OutboxItem{ID: "01JB0000000000000000000005", Kind: v1alpha1.OutboxCreateSubtask, Spec: &spec}
+		if _, err := Apply(tk, Record{RunID: runA, Outbox: []v1alpha1.OutboxItem{bad}}, now); !errors.Is(err, ErrInvalidEvent) {
+			t.Errorf("subtask with %s: got %v, want ErrInvalidEvent", name, err)
+		}
+	}
 
 	tk.Status = apply(t, tk, AckOutbox{IDs: []string{a.ID, "unknown"}}).Status
 	if len(tk.Status.Outbox) != 2 || tk.Status.Outbox[1].ID != b.ID {
@@ -287,6 +301,10 @@ func TestReclaim(t *testing.T) {
 	live := taskIn(v1alpha1.PhaseRunning, runtime)
 	live.Status.Run.LeaseUntil = metav1.NewTime(now)
 	wantErr(t, live, Reclaim{}, ErrLeaseNotExpired)
+
+	// The lease expired a minute ago, but not by more than the grace.
+	wantErr(t, taskIn(v1alpha1.PhaseRunning, runtime), Reclaim{Grace: time.Minute}, ErrLeaseNotExpired)
+	apply(t, taskIn(v1alpha1.PhaseRunning, runtime), Reclaim{Grace: time.Minute - time.Second})
 
 	corrupt := taskIn(v1alpha1.PhaseRunning, runtime)
 	corrupt.Status.Run = nil

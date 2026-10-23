@@ -9,6 +9,7 @@ import (
 	"errors"
 	"fmt"
 	"slices"
+	"strings"
 	"sync"
 
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
@@ -64,12 +65,14 @@ func Open(ctx context.Context, cfg Config) (*Driver, error) {
 	if err := log.probe(ctx); err != nil {
 		return nil, err
 	}
-	index, err := cache.New(cfg.REST, cache.Options{Scheme: scheme, ByObject: map[client.Object]cache.ByObject{&v1alpha1.Task{}: {}}})
+	index, err := cache.New(cfg.REST, cache.Options{Scheme: scheme})
 	if err != nil {
-		return nil, fmt.Errorf("task cache: %w", err)
+		return nil, fmt.Errorf("index cache: %w", err)
 	}
-	if _, err := index.GetInformer(ctx, &v1alpha1.Task{}); err != nil {
-		return nil, fmt.Errorf("task informer: %w", err)
+	for _, obj := range []client.Object{&v1alpha1.Task{}, &v1alpha1.Team{}} {
+		if _, err := index.GetInformer(ctx, obj); err != nil {
+			return nil, fmt.Errorf("informer for %T: %w", obj, err)
+		}
 	}
 
 	runCtx, stop := context.WithCancel(context.Background())
@@ -77,7 +80,7 @@ func Open(ctx context.Context, cfg Config) (*Driver, error) {
 	go func() { d.done <- index.Start(runCtx) }()
 	if !index.WaitForCacheSync(ctx) {
 		_ = d.Close()
-		return nil, errors.New("task index did not sync")
+		return nil, errors.New("index did not sync")
 	}
 	return d, nil
 }
@@ -153,6 +156,16 @@ func (d *Driver) UpdateTeamStatus(ctx context.Context, team *v1alpha1.Team) erro
 		return fmt.Errorf("update team %s: no resourceVersion: %w", team.Namespace, storage.ErrConflict)
 	}
 	return mapError(d.client.Status().Update(ctx, team), "update team "+team.Namespace)
+}
+
+// ListTeams implements storage.Index from the informer cache.
+func (d *Driver) ListTeams(ctx context.Context) ([]v1alpha1.Team, error) {
+	list := &v1alpha1.TeamList{}
+	if err := d.index.List(ctx, list); err != nil {
+		return nil, fmt.Errorf("list teams: %w", err)
+	}
+	slices.SortFunc(list.Items, func(a, b v1alpha1.Team) int { return strings.Compare(a.Namespace, b.Namespace) })
+	return list.Items, nil
 }
 
 // ListTasks implements storage.Index from the informer cache.

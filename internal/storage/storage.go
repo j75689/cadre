@@ -142,4 +142,7 @@ type Index interface {
 	// then by number, then by name. It fails with ErrInvalidQuery if
 	// q.Validate does.
 	ListTasks(ctx context.Context, q Query) ([]v1alpha1.Task, error)
+	// ListTeams returns every Team, ordered by namespace. The namespaces
+	// that have one are the namespaces Cadre serves.
+	ListTeams(ctx context.Context) ([]v1alpha1.Team, error)
 }

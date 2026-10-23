@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"slices"
+	"strings"
 	"time"
 
 	v1alpha1 "github.com/j75689/cadre/api/v1alpha1"
@@ -20,7 +21,7 @@ var (
 	ErrRunMismatch       = errors.New("run id does not match the task's run")
 	ErrStepMismatch      = errors.New("step does not match the run's current step")
 	ErrLeaseNotExpired   = errors.New("lease has not expired")
-	ErrUnassigned        = errors.New("task has no assignee")
+	ErrNotClaimable      = errors.New("task is not assigned to an agent")
 	ErrInvalidEvent      = errors.New("invalid event")
 )
 
@@ -80,7 +81,9 @@ type Create struct {
 	Number int64 // claimed from the Team's counter
 }
 
-// Claim starts a run. The caller must already hold a Team slot.
+// Claim starts a run. Only a task assigned to an Agent can be claimed; this is
+// decided here, on the fresh read, never from the index. The caller must
+// already hold a Team slot.
 type Claim struct {
 	RunID  string
 	Mode   v1alpha1.RunMode
@@ -139,8 +142,12 @@ type Finish struct {
 // Reply is a human answer or approval that ends the wait.
 type Reply struct{}
 
-// Reclaim takes back a run whose lease has passed.
-type Reclaim struct{}
+// Reclaim takes back a run whose lease has passed by more than Grace. The
+// grace absorbs clock skew between the replica that renewed the lease and the
+// one reclaiming it, so a live run is never reclaimed.
+type Reclaim struct {
+	Grace time.Duration
+}
 
 // Cancel is a human cancelling the task.
 type Cancel struct{}
@@ -198,8 +205,8 @@ func Apply(t *v1alpha1.Task, ev Event, now time.Time) (Result, error) {
 		s.Phase = v1alpha1.PhaseTodo
 
 	case Claim:
-		if t.Spec.Assignee == nil {
-			return Result{}, ErrUnassigned
+		if t.Spec.Assignee == nil || t.Spec.Assignee.Kind != v1alpha1.AssigneeAgent {
+			return Result{}, ErrNotClaimable
 		}
 		if ev.RunID == "" || ev.Lease <= 0 {
 			return Result{}, fmt.Errorf("claim needs a run id and a positive lease: %w", ErrInvalidEvent)
@@ -284,7 +291,7 @@ func Apply(t *v1alpha1.Task, ev Event, now time.Time) (Result, error) {
 		if s.Run == nil {
 			return Result{}, fmt.Errorf("running task has no run: %w", ErrInvalidTransition)
 		}
-		if !now.After(s.Run.LeaseUntil.Time) {
+		if !now.After(s.Run.LeaseUntil.Add(ev.Grace)) {
 			return Result{}, ErrLeaseNotExpired
 		}
 		s.Phase = v1alpha1.PhaseTodo
@@ -347,16 +354,41 @@ func endRun(res *Result, reason v1alpha1.RunEndReason, outcome Outcome, now time
 	res.ReleasesSlot = true
 }
 
-// appendOutbox adds CreateSubtask items written by a run.
+// appendOutbox adds CreateSubtask items written by a run. A subtask spec the
+// API server would reject is refused here, so it can never become an outbox
+// item the dispatcher fails on forever.
 func appendOutbox(s *v1alpha1.TaskStatus, items []v1alpha1.OutboxItem) error {
 	for _, it := range items {
 		if it.ID == "" || it.Kind != v1alpha1.OutboxCreateSubtask || it.Spec == nil {
 			return fmt.Errorf("outbox item %q: %w", it.ID, ErrInvalidEvent)
 		}
+		if err := validSpec(it.Spec); err != nil {
+			return fmt.Errorf("outbox item %q: %w", it.ID, err)
+		}
 		if slices.ContainsFunc(s.Outbox, func(o v1alpha1.OutboxItem) bool { return o.ID == it.ID }) {
 			return fmt.Errorf("duplicate outbox item %q: %w", it.ID, ErrInvalidEvent)
 		}
 		s.Outbox = append(s.Outbox, *it.DeepCopy())
+	}
+	return nil
+}
+
+var (
+	priorities    = []v1alpha1.Priority{"", v1alpha1.PriorityLow, v1alpha1.PriorityMedium, v1alpha1.PriorityHigh, v1alpha1.PriorityUrgent}
+	assigneeKinds = []v1alpha1.AssigneeKind{v1alpha1.AssigneeAgent, v1alpha1.AssigneeUser}
+)
+
+// validSpec checks what the Task CRD validates on a spec.
+func validSpec(spec *v1alpha1.TaskSpec) error {
+	switch {
+	case strings.TrimSpace(spec.Title) == "":
+		return fmt.Errorf("subtask without a title: %w", ErrInvalidEvent)
+	case !slices.Contains(priorities, spec.Priority):
+		return fmt.Errorf("priority %q: %w", spec.Priority, ErrInvalidEvent)
+	case spec.Assignee != nil && (!slices.Contains(assigneeKinds, spec.Assignee.Kind) || spec.Assignee.Name == ""):
+		return fmt.Errorf("assignee %+v: %w", *spec.Assignee, ErrInvalidEvent)
+	case spec.ParentRef != nil && spec.ParentRef.Name == "":
+		return fmt.Errorf("parentRef without a name: %w", ErrInvalidEvent)
 	}
 	return nil
 }

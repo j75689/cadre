@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"slices"
+	"strings"
 	"testing"
 	"time"
 
@@ -515,4 +516,25 @@ func testLogNestedStreams(t *testing.T, s *suite) {
 	if _, err := d.Read(s.ctx, s.ns+"//t", "", 0); !errors.Is(err, storage.ErrInvalidName) {
 		t.Errorf("read a malformed stream: got %v, want ErrInvalidName", err)
 	}
+}
+
+func testIndexListsTeams(t *testing.T, s *suite) {
+	a, b := s.open(), s.open()
+	team := &v1alpha1.Team{ObjectMeta: metav1.ObjectMeta{Name: v1alpha1.TeamName, Namespace: s.ns}, Spec: v1alpha1.TeamSpec{MaxConcurrentRuns: 1}}
+	if err := a.CreateTeam(s.ctx, team); err != nil {
+		t.Fatalf("create team: %v", err)
+	}
+	eventually(t, "another process lists the team", func() error {
+		teams, err := b.ListTeams(s.ctx)
+		if err != nil {
+			return err
+		}
+		if !slices.ContainsFunc(teams, func(tm v1alpha1.Team) bool { return tm.Namespace == s.ns }) {
+			return fmt.Errorf("team in %s not listed: %d teams", s.ns, len(teams))
+		}
+		if !slices.IsSortedFunc(teams, func(x, y v1alpha1.Team) int { return strings.Compare(x.Namespace, y.Namespace) }) {
+			return errors.New("teams are not ordered by namespace")
+		}
+		return nil
+	})
 }
