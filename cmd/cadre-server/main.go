@@ -1,6 +1,7 @@
 // Command cadre-server runs the Task Manager: the /api/v1 and /runner/v1
 // endpoints and the background loops (numbering, outbox dispatch, lease
-// reclaim). Any number of replicas may run against the same cluster and
+// reclaim), and the controllers that mark Agents, ModelProviders and
+// ToolServers Ready. Any number of replicas may run against the same cluster and
 // object store.
 package main
 
@@ -21,6 +22,7 @@ import (
 	ctrllog "sigs.k8s.io/controller-runtime/pkg/log"
 
 	"github.com/j75689/cadre/internal/api"
+	"github.com/j75689/cadre/internal/controller"
 	"github.com/j75689/cadre/internal/manager"
 	"github.com/j75689/cadre/internal/runner"
 	"github.com/j75689/cadre/internal/storage/kubernetes"
@@ -73,6 +75,14 @@ func run() error {
 	}
 	defer func() { _ = store.Close() }()
 
+	ctrls, err := controller.NewManager(rest)
+	if err != nil {
+		return fmt.Errorf("controllers: %w", err)
+	}
+	if err := controller.Setup(ctrls, controller.Options{}); err != nil {
+		return fmt.Errorf("controllers: %w", err)
+	}
+
 	m := manager.New(store, manager.Config{Lease: *lease, Heartbeat: *heartbeat})
 	mux := http.NewServeMux()
 	runner.NewServer(m, log).Register(mux)
@@ -100,16 +110,26 @@ func run() error {
 		defer close(loops)
 		m.Run(ctx, manager.LoopConfig{Reclaim: *reclaim, Dispatch: *dispatch}, log)
 	}()
+	controllers := make(chan error, 1)
+	go func() { controllers <- ctrls.Start(ctx) }()
 	served := make(chan error, 1)
 	go func() { served <- srv.ListenAndServe() }()
 	log.Info("cadre-server started", "listen", *listen)
 
+	// Whatever ends the server (a signal, the listener failing, the
+	// controllers stopping), in-flight requests are drained before exit.
 	select {
 	case err = <-served:
+	case cerr := <-controllers:
+		if cerr != nil {
+			err = fmt.Errorf("controllers stopped: %w", cerr)
+		}
 	case <-ctx.Done():
-		shutdown, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-		defer cancel()
-		err = srv.Shutdown(shutdown)
+	}
+	shutdown, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	if serr := srv.Shutdown(shutdown); err == nil {
+		err = serr
 	}
 	stop()
 	<-loops

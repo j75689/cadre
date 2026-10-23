@@ -49,11 +49,12 @@ lint: $(GOLANGCI_LINT) ## Run golangci-lint
 generate: $(CONTROLLER_GEN) ## Generate deepcopy code for the API types
 	$(CONTROLLER_GEN) object:headerFile=hack/boilerplate.go.txt paths=./api/...
 
-manifests: $(CONTROLLER_GEN) ## Generate CRD manifests into config/crd/bases
+manifests: $(CONTROLLER_GEN) ## Generate CRD manifests into config/crd/bases and cadre-server's RBAC into config/rbac
 	$(CONTROLLER_GEN) crd paths=./api/... output:crd:artifacts:config=config/crd/bases
+	$(CONTROLLER_GEN) rbac:roleName=cadre-server paths=./internal/... output:rbac:artifacts:config=config/rbac
 
 verify-generated: generate manifests ## Fail if generated files are out of date
-	@test -z "$$(git status --porcelain -- api/*/zz_generated.deepcopy.go config/crd)" || { git status --short -- api/*/zz_generated.deepcopy.go config/crd; echo "generated files are stale: run make generate manifests and commit"; exit 1; }
+	@test -z "$$(git status --porcelain -- api/*/zz_generated.deepcopy.go config/crd config/rbac)" || { git status --short -- api/*/zz_generated.deepcopy.go config/crd config/rbac; echo "generated files are stale: run make generate manifests and commit"; exit 1; }
 
 tidy:
 	go mod tidy
