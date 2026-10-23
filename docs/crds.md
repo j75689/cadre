@@ -1,0 +1,169 @@
+# CRDs
+
+Principle: **configuration lives in CRDs, data lives in the storage driver.** CRDs hold what changes rarely and belongs under GitOps. Thread messages, conversation history, run history and files are never CRDs (see [storage.md](storage.md)).
+
+Two exceptions are deliberate: `Task` and `Team` are CRDs even though tasks change often, because `kubectl get tasks -n team-a` is worth it and because a task's control state is small. Their bulky data still lives in object storage.
+
+All YAML is illustrative. The API group is provisionally `cadre.dev/v1alpha1`.
+
+## Inventory
+
+| CRD | Scope | Purpose |
+| --- | --- | --- |
+| `Team` | namespace | opt-in marker for a team's namespace, task numbering, concurrency limit, role mapping |
+| `Task` | namespace | a work item on the board |
+| `Agent` | namespace | prompt, model, tools, permissions, who runs it |
+| `ModelProvider` | namespace | a model, its endpoint and credentials |
+| `ToolServer` | namespace | one MCP server, managed by Cadre or external |
+| `Schedule` | namespace | create a task on a cron schedule |
+| `Notifier` | namespace | whom to notify when a human is needed |
+| `Runner` | namespace | an out-of-cluster runner and its credential |
+
+Deliverables, approval policies and publishers are plugins with their own CRDs, outside the core.
+
+Integrations are never built into the core as connectors. Every external integration is a `ToolServer`.
+
+## Team
+
+One per namespace, always named `team`.
+
+```yaml
+apiVersion: cadre.dev/v1alpha1
+kind: Team
+metadata: { name: team, namespace: team-a }
+spec:
+  displayName: Backend
+  maxConcurrentRuns: 5
+  archiveAfter: 720h
+status:
+  nextNumber: 124
+  running: 3
+```
+
+Three roles:
+
+1. **Opt-in.** Controllers only handle Tasks in namespaces that have a `Team`. The UI's team list is the `Team` list intersected with the namespaces the user may access. A Task applied in a namespace without a Team never runs.
+2. **Counter.** `status.nextNumber` is claimed with a conditional write and copied to `Task.status.number`, so humans can say "#123".
+3. **Semaphore.** A claim first does a conditional write on Team (`running < maxConcurrentRuns`, increment), then the conditional claim on the Task; if the Task claim loses, Team is decremented again. Counting first and deciding afterwards would overshoot.
+
+Role mapping for SSO (the equivalent of Argo CD's `AppProject` roles) hangs here.
+
+## Task
+
+Iron rule: humans and GitOps write `spec`; only the Task Manager writes `status`, through the status subresource. `kubectl edit` and the state machine never overwrite each other, and spec changes never touch the run's fencing fields.
+
+```yaml
+apiVersion: cadre.dev/v1alpha1
+kind: Task
+metadata: { name: fix-login-flake, namespace: team-a }
+spec:
+  title: Fix the flaky login test
+  description: |
+    ...
+  assignee: { kind: Agent, name: coder }     # or kind: User
+  priority: high
+  parentRef: { name: q4-stability }
+  labels: [backend]
+status:
+  number: 123
+  phase: Running              # Todo | Running | Waiting | Review | Done | Cancelled | Failed
+  waiting: { reason: Question, since: ..., threadSeq: 41 }   # only while Waiting
+  run:                        # only while Running
+    id: 01JB...               # ULID; the run the per-run MCP token maps to
+    mode: runtime             # runtime | step
+    runner: runner-7f3a       # runtime mode: the one runner; step mode: the worker holding this step
+    step: 7                   # advances in step mode only
+    leaseUntil: ...
+  outbox:                     # written with the state change; applied idempotently, then cleared
+    - { id: 01JB..., kind: CreateSubtask, spec: {...} }
+    - { id: 01JB..., kind: Notify, ... }
+  thread: { revision: 42, store: s3://cadre/team-a/fix-login-flake/thread/ }
+  runs: { count: 3, lastId: 01JB..., store: s3://.../runs/ }
+  conditions: [...]
+```
+
+- **Status stays small.** Only control state and pointers. Thread contents, conversation history and run history live in object storage; etcd caps one object at 1.5 MB.
+- **Exactly seven phases.** `waiting.reason` (`Question`, `ToolApproval`, `Review`) carries the detail. Fewer fields make the move past `v1alpha1` cheaper.
+- **Task is the single aggregate.** The run's control state lives inside the Task, so "the run finished, change the task's phase" is one write on one object.
+- `thread.revision` is the thread's sequencer: every append advances it with a conditional write, so watching the Task is enough to learn the thread changed.
+
+## Agent, ModelProvider, ToolServer
+
+```yaml
+apiVersion: cadre.dev/v1alpha1
+kind: ModelProvider
+metadata: { name: claude, namespace: team-a }
+spec:
+  type: anthropic               # anthropic | openai | bedrock | vertex
+  model: claude-opus-5-5
+  auth: { secretRef: { name: anthropic, key: api-key } }
+  # baseURL: https://llm-gateway.internal/v1     # openai-compatible endpoints and gateways
+  # workloadIdentity: true                        # bedrock and vertex: no key, bind the ServiceAccount
+---
+apiVersion: cadre.dev/v1alpha1
+kind: ToolServer
+metadata: { name: github, namespace: team-a }
+spec:
+  transport: streamable_http
+  url: https://api.githubcopilot.com/mcp/
+  auth: { secretRef: { name: github-token, key: token } }
+  permissions: { create_pull_request: ask, "*": allow }
+---
+apiVersion: cadre.dev/v1alpha1
+kind: ToolServer
+metadata: { name: searxng, namespace: team-a }
+spec:
+  managed:                      # the controller creates a Deployment and a Service
+    image: ghcr.io/searxng/searxng:2026.10.1
+    port: 8080
+---
+apiVersion: cadre.dev/v1alpha1
+kind: Agent
+metadata: { name: writer, namespace: team-a }
+spec:
+  description: Writes one AI trends thread a day
+  modelRef: claude
+  toolRefs: [searxng, news-trends]
+  instructions: |
+    ...
+  runtime:
+    type: builtin               # builtin | runner
+    # selector: { pool: claude-code }   # runner: which runner pool may claim this agent's tasks
+```
+
+- `runtime.type: builtin` is Cadre's own LLM loop. `runner` hands the task to any runner whose labels match the selector (see [execution.md](execution.md)).
+- `permissions` on a ToolServer decide per tool whether a call is allowed, denied or must ask a human first (`ask` ends the run with `Waiting{ToolApproval}`).
+- The managed mode of ToolServer creates a Deployment and a Service only. NetworkPolicy and ServiceAccount management may follow.
+
+## Schedule and Notifier
+
+```yaml
+apiVersion: cadre.dev/v1alpha1
+kind: Schedule
+metadata: { name: daily-thread, namespace: team-a }
+spec:
+  cron: "0 9 * * *"
+  timezone: Asia/Taipei
+  jitter: 60s                   # avoid everyone firing on the hour
+  task: { assignee: writer, title: "Today's AI trends thread" }
+```
+
+`Notifier` names a channel (an MCP ToolServer or a webhook) and when to use it: a question for a human, a tool approval, a review.
+
+## Credentials
+
+- **Ordinary credentials** are Kubernetes Secrets referenced with `secretRef`, optionally synced from Vault or a cloud secret manager by External Secrets Operator.
+- **Cloud services** use workload identity: an Agent or ToolServer maps to a ServiceAccount bound to a GCP or AWS IAM identity, no key files.
+- **Credentials never leave Cadre.** Tools execute on the Cadre side; LLM calls are made by Cadre's worker or a gateway. Runtime-mode runners never receive a provider key.
+- Rotation is the Secret's business.
+
+## Multi-team
+
+- One team per namespace. Kubernetes RBAC decides who may change `Agent`, `ToolServer` and `Task` resources through GitOps or kubectl.
+- Board actions (approve, assign, comment) are governed by Cadre's own SSO and the per-team role mapping on `Team`; see [architecture.md](architecture.md#identity-and-access).
+- Boards are separated by namespace.
+
+## Versioning
+
+- Start at `v1alpha1`; moving to a new version needs a conversion webhook.
+- CRDs are public API. The first version keeps fields to the minimum; it is far easier to add a field than to remove one.
