@@ -1,0 +1,376 @@
+---
+apiVersion: apiextensions.k8s.io/v1
+kind: CustomResourceDefinition
+metadata:
+  annotations:
+    controller-gen.kubebuilder.io/version: v0.23.0
+  name: tasks.cadre.dev
+spec:
+  group: cadre.dev
+  names:
+    kind: Task
+    listKind: TaskList
+    plural: tasks
+    singular: task
+  scope: Namespaced
+  versions:
+  - additionalPrinterColumns:
+    - jsonPath: .status.number
+      name: Number
+      type: integer
+    - jsonPath: .status.phase
+      name: Phase
+      type: string
+    - jsonPath: .spec.assignee.name
+      name: Assignee
+      type: string
+    - jsonPath: .metadata.creationTimestamp
+      name: Age
+      type: date
+    name: v1alpha1
+    schema:
+      openAPIV3Schema:
+        description: Task is a work item on the board.
+        properties:
+          apiVersion:
+            description: |-
+              APIVersion defines the versioned schema of this representation of an object.
+              Servers should convert recognized schemas to the latest internal value, and
+              may reject unrecognized values.
+              More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#resources
+            type: string
+          kind:
+            description: |-
+              Kind is a string value representing the REST resource this object represents.
+              Servers may infer this from the endpoint the client submits requests to.
+              Cannot be updated.
+              In CamelCase.
+              More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#types-kinds
+            type: string
+          metadata:
+            type: object
+          spec:
+            description: |-
+              TaskSpec is the human intent of a task. Humans and GitOps write it; the
+              Task Manager never does.
+            properties:
+              assignee:
+                description: Assignee is who works on the task. An unassigned task
+                  is never claimed.
+                properties:
+                  kind:
+                    description: Kind is Agent or User.
+                    enum:
+                    - Agent
+                    - User
+                    type: string
+                  name:
+                    description: Name is the Agent's name in the task's namespace,
+                      or the user's name.
+                    minLength: 1
+                    type: string
+                required:
+                - kind
+                - name
+                type: object
+              description:
+                description: Description is the full statement of the work.
+                type: string
+              labels:
+                description: Labels are free-form tags for filtering the board.
+                items:
+                  type: string
+                type: array
+                x-kubernetes-list-type: set
+              parentRef:
+                description: ParentRef makes this task a subtask of another task.
+                properties:
+                  name:
+                    description: Name is the referenced Task's metadata.name.
+                    minLength: 1
+                    type: string
+                required:
+                - name
+                type: object
+              priority:
+                default: medium
+                description: Priority orders the task on the board.
+                enum:
+                - low
+                - medium
+                - high
+                - urgent
+                type: string
+              title:
+                description: Title is the one-line summary shown on the board.
+                minLength: 1
+                type: string
+            required:
+            - title
+            type: object
+          status:
+            description: |-
+              TaskStatus is the control state of a task. Only the Task Manager writes it,
+              through the status subresource. It holds control state and pointers only.
+            properties:
+              conditions:
+                description: Conditions are the standard Kubernetes conditions.
+                items:
+                  description: Condition contains details for one aspect of the current
+                    state of this API Resource.
+                  properties:
+                    lastTransitionTime:
+                      description: |-
+                        lastTransitionTime is the last time the condition transitioned from one status to another.
+                        This should be when the underlying condition changed.  If that is not known, then using the time when the API field changed is acceptable.
+                      format: date-time
+                      type: string
+                    message:
+                      description: |-
+                        message is a human readable message indicating details about the transition.
+                        This may be an empty string.
+                      maxLength: 32768
+                      type: string
+                    observedGeneration:
+                      description: |-
+                        observedGeneration represents the .metadata.generation that the condition was set based upon.
+                        For instance, if .metadata.generation is currently 12, but the .status.conditions[x].observedGeneration is 9, the condition is out of date
+                        with respect to the current state of the instance.
+                      format: int64
+                      minimum: 0
+                      type: integer
+                    reason:
+                      description: |-
+                        reason contains a programmatic identifier indicating the reason for the condition's last transition.
+                        Producers of specific condition types may define expected values and meanings for this field,
+                        and whether the values are considered a guaranteed API.
+                        The value should be a CamelCase string.
+                        This field may not be empty.
+                      maxLength: 1024
+                      minLength: 1
+                      pattern: ^[A-Za-z]([A-Za-z0-9_,:]*[A-Za-z0-9_])?$
+                      type: string
+                    status:
+                      description: status of the condition, one of True, False, Unknown.
+                      enum:
+                      - "True"
+                      - "False"
+                      - Unknown
+                      type: string
+                    type:
+                      description: type of condition in CamelCase or in foo.example.com/CamelCase.
+                      maxLength: 316
+                      pattern: ^([a-z0-9]([-a-z0-9]*[a-z0-9])?(\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)*/)?(([A-Za-z0-9][-A-Za-z0-9_.]*)?[A-Za-z0-9])$
+                      type: string
+                  required:
+                  - lastTransitionTime
+                  - message
+                  - reason
+                  - status
+                  - type
+                  type: object
+                type: array
+                x-kubernetes-list-map-keys:
+                - type
+                x-kubernetes-list-type: map
+              number:
+                description: Number is the human-facing number, claimed from the Team's
+                  counter.
+                format: int64
+                type: integer
+              outbox:
+                description: Outbox holds side effects not yet applied.
+                items:
+                  description: |-
+                    OutboxItem is a side effect written in the same conditional write as the
+                    state change that caused it. The dispatcher applies it idempotently and then
+                    clears it with another conditional write.
+                  properties:
+                    id:
+                      description: |-
+                        ID is a ULID minted when the item is written. It is the idempotency key.
+
+                        For CreateSubtask the subtask's metadata.name is derived from it
+                        deterministically (the lowercase ULID, a valid DNS-1123 label), so
+                        re-applying the item is a create that already exists and leaves no
+                        trace.
+                      pattern: ^[0-9A-HJKMNP-TV-Z]{26}$
+                      type: string
+                    kind:
+                      description: Kind is the side effect asked for.
+                      enum:
+                      - CreateSubtask
+                      type: string
+                    spec:
+                      description: Spec is the subtask to create, for kind CreateSubtask.
+                      properties:
+                        assignee:
+                          description: Assignee is who works on the task. An unassigned
+                            task is never claimed.
+                          properties:
+                            kind:
+                              description: Kind is Agent or User.
+                              enum:
+                              - Agent
+                              - User
+                              type: string
+                            name:
+                              description: Name is the Agent's name in the task's
+                                namespace, or the user's name.
+                              minLength: 1
+                              type: string
+                          required:
+                          - kind
+                          - name
+                          type: object
+                        description:
+                          description: Description is the full statement of the work.
+                          type: string
+                        labels:
+                          description: Labels are free-form tags for filtering the
+                            board.
+                          items:
+                            type: string
+                          type: array
+                          x-kubernetes-list-type: set
+                        parentRef:
+                          description: ParentRef makes this task a subtask of another
+                            task.
+                          properties:
+                            name:
+                              description: Name is the referenced Task's metadata.name.
+                              minLength: 1
+                              type: string
+                          required:
+                          - name
+                          type: object
+                        priority:
+                          default: medium
+                          description: Priority orders the task on the board.
+                          enum:
+                          - low
+                          - medium
+                          - high
+                          - urgent
+                          type: string
+                        title:
+                          description: Title is the one-line summary shown on the
+                            board.
+                          minLength: 1
+                          type: string
+                      required:
+                      - title
+                      type: object
+                  required:
+                  - id
+                  - kind
+                  type: object
+                type: array
+                x-kubernetes-list-map-keys:
+                - id
+                x-kubernetes-list-type: map
+              phase:
+                description: Phase is where the task is in its life.
+                enum:
+                - Todo
+                - Running
+                - Waiting
+                - Review
+                - Done
+                - Cancelled
+                - Failed
+                type: string
+              run:
+                description: Run is set only while the phase is Running.
+                properties:
+                  id:
+                    description: ID is the run's ULID; the per-run MCP token maps
+                      to it.
+                    pattern: ^[0-9A-HJKMNP-TV-Z]{26}$
+                    type: string
+                  leaseUntil:
+                    description: LeaseUntil is when the run may be reclaimed unless
+                      it is renewed.
+                    format: date-time
+                    type: string
+                  mode:
+                    description: Mode is runtime or step.
+                    enum:
+                    - runtime
+                    - step
+                    type: string
+                  runner:
+                    description: |-
+                      Runner is the one runner holding the run in runtime mode, or the worker
+                      holding the current step in step mode.
+                    type: string
+                  step:
+                    description: Step advances in step mode only.
+                    format: int64
+                    minimum: 0
+                    type: integer
+                required:
+                - id
+                - leaseUntil
+                - mode
+                type: object
+              runs:
+                description: Runs points at the task's run history.
+                properties:
+                  count:
+                    description: Count is the number of runs started so far.
+                    format: int64
+                    minimum: 0
+                    type: integer
+                  lastId:
+                    description: LastID is the ULID of the most recent run.
+                    type: string
+                  store:
+                    description: Store is the URI of the run history in object storage.
+                    type: string
+                type: object
+              thread:
+                description: Thread points at the task's thread.
+                properties:
+                  revision:
+                    description: |-
+                      Revision advances with every append, so watching the Task is enough to
+                      learn the thread changed.
+                    format: int64
+                    minimum: 0
+                    type: integer
+                  store:
+                    description: Store is the URI of the thread in object storage.
+                    type: string
+                type: object
+              waiting:
+                description: Waiting is set only while the phase is Waiting.
+                properties:
+                  reason:
+                    description: Reason is what the task waits for.
+                    enum:
+                    - Question
+                    - ToolApproval
+                    - Review
+                    type: string
+                  since:
+                    description: Since is when the task started waiting.
+                    format: date-time
+                    type: string
+                  threadSeq:
+                    description: ThreadSeq is the thread entry that asked for the
+                      human, if any.
+                    format: int64
+                    type: integer
+                required:
+                - reason
+                - since
+                type: object
+            type: object
+        required:
+        - spec
+        type: object
+    served: true
+    storage: true
+    subresources:
+      status: {}

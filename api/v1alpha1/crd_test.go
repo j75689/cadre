@@ -1,0 +1,157 @@
+package v1alpha1_test
+
+import (
+	"context"
+	"os"
+	"path/filepath"
+	"testing"
+	"time"
+
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/runtime"
+	"sigs.k8s.io/controller-runtime/pkg/client"
+	"sigs.k8s.io/controller-runtime/pkg/envtest"
+
+	v1alpha1 "github.com/j75689/cadre/api/v1alpha1"
+)
+
+const ns = "default"
+
+// startAPIServer applies the generated CRDs to an envtest API server. It skips
+// when the envtest binaries are not installed; `make test` installs them.
+func startAPIServer(t *testing.T) client.Client {
+	t.Helper()
+	if os.Getenv("KUBEBUILDER_ASSETS") == "" {
+		t.Skip("KUBEBUILDER_ASSETS is not set; run make test")
+	}
+	env := &envtest.Environment{
+		CRDDirectoryPaths:     []string{filepath.Join("..", "..", "config", "crd", "bases")},
+		ErrorIfCRDPathMissing: true,
+	}
+	cfg, err := env.Start()
+	if err != nil {
+		t.Fatalf("start envtest: %v", err)
+	}
+	t.Cleanup(func() {
+		if err := env.Stop(); err != nil {
+			t.Errorf("stop envtest: %v", err)
+		}
+	})
+	scheme := runtime.NewScheme()
+	if err := v1alpha1.AddToScheme(scheme); err != nil {
+		t.Fatalf("add to scheme: %v", err)
+	}
+	c, err := client.New(cfg, client.Options{Scheme: scheme})
+	if err != nil {
+		t.Fatalf("new client: %v", err)
+	}
+	return c
+}
+
+func TestCRDs(t *testing.T) {
+	c := startAPIServer(t)
+	ctx := context.Background()
+
+	t.Run("team must be named team", func(t *testing.T) {
+		bad := &v1alpha1.Team{ObjectMeta: metav1.ObjectMeta{Name: "backend", Namespace: ns}}
+		if err := c.Create(ctx, bad); !apierrors.IsInvalid(err) {
+			t.Fatalf("create Team named backend: got %v, want Invalid", err)
+		}
+	})
+
+	t.Run("team defaults and status subresource", func(t *testing.T) {
+		team := &v1alpha1.Team{ObjectMeta: metav1.ObjectMeta{Name: v1alpha1.TeamName, Namespace: ns}}
+		if err := c.Create(ctx, team); err != nil {
+			t.Fatalf("create Team: %v", err)
+		}
+		if team.Spec.MaxConcurrentRuns != 1 {
+			t.Fatalf("maxConcurrentRuns = %d, want default 1", team.Spec.MaxConcurrentRuns)
+		}
+		team.Status.NextNumber = 7
+		if err := c.Status().Update(ctx, team); err != nil {
+			t.Fatalf("update Team status: %v", err)
+		}
+		got := &v1alpha1.Team{}
+		if err := c.Get(ctx, client.ObjectKeyFromObject(team), got); err != nil {
+			t.Fatalf("get Team: %v", err)
+		}
+		if got.Status.NextNumber != 7 {
+			t.Fatalf("nextNumber = %d, want 7", got.Status.NextNumber)
+		}
+	})
+
+	t.Run("team rejects negative concurrency", func(t *testing.T) {
+		team := &v1alpha1.Team{
+			ObjectMeta: metav1.ObjectMeta{Name: v1alpha1.TeamName, Namespace: "kube-public"},
+			Spec:       v1alpha1.TeamSpec{MaxConcurrentRuns: -1},
+		}
+		if err := c.Create(ctx, team); !apierrors.IsInvalid(err) {
+			t.Fatalf("create Team with maxConcurrentRuns -1: got %v, want Invalid", err)
+		}
+	})
+
+	t.Run("task validation", func(t *testing.T) {
+		for name, spec := range map[string]v1alpha1.TaskSpec{
+			"missing title":    {},
+			"unknown priority": {Title: "x", Priority: "whenever"},
+			"unknown assignee": {Title: "x", Assignee: &v1alpha1.Assignee{Kind: "Robot", Name: "r"}},
+		} {
+			task := &v1alpha1.Task{ObjectMeta: metav1.ObjectMeta{Name: "invalid", Namespace: ns}, Spec: spec}
+			if err := c.Create(ctx, task); !apierrors.IsInvalid(err) {
+				t.Errorf("%s: got %v, want Invalid", name, err)
+			}
+		}
+	})
+
+	t.Run("task spec and status are written separately", func(t *testing.T) {
+		task := &v1alpha1.Task{
+			ObjectMeta: metav1.ObjectMeta{Name: "fix-login-flake", Namespace: ns},
+			Spec:       v1alpha1.TaskSpec{Title: "Fix the flaky login test"},
+		}
+		if err := c.Create(ctx, task); err != nil {
+			t.Fatalf("create Task: %v", err)
+		}
+		if task.Spec.Priority != v1alpha1.PriorityMedium {
+			t.Fatalf("priority = %q, want default medium", task.Spec.Priority)
+		}
+
+		// A write to the main resource must not touch status.
+		task.Status.Phase = v1alpha1.PhaseDone
+		if err := c.Update(ctx, task); err != nil {
+			t.Fatalf("update Task: %v", err)
+		}
+		if task.Status.Phase != "" {
+			t.Fatalf("phase = %q after a spec update, want it untouched", task.Status.Phase)
+		}
+
+		lease := metav1.NewTime(time.Now().Add(time.Minute).Truncate(time.Second))
+		task.Status = v1alpha1.TaskStatus{
+			Number: 1,
+			Phase:  v1alpha1.PhaseRunning,
+			Run: &v1alpha1.Run{
+				ID: "01JB0000000000000000000000", Mode: v1alpha1.RunModeRuntime,
+				Runner: "runner-7f3a", LeaseUntil: lease,
+			},
+			Outbox: []v1alpha1.OutboxItem{{
+				ID: "01JB0000000000000000000001", Kind: v1alpha1.OutboxCreateSubtask,
+				Spec: &v1alpha1.TaskSpec{Title: "child"},
+			}},
+		}
+		if err := c.Status().Update(ctx, task); err != nil {
+			t.Fatalf("update Task status: %v", err)
+		}
+		got := &v1alpha1.Task{}
+		if err := c.Get(ctx, client.ObjectKeyFromObject(task), got); err != nil {
+			t.Fatalf("get Task: %v", err)
+		}
+		if got.Status.Run == nil || got.Status.Run.ID != task.Status.Run.ID || !got.Status.Run.LeaseUntil.Equal(&lease) {
+			t.Fatalf("run = %+v, want %+v", got.Status.Run, task.Status.Run)
+		}
+
+		got.Status.Outbox[0].ID = "not-a-ulid"
+		if err := c.Status().Update(ctx, got); !apierrors.IsInvalid(err) {
+			t.Fatalf("outbox id not-a-ulid: got %v, want Invalid", err)
+		}
+	})
+}
