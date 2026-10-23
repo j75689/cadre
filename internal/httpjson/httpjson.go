@@ -74,33 +74,56 @@ func WriteError(w http.ResponseWriter, status int, code, msg string) {
 	Write(w, status, ErrorResponse{Error: ErrorBody{Code: code, Message: msg}})
 }
 
-// Fail answers err with the status and code every Cadre API uses for it.
-// Only validation errors, which describe the request itself, are sent in
-// full; other errors are answered with fixed text, and the unexpected ones
-// are logged, so storage details never reach the client.
-func Fail(w http.ResponseWriter, log *slog.Logger, err error) {
+// Classify says which error code err maps to. It is the one classification
+// every Cadre API uses, the HTTP APIs through Fail and the MCP tools through
+// their tool errors, so an error cannot be a client mistake on one surface
+// and a retriable fault on another.
+func Classify(err error) string {
 	switch {
 	case errors.Is(err, task.ErrRunMismatch):
-		WriteError(w, http.StatusConflict, CodeRunMismatch, task.ErrRunMismatch.Error())
+		return CodeRunMismatch
 	case errors.Is(err, task.ErrStepMismatch):
-		WriteError(w, http.StatusConflict, CodeStepMismatch, task.ErrStepMismatch.Error())
+		return CodeStepMismatch
 	case errors.Is(err, task.ErrInvalidTransition):
-		WriteError(w, http.StatusConflict, CodeInvalidTransition, task.ErrInvalidTransition.Error())
+		return CodeInvalidTransition
 	case errors.Is(err, manager.ErrInvalid), errors.Is(err, task.ErrInvalidEvent),
 		errors.Is(err, storage.ErrInvalidQuery), errors.Is(err, storage.ErrInvalid), errors.Is(err, storage.ErrInvalidName):
-		WriteError(w, http.StatusBadRequest, CodeInvalid, err.Error())
+		return CodeInvalid
 	case errors.Is(err, storage.ErrNotFound):
-		WriteError(w, http.StatusNotFound, CodeNotFound, "not found")
+		return CodeNotFound
 	case errors.Is(err, storage.ErrAlreadyExists):
-		WriteError(w, http.StatusConflict, CodeAlreadyExists, "already exists")
-	case errors.Is(err, storage.ErrStreamCollision):
-		// A server-side layout fault: retriable for the client, and logged
-		// so it is investigated.
-		log.Error("log layout fault", "err", err)
-		WriteError(w, http.StatusServiceUnavailable, CodeUnavailable, "temporarily unavailable; retry")
+		return CodeAlreadyExists
+	}
+	return CodeUnavailable
+}
+
+// Fail answers err with the status and code Classify gives it. Only
+// validation errors, which describe the request itself, are sent in full;
+// other errors are answered with fixed text, and the unexpected ones are
+// logged, so storage details never reach the client.
+func Fail(w http.ResponseWriter, log *slog.Logger, err error) {
+	switch code := Classify(err); code {
+	case CodeRunMismatch:
+		WriteError(w, http.StatusConflict, code, task.ErrRunMismatch.Error())
+	case CodeStepMismatch:
+		WriteError(w, http.StatusConflict, code, task.ErrStepMismatch.Error())
+	case CodeInvalidTransition:
+		WriteError(w, http.StatusConflict, code, task.ErrInvalidTransition.Error())
+	case CodeInvalid:
+		WriteError(w, http.StatusBadRequest, code, err.Error())
+	case CodeNotFound:
+		WriteError(w, http.StatusNotFound, code, "not found")
+	case CodeAlreadyExists:
+		WriteError(w, http.StatusConflict, code, "already exists")
 	default:
-		// Busy objects and storage failures are worth retrying.
-		log.Warn("request failed", "err", err)
+		if errors.Is(err, storage.ErrStreamCollision) {
+			// A server-side layout fault: retriable for the client,
+			// and logged so it is investigated.
+			log.Error("log layout fault", "err", err)
+		} else {
+			// Busy objects and storage failures are worth retrying.
+			log.Warn("request failed", "err", err)
+		}
 		WriteError(w, http.StatusServiceUnavailable, CodeUnavailable, "temporarily unavailable; retry")
 	}
 }

@@ -31,11 +31,14 @@ type Server struct {
 	m   *manager.Manager
 	log *slog.Logger
 	mcp http.Handler
+	// schemas caches the tools' input and output schemas, which would
+	// otherwise be built by reflection on every request.
+	schemas *sdk.SchemaCache
 }
 
 // NewServer returns the endpoint.
 func NewServer(m *manager.Manager, log *slog.Logger) *Server {
-	s := &Server{m: m, log: log}
+	s := &Server{m: m, log: log, schemas: sdk.NewSchemaCache()}
 	s.mcp = sdk.NewStreamableHTTPHandler(s.serverFor, &sdk.StreamableHTTPOptions{Stateless: true, Logger: log})
 	return s
 }
@@ -82,7 +85,8 @@ func (s *Server) serverFor(r *http.Request) *sdk.Server {
 	if t == nil || t.Status.Run == nil {
 		return sdk.NewServer(&sdk.Implementation{Name: "cadre", Version: v1alpha1.GroupVersion.Version}, nil)
 	}
-	server := sdk.NewServer(&sdk.Implementation{Name: "cadre run " + t.Status.Run.ID, Version: v1alpha1.GroupVersion.Version}, nil)
+	server := sdk.NewServer(&sdk.Implementation{Name: "cadre run " + t.Status.Run.ID, Version: v1alpha1.GroupVersion.Version},
+		&sdk.ServerOptions{SchemaCache: s.schemas})
 	s.addTools(server, t)
 	return server
 }

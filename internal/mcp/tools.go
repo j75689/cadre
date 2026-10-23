@@ -2,14 +2,13 @@ package mcp
 
 import (
 	"context"
-	"errors"
 
 	sdk "github.com/modelcontextprotocol/go-sdk/mcp"
 
 	v1alpha1 "github.com/j75689/cadre/api/v1alpha1"
+	"github.com/j75689/cadre/internal/httpjson"
 	"github.com/j75689/cadre/internal/manager"
 	"github.com/j75689/cadre/internal/storage"
-	"github.com/j75689/cadre/internal/task"
 )
 
 // Messages a tool answers with when it cannot act. They are tool errors
@@ -123,17 +122,19 @@ func (s *Server) addTools(server *sdk.Server, t *v1alpha1.Task) {
 		})
 }
 
-// fail turns an error into a tool error the model can read. Storage details
-// stay in the server log.
+// fail turns an error into a tool error the model can read. It uses the
+// classification the HTTP APIs use. Storage details stay in the server log.
 func (s *Server) fail(err error) *sdk.CallToolResult {
 	var msg string
-	switch {
-	case errors.Is(err, task.ErrRunMismatch), errors.Is(err, task.ErrInvalidTransition):
+	switch httpjson.Classify(err) {
+	case httpjson.CodeRunMismatch, httpjson.CodeStepMismatch, httpjson.CodeInvalidTransition:
 		msg = msgRunGone
-	case errors.Is(err, manager.ErrInvalid), errors.Is(err, task.ErrInvalidEvent):
+	case httpjson.CodeInvalid:
 		msg = "Invalid call: " + err.Error()
-	case errors.Is(err, storage.ErrNotFound):
+	case httpjson.CodeNotFound:
 		msg = "Not found."
+	case httpjson.CodeAlreadyExists:
+		msg = "Already exists."
 	default:
 		s.log.Warn("MCP tool failed", "err", err)
 		msg = "A temporary error occurred; try again."

@@ -192,7 +192,10 @@ func (m *Manager) RunWriteFile(ctx context.Context, key storage.Key, runID, path
 		return nil, err
 	}
 	info := &FileInfo{Path: path, Version: latest + 1, Size: len(content)}
-	for range maxSeqRaces {
+	for attempt := 0; ; attempt++ {
+		if attempt == maxSeqRaces {
+			return nil, fmt.Errorf("file %q: %w", path, ErrBusy)
+		}
 		err := m.store.Append(ctx, stream, storage.SeqKey(info.Version), []byte(content))
 		if err == nil {
 			break

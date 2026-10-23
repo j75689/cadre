@@ -94,6 +94,16 @@ Core tools:
 
 plus the ToolServers forwarded from the Agent's `toolRefs`. Every tool checks the run_id; a run that has lost its task is always rejected, with a tool error telling the agent to stop.
 
+What fencing guarantees for each tool in runtime mode, in M1:
+
+| Tool | Guarantee |
+| --- | --- |
+| `task_create_subtask` | fully fenced: the subtask enters the outbox in a conditional write on the Task that checks the run |
+| `thread_ask` | the run ends through Finish, which is fenced; the Question is appended just before it |
+| `thread_post`, `thread_ask`'s Question, `task_files_write` | checked, then written: a fresh read must show the run still holding the task, then the log entry is appended. A run that loses its task in the moment between the two can still land that one entry. |
+
+A two-phase write would close that window: the content written first, then a pointer to it committed in a run-fenced write. It is planned for M2.
+
 Task files are stored as one log stream of versions per path, `<ns>/<task>/files/<base64url(path)>`, plus an index stream, `<ns>/<task>/files-index`, recording each write's path, version and size. A write appends the version first and the index entry second. Reads use the version streams, so a write whose index entry was lost is still read, and the path is indexed again by its next write.
 
 ## Correctness: three layers

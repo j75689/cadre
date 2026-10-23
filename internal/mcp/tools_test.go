@@ -192,3 +192,24 @@ func TestALostRunIsToldToStop(t *testing.T) {
 	}
 	_ = c
 }
+
+// Tool errors use the same classification as the HTTP APIs: a spec the API
+// server rejects is the model's mistake to correct, not a retry.
+func TestToolErrorClassification(t *testing.T) {
+	log := slog.New(slog.NewTextHandler(io.Discard, nil))
+	for err, want := range map[error]string{
+		storage.ErrInvalid:                  "Invalid call",
+		storage.ErrInvalidName:              "Invalid call",
+		manager.ErrInvalid:                  "Invalid call",
+		storage.ErrNotFound:                 "Not found.",
+		storage.ErrAlreadyExists:            "Already exists.",
+		task.ErrInvalidTransition:           "no longer active",
+		storage.ErrStreamCollision:          "temporary",
+		errors.New("apiserver unavailable"): "temporary",
+	} {
+		r := mcp.FailForTest(log, err)
+		if text := r.Content[0].(*sdk.TextContent).Text; !r.IsError || !strings.Contains(text, want) {
+			t.Errorf("%v: %q, want it to contain %q", err, text, want)
+		}
+	}
+}
