@@ -5,6 +5,7 @@ import (
 	"errors"
 	"io"
 	"log/slog"
+	"regexp"
 	"slices"
 	"strings"
 	"testing"
@@ -99,13 +100,19 @@ func runTools(t *testing.T, e *env) {
 		names = append(names, tool.Name)
 	}
 	slices.Sort(names)
-	if want := []string{"task.create_subtask", "task.files.list", "task.files.read", "task.files.write", "thread.ask", "thread.post"}; !slices.Equal(names, want) {
+	if want := []string{"task_create_subtask", "task_files_list", "task_files_read", "task_files_write", "thread_ask", "thread_post"}; !slices.Equal(names, want) {
 		t.Fatalf("tools %v, want %v", names, want)
+	}
+	modelName := regexp.MustCompile(`^[a-zA-Z0-9_-]{1,64}$`)
+	for _, n := range names {
+		if !modelName.MatchString(n) {
+			t.Errorf("tool name %q breaks the model APIs' naming rule", n)
+		}
 	}
 
 	var posted struct{ Seq int64 }
-	if msg := call(t, s, "thread.post", map[string]any{"body": "Looking at the login test."}, &posted); msg != "" || posted.Seq != 1 {
-		t.Fatalf("thread.post: %+v %q", posted, msg)
+	if msg := call(t, s, "thread_post", map[string]any{"body": "Looking at the login test."}, &posted); msg != "" || posted.Seq != 1 {
+		t.Fatalf("thread_post: %+v %q", posted, msg)
 	}
 	thread, _ := e.m.ReadThread(ctx, key, 0, 0)
 	if len(thread) != 1 || thread[0].Author.Kind != manager.AuthorAgent || thread[0].Author.Name != "coder" {
@@ -113,61 +120,61 @@ func runTools(t *testing.T, e *env) {
 	}
 
 	var sub manager.SubtaskCreated
-	if msg := call(t, s, "task.create_subtask", map[string]any{"title": "Write the regression test"}, &sub); msg != "" || sub.Name == "" || sub.Number < 2 {
+	if msg := call(t, s, "task_create_subtask", map[string]any{"title": "Write the regression test"}, &sub); msg != "" || sub.Name == "" || sub.Number < 2 {
 		t.Fatalf("create_subtask: %+v %q", sub, msg)
 	}
 	child, err := e.m.GetTask(ctx, storage.Key{Namespace: ns, Name: sub.Name})
 	if err != nil || child.Spec.ParentRef == nil || child.Spec.ParentRef.Name != "t" || child.Spec.Assignee != nil || child.Status.Number != sub.Number {
 		t.Fatalf("subtask: %+v, %v", child, err)
 	}
-	if msg := call(t, s, "task.create_subtask", map[string]any{"title": "Review", "assignee": map[string]any{"kind": "Agent", "name": "coder"}}, &sub); msg != "" {
+	if msg := call(t, s, "task_create_subtask", map[string]any{"title": "Review", "assignee": map[string]any{"kind": "Agent", "name": "coder"}}, &sub); msg != "" {
 		t.Fatalf("create_subtask with an assignee: %q", msg)
 	}
-	if msg := call(t, s, "task.create_subtask", map[string]any{"title": " "}, nil); !strings.HasPrefix(msg, "Invalid call") {
+	if msg := call(t, s, "task_create_subtask", map[string]any{"title": " "}, nil); !strings.HasPrefix(msg, "Invalid call") {
 		t.Fatalf("create_subtask without a title: %q", msg)
 	}
 
 	var info manager.FileInfo
 	for i, content := range []string{"first draft", "second draft"} {
-		if msg := call(t, s, "task.files.write", map[string]any{"path": "notes/plan.md", "content": content}, &info); msg != "" || info.Version != int64(i+1) {
+		if msg := call(t, s, "task_files_write", map[string]any{"path": "notes/plan.md", "content": content}, &info); msg != "" || info.Version != int64(i+1) {
 			t.Fatalf("write %d: %+v %q", i+1, info, msg)
 		}
 	}
-	call(t, s, "task.files.write", map[string]any{"path": "out.txt", "content": "x"}, nil)
+	call(t, s, "task_files_write", map[string]any{"path": "out.txt", "content": "x"}, nil)
 	var file manager.File
-	if msg := call(t, s, "task.files.read", map[string]any{"path": "notes/plan.md"}, &file); msg != "" || file.Content != "second draft" || file.Version != 2 {
+	if msg := call(t, s, "task_files_read", map[string]any{"path": "notes/plan.md"}, &file); msg != "" || file.Content != "second draft" || file.Version != 2 {
 		t.Fatalf("read: %+v %q", file, msg)
 	}
 	var list struct{ Files []manager.FileInfo }
-	if msg := call(t, s, "task.files.list", map[string]any{}, &list); msg != "" || len(list.Files) != 2 ||
+	if msg := call(t, s, "task_files_list", map[string]any{}, &list); msg != "" || len(list.Files) != 2 ||
 		list.Files[0] != (manager.FileInfo{Path: "notes/plan.md", Version: 2, Size: len("second draft")}) {
 		t.Fatalf("list: %+v %q", list, msg)
 	}
-	if msg := call(t, s, "task.files.read", map[string]any{"path": "missing"}, nil); msg != "Not found." {
+	if msg := call(t, s, "task_files_read", map[string]any{"path": "missing"}, nil); msg != "Not found." {
 		t.Fatalf("read a missing file: %q", msg)
 	}
-	if msg := call(t, s, "task.files.write", map[string]any{"path": "big", "content": strings.Repeat("x", manager.MaxFileSize+1)}, nil); !strings.HasPrefix(msg, "Invalid call") {
+	if msg := call(t, s, "task_files_write", map[string]any{"path": "big", "content": strings.Repeat("x", manager.MaxFileSize+1)}, nil); !strings.HasPrefix(msg, "Invalid call") {
 		t.Fatalf("write over the limit: %q", msg)
 	}
 
-	// thread.ask ends the run: the task waits for a human, the token dies,
+	// thread_ask ends the run: the task waits for a human, the token dies,
 	// and a finish from the runner is a run mismatch.
 	var asked struct {
 		Seq     int64
 		Message string
 	}
-	if msg := call(t, s, "thread.ask", map[string]any{"question": "Staging or production?"}, &asked); msg != "" || !strings.Contains(asked.Message, "do not call finish") {
-		t.Fatalf("thread.ask: %+v %q", asked, msg)
+	if msg := call(t, s, "thread_ask", map[string]any{"question": "Staging or production?"}, &asked); msg != "" || !strings.Contains(asked.Message, "do not call finish") {
+		t.Fatalf("thread_ask: %+v %q", asked, msg)
 	}
 	tk, _ := e.m.GetTask(ctx, key)
 	if tk.Status.Phase != v1alpha1.PhaseWaiting || tk.Status.Waiting.Reason != v1alpha1.WaitingQuestion || tk.Status.Waiting.ThreadSeq != asked.Seq {
-		t.Fatalf("after thread.ask: %+v", tk.Status)
+		t.Fatalf("after thread_ask: %+v", tk.Status)
 	}
 	if got := e.status(t, "Bearer "+c.MCPToken); got != 404 {
-		t.Fatalf("token after thread.ask: status %d, want 404", got)
+		t.Fatalf("token after thread_ask: status %d, want 404", got)
 	}
 	if _, _, err := e.m.Finish(ctx, key, manager.FinishRequest{RunID: c.RunID, Outcome: task.OutcomeDone}); !errors.Is(err, task.ErrRunMismatch) {
-		t.Fatalf("finish after thread.ask: %v, want run mismatch", err)
+		t.Fatalf("finish after thread_ask: %v, want run mismatch", err)
 	}
 }
 

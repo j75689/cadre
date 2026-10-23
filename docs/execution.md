@@ -80,15 +80,17 @@ The claim response describes the agent: its instructions, its ToolServers, and a
 
 The token is minted when a run is claimed and handed to the runner in the claim response (`mcp: {url, token}`), once. Only its SHA-256 is stored, in the Task's `status.run`, written in the same conditional write as the claim. The token is bound to that one run and dies with it: when the run ends (finish, cancel, lease-expiry reclaim) `status.run` is cleared and the token stops working, and a reclaimed task gets a fresh token with its new run. The endpoint keeps no session; every request resolves the token on a fresh read of the task, so any replica can serve it.
 
+Tool names follow the model APIs' rule, `^[a-zA-Z0-9_-]{1,64}$`, so a runner hands them to a model unchanged. Forwarded ToolServer tools are named `<toolserver>__<tool>`; ToolServer names cannot contain `_`, so they never collide with the core tools.
+
 Core tools:
 
 | Tool | Behaviour |
 | --- | --- |
-| `thread.post` | append the agent's message to the thread; returns its sequence number |
-| `thread.ask` | append the agent's question and end the run as `Waiting{Question}`, in one step; the runner must stop without calling finish |
-| `task.create_subtask` | record the subtask in the outbox (fenced on the run); the dispatcher creates it, unassigned unless an assignee is given; returns its name and number |
-| `task.files.read` / `task.files.write` | the latest version of a task file, or a new version of it: UTF-8 text, at most 1 MiB, paths up to 255 bytes |
-| `task.files.list` | the task's files with their latest version and size |
+| `thread_post` | append the agent's message to the thread; returns its sequence number |
+| `thread_ask` | append the agent's question and end the run as `Waiting{Question}`, in one step; the runner must stop without calling finish |
+| `task_create_subtask` | record the subtask in the outbox (fenced on the run); the dispatcher creates it, unassigned unless an assignee is given; returns its name and number |
+| `task_files_read` / `task_files_write` | the latest version of a task file, or a new version of it: UTF-8 text, at most 1 MiB, paths up to 255 bytes |
+| `task_files_list` | the task's files with their latest version and size |
 
 plus the ToolServers forwarded from the Agent's `toolRefs`. Every tool checks the run_id; a run that has lost its task is always rejected, with a tool error telling the agent to stop.
 

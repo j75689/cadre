@@ -88,7 +88,7 @@ type ClaimedMCP struct {
 // ClaimResponse is the 200 body of a claim; 204 means there is no work.
 // Fields are only ever added.
 //
-// A run that calls the thread.ask tool has ended when the tool returns: the
+// A run that calls the thread_ask tool has ended when the tool returns: the
 // server finished it as Waiting{Question}. The runner must stop without
 // calling finish; if it calls finish anyway, run_mismatch is the expected
 // answer and means stop, as always.
