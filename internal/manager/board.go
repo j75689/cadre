@@ -24,8 +24,8 @@ import (
 // its number. Without a name the task is named after a fresh lowercase ULID.
 // If numbering fails the task still exists and NumberNew numbers it later.
 func (m *Manager) CreateTask(ctx context.Context, namespace, name string, spec v1alpha1.TaskSpec) (*v1alpha1.Task, error) {
-	if strings.TrimSpace(spec.Title) == "" {
-		return nil, fmt.Errorf("title is required: %w", ErrInvalid)
+	if err := task.ValidateSpec(&spec); err != nil {
+		return nil, fmt.Errorf("%w: %w", ErrInvalid, err)
 	}
 	if _, err := m.store.GetTeam(ctx, namespace); err != nil {
 		return nil, fmt.Errorf("namespace %s has no Team: %w", namespace, err)

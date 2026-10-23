@@ -32,8 +32,16 @@ func TestCreateTaskNumbersAtOnce(t *testing.T) {
 	if _, err := e.m.CreateTask(ctx, "no-team", "", v1alpha1.TaskSpec{Title: "x"}); !errors.Is(err, storage.ErrNotFound) {
 		t.Fatalf("namespace without a Team: %v", err)
 	}
-	if _, err := e.m.CreateTask(ctx, ns, "", v1alpha1.TaskSpec{Title: "  "}); !errors.Is(err, ErrInvalid) {
-		t.Fatalf("blank title: %v", err)
+	for name, spec := range map[string]v1alpha1.TaskSpec{
+		"blank title":       {Title: "  "},
+		"unknown priority":  {Title: "x", Priority: "whenever"},
+		"unknown assignee":  {Title: "x", Assignee: &v1alpha1.Assignee{Kind: "Robot", Name: "r"}},
+		"nameless assignee": {Title: "x", Assignee: &v1alpha1.Assignee{Kind: v1alpha1.AssigneeAgent}},
+		"nameless parent":   {Title: "x", ParentRef: &v1alpha1.TaskReference{}},
+	} {
+		if _, err := e.m.CreateTask(ctx, ns, "", spec); !errors.Is(err, ErrInvalid) {
+			t.Errorf("%s: %v, want ErrInvalid", name, err)
+		}
 	}
 }
 

@@ -388,7 +388,7 @@ func appendOutbox(s *v1alpha1.TaskStatus, items []v1alpha1.OutboxItem) error {
 		if it.ID == "" || it.Kind != v1alpha1.OutboxCreateSubtask || it.Spec == nil {
 			return fmt.Errorf("outbox item %q: %w", it.ID, ErrInvalidEvent)
 		}
-		if err := validSpec(it.Spec); err != nil {
+		if err := ValidateSpec(it.Spec); err != nil {
 			return fmt.Errorf("outbox item %q: %w", it.ID, err)
 		}
 		if slices.ContainsFunc(s.Outbox, func(o v1alpha1.OutboxItem) bool { return o.ID == it.ID }) {
@@ -404,11 +404,14 @@ var (
 	assigneeKinds = []v1alpha1.AssigneeKind{v1alpha1.AssigneeAgent, v1alpha1.AssigneeUser}
 )
 
-// validSpec checks what the Task CRD validates on a spec.
-func validSpec(spec *v1alpha1.TaskSpec) error {
+// ValidateSpec checks what the Task CRD validates on a spec, for every path
+// that creates a task: a driver without an API server behind it (memory,
+// postgres) would otherwise store what Kubernetes would reject. It fails
+// with ErrInvalidEvent.
+func ValidateSpec(spec *v1alpha1.TaskSpec) error {
 	switch {
 	case strings.TrimSpace(spec.Title) == "":
-		return fmt.Errorf("subtask without a title: %w", ErrInvalidEvent)
+		return fmt.Errorf("title is required: %w", ErrInvalidEvent)
 	case !slices.Contains(priorities, spec.Priority):
 		return fmt.Errorf("priority %q: %w", spec.Priority, ErrInvalidEvent)
 	case spec.Assignee != nil && (!slices.Contains(assigneeKinds, spec.Assignee.Kind) || spec.Assignee.Name == ""):
