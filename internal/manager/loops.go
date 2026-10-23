@@ -45,6 +45,8 @@ func (m *Manager) NumberNew(ctx context.Context) error {
 		if err != nil {
 			return err
 		}
+		// One failing task must not hold up the ones after it.
+		var errs []error
 		for _, t := range unborn {
 			var n int64
 			if err := m.writeTeam(ctx, ns, func(team *v1alpha1.Team) (v1alpha1.TeamStatus, error) {
@@ -52,14 +54,14 @@ func (m *Manager) NumberNew(ctx context.Context) error {
 				n = num
 				return next, nil
 			}); err != nil {
-				return err
+				return err // the Team itself is failing; the rest would too
 			}
 			_, err := m.transition(ctx, storage.Key{Namespace: ns, Name: t.Name}, task.Create{Number: n})
 			if err != nil && !isLostCandidate(err) {
-				return err
+				errs = append(errs, fmt.Errorf("%s: %w", t.Name, err))
 			}
 		}
-		return nil
+		return errors.Join(errs...)
 	})
 }
 
@@ -122,10 +124,20 @@ func (m *Manager) applyItem(ctx context.Context, parent *v1alpha1.Task, it v1alp
 		}
 		sub.Spec.ParentRef = &v1alpha1.TaskReference{Name: parent.Name}
 		err := m.store.CreateTask(ctx, sub)
-		if errors.Is(err, storage.ErrAlreadyExists) {
-			return nil
+		if !errors.Is(err, storage.ErrAlreadyExists) {
+			return err
 		}
-		return err
+		// Applied before, unless the name was taken by something else, such
+		// as a runner reusing a ULID under another parent. Then the item
+		// stays in the outbox, visibly failing, instead of being dropped.
+		existing, err := m.store.GetTask(ctx, storage.Key{Namespace: sub.Namespace, Name: sub.Name})
+		if err != nil {
+			return err
+		}
+		if existing.Spec.ParentRef == nil || existing.Spec.ParentRef.Name != parent.Name {
+			return fmt.Errorf("task %s exists but is not a subtask of %s: %w", sub.Name, parent.Name, storage.ErrAlreadyExists)
+		}
+		return nil
 	case v1alpha1.OutboxRunEnded:
 		if it.Run == nil {
 			return fmt.Errorf("no run: %w", ErrInvalid)
@@ -154,16 +166,17 @@ func (m *Manager) ReclaimExpired(ctx context.Context) error {
 			return err
 		}
 		now := m.now()
+		var errs []error
 		for _, t := range running {
 			if t.Status.Run != nil && !now.After(t.Status.Run.LeaseUntil.Add(grace)) {
 				continue // still live as far as the index knows
 			}
 			_, err := m.transition(ctx, storage.Key{Namespace: ns, Name: t.Name}, task.Reclaim{Grace: grace})
 			if err != nil && !errors.Is(err, task.ErrLeaseNotExpired) && !isLostCandidate(err) {
-				return err
+				errs = append(errs, fmt.Errorf("%s: %w", t.Name, err))
 			}
 		}
-		return nil
+		return errors.Join(errs...)
 	})
 }
 
@@ -197,11 +210,18 @@ func (r *teamReconciler) reconcile(ctx context.Context, m *Manager) error {
 			return nil
 		}
 		fix := min(excess, prev)
-		return m.writeTeam(ctx, ns, func(team *v1alpha1.Team) (v1alpha1.TeamStatus, error) {
+		if err := m.writeTeam(ctx, ns, func(team *v1alpha1.Team) (v1alpha1.TeamStatus, error) {
 			s := team.Status
 			s.Running = max(s.Running-fix, 0)
 			return s, nil
-		})
+		}); err != nil {
+			return err
+		}
+		// The fixed part is gone; only what is left over counts as seen
+		// once. Otherwise the next scan would treat a claim in flight as a
+		// second sighting and take its slot.
+		r.excess[ns] = excess - fix
+		return nil
 	})
 }
 
@@ -211,8 +231,12 @@ type LoopConfig struct {
 	Dispatch time.Duration // default 10s; also numbers new tasks and reconciles Team counts
 }
 
-// Run runs the background loops until ctx is done.
+// Run runs the background loops until ctx is done. A nil log logs to
+// slog.Default().
 func (m *Manager) Run(ctx context.Context, cfg LoopConfig, log *slog.Logger) {
+	if log == nil {
+		log = slog.Default()
+	}
 	if cfg.Reclaim <= 0 {
 		cfg.Reclaim = 5 * time.Second
 	}

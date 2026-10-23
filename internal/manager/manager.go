@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/oklog/ulid/v2"
+	"k8s.io/apimachinery/pkg/api/equality"
 
 	v1alpha1 "github.com/j75689/cadre/api/v1alpha1"
 	"github.com/j75689/cadre/internal/storage"
@@ -65,13 +66,25 @@ func New(store storage.Driver, cfg Config, opts ...Option) *Manager {
 // retriable error instead of spinning.
 const maxConflicts = 20
 
-// ErrBusy means a transition kept losing conditional writes. It is retriable.
-var ErrBusy = errors.New("object is busy; retry")
+var (
+	// ErrBusy means a transition kept losing conditional writes. It is
+	// retriable.
+	ErrBusy = errors.New("object is busy; retry")
+	// ErrUncertain means a write failed in a way that leaves open whether
+	// it landed, and a re-read could not settle it. Callers must not undo
+	// anything (such as releasing a Team slot) on this error.
+	ErrUncertain = errors.New("write outcome unknown")
+)
 
 // transition reads the task, applies ev and writes the result, retrying on
 // conflicts. On success it returns the written task. A transition that ends
 // a run releases the Team slot after the Task write, which is the commit
-// point; a lost release is tolerated (see ReconcileTeams).
+// point; a lost release is tolerated (see teamReconciler).
+//
+// A write that fails without a conflict, a timeout say, may still have been
+// committed. The task is then read again: if it holds exactly the status
+// that was written, the write landed and the transition succeeded, so its
+// slot release is not lost; if it holds something else, the write failed.
 func (m *Manager) transition(ctx context.Context, key storage.Key, ev task.Event) (*v1alpha1.Task, error) {
 	for range maxConflicts {
 		t, err := m.store.GetTask(ctx, key)
@@ -88,16 +101,40 @@ func (m *Manager) transition(ctx context.Context, key storage.Key, ev task.Event
 			continue
 		}
 		if err != nil {
-			return nil, err
+			landed, rerr := m.landed(ctx, key, &res.Status)
+			if rerr != nil {
+				return nil, fmt.Errorf("%s %s: %w: %w", task.KindOf(ev), key, ErrUncertain, err)
+			}
+			if !landed {
+				return nil, err
+			}
+			if t, err = m.store.GetTask(ctx, key); err != nil {
+				return nil, fmt.Errorf("%s %s: %w: %w", task.KindOf(ev), key, ErrUncertain, err)
+			}
 		}
 		if res.ReleasesSlot {
-			_ = m.writeTeam(ctx, key.Namespace, func(team *v1alpha1.Team) (v1alpha1.TeamStatus, error) {
-				return task.ReleaseSlot(team), nil
-			})
+			m.releaseSlot(ctx, key.Namespace)
 		}
 		return t, nil
 	}
 	return nil, fmt.Errorf("%s %s: %w", task.KindOf(ev), key, ErrBusy)
+}
+
+// landed reports whether the task now holds exactly status.
+func (m *Manager) landed(ctx context.Context, key storage.Key, status *v1alpha1.TaskStatus) (bool, error) {
+	cur, err := m.store.GetTask(ctx, key)
+	if err != nil {
+		return false, err
+	}
+	return equality.Semantic.DeepEqual(&cur.Status, status), nil
+}
+
+// releaseSlot gives a run slot back to the namespace's Team. A failure only
+// leaves the count too high, which the team reconciler corrects.
+func (m *Manager) releaseSlot(ctx context.Context, namespace string) {
+	_ = m.writeTeam(ctx, namespace, func(team *v1alpha1.Team) (v1alpha1.TeamStatus, error) {
+		return task.ReleaseSlot(team), nil
+	})
 }
 
 // writeTeam reads the namespace's Team, applies change and writes it,

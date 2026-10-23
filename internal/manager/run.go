@@ -89,6 +89,7 @@ func (m *Manager) claimIn(ctx context.Context, ns, runner string) (*Claimed, err
 		return nil, err
 	}
 	for _, cand := range todo {
+		// A pre-filter only: the Claim transition decides on a fresh read.
 		if cand.Spec.Assignee == nil || cand.Spec.Assignee.Kind != v1alpha1.AssigneeAgent {
 			continue
 		}
@@ -106,11 +107,15 @@ func (m *Manager) claimIn(ctx context.Context, ns, runner string) (*Claimed, err
 		if err == nil {
 			return &Claimed{Task: t, RunID: runID, Mode: v1alpha1.RunModeRuntime, LeaseUntil: t.Status.Run.LeaseUntil.Time}, nil
 		}
-		// Lost the task (someone else claimed it, it was cancelled or
-		// deleted, the index was stale): give the slot back and move on.
-		_ = m.writeTeam(ctx, ns, func(team *v1alpha1.Team) (v1alpha1.TeamStatus, error) {
-			return task.ReleaseSlot(team), nil
-		})
+		if errors.Is(err, ErrUncertain) {
+			// The claim may have landed: keep the slot. If it did not, the
+			// team reconciler gives the slot back.
+			return nil, err
+		}
+		// Lost the task (someone else claimed it, it was cancelled,
+		// reassigned or deleted, the index was stale) or the write failed:
+		// give the slot back.
+		m.releaseSlot(ctx, ns)
 		if !isLostCandidate(err) {
 			return nil, err
 		}
@@ -119,7 +124,7 @@ func (m *Manager) claimIn(ctx context.Context, ns, runner string) (*Claimed, err
 }
 
 func isLostCandidate(err error) bool {
-	return errors.Is(err, task.ErrInvalidTransition) || errors.Is(err, task.ErrUnassigned) || errors.Is(err, storage.ErrNotFound)
+	return errors.Is(err, task.ErrInvalidTransition) || errors.Is(err, task.ErrNotClaimable) || errors.Is(err, storage.ErrNotFound)
 }
 
 // Subtask is a subtask a run asks for.
@@ -161,13 +166,23 @@ func (m *Manager) Finish(ctx context.Context, key storage.Key, req FinishRequest
 			return "", false, lookupErr
 		}
 		if rec != nil && rec.Reason == v1alpha1.RunFinished && rec.Outcome == req.Outcome {
-			return t.Status.Phase, true, nil
+			// The task may have moved on since (a reply, a new claim), so
+			// report the phase this finish produced, not the current one.
+			return outcomePhase[req.Outcome], true, nil
 		}
 	}
 	if err != nil {
 		return "", false, err
 	}
 	return t.Status.Phase, false, nil
+}
+
+// outcomePhase is the phase each finish outcome leads to.
+var outcomePhase = map[task.Outcome]v1alpha1.Phase{
+	task.OutcomeDone:    v1alpha1.PhaseDone,
+	task.OutcomeReview:  v1alpha1.PhaseReview,
+	task.OutcomeFailed:  v1alpha1.PhaseFailed,
+	task.OutcomeWaiting: v1alpha1.PhaseWaiting,
 }
 
 // RunsStream is the log stream holding a task's run history.
