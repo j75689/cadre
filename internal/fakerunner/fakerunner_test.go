@@ -181,3 +181,23 @@ func TestStalledRunToleratesAnUnavailableServer(t *testing.T) {
 		t.Fatalf("results %+v, %v; want the run stopped without an error", results, err)
 	}
 }
+
+// An answer that arrives but makes no sense is a protocol surprise, not a
+// server that could not be reached.
+func TestStalledRunReportsANonsenseAnswer(t *testing.T) {
+	var beats atomic.Int32
+	s := &stub{
+		heartbeat: func(w http.ResponseWriter, _ *http.Request) {
+			if beats.Add(1) > 1 {
+				w.Header().Set("Content-Type", "application/json")
+				_, _ = w.Write([]byte("not json"))
+				return
+			}
+			httpjson.Write(w, http.StatusOK, runner.HeartbeatResponse{LeaseUntil: time.Now().Add(2 * time.Second), LeaseSeconds: 2})
+		},
+	}
+	plan := Plan{Work: time.Minute, Stall: 3 * time.Second, StallAfter: 1}
+	if _, err := Run(context.Background(), s.start(t), Options{Runner: "r", Once: true, Plan: plan}); err == nil {
+		t.Fatal("a late heartbeat answered with nonsense must fail the run")
+	}
+}

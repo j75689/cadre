@@ -20,8 +20,9 @@ import (
 // the API server for the claim decision.
 func Agents(mgr ctrl.Manager) manager.Agents { return sources(mgr) }
 
-// ToolServerSources gives the per-run MCP endpoint fresh reads of Agents,
-// ToolServers and their Secrets.
+// ToolServerSources gives the per-run MCP endpoint cached reads of Agents
+// and ToolServers for listing tools, and fresh reads of ToolServers and
+// their Secrets for making calls.
 func ToolServerSources(mgr ctrl.Manager) mcp.Sources { return sources(mgr) }
 
 func sources(mgr ctrl.Manager) agents {
@@ -43,6 +44,10 @@ func (a agents) Agent(ctx context.Context, ns, name string) (*v1alpha1.Agent, er
 
 func (a agents) ModelProvider(ctx context.Context, ns, name string) (*v1alpha1.ModelProvider, error) {
 	return get[v1alpha1.ModelProvider](ctx, a.fresh, ns, name)
+}
+
+func (a agents) CachedToolServer(ctx context.Context, ns, name string) (*v1alpha1.ToolServer, error) {
+	return get[v1alpha1.ToolServer](ctx, a.cached, ns, name)
 }
 
 func (a agents) ToolServer(ctx context.Context, ns, name string) (*v1alpha1.ToolServer, error) {
