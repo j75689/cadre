@@ -21,6 +21,15 @@ import (
 
 const ns = "team-a"
 
+// testAgents holds the builtin agent every test task is assigned to, and
+// builtin is the claim label cadre-runner sends.
+var (
+	testAgents = StaticAgents{Agents: map[string]*v1alpha1.Agent{
+		ns + "/coder": ReadyAgent(ns, "coder", "claude", v1alpha1.AgentRuntime{Type: v1alpha1.RuntimeBuiltin}),
+	}}
+	builtin = map[string]string{v1alpha1.LabelRuntime: string(v1alpha1.RuntimeBuiltin)}
+)
+
 var ctx = context.Background()
 
 type clock struct {
@@ -57,7 +66,7 @@ func newEnv(t *testing.T, maxRuns int32) *env {
 
 // manager returns another Task Manager instance on the same store and clock.
 func (e *env) manager(store storage.Driver) *Manager {
-	return New(store, Config{Lease: 30 * time.Second, Heartbeat: 10 * time.Second}, WithClock(e.clock.now))
+	return New(store, Config{Lease: 30 * time.Second, Heartbeat: 10 * time.Second, Agents: testAgents}, WithClock(e.clock.now))
 }
 
 // addTask applies a task as kubectl would and numbers it.
@@ -74,6 +83,15 @@ func (e *env) addTask(t *testing.T, name string, assignee v1alpha1.AssigneeKind)
 		t.Fatal(err)
 	}
 	return storage.Key{Namespace: ns, Name: name}
+}
+
+// reassign gives the task to another agent, as kubectl edit would; the
+// memory driver has no spec update, so the backend's copy is changed.
+func (e *env) reassign(t *testing.T, key storage.Key, agent string) {
+	t.Helper()
+	e.backend.EditSpec(key, func(spec *v1alpha1.TaskSpec) {
+		spec.Assignee = &v1alpha1.Assignee{Kind: v1alpha1.AssigneeAgent, Name: agent}
+	})
 }
 
 func (e *env) get(t *testing.T, key storage.Key) *v1alpha1.Task {
@@ -96,7 +114,7 @@ func (e *env) running(t *testing.T) int32 {
 
 func (e *env) claim(t *testing.T) *Claimed {
 	t.Helper()
-	c, err := e.m.Claim(ctx, ClaimRequest{Runner: "runner-1"})
+	c, err := e.m.Claim(ctx, ClaimRequest{Runner: "runner-1", Labels: builtin})
 	if err != nil {
 		t.Fatalf("claim: %v", err)
 	}
@@ -202,10 +220,10 @@ func TestClaimRespectsTheSemaphoreAndAssignee(t *testing.T) {
 	if second == nil || second.Task.Name == first.Task.Name || second.Task.Name == "for-a-human" {
 		t.Fatalf("second claim: %+v", second)
 	}
-	if c, err := e.m.Claim(ctx, ClaimRequest{Runner: "r", Namespaces: []string{"elsewhere"}}); c != nil || err != nil {
+	if c, err := e.m.Claim(ctx, ClaimRequest{Runner: "r", Namespaces: []string{"elsewhere"}, Labels: builtin}); c != nil || err != nil {
 		t.Fatalf("claim in a namespace without a Team: %+v, %v", c, err)
 	}
-	if _, err := e.m.Claim(ctx, ClaimRequest{}); !errors.Is(err, ErrInvalid) {
+	if _, err := e.m.Claim(ctx, ClaimRequest{Labels: builtin}); !errors.Is(err, ErrInvalid) {
 		t.Fatalf("claim without a runner: %v", err)
 	}
 }
@@ -386,7 +404,7 @@ func TestConcurrentClaims(t *testing.T) {
 		go func() {
 			defer wg.Done()
 			for done.Load() < tasks {
-				c, err := m.Claim(ctx, ClaimRequest{Runner: fmt.Sprintf("runner-%d", i)})
+				c, err := m.Claim(ctx, ClaimRequest{Runner: fmt.Sprintf("runner-%d", i), Labels: builtin})
 				if err != nil {
 					t.Errorf("claim: %v", err)
 					return

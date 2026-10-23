@@ -26,8 +26,10 @@ type TaskRef struct {
 }
 
 // ClaimRequest asks for one task. Namespaces limits the search; empty means
-// every Team namespace. Labels are matched against Agent selectors from M1
-// and are ignored in M0.
+// every Team namespace. Labels decide which agents' tasks the runner may
+// take: a builtin agent's only with cadre.dev/runtime: builtin (sent by
+// cadre-runner), a runner agent's when the labels include every pair of its
+// selector.
 type ClaimRequest struct {
 	Runner     string            `json:"runner"`
 	Namespaces []string          `json:"namespaces,omitempty"`
@@ -47,9 +49,35 @@ type ClaimedTask struct {
 	Labels      []string                `json:"labels,omitempty"`
 }
 
+// ClaimedAgent is the agent whose task was claimed.
+type ClaimedAgent struct {
+	Name         string `json:"name"`
+	Instructions string `json:"instructions,omitempty"`
+	// ToolServers are the names of the ToolServers the agent may use.
+	ToolServers []string `json:"toolServers,omitempty"`
+	// Model says which model the agent uses and where its credential is.
+	// It is for cadre-runner, Cadre's own runner; other runners bring
+	// their own loop and credentials and ignore it.
+	Model *ClaimedModel `json:"model,omitempty"`
+}
+
+// ClaimedModel describes a ModelProvider without its credential: SecretRef
+// names the Secret key, never its value. Keys never travel over this
+// protocol; cadre-runner reads the Secret itself with its own
+// ServiceAccount, which is why the builtin runner runs in the cluster only.
+type ClaimedModel struct {
+	Type             v1alpha1.ProviderType  `json:"type"`
+	Model            string                 `json:"model"`
+	BaseURL          string                 `json:"baseURL,omitempty"`
+	Region           string                 `json:"region,omitempty"`
+	Project          string                 `json:"project,omitempty"`
+	Location         string                 `json:"location,omitempty"`
+	SecretRef        *v1alpha1.SecretKeyRef `json:"secretRef,omitempty"`
+	WorkloadIdentity bool                   `json:"workloadIdentity,omitempty"`
+}
+
 // ClaimResponse is the 200 body of a claim; 204 means there is no work.
-// M1 adds an "agent" block (instructions, model, tools) and "mcp" (url,
-// token); both are additive.
+// A later step adds "mcp" (url, token); fields are only ever added.
 type ClaimResponse struct {
 	Task             ClaimedTask      `json:"task"`
 	RunID            string           `json:"runId"`
@@ -57,6 +85,7 @@ type ClaimResponse struct {
 	LeaseUntil       time.Time        `json:"leaseUntil"`
 	LeaseSeconds     int              `json:"leaseSeconds"`
 	HeartbeatSeconds int              `json:"heartbeatSeconds"`
+	Agent            *ClaimedAgent    `json:"agent,omitempty"`
 }
 
 // HeartbeatRequest renews a run's lease.

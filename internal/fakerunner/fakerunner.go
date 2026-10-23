@@ -41,7 +41,10 @@ type Plan struct {
 type Options struct {
 	Runner     string
 	Namespaces []string
-	Plan       // used for every run unless Decide is set
+	// Labels are sent with every claim; they decide which agents' tasks the
+	// runner may take.
+	Labels map[string]string
+	Plan   // used for every run unless Decide is set
 	// Decide picks the plan for each claimed task, overriding Plan.
 	Decide func(runner.ClaimedTask) Plan
 	// Observe, if set, is told about every claim, renewal, finish and loss,
@@ -142,7 +145,7 @@ func Run(ctx context.Context, c *client.Client, o Options) ([]Result, error) {
 		// The lease is counted from before the request, so the claim's
 		// round trip can only make the runner stop earlier.
 		sent := time.Now()
-		claim, err := c.Claim(ctx, runner.ClaimRequest{Runner: o.Runner, Namespaces: o.Namespaces})
+		claim, err := c.Claim(ctx, runner.ClaimRequest{Runner: o.Runner, Namespaces: o.Namespaces, Labels: o.Labels})
 		if err != nil && ctx.Err() == nil {
 			logf(o.Log, "claim failed: %v\n", err)
 		}

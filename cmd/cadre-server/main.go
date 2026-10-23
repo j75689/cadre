@@ -83,7 +83,7 @@ func run() error {
 		return fmt.Errorf("controllers: %w", err)
 	}
 
-	m := manager.New(store, manager.Config{Lease: *lease, Heartbeat: *heartbeat})
+	m := manager.New(store, manager.Config{Lease: *lease, Heartbeat: *heartbeat, Agents: controller.Agents(ctrls)})
 	mux := http.NewServeMux()
 	runner.NewServer(m, log).Register(mux)
 	api.NewServer(m, log).Register(mux)

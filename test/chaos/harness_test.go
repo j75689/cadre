@@ -16,6 +16,7 @@ import (
 
 	v1alpha1 "github.com/j75689/cadre/api/v1alpha1"
 	"github.com/j75689/cadre/internal/api"
+	"github.com/j75689/cadre/internal/controller"
 	"github.com/j75689/cadre/internal/httpjson"
 	"github.com/j75689/cadre/internal/manager"
 	"github.com/j75689/cadre/internal/runner"
@@ -109,7 +110,23 @@ func startServer(name string, cfg kubernetes.Config, rnd *lockedRand) (*server, 
 		cancel()
 		return nil, err
 	}
-	m := manager.New(&chaosStore{Driver: drv, rnd: rnd}, managerConfig)
+	// Each server runs its own controllers, as cadre-server does: they
+	// mark the Agent Ready, and claims read it.
+	ctrls, err := controller.NewManager(cfg.REST)
+	if err != nil {
+		cancel()
+		_ = drv.Close()
+		return nil, err
+	}
+	if err := controller.Setup(ctrls, controller.Options{}, controller.SkipNameValidation()); err != nil {
+		cancel()
+		_ = drv.Close()
+		return nil, err
+	}
+	go func() { _ = ctrls.Start(ctx) }()
+	mcfg := managerConfig
+	mcfg.Agents = controller.Agents(ctrls)
+	m := manager.New(&chaosStore{Driver: drv, rnd: rnd}, mcfg)
 	log := slog.New(slog.NewTextHandler(io.Discard, nil))
 	mux := http.NewServeMux()
 	runner.NewServer(m, log).Register(mux)

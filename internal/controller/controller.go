@@ -28,6 +28,7 @@ import (
 	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
 	"k8s.io/client-go/rest"
 	"sigs.k8s.io/controller-runtime/pkg/client"
+	"sigs.k8s.io/controller-runtime/pkg/controller"
 	ctrl "sigs.k8s.io/controller-runtime/pkg/manager"
 	metricsserver "sigs.k8s.io/controller-runtime/pkg/metrics/server"
 
@@ -44,13 +45,29 @@ type Options struct {
 	Resync time.Duration
 }
 
+// SetupOption adjusts Setup.
+type SetupOption func(*setupConfig)
+
+type setupConfig struct{ skipNameValidation bool }
+
+// SkipNameValidation lets several managers register the same controllers in
+// one process, as tests that run several cadre-servers do; controller-runtime
+// otherwise rejects a second controller of a name.
+func SkipNameValidation() SetupOption {
+	return func(c *setupConfig) { c.skipNameValidation = true }
+}
+
 // Setup registers the reconcilers with mgr. Secrets are read through
 // mgr.GetAPIReader, which bypasses the cache.
-func Setup(mgr ctrl.Manager, o Options) error {
+func Setup(mgr ctrl.Manager, o Options, opts ...SetupOption) error {
+	var sc setupConfig
+	for _, opt := range opts {
+		opt(&sc)
+	}
 	if o.Resync <= 0 {
 		o.Resync = DefaultResync
 	}
-	b := base{client: mgr.GetClient(), secrets: mgr.GetAPIReader(), resync: o.Resync}
+	b := base{client: mgr.GetClient(), secrets: mgr.GetAPIReader(), resync: o.Resync, skipNames: sc.skipNameValidation}
 	if err := setupIndexes(mgr); err != nil {
 		return err
 	}
@@ -65,9 +82,15 @@ func Setup(mgr ctrl.Manager, o Options) error {
 
 // base is what every reconciler shares.
 type base struct {
-	client  client.Client
-	secrets client.Reader // uncached
-	resync  time.Duration
+	client    client.Client
+	secrets   client.Reader // uncached
+	resync    time.Duration
+	skipNames bool
+}
+
+// options returns the controller options every reconciler uses.
+func (b base) options() controller.Options {
+	return controller.Options{SkipNameValidation: &b.skipNames}
 }
 
 // hasTeam reports whether ns is a Team namespace.
@@ -118,12 +141,9 @@ func (b base) setReady(ctx context.Context, obj client.Object, status *v1alpha1.
 	return err
 }
 
-// isReady reports whether obj is Ready for its current spec: a Ready
-// condition decided for an older generation does not count.
+// isReady reports whether obj is Ready for its current spec.
 func isReady(obj client.Object, status v1alpha1.ConfigStatus) bool {
-	c := meta.FindStatusCondition(status.Conditions, v1alpha1.ConditionReady)
-	gen := obj.GetGeneration()
-	return c != nil && c.Status == metav1.ConditionTrue && c.ObservedGeneration == gen && status.ObservedGeneration == gen
+	return status.ReadyFor(obj.GetGeneration())
 }
 
 // NewManager returns a controller manager for cadre-server: no metrics or

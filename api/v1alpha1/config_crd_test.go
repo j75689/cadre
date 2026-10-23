@@ -83,6 +83,7 @@ func TestConfigCRDs(t *testing.T) {
 		"runner with selector":  {v1alpha1.AgentSpec{ModelRef: "claude", Runtime: v1alpha1.AgentRuntime{Type: v1alpha1.RuntimeRunner, Selector: map[string]string{"pool": "claude-code"}}}, true},
 		"runner, no selector":   {v1alpha1.AgentSpec{ModelRef: "claude", Runtime: v1alpha1.AgentRuntime{Type: v1alpha1.RuntimeRunner}}, false},
 		"builtin with selector": {v1alpha1.AgentSpec{ModelRef: "claude", Runtime: v1alpha1.AgentRuntime{Type: v1alpha1.RuntimeBuiltin, Selector: map[string]string{"a": "b"}}}, false},
+		"reserved label prefix": {v1alpha1.AgentSpec{ModelRef: "claude", Runtime: v1alpha1.AgentRuntime{Type: v1alpha1.RuntimeRunner, Selector: map[string]string{"cadre.dev/runtime": "builtin"}}}, false},
 		"no model":              {v1alpha1.AgentSpec{Runtime: v1alpha1.AgentRuntime{Type: v1alpha1.RuntimeBuiltin}}, false},
 	} {
 		expect(t, c, "Agent "+name, &v1alpha1.Agent{ObjectMeta: meta(), Spec: tc.spec}, tc.valid)

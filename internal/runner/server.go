@@ -49,6 +49,7 @@ func (s *Server) claim(w http.ResponseWriter, r *http.Request) {
 			Title: t.Spec.Title, Description: t.Spec.Description, Assignee: t.Spec.Assignee,
 			Priority: t.Spec.Priority, ParentRef: t.Spec.ParentRef, Labels: t.Spec.Labels,
 		},
+		Agent:            claimedAgent(c),
 		RunID:            c.RunID,
 		Mode:             c.Mode,
 		LeaseUntil:       c.LeaseUntil,
@@ -109,6 +110,27 @@ func (s *Server) finish(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	httpjson.Write(w, http.StatusOK, FinishResponse{Phase: phase, AlreadyFinished: again})
+}
+
+// claimedAgent describes the claimed task's agent, with its model's
+// credential as a reference only.
+func claimedAgent(c *manager.Claimed) *ClaimedAgent {
+	if c.Agent == nil {
+		return nil
+	}
+	a := &ClaimedAgent{Name: c.Agent.Name, Instructions: c.Agent.Spec.Instructions, ToolServers: c.Agent.Spec.ToolRefs}
+	if mp := c.ModelProvider; mp != nil {
+		s := mp.Spec
+		a.Model = &ClaimedModel{
+			Type: s.Type, Model: s.Model, BaseURL: s.BaseURL, Region: s.Region, Project: s.Project, Location: s.Location,
+			WorkloadIdentity: s.WorkloadIdentity,
+		}
+		if s.Auth != nil {
+			ref := s.Auth.SecretRef
+			a.Model.SecretRef = &ref
+		}
+	}
+	return a
 }
 
 func key(ref TaskRef) storage.Key { return storage.Key{Namespace: ref.Namespace, Name: ref.Name} }

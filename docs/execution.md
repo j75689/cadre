@@ -64,6 +64,16 @@ POST /runner/v1/events     run_id, seq → usage, context size, progress (for th
 POST /runner/v1/finish     run_id, outcome: Done | Review | Waiting{reason} | Failed
 ```
 
+Claiming matches a task's agent to the runner:
+
+- The agent must exist and be Ready for its current spec. Otherwise its tasks are passed over until it is.
+- A `builtin` agent is claimed only by `cadre-runner`, which sends the label `cadre.dev/runtime: builtin`.
+- A `runner` agent is claimed by any runner whose labels include every pair of its selector.
+- The `cadre.dev/` label prefix is reserved, so a selector cannot match the builtin label.
+- The index only proposes candidates. The agent is read fresh for the decision.
+
+The claim response describes the agent: its instructions, its ToolServers, and a model block (type, model, endpoint, cloud location). The model block names the Secret key holding the credential, never its value: **provider keys never travel over the runner protocol.** `cadre-runner` reads the Secret itself with its own ServiceAccount, so in M1 the builtin runner runs inside the cluster only. Other runners bring their own loop and credentials and ignore the model block.
+
 ## Per-run MCP endpoint
 
 `/mcp/run/<token>`, where the token maps to a run_id. Core tools:

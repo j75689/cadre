@@ -42,7 +42,7 @@ func (r *modelProviderReconciler) setup(mgr ctrl.Manager) error {
 	// object back for a second Secret read; the periodic re-check does.
 	return ctrl.NewControllerManagedBy(mgr).
 		For(&v1alpha1.ModelProvider{}, builder.WithPredicates(predicate.GenerationChangedPredicate{})).
-		Named("modelprovider").Complete(r)
+		Named("modelprovider").WithOptions(r.options()).Complete(r)
 }
 
 func (r *modelProviderReconciler) Reconcile(ctx context.Context, req reconcile.Request) (reconcile.Result, error) {
@@ -68,7 +68,7 @@ type toolServerReconciler struct{ base }
 func (r *toolServerReconciler) setup(mgr ctrl.Manager) error {
 	return ctrl.NewControllerManagedBy(mgr).
 		For(&v1alpha1.ToolServer{}, builder.WithPredicates(predicate.GenerationChangedPredicate{})).
-		Named("toolserver").Complete(r)
+		Named("toolserver").WithOptions(r.options()).Complete(r)
 }
 
 func (r *toolServerReconciler) Reconcile(ctx context.Context, req reconcile.Request) (reconcile.Result, error) {
@@ -95,7 +95,7 @@ func (r *toolServerReconciler) Reconcile(ctx context.Context, req reconcile.Requ
 type agentReconciler struct{ base }
 
 func (r *agentReconciler) setup(mgr ctrl.Manager) error {
-	return ctrl.NewControllerManagedBy(mgr).For(&v1alpha1.Agent{}).Named("agent").
+	return ctrl.NewControllerManagedBy(mgr).For(&v1alpha1.Agent{}).Named("agent").WithOptions(r.options()).
 		Watches(&v1alpha1.ModelProvider{}, handler.EnqueueRequestsFromMapFunc(r.agentsUsing(indexModelRef))).
 		Watches(&v1alpha1.ToolServer{}, handler.EnqueueRequestsFromMapFunc(r.agentsUsing(indexToolRefs))).
 		Complete(r)
