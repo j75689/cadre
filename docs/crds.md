@@ -105,9 +105,11 @@ status:
 | `status.waiting.threadSeq` | a thread sequence; sequences start at 1 |
 | `status.run.id`, `status.outbox[].id` | ULIDs |
 | `status.run.mode` | `runtime` or `step` |
-| `status.outbox[].kind` | `CreateSubtask`, whose `spec` is the subtask's `TaskSpec`; `Notify` is added once its payload is defined |
+| `status.outbox[].kind` | `CreateSubtask`, whose `spec` is the subtask's `TaskSpec`; `RunEnded`, whose `run` is the ended run (id, mode, runner, step, reason `Finished`, `Interrupted` or `Cancelled`, outcome, end time); `Notify` is added once its payload is defined |
 
 A `CreateSubtask` item names the subtask after its own id, lowercased (a valid DNS-1123 label). Re-applying the item is then a create of an object that already exists, which is what makes the dispatcher idempotent.
+
+A transition that ends a run (finish, lease-expiry reclaim, cancel) writes a `RunEnded` item in the same conditional write, with the run's id as the item id. The dispatcher appends it to the run history keyed on that id and then acks it, so the history always agrees with the Task: a write that loses the race leaves no record. Cancelling a task drops its pending `CreateSubtask` items but keeps `RunEnded` items.
 
 ## Agent, ModelProvider, ToolServer
 

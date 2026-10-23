@@ -6,6 +6,7 @@ import (
 	"testing"
 	"time"
 
+	"k8s.io/apimachinery/pkg/api/equality"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
 	v1alpha1 "github.com/j75689/cadre/api/v1alpha1"
@@ -22,9 +23,10 @@ func item(id string) v1alpha1.OutboxItem {
 	return v1alpha1.OutboxItem{ID: id, Kind: v1alpha1.OutboxCreateSubtask, Spec: &v1alpha1.TaskSpec{Title: "child " + id}}
 }
 
-// taskIn returns an assigned task in phase p. A Running task holds runA in step
-// mode at step 3 with a lease that expired a minute ago.
-func taskIn(p v1alpha1.Phase) *v1alpha1.Task {
+// taskIn returns an assigned task in phase p with one pending subtask. A
+// Running task holds runA in the given mode at step 3, with a lease that
+// expired a minute ago.
+func taskIn(p v1alpha1.Phase, mode v1alpha1.RunMode) *v1alpha1.Task {
 	t := &v1alpha1.Task{Spec: v1alpha1.TaskSpec{
 		Title:    "t",
 		Assignee: &v1alpha1.Assignee{Kind: v1alpha1.AssigneeAgent, Name: "coder"},
@@ -32,35 +34,44 @@ func taskIn(p v1alpha1.Phase) *v1alpha1.Task {
 	t.Status.Phase = p
 	if p != unborn {
 		t.Status.Number = 1
+		t.Status.Outbox = []v1alpha1.OutboxItem{item("01JB0000000000000000000000")}
 	}
 	switch p {
 	case v1alpha1.PhaseRunning:
-		t.Status.Run = &v1alpha1.Run{ID: runA, Mode: v1alpha1.RunModeStep, Step: 3, LeaseUntil: metav1.NewTime(now.Add(-time.Minute))}
+		t.Status.Run = &v1alpha1.Run{ID: runA, Mode: mode, Runner: "w1", Step: 3, LeaseUntil: metav1.NewTime(now.Add(-time.Minute))}
 	case v1alpha1.PhaseWaiting:
 		t.Status.Waiting = &v1alpha1.Waiting{Reason: v1alpha1.WaitingQuestion, Since: metav1.NewTime(now)}
 	}
 	return t
 }
 
-// validEvents holds one event of each kind that succeeds from every phase the
-// table allows it from.
-var validEvents = []Event{
-	Create{Number: 1},
-	Claim{RunID: runB, Mode: v1alpha1.RunModeRuntime, Runner: "r", Lease: time.Minute},
-	Heartbeat{RunID: runA, Lease: time.Minute},
-	Advance{RunID: runA, Step: 3},
-	Record{RunID: runA, Outbox: []v1alpha1.OutboxItem{item("01JB0000000000000000000001")}},
-	Finish{RunID: runA, Outcome: OutcomeDone},
-	Reply{},
-	Reclaim{},
-	Cancel{},
-	AckOutbox{},
+var (
+	step    = v1alpha1.RunModeStep
+	runtime = v1alpha1.RunModeRuntime
+)
+
+// validEvents holds one event of each kind, with the run mode it is valid in,
+// that succeeds from every phase the table allows it from.
+var validEvents = []struct {
+	ev   Event
+	mode v1alpha1.RunMode
+}{
+	{Create{Number: 1}, step},
+	{Claim{RunID: runB, Mode: runtime, Runner: "r", Lease: time.Minute}, step},
+	{Heartbeat{RunID: runA, Lease: time.Minute}, step},
+	{Advance{RunID: runA, Step: 3, Runner: "w2", Lease: time.Minute}, step},
+	{Record{RunID: runA, Outbox: []v1alpha1.OutboxItem{item("01JB0000000000000000000001")}}, runtime},
+	{Finish{RunID: runA, Step: 3, Outcome: OutcomeDone}, step},
+	{Reply{}, step},
+	{Reclaim{}, step},
+	{Cancel{}, step},
+	{AckOutbox{}, step},
 }
 
 func TestTableIsExhaustive(t *testing.T) {
-	for _, ev := range validEvents {
-		if _, ok := From[ev.kind()]; !ok {
-			t.Errorf("%s has no row in From", ev.kind())
+	for _, v := range validEvents {
+		if _, ok := From[KindOf(v.ev)]; !ok {
+			t.Errorf("%s has no row in From", KindOf(v.ev))
 		}
 	}
 	if len(From) != len(validEvents) {
@@ -70,19 +81,25 @@ func TestTableIsExhaustive(t *testing.T) {
 
 func TestEveryPhaseAndEvent(t *testing.T) {
 	for _, p := range append([]v1alpha1.Phase{unborn}, allPhases...) {
-		for _, ev := range validEvents {
-			before := taskIn(p)
+		for _, v := range validEvents {
+			before := taskIn(p, v.mode)
 			snapshot := before.DeepCopy()
-			_, err := Apply(before, ev, now)
-			allowed := slices.Contains(From[ev.kind()], p)
+			_, err := Apply(before, v.ev, now)
+			allowed := slices.Contains(From[KindOf(v.ev)], p)
+			// A run's event against a task without its run is a fencing
+			// failure, whatever the phase.
+			want := ErrInvalidTransition
+			if _, ok := v.ev.(fenced); ok {
+				want = ErrRunMismatch
+			}
 			switch {
 			case allowed && err != nil:
-				t.Errorf("%s from %q: unexpected error %v", ev.kind(), p, err)
-			case !allowed && !errors.Is(err, ErrInvalidTransition):
-				t.Errorf("%s from %q: got %v, want ErrInvalidTransition", ev.kind(), p, err)
+				t.Errorf("%s from %q: unexpected error %v", KindOf(v.ev), p, err)
+			case !allowed && !errors.Is(err, want):
+				t.Errorf("%s from %q: got %v, want %v", KindOf(v.ev), p, err, want)
 			}
-			if before.Status.Phase != snapshot.Status.Phase || (before.Status.Run == nil) != (snapshot.Status.Run == nil) {
-				t.Errorf("%s from %q modified its input", ev.kind(), p)
+			if !equality.Semantic.DeepEqual(before, snapshot) {
+				t.Errorf("%s from %q modified its input", KindOf(v.ev), p)
 			}
 		}
 	}
@@ -92,22 +109,37 @@ func apply(t *testing.T, tk *v1alpha1.Task, ev Event) Result {
 	t.Helper()
 	res, err := Apply(tk, ev, now)
 	if err != nil {
-		t.Fatalf("%s: %v", ev.kind(), err)
+		t.Fatalf("%s: %v", KindOf(ev), err)
 	}
 	return res
 }
 
-func TestCreateAndClaim(t *testing.T) {
-	tk := taskIn(unborn)
-	if _, err := Apply(tk, Create{}, now); !errors.Is(err, ErrInvalidEvent) {
-		t.Fatalf("create without a number: got %v", err)
+func wantErr(t *testing.T, tk *v1alpha1.Task, ev Event, want error) {
+	t.Helper()
+	if _, err := Apply(tk, ev, now); !errors.Is(err, want) {
+		t.Errorf("%s %+v: got %v, want %v", KindOf(ev), ev, err, want)
 	}
+}
+
+// runEnded returns the RunEnded item for runA, or nil.
+func runEnded(s v1alpha1.TaskStatus) *v1alpha1.RunRecord {
+	for _, it := range s.Outbox {
+		if it.Kind == v1alpha1.OutboxRunEnded && it.ID == runA {
+			return it.Run
+		}
+	}
+	return nil
+}
+
+func TestCreateAndClaim(t *testing.T) {
+	tk := taskIn(unborn, step)
+	wantErr(t, tk, Create{}, ErrInvalidEvent)
 	tk.Status = apply(t, tk, Create{Number: 123}).Status
 	if tk.Status.Phase != v1alpha1.PhaseTodo || tk.Status.Number != 123 {
 		t.Fatalf("after create: %+v", tk.Status)
 	}
 
-	res := apply(t, tk, Claim{RunID: runA, Mode: v1alpha1.RunModeRuntime, Runner: "runner-7f3a", Lease: 1500 * time.Millisecond})
+	res := apply(t, tk, Claim{RunID: runA, Mode: runtime, Runner: "runner-7f3a", Lease: 1500 * time.Millisecond})
 	s := res.Status
 	if s.Phase != v1alpha1.PhaseRunning || s.Run.ID != runA || s.Run.Runner != "runner-7f3a" {
 		t.Fatalf("after claim: %+v", s)
@@ -119,72 +151,91 @@ func TestCreateAndClaim(t *testing.T) {
 		t.Fatalf("runs = %+v, releases = %v", s.Runs, res.ReleasesSlot)
 	}
 
-	unassigned := taskIn(v1alpha1.PhaseTodo)
+	unassigned := taskIn(v1alpha1.PhaseTodo, step)
 	unassigned.Spec.Assignee = nil
-	if _, err := Apply(unassigned, Claim{RunID: runA, Lease: time.Minute}, now); !errors.Is(err, ErrUnassigned) {
-		t.Fatalf("claim unassigned: got %v", err)
-	}
-	if _, err := Apply(taskIn(v1alpha1.PhaseTodo), Claim{RunID: runA}, now); !errors.Is(err, ErrInvalidEvent) {
-		t.Fatalf("claim without a lease: got %v", err)
-	}
+	wantErr(t, unassigned, Claim{RunID: runA, Mode: runtime, Lease: time.Minute}, ErrUnassigned)
+	wantErr(t, taskIn(v1alpha1.PhaseTodo, step), Claim{RunID: runA, Mode: runtime}, ErrInvalidEvent)
+	wantErr(t, taskIn(v1alpha1.PhaseTodo, step), Claim{RunID: runA, Mode: "batch", Lease: time.Minute}, ErrInvalidEvent)
 }
 
 func TestFencing(t *testing.T) {
-	for _, ev := range []Event{
+	stale := []Event{
 		Heartbeat{RunID: runB, Lease: time.Minute},
-		Advance{RunID: runB, Step: 3},
+		Advance{RunID: runB, Step: 3, Lease: time.Minute},
 		Record{RunID: runB},
-		Finish{RunID: runB, Outcome: OutcomeDone},
-	} {
-		if _, err := Apply(taskIn(v1alpha1.PhaseRunning), ev, now); !errors.Is(err, ErrRunMismatch) {
-			t.Errorf("%s with a stale run id: got %v, want ErrRunMismatch", ev.kind(), err)
+		Finish{RunID: runB, Step: 3, Outcome: OutcomeDone},
+	}
+	for _, ev := range stale {
+		wantErr(t, taskIn(v1alpha1.PhaseRunning, step), ev, ErrRunMismatch)
+	}
+
+	// A runner whose task was cancelled or reclaimed must get a 409 on its
+	// next call, not a phase error, so it knows to stop.
+	running := taskIn(v1alpha1.PhaseRunning, runtime)
+	cancelled := apply(t, running, Cancel{}).Status
+	reclaimed := apply(t, running, Reclaim{}).Status
+	for _, s := range []v1alpha1.TaskStatus{cancelled, reclaimed} {
+		gone := &v1alpha1.Task{Spec: running.Spec, Status: s}
+		for _, ev := range []Event{
+			Heartbeat{RunID: runA, Lease: time.Minute},
+			Record{RunID: runA},
+			Finish{RunID: runA, Outcome: OutcomeDone},
+		} {
+			wantErr(t, gone, ev, ErrRunMismatch)
 		}
 	}
 }
 
 func TestHeartbeatExtendsLease(t *testing.T) {
-	s := apply(t, taskIn(v1alpha1.PhaseRunning), Heartbeat{RunID: runA, Lease: time.Minute}).Status
+	s := apply(t, taskIn(v1alpha1.PhaseRunning, runtime), Heartbeat{RunID: runA, Lease: time.Minute}).Status
 	if !s.Run.LeaseUntil.Time.Equal(now.Add(time.Minute)) {
 		t.Fatalf("leaseUntil = %v", s.Run.LeaseUntil)
 	}
+	wantErr(t, taskIn(v1alpha1.PhaseRunning, runtime), Heartbeat{RunID: runA}, ErrInvalidEvent)
 }
 
-func TestAdvanceExactlyOnce(t *testing.T) {
-	tk := taskIn(v1alpha1.PhaseRunning)
-	step := Advance{RunID: runA, Step: 3, Outbox: []v1alpha1.OutboxItem{item("01JB0000000000000000000001")}}
-	tk.Status = apply(t, tk, step).Status
-	if tk.Status.Run.Step != 4 || len(tk.Status.Outbox) != 1 {
-		t.Fatalf("after advance: step %d, outbox %d", tk.Status.Run.Step, len(tk.Status.Outbox))
+func TestAdvance(t *testing.T) {
+	tk := taskIn(v1alpha1.PhaseRunning, step)
+	commit := Advance{RunID: runA, Step: 3, Runner: "w2", Lease: time.Minute, Outbox: []v1alpha1.OutboxItem{item("01JB0000000000000000000001")}}
+	tk.Status = apply(t, tk, commit).Status
+	r := tk.Status.Run
+	if r.Step != 4 || r.Runner != "w2" || !r.LeaseUntil.Time.Equal(now.Add(time.Minute)) || len(tk.Status.Outbox) != 2 {
+		t.Fatalf("after advance: run %+v, outbox %d", r, len(tk.Status.Outbox))
 	}
-	if _, err := Apply(tk, step, now); !errors.Is(err, ErrStepMismatch) {
-		t.Fatalf("re-delivered step: got %v, want ErrStepMismatch", err)
-	}
+	wantErr(t, tk, commit, ErrStepMismatch)
+	wantErr(t, taskIn(v1alpha1.PhaseRunning, step), Advance{RunID: runA, Step: 3}, ErrInvalidEvent)
+	wantErr(t, taskIn(v1alpha1.PhaseRunning, runtime), Advance{RunID: runA, Step: 3, Lease: time.Minute}, ErrInvalidTransition)
+}
 
-	runtime := taskIn(v1alpha1.PhaseRunning)
-	runtime.Status.Run.Mode = v1alpha1.RunModeRuntime
-	if _, err := Apply(runtime, Advance{RunID: runA, Step: 3}, now); !errors.Is(err, ErrInvalidTransition) {
-		t.Fatalf("advance in runtime mode: got %v", err)
+// W1 stalls at step 3; W2 redoes step 3 and advances to 4. W1's late finish
+// or record must not land.
+func TestSupersededStepIsDropped(t *testing.T) {
+	tk := taskIn(v1alpha1.PhaseRunning, step)
+	tk.Status = apply(t, tk, Advance{RunID: runA, Step: 3, Runner: "w2", Lease: time.Minute}).Status
+
+	wantErr(t, tk, Finish{RunID: runA, Step: 3, Outcome: OutcomeDone}, ErrStepMismatch)
+	wantErr(t, tk, Record{RunID: runA, Outbox: []v1alpha1.OutboxItem{item("01JB0000000000000000000002")}}, ErrInvalidTransition)
+	if s := apply(t, tk, Finish{RunID: runA, Step: 4, Outcome: OutcomeDone}).Status; s.Phase != v1alpha1.PhaseDone {
+		t.Fatalf("finish at the current step: %+v", s)
 	}
 }
 
 func TestRecordAndOutbox(t *testing.T) {
-	tk := taskIn(v1alpha1.PhaseRunning)
+	tk := taskIn(v1alpha1.PhaseRunning, runtime)
 	a, b := item("01JB0000000000000000000001"), item("01JB0000000000000000000002")
 	res := apply(t, tk, Record{RunID: runA, Outbox: []v1alpha1.OutboxItem{a, b}})
-	if res.Status.Phase != v1alpha1.PhaseRunning || res.Status.Run.Step != 3 || len(res.Status.Outbox) != 2 {
+	if res.Status.Phase != v1alpha1.PhaseRunning || res.Status.Run.Step != 3 || len(res.Status.Outbox) != 3 {
 		t.Fatalf("after record: %+v", res.Status)
 	}
 	tk.Status = res.Status
-	if _, err := Apply(tk, Record{RunID: runA, Outbox: []v1alpha1.OutboxItem{a}}, now); !errors.Is(err, ErrInvalidEvent) {
-		t.Fatalf("duplicate outbox id: got %v", err)
-	}
-	bad := v1alpha1.OutboxItem{ID: "01JB0000000000000000000003", Kind: v1alpha1.OutboxCreateSubtask}
-	if _, err := Apply(tk, Record{RunID: runA, Outbox: []v1alpha1.OutboxItem{bad}}, now); !errors.Is(err, ErrInvalidEvent) {
-		t.Fatalf("subtask without a spec: got %v", err)
-	}
+	wantErr(t, tk, Record{RunID: runA, Outbox: []v1alpha1.OutboxItem{a}}, ErrInvalidEvent)
+	noSpec := v1alpha1.OutboxItem{ID: "01JB0000000000000000000003", Kind: v1alpha1.OutboxCreateSubtask}
+	wantErr(t, tk, Record{RunID: runA, Outbox: []v1alpha1.OutboxItem{noSpec}}, ErrInvalidEvent)
+	forged := v1alpha1.OutboxItem{ID: "01JB0000000000000000000004", Kind: v1alpha1.OutboxRunEnded, Run: &v1alpha1.RunRecord{}}
+	wantErr(t, tk, Record{RunID: runA, Outbox: []v1alpha1.OutboxItem{forged}}, ErrInvalidEvent)
 
 	tk.Status = apply(t, tk, AckOutbox{IDs: []string{a.ID, "unknown"}}).Status
-	if len(tk.Status.Outbox) != 1 || tk.Status.Outbox[0].ID != b.ID {
+	if len(tk.Status.Outbox) != 2 || tk.Status.Outbox[1].ID != b.ID {
 		t.Fatalf("after ack: %+v", tk.Status.Outbox)
 	}
 }
@@ -193,16 +244,17 @@ func TestFinish(t *testing.T) {
 	for outcome, phase := range map[Outcome]v1alpha1.Phase{
 		OutcomeDone: v1alpha1.PhaseDone, OutcomeReview: v1alpha1.PhaseReview, OutcomeFailed: v1alpha1.PhaseFailed,
 	} {
-		res := apply(t, taskIn(v1alpha1.PhaseRunning), Finish{RunID: runA, Outcome: outcome})
+		res := apply(t, taskIn(v1alpha1.PhaseRunning, runtime), Finish{RunID: runA, Outcome: outcome})
 		if res.Status.Phase != phase || res.Status.Run != nil || !res.ReleasesSlot {
 			t.Errorf("finish %s: %+v releases=%v", outcome, res.Status, res.ReleasesSlot)
 		}
-		if res.Ended == nil || res.Ended.Run.ID != runA || res.Ended.Reason != EndFinished || res.Ended.Outcome != outcome {
-			t.Errorf("finish %s: ended = %+v", outcome, res.Ended)
+		rec := runEnded(res.Status)
+		if rec == nil || rec.Reason != v1alpha1.RunFinished || rec.Outcome != outcome || rec.Runner != "w1" || rec.Step != 3 || !rec.EndedAt.Time.Equal(now) {
+			t.Errorf("finish %s: run record %+v", outcome, rec)
 		}
 	}
 
-	res := apply(t, taskIn(v1alpha1.PhaseRunning), Finish{
+	res := apply(t, taskIn(v1alpha1.PhaseRunning, runtime), Finish{
 		RunID: runA, Outcome: OutcomeWaiting, Reason: v1alpha1.WaitingQuestion, ThreadSeq: 41,
 		Outbox: []v1alpha1.OutboxItem{item("01JB0000000000000000000001")},
 	})
@@ -210,52 +262,71 @@ func TestFinish(t *testing.T) {
 	if res.Status.Phase != v1alpha1.PhaseWaiting || w == nil || w.Reason != v1alpha1.WaitingQuestion || w.ThreadSeq != 41 || !w.Since.Time.Equal(now) {
 		t.Fatalf("finish waiting: %+v", res.Status)
 	}
-	if len(res.Status.Outbox) != 1 {
-		t.Fatalf("finish did not record its outbox: %+v", res.Status.Outbox)
+	if len(res.Status.Outbox) != 3 {
+		t.Fatalf("finish outbox: want the pending item, its own and RunEnded, got %+v", res.Status.Outbox)
 	}
 
 	for _, ev := range []Finish{
 		{RunID: runA, Outcome: OutcomeWaiting},
+		{RunID: runA, Outcome: OutcomeWaiting, Reason: "Lunch"},
+		{RunID: runA, Outcome: OutcomeWaiting, Reason: v1alpha1.WaitingQuestion, ThreadSeq: -1},
 		{RunID: runA, Outcome: "Paused"},
 	} {
-		if _, err := Apply(taskIn(v1alpha1.PhaseRunning), ev, now); !errors.Is(err, ErrInvalidEvent) {
-			t.Errorf("finish %+v: got %v, want ErrInvalidEvent", ev, err)
-		}
+		wantErr(t, taskIn(v1alpha1.PhaseRunning, runtime), ev, ErrInvalidEvent)
 	}
 }
 
 func TestReplyClearsWaiting(t *testing.T) {
-	s := apply(t, taskIn(v1alpha1.PhaseWaiting), Reply{}).Status
+	s := apply(t, taskIn(v1alpha1.PhaseWaiting, step), Reply{}).Status
 	if s.Phase != v1alpha1.PhaseTodo || s.Waiting != nil {
 		t.Fatalf("after reply: %+v", s)
 	}
 }
 
 func TestReclaim(t *testing.T) {
-	live := taskIn(v1alpha1.PhaseRunning)
+	live := taskIn(v1alpha1.PhaseRunning, runtime)
 	live.Status.Run.LeaseUntil = metav1.NewTime(now)
-	if _, err := Apply(live, Reclaim{}, now); !errors.Is(err, ErrLeaseNotExpired) {
-		t.Fatalf("reclaim at the lease deadline: got %v", err)
+	wantErr(t, live, Reclaim{}, ErrLeaseNotExpired)
+
+	corrupt := taskIn(v1alpha1.PhaseRunning, runtime)
+	corrupt.Status.Run = nil
+	wantErr(t, corrupt, Reclaim{}, ErrInvalidTransition)
+
+	res := apply(t, taskIn(v1alpha1.PhaseRunning, runtime), Reclaim{})
+	if res.Status.Phase != v1alpha1.PhaseTodo || res.Status.Run != nil || !res.ReleasesSlot {
+		t.Fatalf("after reclaim: %+v", res.Status)
 	}
-	res := apply(t, taskIn(v1alpha1.PhaseRunning), Reclaim{})
-	if res.Status.Phase != v1alpha1.PhaseTodo || res.Status.Run != nil || !res.ReleasesSlot || res.Ended.Reason != EndInterrupted {
-		t.Fatalf("after reclaim: %+v ended=%+v", res.Status, res.Ended)
+	if rec := runEnded(res.Status); rec == nil || rec.Reason != v1alpha1.RunInterrupted {
+		t.Fatalf("reclaim run record: %+v", rec)
 	}
 }
 
 func TestCancel(t *testing.T) {
 	for _, p := range allPhases {
-		res := apply(t, taskIn(p), Cancel{})
+		res := apply(t, taskIn(p, runtime), Cancel{})
 		if res.Status.Phase != v1alpha1.PhaseCancelled || res.Status.Run != nil || res.Status.Waiting != nil {
 			t.Errorf("cancel from %s: %+v", p, res.Status)
 		}
 		running := p == v1alpha1.PhaseRunning
-		if res.ReleasesSlot != running || (res.Ended != nil) != running {
-			t.Errorf("cancel from %s: releases=%v ended=%+v", p, res.ReleasesSlot, res.Ended)
+		rec := runEnded(res.Status)
+		if res.ReleasesSlot != running || (rec != nil) != running {
+			t.Errorf("cancel from %s: releases=%v record=%+v", p, res.ReleasesSlot, rec)
 		}
-		if running && res.Ended.Reason != EndCancelled {
-			t.Errorf("cancel from Running: reason %s", res.Ended.Reason)
+		if running && rec.Reason != v1alpha1.RunCancelled {
+			t.Errorf("cancel from Running: reason %s", rec.Reason)
 		}
+		for _, it := range res.Status.Outbox {
+			if it.Kind == v1alpha1.OutboxCreateSubtask {
+				t.Errorf("cancel from %s kept pending subtask %s", p, it.ID)
+			}
+		}
+	}
+
+	// Cancelling after a finish keeps the finish's run record.
+	finished := apply(t, taskIn(v1alpha1.PhaseRunning, runtime), Finish{RunID: runA, Outcome: OutcomeReview})
+	s := apply(t, &v1alpha1.Task{Status: finished.Status}, Cancel{}).Status
+	if rec := runEnded(s); rec == nil || rec.Reason != v1alpha1.RunFinished {
+		t.Fatalf("cancel dropped the run record: %+v", s.Outbox)
 	}
 }
 
@@ -285,5 +356,15 @@ func TestTeam(t *testing.T) {
 	team.Status = ReleaseSlot(team)
 	if team.Status.Running != 0 {
 		t.Fatalf("running = %d after over-release", team.Status.Running)
+	}
+
+	unset := &v1alpha1.Team{}
+	s, err := AcquireSlot(unset)
+	if err != nil || s.Running != 1 {
+		t.Fatalf("unset maxConcurrentRuns: got %v, running %d; want the default of 1", err, s.Running)
+	}
+	unset.Status = s
+	if _, err := AcquireSlot(unset); !errors.Is(err, ErrNoSlot) {
+		t.Fatalf("second slot with the default of 1: got %v", err)
 	}
 }

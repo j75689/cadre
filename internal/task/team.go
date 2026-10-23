@@ -27,7 +27,9 @@ func ClaimNumber(team *v1alpha1.Team) (int64, v1alpha1.TeamStatus) {
 // lost Task claim must be followed by ReleaseSlot.
 func AcquireSlot(team *v1alpha1.Team) (v1alpha1.TeamStatus, error) {
 	s := team.Status
-	if s.Running >= team.Spec.MaxConcurrentRuns {
+	// The API server defaults MaxConcurrentRuns to 1; a Team built elsewhere
+	// gets the same floor rather than zero slots.
+	if s.Running >= max(team.Spec.MaxConcurrentRuns, 1) {
 		return s, ErrNoSlot
 	}
 	s.Running++

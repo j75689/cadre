@@ -70,6 +70,11 @@ type Event interface{ kind() Kind }
 // KindOf returns the kind of ev.
 func KindOf(ev Event) Kind { return ev.kind() }
 
+// fenced is an event sent by a run. It is checked against the task's run
+// before anything else, so a run that lost its task always learns so with
+// ErrRunMismatch, whatever phase the task has moved to.
+type fenced interface{ runID() string }
+
 // Create numbers a new task and puts it in Todo.
 type Create struct {
 	Number int64 // claimed from the Team's counter
@@ -89,37 +94,42 @@ type Heartbeat struct {
 	Lease time.Duration
 }
 
-// Advance commits step Step of a step-mode run: the step becomes Step+1 and
-// Outbox is written in the same write. Re-delivering the same step fails with
-// ErrStepMismatch, so the step's effects land exactly once.
+// Advance commits step Step of a step-mode run: the step becomes Step+1,
+// Outbox is written, and the run is handed to Runner, the worker taking the
+// next step, with a fresh lease, all in the same write. Re-delivering the same
+// step fails with ErrStepMismatch, so the step's effects land exactly once.
 type Advance struct {
 	RunID  string
 	Step   int64
+	Runner string
+	Lease  time.Duration
 	Outbox []v1alpha1.OutboxItem
 }
 
-// Record writes outbox items for a run without touching its phase or step. It
-// is fenced on the run id only, because a runtime-mode run has no step.
+// Record writes outbox items for a runtime-mode run without touching its
+// phase. It is fenced on the run id only, because a runtime run has no step;
+// a step-mode run commits its outbox with Advance instead.
 type Record struct {
 	RunID  string
 	Outbox []v1alpha1.OutboxItem
 }
 
 // Outcome is how a run finished.
-type Outcome string
+type Outcome = v1alpha1.RunOutcome
 
 // Run outcomes, as accepted by /runner/v1/finish.
 const (
-	OutcomeDone    Outcome = "Done"
-	OutcomeReview  Outcome = "Review"
-	OutcomeWaiting Outcome = "Waiting"
-	OutcomeFailed  Outcome = "Failed"
+	OutcomeDone    = v1alpha1.RunOutcomeDone
+	OutcomeReview  = v1alpha1.RunOutcomeReview
+	OutcomeWaiting = v1alpha1.RunOutcomeWaiting
+	OutcomeFailed  = v1alpha1.RunOutcomeFailed
 )
 
-// Finish ends the run with an outcome. Outbox is recorded exactly as Record
-// would, in the same write as the phase change.
+// Finish ends the run with an outcome. Outbox is written in the same write.
+// In step mode Step must be the run's current step, as for Advance.
 type Finish struct {
 	RunID     string
+	Step      int64
 	Outcome   Outcome
 	Reason    v1alpha1.WaitingReason // required for OutcomeWaiting
 	ThreadSeq int64                  // optional, for OutcomeWaiting
@@ -151,37 +161,28 @@ func (Reclaim) kind() Kind   { return KindReclaim }
 func (Cancel) kind() Kind    { return KindCancel }
 func (AckOutbox) kind() Kind { return KindAckOutbox }
 
-// EndReason says why a run ended.
-type EndReason string
-
-// End reasons.
-const (
-	EndFinished    EndReason = "Finished"
-	EndInterrupted EndReason = "Interrupted"
-	EndCancelled   EndReason = "Cancelled"
-)
-
-// EndedRun describes a run a transition ended, for the run history log.
-type EndedRun struct {
-	Run     v1alpha1.Run
-	Reason  EndReason
-	Outcome Outcome // set when Reason is EndFinished
-	At      time.Time
-}
+func (e Heartbeat) runID() string { return e.RunID }
+func (e Advance) runID() string   { return e.RunID }
+func (e Record) runID() string    { return e.RunID }
+func (e Finish) runID() string    { return e.RunID }
 
 // Result is the outcome of a transition.
 type Result struct {
 	// Status is the next status, to be written with a conditional write.
 	Status v1alpha1.TaskStatus
 	// ReleasesSlot is true when the transition ended a run, so the caller
-	// releases the Team slot after the write succeeds.
+	// releases the Team slot after the write succeeds. The ended run itself
+	// is recorded by a RunEnded outbox item in Status.
 	ReleasesSlot bool
-	// Ended is the run the transition ended, if any.
-	Ended *EndedRun
 }
 
 // Apply runs one transition. It does not modify t.
 func Apply(t *v1alpha1.Task, ev Event, now time.Time) (Result, error) {
+	if f, ok := ev.(fenced); ok {
+		if err := checkRun(&t.Status, f.runID()); err != nil {
+			return Result{}, err
+		}
+	}
 	cur := t.Status.Phase
 	if !slices.Contains(From[ev.kind()], cur) {
 		return Result{}, fmt.Errorf("%s from phase %q: %w", ev.kind(), cur, ErrInvalidTransition)
@@ -203,6 +204,9 @@ func Apply(t *v1alpha1.Task, ev Event, now time.Time) (Result, error) {
 		if ev.RunID == "" || ev.Lease <= 0 {
 			return Result{}, fmt.Errorf("claim needs a run id and a positive lease: %w", ErrInvalidEvent)
 		}
+		if ev.Mode != v1alpha1.RunModeRuntime && ev.Mode != v1alpha1.RunModeStep {
+			return Result{}, fmt.Errorf("run mode %q: %w", ev.Mode, ErrInvalidEvent)
+		}
 		s.Phase = v1alpha1.PhaseRunning
 		s.Run = &v1alpha1.Run{ID: ev.RunID, Mode: ev.Mode, Runner: ev.Runner, LeaseUntil: leaseUntil(now, ev.Lease)}
 		if s.Runs == nil {
@@ -212,37 +216,41 @@ func Apply(t *v1alpha1.Task, ev Event, now time.Time) (Result, error) {
 		s.Runs.LastID = ev.RunID
 
 	case Heartbeat:
-		if err := checkRun(s, ev.RunID); err != nil {
-			return Result{}, err
-		}
 		if ev.Lease <= 0 {
 			return Result{}, fmt.Errorf("heartbeat needs a positive lease: %w", ErrInvalidEvent)
 		}
 		s.Run.LeaseUntil = leaseUntil(now, ev.Lease)
 
 	case Advance:
-		if err := checkRun(s, ev.RunID); err != nil {
-			return Result{}, err
-		}
 		if s.Run.Mode != v1alpha1.RunModeStep {
 			return Result{}, fmt.Errorf("advance in %s mode: %w", s.Run.Mode, ErrInvalidTransition)
 		}
-		if ev.Step != s.Run.Step {
-			return Result{}, fmt.Errorf("step %d, run is at %d: %w", ev.Step, s.Run.Step, ErrStepMismatch)
+		if err := checkStep(s.Run, ev.Step); err != nil {
+			return Result{}, err
+		}
+		if ev.Lease <= 0 {
+			return Result{}, fmt.Errorf("advance needs a positive lease: %w", ErrInvalidEvent)
 		}
 		if err := appendOutbox(s, ev.Outbox); err != nil {
 			return Result{}, err
 		}
 		s.Run.Step++
+		s.Run.Runner = ev.Runner
+		s.Run.LeaseUntil = leaseUntil(now, ev.Lease)
 
 	case Record:
-		if err := record(s, ev.RunID, ev.Outbox); err != nil {
+		if s.Run.Mode != v1alpha1.RunModeRuntime {
+			return Result{}, fmt.Errorf("record in %s mode, use advance: %w", s.Run.Mode, ErrInvalidTransition)
+		}
+		if err := appendOutbox(s, ev.Outbox); err != nil {
 			return Result{}, err
 		}
 
 	case Finish:
-		if err := record(s, ev.RunID, ev.Outbox); err != nil {
-			return Result{}, err
+		if s.Run.Mode == v1alpha1.RunModeStep {
+			if err := checkStep(s.Run, ev.Step); err != nil {
+				return Result{}, err
+			}
 		}
 		switch ev.Outcome {
 		case OutcomeDone:
@@ -252,30 +260,44 @@ func Apply(t *v1alpha1.Task, ev Event, now time.Time) (Result, error) {
 		case OutcomeFailed:
 			s.Phase = v1alpha1.PhaseFailed
 		case OutcomeWaiting:
-			if ev.Reason == "" {
-				return Result{}, fmt.Errorf("waiting outcome needs a reason: %w", ErrInvalidEvent)
+			if !slices.Contains(waitingReasons, ev.Reason) {
+				return Result{}, fmt.Errorf("waiting reason %q: %w", ev.Reason, ErrInvalidEvent)
+			}
+			if ev.ThreadSeq < 0 {
+				return Result{}, fmt.Errorf("thread sequence %d: %w", ev.ThreadSeq, ErrInvalidEvent)
 			}
 			s.Phase = v1alpha1.PhaseWaiting
 			s.Waiting = &v1alpha1.Waiting{Reason: ev.Reason, Since: metaTime(now), ThreadSeq: ev.ThreadSeq}
 		default:
 			return Result{}, fmt.Errorf("outcome %q: %w", ev.Outcome, ErrInvalidEvent)
 		}
-		endRun(&res, EndFinished, ev.Outcome, now)
+		if err := appendOutbox(s, ev.Outbox); err != nil {
+			return Result{}, err
+		}
+		endRun(&res, v1alpha1.RunFinished, ev.Outcome, now)
 
 	case Reply:
 		s.Waiting = nil
 		s.Phase = v1alpha1.PhaseTodo
 
 	case Reclaim:
+		if s.Run == nil {
+			return Result{}, fmt.Errorf("running task has no run: %w", ErrInvalidTransition)
+		}
 		if !now.After(s.Run.LeaseUntil.Time) {
 			return Result{}, ErrLeaseNotExpired
 		}
 		s.Phase = v1alpha1.PhaseTodo
-		endRun(&res, EndInterrupted, "", now)
+		endRun(&res, v1alpha1.RunInterrupted, "", now)
 
 	case Cancel:
+		// The agent's subtasks that were never created are not wanted any
+		// more; run history still has to be written.
+		s.Outbox = slices.DeleteFunc(s.Outbox, func(it v1alpha1.OutboxItem) bool {
+			return it.Kind == v1alpha1.OutboxCreateSubtask
+		})
 		if s.Run != nil {
-			endRun(&res, EndCancelled, "", now)
+			endRun(&res, v1alpha1.RunCancelled, "", now)
 		}
 		s.Waiting = nil
 		s.Phase = v1alpha1.PhaseCancelled
@@ -291,6 +313,10 @@ func Apply(t *v1alpha1.Task, ev Event, now time.Time) (Result, error) {
 	return res, nil
 }
 
+var waitingReasons = []v1alpha1.WaitingReason{
+	v1alpha1.WaitingQuestion, v1alpha1.WaitingToolApproval, v1alpha1.WaitingReview,
+}
+
 func checkRun(s *v1alpha1.TaskStatus, runID string) error {
 	if s.Run == nil || s.Run.ID != runID {
 		return ErrRunMismatch
@@ -298,21 +324,30 @@ func checkRun(s *v1alpha1.TaskStatus, runID string) error {
 	return nil
 }
 
-// endRun clears the run from the status and records it as ended.
-func endRun(res *Result, reason EndReason, outcome Outcome, now time.Time) {
-	res.Ended = &EndedRun{Run: *res.Status.Run, Reason: reason, Outcome: outcome, At: now}
+func checkStep(run *v1alpha1.Run, step int64) error {
+	if step != run.Step {
+		return fmt.Errorf("step %d, run is at %d: %w", step, run.Step, ErrStepMismatch)
+	}
+	return nil
+}
+
+// endRun clears the run from the status and writes its RunEnded item, keyed
+// on the run id, in the same write.
+func endRun(res *Result, reason v1alpha1.RunEndReason, outcome Outcome, now time.Time) {
+	run := res.Status.Run
+	res.Status.Outbox = append(res.Status.Outbox, v1alpha1.OutboxItem{
+		ID:   run.ID,
+		Kind: v1alpha1.OutboxRunEnded,
+		Run: &v1alpha1.RunRecord{
+			ID: run.ID, Mode: run.Mode, Runner: run.Runner, Step: run.Step,
+			Reason: reason, Outcome: outcome, EndedAt: metaTime(now),
+		},
+	})
 	res.Status.Run = nil
 	res.ReleasesSlot = true
 }
 
-// record is the Record transition, shared with Finish.
-func record(s *v1alpha1.TaskStatus, runID string, items []v1alpha1.OutboxItem) error {
-	if err := checkRun(s, runID); err != nil {
-		return err
-	}
-	return appendOutbox(s, items)
-}
-
+// appendOutbox adds CreateSubtask items written by a run.
 func appendOutbox(s *v1alpha1.TaskStatus, items []v1alpha1.OutboxItem) error {
 	for _, it := range items {
 		if it.ID == "" || it.Kind != v1alpha1.OutboxCreateSubtask || it.Spec == nil {

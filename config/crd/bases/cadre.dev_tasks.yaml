@@ -188,19 +188,70 @@ spec:
                   properties:
                     id:
                       description: |-
-                        ID is a ULID minted when the item is written. It is the idempotency key.
+                        ID is a ULID and the item's idempotency key.
 
-                        For CreateSubtask the subtask's metadata.name is derived from it
-                        deterministically (the lowercase ULID, a valid DNS-1123 label), so
-                        re-applying the item is a create that already exists and leaves no
-                        trace.
+                        For CreateSubtask it is minted when the item is written, and the
+                        subtask's metadata.name is derived from it deterministically (the
+                        lowercase ULID, a valid DNS-1123 label), so re-applying the item is a
+                        create that already exists and leaves no trace.
+
+                        For RunEnded it is the ended run's id: a run ends once, and the
+                        dispatcher appends the record to the run history keyed on it.
                       pattern: ^[0-9A-HJKMNP-TV-Z]{26}$
                       type: string
                     kind:
                       description: Kind is the side effect asked for.
                       enum:
                       - CreateSubtask
+                      - RunEnded
                       type: string
+                    run:
+                      description: Run is the ended run to record, for kind RunEnded.
+                      properties:
+                        endedAt:
+                          description: EndedAt is when the run ended.
+                          format: date-time
+                          type: string
+                        id:
+                          description: ID is the run's ULID.
+                          pattern: ^[0-9A-HJKMNP-TV-Z]{26}$
+                          type: string
+                        mode:
+                          description: Mode is runtime or step.
+                          enum:
+                          - runtime
+                          - step
+                          type: string
+                        outcome:
+                          description: Outcome is set when Reason is Finished.
+                          enum:
+                          - Done
+                          - Review
+                          - Waiting
+                          - Failed
+                          type: string
+                        reason:
+                          description: Reason is why the run ended.
+                          enum:
+                          - Finished
+                          - Interrupted
+                          - Cancelled
+                          type: string
+                        runner:
+                          description: Runner is the runner, or the worker of the
+                            last step, that held the run.
+                          type: string
+                        step:
+                          description: Step is the step the run had reached.
+                          format: int64
+                          minimum: 0
+                          type: integer
+                      required:
+                      - endedAt
+                      - id
+                      - mode
+                      - reason
+                      type: object
                     spec:
                       description: Spec is the subtask to create, for kind CreateSubtask.
                       properties:
@@ -265,6 +316,11 @@ spec:
                   - id
                   - kind
                   type: object
+                  x-kubernetes-validations:
+                  - message: a CreateSubtask item needs spec
+                    rule: self.kind != 'CreateSubtask' || has(self.spec)
+                  - message: a RunEnded item needs run
+                    rule: self.kind != 'RunEnded' || has(self.run)
                 type: array
                 x-kubernetes-list-map-keys:
                 - id
