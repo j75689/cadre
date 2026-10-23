@@ -23,7 +23,8 @@ Requirements: Go (see `go.mod`) and `make`. Running Cadre itself later also need
 make build             # build all binaries into bin/
 make generate          # regenerate deepcopy code after changing api/
 make manifests         # regenerate the CRDs in config/crd/bases
-make test              # run all tests, including the CRD tests against an envtest API server
+make test              # run all tests, including the CRD tests against an envtest API server and a short chaos run
+make chaos             # run the full chaos test: two servers, fake runners, kills and delayed writes
 make check             # gofmt, go vet, golangci-lint, verify-generated and tests: what CI runs
 make verify-generated  # regenerate, then fail if the committed generated files differ
 make tools             # install the pinned tools into bin/tools

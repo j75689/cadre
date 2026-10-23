@@ -21,7 +21,7 @@ define go-install
 	mkdir -p $(TOOLS); mv $$tmp/$$(basename $(2)) $(1); rm -rf $$tmp
 endef
 
-.PHONY: all build test fmt vet lint check tidy clean generate manifests verify-generated tools
+.PHONY: all build test chaos fmt vet lint check tidy clean generate manifests verify-generated tools
 
 all: build
 
@@ -29,9 +29,13 @@ build: ## Build all binaries into bin/
 	@mkdir -p $(BIN)
 	@for c in $(CMDS); do echo "building $$c"; go build $(GOFLAGS) -o $(BIN)/$$c ./cmd/$$c; done
 
-test: $(ENVTEST) ## Run unit tests; downloads envtest binaries on first run
+test: $(ENVTEST) ## Run all tests, the chaos test in its short form; downloads envtest binaries on first run
 	assets=$$($(ENVTEST) use $(ENVTEST_K8S_VERSION) --bin-dir $(TOOLS)/envtest -p path) && \
-	KUBEBUILDER_ASSETS="$$assets" go test -race -count=1 ./...
+	KUBEBUILDER_ASSETS="$$assets" go test -race -short -count=1 ./...
+
+chaos: $(ENVTEST) ## Run the full 60s chaos test locally (CADRE_CHAOS_SEED, CADRE_CHAOS_DURATION)
+	assets=$$($(ENVTEST) use $(ENVTEST_K8S_VERSION) --bin-dir $(TOOLS)/envtest -p path) && \
+	KUBEBUILDER_ASSETS="$$assets" go test -race -count=1 -timeout 15m -v -run TestChaos ./test/chaos/
 
 fmt: ## Check formatting
 	@test -z "$$(gofmt -l .)" || { echo "unformatted files:"; gofmt -l .; exit 1; }
