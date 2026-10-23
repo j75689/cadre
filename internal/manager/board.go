@@ -12,6 +12,7 @@ import (
 
 	"github.com/oklog/ulid/v2"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/util/validation"
 
 	v1alpha1 "github.com/j75689/cadre/api/v1alpha1"
 	"github.com/j75689/cadre/internal/storage"
@@ -29,6 +30,14 @@ import (
 func (m *Manager) CreateTask(ctx context.Context, namespace, name string, spec v1alpha1.TaskSpec) (*v1alpha1.Task, error) {
 	if err := task.ValidateSpec(&spec); err != nil {
 		return nil, fmt.Errorf("%w: %w", ErrInvalid, err)
+	}
+	if err := validNamespace(namespace); err != nil {
+		return nil, err
+	}
+	if name != "" {
+		if errs := validation.IsDNS1123Subdomain(name); len(errs) > 0 {
+			return nil, fmt.Errorf("task name %q: %s: %w", name, strings.Join(errs, "; "), ErrInvalid)
+		}
 	}
 	if spec.ParentRef != nil && name != "" && spec.ParentRef.Name == name {
 		return nil, fmt.Errorf("a task cannot be its own parent: %w", ErrInvalid)
@@ -291,6 +300,9 @@ func (m *Manager) RunEvents(ctx context.Context, key storage.Key, runID string) 
 // InitTeam opts a namespace in to Cadre. It fails with ErrAlreadyExists if
 // the namespace already has a Team.
 func (m *Manager) InitTeam(ctx context.Context, namespace string, spec v1alpha1.TeamSpec) (*v1alpha1.Team, error) {
+	if err := validNamespace(namespace); err != nil {
+		return nil, err
+	}
 	if spec.MaxConcurrentRuns < 0 {
 		return nil, fmt.Errorf("maxConcurrentRuns %d: %w", spec.MaxConcurrentRuns, ErrInvalid)
 	}
@@ -307,4 +319,12 @@ func (m *Manager) InitTeam(ctx context.Context, namespace string, spec v1alpha1.
 // ListTeams lists every Team.
 func (m *Manager) ListTeams(ctx context.Context) ([]v1alpha1.Team, error) {
 	return m.store.ListTeams(ctx)
+}
+
+// validNamespace rejects what Kubernetes would reject as a namespace name.
+func validNamespace(ns string) error {
+	if errs := validation.IsDNS1123Label(ns); len(errs) > 0 {
+		return fmt.Errorf("namespace %q: %s: %w", ns, strings.Join(errs, "; "), ErrInvalid)
+	}
+	return nil
 }

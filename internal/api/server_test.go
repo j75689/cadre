@@ -74,8 +74,8 @@ func TestBoardThroughTheAPI(t *testing.T) {
 		t.Fatalf("Running tasks: %+v", page.Items)
 	}
 
-	if err := c.Comment(ctx, ns, "fix-login", "alice", "it fails on Mondays"); err != nil {
-		t.Fatalf("comment: %v", err)
+	if entry, err := c.Comment(ctx, ns, "fix-login", "alice", "it fails on Mondays"); err != nil || entry.Seq != 1 || entry.Author.Kind != manager.AuthorUser {
+		t.Fatalf("comment: %+v, %v", entry, err)
 	}
 	if _, err := c.Reply(ctx, ns, "fix-login", "alice", "not waiting"); !client.IsCode(err, httpjson.CodeInvalidTransition) {
 		t.Fatalf("reply to a Todo task: %v", err)
@@ -133,7 +133,7 @@ func TestAPIRejectsBadInput(t *testing.T) {
 	if _, err := c.CreateTask(ctx, ns, "t", v1alpha1.TaskSpec{Title: "t"}); err != nil {
 		t.Fatal(err)
 	}
-	if err := c.Comment(ctx, ns, "t", "", "x"); !client.IsCode(err, httpjson.CodeInvalid) {
+	if _, err := c.Comment(ctx, ns, "t", "", "x"); !client.IsCode(err, httpjson.CodeInvalid) {
 		t.Errorf("comment without an author: %v", err)
 	}
 	if _, err := c.Events(ctx, ns, "t", "not-a-ulid"); !client.IsCode(err, httpjson.CodeInvalid) {
@@ -142,6 +142,15 @@ func TestAPIRejectsBadInput(t *testing.T) {
 	if _, err := c.InitTeam(ctx, "team-b", api.TeamRequest{MaxConcurrentRuns: -1}); !client.IsCode(err, httpjson.CodeInvalid) {
 		t.Errorf("negative maxConcurrentRuns: %v", err)
 	}
+	if _, err := c.InitTeam(ctx, "Team_B", api.TeamRequest{}); !client.IsCode(err, httpjson.CodeInvalid) {
+		t.Errorf("bad namespace: %v", err)
+	}
+	if _, err := c.CreateTask(ctx, ns, "Fix_Login", v1alpha1.TaskSpec{Title: "x"}); !client.IsCode(err, httpjson.CodeInvalid) {
+		t.Errorf("bad task name: %v", err)
+	}
+	if _, err := c.ListTasks(ctx, ns, []v1alpha1.Phase{"Sleeping"}, 0, 0); !client.IsCode(err, httpjson.CodeInvalid) {
+		t.Errorf("unknown phase: %v", err)
+	}
 	resp, err := http.Get(base + "/api/v1/namespaces/" + ns + "/tasks?limit=-1")
 	if err != nil {
 		t.Fatal(err)
@@ -149,5 +158,41 @@ func TestAPIRejectsBadInput(t *testing.T) {
 	_ = resp.Body.Close()
 	if resp.StatusCode != http.StatusBadRequest {
 		t.Errorf("negative limit: status %d", resp.StatusCode)
+	}
+}
+
+func TestListTasksPageSize(t *testing.T) {
+	c, m := start(t)
+	if _, err := m.InitTeam(ctx, ns, v1alpha1.TeamSpec{}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := c.CreateTask(ctx, ns, "t", v1alpha1.TaskSpec{Title: "t"}); err != nil {
+		t.Fatal(err)
+	}
+	for limit, want := range map[int]int{0: api.DefaultLimit, 7: 7, 10000: api.MaxLimit} {
+		list, err := c.ListTasks(ctx, ns, nil, 0, limit)
+		if err != nil || list.Limit != want || len(list.Items) != 1 {
+			t.Errorf("limit %d: %+v, %v; want limit %d applied", limit, list, err, want)
+		}
+	}
+}
+
+// A base URL with a trailing slash must not produce "//" paths. cadre-server
+// itself answers those with a 307 that keeps the method, but a proxy or
+// ingress in front of it may answer 301, and a client following that turns
+// a POST into a body-less GET that decodes the wrong response as success.
+func TestClientIgnoresATrailingSlash(t *testing.T) {
+	var paths []string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		paths = append(paths, r.URL.Path)
+		httpjson.Write(w, http.StatusCreated, v1alpha1.Task{})
+	}))
+	defer srv.Close()
+	c := client.New(srv.URL+"/", nil)
+	if _, err := c.CreateTask(ctx, ns, "slash", v1alpha1.TaskSpec{Title: "slash"}); err != nil {
+		t.Fatal(err)
+	}
+	if len(paths) != 1 || paths[0] != api.Base+"/namespaces/"+ns+"/tasks" {
+		t.Fatalf("requested %v, want one request to the clean path", paths)
 	}
 }

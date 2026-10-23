@@ -1,16 +1,17 @@
 package api
 
 import (
-	"errors"
+	"fmt"
 	"log/slog"
 	"net/http"
+	"net/url"
+	"slices"
 	"strconv"
 
 	v1alpha1 "github.com/j75689/cadre/api/v1alpha1"
 	"github.com/j75689/cadre/internal/httpjson"
 	"github.com/j75689/cadre/internal/manager"
 	"github.com/j75689/cadre/internal/storage"
-	"github.com/j75689/cadre/internal/task"
 )
 
 // Server serves /api/v1 on a Task Manager.
@@ -24,7 +25,7 @@ func NewServer(m *manager.Manager, log *slog.Logger) *Server { return &Server{m:
 
 // Register adds the API's routes to mux.
 func (s *Server) Register(mux *http.ServeMux) {
-	const tasks = "/api/v1/namespaces/{ns}/tasks"
+	const tasks = Base + "/namespaces/{ns}/tasks"
 	const one = tasks + "/{name}"
 	mux.HandleFunc("POST "+tasks, s.createTask)
 	mux.HandleFunc("GET "+tasks, s.listTasks)
@@ -35,8 +36,8 @@ func (s *Server) Register(mux *http.ServeMux) {
 	mux.HandleFunc("POST "+one+"/reply", s.reply)
 	mux.HandleFunc("GET "+one+"/runs", s.runs)
 	mux.HandleFunc("GET "+one+"/runs/{run}/events", s.events)
-	mux.HandleFunc("PUT /api/v1/namespaces/{ns}/team", s.initTeam)
-	mux.HandleFunc("GET /api/v1/teams", s.listTeams)
+	mux.HandleFunc("PUT "+Base+"/namespaces/{ns}/team", s.initTeam)
+	mux.HandleFunc("GET "+Base+"/teams", s.listTeams)
 }
 
 func taskKey(r *http.Request) storage.Key {
@@ -50,27 +51,40 @@ func (s *Server) createTask(w http.ResponseWriter, r *http.Request) {
 	}
 	t, err := s.m.CreateTask(r.Context(), r.PathValue("ns"), req.Name, req.Spec)
 	if err != nil {
-		s.fail(w, err)
+		httpjson.Fail(w, s.log, err)
 		return
 	}
 	httpjson.Write(w, http.StatusCreated, t)
 }
 
 func (s *Server) listTasks(w http.ResponseWriter, r *http.Request) {
+	query := r.URL.Query()
 	q := storage.Query{Namespace: r.PathValue("ns")}
-	for _, p := range r.URL.Query()["phase"] {
+	for _, p := range query["phase"] {
+		if !slices.Contains(phases, v1alpha1.Phase(p)) {
+			httpjson.WriteError(w, http.StatusBadRequest, httpjson.CodeInvalid, fmt.Sprintf("phase %q: not one of %v", p, phases))
+			return
+		}
 		q.Phases = append(q.Phases, v1alpha1.Phase(p))
 	}
 	var ok bool
-	if q.Offset, ok = intParam(w, r, "offset"); !ok {
+	if q.Offset, ok = intParam(w, query, "offset"); !ok {
 		return
 	}
-	if q.Limit, ok = intParam(w, r, "limit"); !ok {
+	if q.Limit, ok = intParam(w, query, "limit"); !ok {
 		return
+	}
+	// A board page is bounded: no limit means the default, and a larger
+	// one is capped. The response says which limit applied.
+	switch {
+	case q.Limit == 0:
+		q.Limit = DefaultLimit
+	case q.Limit > MaxLimit:
+		q.Limit = MaxLimit
 	}
 	items, err := s.m.ListTasks(r.Context(), q)
 	if err != nil {
-		s.fail(w, err)
+		httpjson.Fail(w, s.log, err)
 		return
 	}
 	if items == nil {
@@ -79,10 +93,15 @@ func (s *Server) listTasks(w http.ResponseWriter, r *http.Request) {
 	httpjson.Write(w, http.StatusOK, TaskList{Items: items, Offset: q.Offset, Limit: q.Limit})
 }
 
+var phases = []v1alpha1.Phase{
+	v1alpha1.PhaseTodo, v1alpha1.PhaseRunning, v1alpha1.PhaseWaiting, v1alpha1.PhaseReview,
+	v1alpha1.PhaseDone, v1alpha1.PhaseCancelled, v1alpha1.PhaseFailed,
+}
+
 func (s *Server) getTask(w http.ResponseWriter, r *http.Request) {
 	t, err := s.m.GetTask(r.Context(), taskKey(r))
 	if err != nil {
-		s.fail(w, err)
+		httpjson.Fail(w, s.log, err)
 		return
 	}
 	httpjson.Write(w, http.StatusOK, t)
@@ -91,7 +110,7 @@ func (s *Server) getTask(w http.ResponseWriter, r *http.Request) {
 func (s *Server) cancel(w http.ResponseWriter, r *http.Request) {
 	t, err := s.m.Cancel(r.Context(), taskKey(r))
 	if err != nil {
-		s.fail(w, err)
+		httpjson.Fail(w, s.log, err)
 		return
 	}
 	httpjson.Write(w, http.StatusOK, t)
@@ -104,24 +123,25 @@ func (s *Server) comment(w http.ResponseWriter, r *http.Request) {
 	}
 	entry, err := s.m.AppendThread(r.Context(), taskKey(r), manager.Author{Kind: manager.AuthorUser, Name: req.Author}, manager.EntryComment, req.Body)
 	if err != nil {
-		s.fail(w, err)
+		httpjson.Fail(w, s.log, err)
 		return
 	}
 	httpjson.Write(w, http.StatusCreated, entry)
 }
 
 func (s *Server) thread(w http.ResponseWriter, r *http.Request) {
-	after, ok := intParam(w, r, "after")
+	query := r.URL.Query()
+	after, ok := intParam(w, query, "after")
 	if !ok {
 		return
 	}
-	limit, ok := intParam(w, r, "limit")
+	limit, ok := intParam(w, query, "limit")
 	if !ok {
 		return
 	}
 	items, err := s.m.ReadThread(r.Context(), taskKey(r), int64(after), limit)
 	if err != nil {
-		s.fail(w, err)
+		httpjson.Fail(w, s.log, err)
 		return
 	}
 	httpjson.Write(w, http.StatusOK, Thread{Items: items})
@@ -137,7 +157,7 @@ func (s *Server) reply(w http.ResponseWriter, r *http.Request) {
 	}
 	t, entry, err := s.m.Answer(r.Context(), taskKey(r), manager.Author{Kind: manager.AuthorUser, Name: req.Author}, req.Body)
 	if err != nil {
-		s.fail(w, err)
+		httpjson.Fail(w, s.log, err)
 		return
 	}
 	httpjson.Write(w, http.StatusOK, ReplyResponse{Task: t, Entry: entry})
@@ -146,7 +166,7 @@ func (s *Server) reply(w http.ResponseWriter, r *http.Request) {
 func (s *Server) runs(w http.ResponseWriter, r *http.Request) {
 	items, err := s.m.Runs(r.Context(), taskKey(r))
 	if err != nil {
-		s.fail(w, err)
+		httpjson.Fail(w, s.log, err)
 		return
 	}
 	httpjson.Write(w, http.StatusOK, Runs{Items: items})
@@ -155,7 +175,7 @@ func (s *Server) runs(w http.ResponseWriter, r *http.Request) {
 func (s *Server) events(w http.ResponseWriter, r *http.Request) {
 	items, err := s.m.RunEvents(r.Context(), taskKey(r), r.PathValue("run"))
 	if err != nil {
-		s.fail(w, err)
+		httpjson.Fail(w, s.log, err)
 		return
 	}
 	httpjson.Write(w, http.StatusOK, Events{Items: items})
@@ -168,7 +188,7 @@ func (s *Server) initTeam(w http.ResponseWriter, r *http.Request) {
 	}
 	team, err := s.m.InitTeam(r.Context(), r.PathValue("ns"), v1alpha1.TeamSpec{DisplayName: req.DisplayName, MaxConcurrentRuns: req.MaxConcurrentRuns})
 	if err != nil {
-		s.fail(w, err)
+		httpjson.Fail(w, s.log, err)
 		return
 	}
 	httpjson.Write(w, http.StatusCreated, team)
@@ -177,15 +197,15 @@ func (s *Server) initTeam(w http.ResponseWriter, r *http.Request) {
 func (s *Server) listTeams(w http.ResponseWriter, r *http.Request) {
 	items, err := s.m.ListTeams(r.Context())
 	if err != nil {
-		s.fail(w, err)
+		httpjson.Fail(w, s.log, err)
 		return
 	}
 	httpjson.Write(w, http.StatusOK, TeamList{Items: items})
 }
 
 // intParam reads a non-negative integer query parameter; absent means 0.
-func intParam(w http.ResponseWriter, r *http.Request, name string) (int, bool) {
-	v := r.URL.Query().Get(name)
+func intParam(w http.ResponseWriter, query url.Values, name string) (int, bool) {
+	v := query.Get(name)
 	if v == "" {
 		return 0, true
 	}
@@ -195,23 +215,4 @@ func intParam(w http.ResponseWriter, r *http.Request, name string) (int, bool) {
 		return 0, false
 	}
 	return n, true
-}
-
-// fail maps a Task Manager error to a status and code. As on /runner/v1,
-// only validation errors, which describe the request, are sent in full;
-// storage details stay in the server log.
-func (s *Server) fail(w http.ResponseWriter, err error) {
-	switch {
-	case errors.Is(err, manager.ErrInvalid), errors.Is(err, task.ErrInvalidEvent), errors.Is(err, storage.ErrInvalidQuery):
-		httpjson.WriteError(w, http.StatusBadRequest, httpjson.CodeInvalid, err.Error())
-	case errors.Is(err, storage.ErrNotFound):
-		httpjson.WriteError(w, http.StatusNotFound, httpjson.CodeNotFound, "not found")
-	case errors.Is(err, storage.ErrAlreadyExists):
-		httpjson.WriteError(w, http.StatusConflict, httpjson.CodeAlreadyExists, "already exists")
-	case errors.Is(err, task.ErrInvalidTransition):
-		httpjson.WriteError(w, http.StatusConflict, httpjson.CodeInvalidTransition, task.ErrInvalidTransition.Error())
-	default:
-		s.log.Warn("api request failed", "err", err)
-		httpjson.WriteError(w, http.StatusServiceUnavailable, httpjson.CodeUnavailable, "temporarily unavailable; retry")
-	}
 }

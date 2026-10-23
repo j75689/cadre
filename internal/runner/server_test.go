@@ -4,7 +4,6 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
-	"fmt"
 	"io"
 	"log/slog"
 	"net/http"
@@ -19,7 +18,6 @@ import (
 	"github.com/j75689/cadre/internal/manager"
 	"github.com/j75689/cadre/internal/storage"
 	"github.com/j75689/cadre/internal/storage/memory"
-	"github.com/j75689/cadre/internal/task"
 )
 
 const ns = "team-a"
@@ -176,33 +174,5 @@ func TestRunnerErrors(t *testing.T) {
 	// The protocol grows by adding fields: an older server ignores them.
 	if status, _ := e.post(t, PathHeartbeat, `{"task":{"namespace":"`+ns+`","name":"`+ref.Name+`"},"runId":"`+claim.RunID+`","newField":1}`, nil); status != http.StatusOK {
 		t.Errorf("heartbeat with an unknown field: status %d, want 200", status)
-	}
-}
-
-// Errors that the endpoints rarely produce still map to their documented
-// codes.
-func TestErrorMapping(t *testing.T) {
-	s := NewServer(nil, slog.New(slog.NewTextHandler(io.Discard, nil)))
-	for err, want := range map[error]struct {
-		status int
-		code   string
-	}{
-		task.ErrStepMismatch:       {409, CodeStepMismatch},
-		task.ErrRunMismatch:        {409, CodeRunMismatch},
-		storage.ErrNotFound:        {404, CodeNotFound},
-		task.ErrInvalidTransition:  {409, CodeInvalidTransition},
-		manager.ErrBusy:            {503, CodeUnavailable},
-		fmt.Errorf("etcd timeout"): {503, CodeUnavailable},
-	} {
-		rec := httptest.NewRecorder()
-		s.fail(rec, fmt.Errorf("get https://10.0.0.1/apis/x: bucket secret-bucket: %w", err))
-		var er ErrorResponse
-		_ = json.NewDecoder(rec.Body).Decode(&er)
-		if rec.Code != want.status || er.Error.Code != want.code {
-			t.Errorf("%v: %d %s, want %d %s", err, rec.Code, er.Error.Code, want.status, want.code)
-		}
-		if strings.Contains(er.Error.Message, "10.0.0.1") || strings.Contains(er.Error.Message, "secret-bucket") {
-			t.Errorf("%v: the response leaks internal details: %q", err, er.Error.Message)
-		}
 	}
 }

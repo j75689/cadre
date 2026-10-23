@@ -11,10 +11,12 @@ import (
 	"net/http"
 	"net/url"
 	"strconv"
+	"strings"
 
 	v1alpha1 "github.com/j75689/cadre/api/v1alpha1"
 	"github.com/j75689/cadre/internal/api"
 	"github.com/j75689/cadre/internal/httpjson"
+	"github.com/j75689/cadre/internal/manager"
 	"github.com/j75689/cadre/internal/runner"
 )
 
@@ -39,11 +41,12 @@ type Client struct {
 }
 
 // New returns a client for the server at base, e.g. http://localhost:8080.
+// A trailing slash is ignored.
 func New(base string, hc *http.Client) *Client {
 	if hc == nil {
 		hc = http.DefaultClient
 	}
-	return &Client{base: base, http: hc}
+	return &Client{base: strings.TrimRight(base, "/"), http: hc}
 }
 
 // do sends a JSON request and decodes a JSON response into out. It returns
@@ -68,7 +71,11 @@ func (c *Client) do(ctx context.Context, method, path string, in, out any) (int,
 	if err != nil {
 		return 0, err
 	}
-	defer func() { _ = resp.Body.Close() }()
+	defer func() {
+		// Drained, so the connection can be reused.
+		_, _ = io.Copy(io.Discard, resp.Body)
+		_ = resp.Body.Close()
+	}()
 	if resp.StatusCode >= 400 {
 		var er httpjson.ErrorResponse
 		if err := json.NewDecoder(resp.Body).Decode(&er); err != nil || er.Error.Code == "" {
@@ -84,14 +91,14 @@ func (c *Client) do(ctx context.Context, method, path string, in, out any) (int,
 	return resp.StatusCode, nil
 }
 
-func taskPath(ns, name string) string {
-	return "/api/v1/namespaces/" + url.PathEscape(ns) + "/tasks/" + url.PathEscape(name)
-}
+func nsPath(ns string) string { return api.Base + "/namespaces/" + url.PathEscape(ns) }
+
+func taskPath(ns, name string) string { return nsPath(ns) + "/tasks/" + url.PathEscape(name) }
 
 // CreateTask creates a task; an empty name lets the server pick one.
 func (c *Client) CreateTask(ctx context.Context, ns, name string, spec v1alpha1.TaskSpec) (*v1alpha1.Task, error) {
 	var t v1alpha1.Task
-	_, err := c.do(ctx, http.MethodPost, "/api/v1/namespaces/"+url.PathEscape(ns)+"/tasks", api.CreateTaskRequest{Name: name, Spec: spec}, &t)
+	_, err := c.do(ctx, http.MethodPost, nsPath(ns)+"/tasks", api.CreateTaskRequest{Name: name, Spec: spec}, &t)
 	return &t, err
 }
 
@@ -108,7 +115,7 @@ func (c *Client) ListTasks(ctx context.Context, ns string, phases []v1alpha1.Pha
 		q.Set("limit", strconv.Itoa(limit))
 	}
 	var list api.TaskList
-	_, err := c.do(ctx, http.MethodGet, "/api/v1/namespaces/"+url.PathEscape(ns)+"/tasks?"+q.Encode(), nil, &list)
+	_, err := c.do(ctx, http.MethodGet, nsPath(ns)+"/tasks?"+q.Encode(), nil, &list)
 	return &list, err
 }
 
@@ -126,10 +133,11 @@ func (c *Client) CancelTask(ctx context.Context, ns, name string) (*v1alpha1.Tas
 	return &t, err
 }
 
-// Comment writes to a task's thread.
-func (c *Client) Comment(ctx context.Context, ns, name, author, body string) error {
-	_, err := c.do(ctx, http.MethodPost, taskPath(ns, name)+"/comments", api.CommentRequest{Author: author, Body: body}, nil)
-	return err
+// Comment writes to a task's thread and returns the entry.
+func (c *Client) Comment(ctx context.Context, ns, name, author, body string) (*manager.ThreadEntry, error) {
+	var entry manager.ThreadEntry
+	_, err := c.do(ctx, http.MethodPost, taskPath(ns, name)+"/comments", api.CommentRequest{Author: author, Body: body}, &entry)
+	return &entry, err
 }
 
 // Reply answers a waiting task.
@@ -164,14 +172,14 @@ func (c *Client) Events(ctx context.Context, ns, name, runID string) (*api.Event
 // InitTeam opts a namespace in.
 func (c *Client) InitTeam(ctx context.Context, ns string, req api.TeamRequest) (*v1alpha1.Team, error) {
 	var team v1alpha1.Team
-	_, err := c.do(ctx, http.MethodPut, "/api/v1/namespaces/"+url.PathEscape(ns)+"/team", req, &team)
+	_, err := c.do(ctx, http.MethodPut, nsPath(ns)+"/team", req, &team)
 	return &team, err
 }
 
 // ListTeams lists every Team.
 func (c *Client) ListTeams(ctx context.Context) (*api.TeamList, error) {
 	var out api.TeamList
-	_, err := c.do(ctx, http.MethodGet, "/api/v1/teams", nil, &out)
+	_, err := c.do(ctx, http.MethodGet, api.Base+"/teams", nil, &out)
 	return &out, err
 }
 

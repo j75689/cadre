@@ -1,12 +1,17 @@
 // Package httpjson holds the JSON conventions shared by Cadre's HTTP APIs:
-// request decoding and the error envelope.
+// request decoding, the error envelope, and which error gets which status.
 package httpjson
 
 import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
 	"net/http"
+
+	"github.com/j75689/cadre/internal/manager"
+	"github.com/j75689/cadre/internal/storage"
+	"github.com/j75689/cadre/internal/task"
 )
 
 // Error codes. Each API documents which ones it returns.
@@ -66,4 +71,30 @@ func Write(w http.ResponseWriter, status int, v any) {
 // WriteError writes the error envelope.
 func WriteError(w http.ResponseWriter, status int, code, msg string) {
 	Write(w, status, ErrorResponse{Error: ErrorBody{Code: code, Message: msg}})
+}
+
+// Fail answers err with the status and code every Cadre API uses for it.
+// Only validation errors, which describe the request itself, are sent in
+// full; other errors are answered with fixed text, and the unexpected ones
+// are logged, so storage details never reach the client.
+func Fail(w http.ResponseWriter, log *slog.Logger, err error) {
+	switch {
+	case errors.Is(err, task.ErrRunMismatch):
+		WriteError(w, http.StatusConflict, CodeRunMismatch, task.ErrRunMismatch.Error())
+	case errors.Is(err, task.ErrStepMismatch):
+		WriteError(w, http.StatusConflict, CodeStepMismatch, task.ErrStepMismatch.Error())
+	case errors.Is(err, task.ErrInvalidTransition):
+		WriteError(w, http.StatusConflict, CodeInvalidTransition, task.ErrInvalidTransition.Error())
+	case errors.Is(err, manager.ErrInvalid), errors.Is(err, task.ErrInvalidEvent),
+		errors.Is(err, storage.ErrInvalidQuery), errors.Is(err, storage.ErrInvalid), errors.Is(err, storage.ErrInvalidName):
+		WriteError(w, http.StatusBadRequest, CodeInvalid, err.Error())
+	case errors.Is(err, storage.ErrNotFound):
+		WriteError(w, http.StatusNotFound, CodeNotFound, "not found")
+	case errors.Is(err, storage.ErrAlreadyExists):
+		WriteError(w, http.StatusConflict, CodeAlreadyExists, "already exists")
+	default:
+		// Busy objects and storage failures are worth retrying.
+		log.Warn("request failed", "err", err)
+		WriteError(w, http.StatusServiceUnavailable, CodeUnavailable, "temporarily unavailable; retry")
+	}
 }

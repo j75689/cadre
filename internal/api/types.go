@@ -18,7 +18,14 @@ type CreateTaskRequest struct {
 	Spec v1alpha1.TaskSpec `json:"spec"`
 }
 
-// TaskList is a page of the board.
+// Page sizes for listing tasks.
+const (
+	DefaultLimit = 100 // when the request gives no limit
+	MaxLimit     = 500 // the most one page returns
+)
+
+// TaskList is a page of the board. Offset and Limit are the values that
+// applied.
 type TaskList struct {
 	Items  []v1alpha1.Task `json:"items"`
 	Offset int             `json:"offset"`
