@@ -15,6 +15,7 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
 	v1alpha1 "github.com/j75689/cadre/api/v1alpha1"
+	"github.com/j75689/cadre/internal/httpjson"
 	"github.com/j75689/cadre/internal/manager"
 	"github.com/j75689/cadre/internal/storage"
 	"github.com/j75689/cadre/internal/storage/memory"
@@ -146,7 +147,7 @@ func TestRunnerErrors(t *testing.T) {
 	}{
 		"not json":            {PathClaim, "{", 400, CodeInvalid},
 		"two JSON values":     {PathClaim, `{"runner":"r"} {"runner":"s"}`, 400, CodeInvalid},
-		"oversized body":      {PathClaim, `{"runner":"` + strings.Repeat("r", maxBody) + `"}`, 413, CodeInvalid},
+		"oversized body":      {PathClaim, `{"runner":"` + strings.Repeat("r", httpjson.MaxBody) + `"}`, 413, CodeInvalid},
 		"claim without name":  {PathClaim, ClaimRequest{}, 400, CodeInvalid},
 		"heartbeat no run":    {PathHeartbeat, HeartbeatRequest{Task: ref}, 400, CodeInvalid},
 		"missing task":        {PathHeartbeat, HeartbeatRequest{Task: TaskRef{Namespace: ns, Name: "nope"}, RunID: claim.RunID}, 404, CodeNotFound},
