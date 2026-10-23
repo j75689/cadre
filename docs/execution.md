@@ -78,6 +78,8 @@ The claim response describes the agent: its instructions, its ToolServers, and a
 
 `/mcp/run/<token>`, where the token maps to a run_id. Core tools:
 
+The token is minted when a run is claimed and handed to the runner in the claim response, once. Only its SHA-256 is stored, in the Task's `status.run`, written in the same conditional write as the claim. The token is bound to that one run and dies with it: when the run ends (finish, cancel, lease-expiry reclaim) `status.run` is cleared and the token stops working, and a reclaimed task gets a fresh token with its new run. The endpoint keeps no session; every request resolves the token on a fresh read of the task, so any replica can serve it. Paths under `/mcp/run/` are never logged.
+
 | Tool | Behaviour |
 | --- | --- |
 | `thread.post` | append a message to the thread |

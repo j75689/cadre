@@ -64,7 +64,7 @@ func newEnv(t *testing.T) *env {
 		t.Fatal(err)
 	}
 	mux := http.NewServeMux()
-	NewServer(m, slog.New(slog.NewTextHandler(io.Discard, nil))).Register(mux)
+	NewServer(m, slog.New(slog.NewTextHandler(io.Discard, nil)), "https://cadre.test/").Register(mux)
 	srv := httptest.NewServer(mux)
 	t.Cleanup(srv.Close)
 	return &env{srv: srv, store: store, m: m}
@@ -118,6 +118,9 @@ func TestRunnerProtocol(t *testing.T) {
 		ag.Model == nil || ag.Model.Type != v1alpha1.ProviderAnthropic || ag.Model.Model != "claude-opus-5-5" ||
 		ag.Model.SecretRef == nil || ag.Model.SecretRef.Name != "anthropic" || ag.Model.SecretRef.Key != "api-key" {
 		t.Fatalf("claimed agent: %+v (model %+v)", ag, ag.Model)
+	}
+	if claim.MCP == nil || !strings.HasPrefix(claim.MCP.URL, "https://cadre.test/mcp/run/") || len(claim.MCP.URL) < len("https://cadre.test/mcp/run/")+40 {
+		t.Fatalf("claimed MCP endpoint: %+v", claim.MCP)
 	}
 	if status, _ := e.post(t, PathClaim, ClaimRequest{Runner: "runner-2", Labels: builtin}, nil); status != http.StatusNoContent {
 		t.Fatalf("second claim: status %d, want 204", status)

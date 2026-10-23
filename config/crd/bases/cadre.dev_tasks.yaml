@@ -349,6 +349,13 @@ spec:
                       it is renewed.
                     format: date-time
                     type: string
+                  mcpTokenHash:
+                    description: |-
+                      MCPTokenHash is the hex SHA-256 of the run's per-run MCP token. The
+                      token itself is handed to the runner once, at claim, and never
+                      stored; it is bound to this run and stops working when the run ends.
+                    pattern: ^[0-9a-f]{64}$
+                    type: string
                   mode:
                     description: Mode is runtime or step.
                     enum:

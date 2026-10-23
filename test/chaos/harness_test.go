@@ -129,7 +129,7 @@ func startServer(name string, cfg kubernetes.Config, rnd *lockedRand) (*server, 
 	m := manager.New(&chaosStore{Driver: drv, rnd: rnd}, mcfg)
 	log := slog.New(slog.NewTextHandler(io.Discard, nil))
 	mux := http.NewServeMux()
-	runner.NewServer(m, log).Register(mux)
+	runner.NewServer(m, log, "http://cadre.test").Register(mux)
 	api.NewServer(m, log).Register(mux)
 	s := &server{name: name, srv: httptest.NewServer(mux), driver: drv, cancel: cancel, loops: make(chan struct{})}
 	go func() {

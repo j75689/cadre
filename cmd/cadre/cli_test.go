@@ -62,7 +62,7 @@ func TestTaskLifeFromTheCLI(t *testing.T) {
 	log := slog.New(slog.NewTextHandler(io.Discard, nil))
 	mux := http.NewServeMux()
 	api.NewServer(m, log).Register(mux)
-	runner.NewServer(m, log).Register(mux)
+	runner.NewServer(m, log, "http://cadre.test").Register(mux)
 	srv := httptest.NewServer(mux)
 	defer srv.Close()
 	ctx := context.Background()

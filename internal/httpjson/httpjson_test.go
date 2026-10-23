@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
@@ -44,6 +45,26 @@ func TestFail(t *testing.T) {
 		leaks := strings.Contains(er.Error.Message, "10.0.0.1") || strings.Contains(er.Error.Message, "secret-bucket")
 		if leaks && want.status != 400 {
 			t.Errorf("%v: the response leaks internal details: %q", err, er.Error.Message)
+		}
+	}
+}
+
+// A path that carries a credential is never logged.
+func TestLogRequestsRedactsSecretPaths(t *testing.T) {
+	var buf strings.Builder
+	log := slog.New(slog.NewTextHandler(&buf, nil))
+	h := httpjson.LogRequests(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusTeapot)
+	}), log, "/mcp/run/")
+	h.ServeHTTP(httptest.NewRecorder(), httptest.NewRequest(http.MethodPost, "/mcp/run/c2VjcmV0.dG9rZW4", nil))
+	h.ServeHTTP(httptest.NewRecorder(), httptest.NewRequest(http.MethodGet, "/api/v1/teams", nil))
+	out := buf.String()
+	if strings.Contains(out, "c2VjcmV0") || strings.Contains(out, "dG9rZW4") {
+		t.Fatalf("the token reached the log:\n%s", out)
+	}
+	for _, want := range []string{"path=/mcp/run/<redacted>", "status=418", "path=/api/v1/teams"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("log lacks %q:\n%s", want, out)
 		}
 	}
 }

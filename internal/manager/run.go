@@ -36,6 +36,9 @@ type Claimed struct {
 	// ModelProvider its model, when it exists.
 	Agent         *v1alpha1.Agent
 	ModelProvider *v1alpha1.ModelProvider
+	// MCPToken is the run's per-run MCP token. It exists only here: the
+	// task stores its hash.
+	MCPToken string
 }
 
 // rotation spreads claims across namespaces, so one busy team cannot starve
@@ -138,13 +141,20 @@ func (m *Manager) claimIn(ctx context.Context, ns, runner string, labels map[str
 		if err != nil {
 			return nil, err
 		}
-		t, err := m.transition(ctx, storage.Key{Namespace: ns, Name: cand.Name}, task.Claim{
-			RunID: runID, Mode: v1alpha1.RunModeRuntime, Runner: runner, Lease: m.cfg.Lease, Agent: agent.Name,
+		key := storage.Key{Namespace: ns, Name: cand.Name}
+		token, tokenHash, err := mintToken(key)
+		if err != nil {
+			_ = m.releaseSlot(ctx, ns, runID)
+			return nil, err
+		}
+		t, err := m.transition(ctx, key, task.Claim{
+			RunID: runID, Mode: v1alpha1.RunModeRuntime, Runner: runner, Lease: m.cfg.Lease,
+			Agent: agent.Name, MCPTokenHash: tokenHash,
 		})
 		if err == nil && t.Status.Run != nil && t.Status.Run.ID == runID {
 			return &Claimed{
 				Task: t, RunID: runID, Mode: v1alpha1.RunModeRuntime, LeaseUntil: t.Status.Run.LeaseUntil.Time,
-				Agent: agent, ModelProvider: model,
+				Agent: agent, ModelProvider: model, MCPToken: token,
 			}, nil
 		}
 		if err == nil {

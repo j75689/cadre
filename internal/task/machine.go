@@ -94,6 +94,9 @@ type Claim struct {
 	// Agent, if set, is the agent the claim was decided for; the claim is
 	// refused if the fresh task is assigned to anyone else.
 	Agent string
+	// MCPTokenHash is the hash of the run's MCP token, written with the
+	// claim so the token works from the moment the runner has it.
+	MCPTokenHash string
 }
 
 // Heartbeat renews the run's lease.
@@ -236,7 +239,7 @@ func Apply(t *v1alpha1.Task, ev Event, now time.Time) (Result, error) {
 			return Result{}, fmt.Errorf("run mode %q: %w", ev.Mode, ErrInvalidEvent)
 		}
 		s.Phase = v1alpha1.PhaseRunning
-		s.Run = &v1alpha1.Run{ID: ev.RunID, Mode: ev.Mode, Runner: ev.Runner, LeaseUntil: leaseUntil(now, ev.Lease)}
+		s.Run = &v1alpha1.Run{ID: ev.RunID, Mode: ev.Mode, Runner: ev.Runner, LeaseUntil: leaseUntil(now, ev.Lease), MCPTokenHash: ev.MCPTokenHash}
 		if s.Runs == nil {
 			s.Runs = &v1alpha1.RunsStatus{}
 		}

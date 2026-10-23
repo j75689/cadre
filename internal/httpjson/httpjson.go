@@ -8,6 +8,8 @@ import (
 	"fmt"
 	"log/slog"
 	"net/http"
+	"strings"
+	"time"
 
 	"github.com/j75689/cadre/internal/manager"
 	"github.com/j75689/cadre/internal/storage"
@@ -101,5 +103,41 @@ func Fail(w http.ResponseWriter, log *slog.Logger, err error) {
 		// Busy objects and storage failures are worth retrying.
 		log.Warn("request failed", "err", err)
 		WriteError(w, http.StatusServiceUnavailable, CodeUnavailable, "temporarily unavailable; retry")
+	}
+}
+
+// LogRequests logs every request's method, path, status and duration. A path
+// under one of the secret prefixes carries a credential (the per-run MCP
+// token) and is logged as the prefix alone.
+func LogRequests(next http.Handler, log *slog.Logger, secretPrefixes ...string) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		start := time.Now()
+		rec := &statusRecorder{ResponseWriter: w, status: http.StatusOK}
+		next.ServeHTTP(rec, r)
+		path := r.URL.Path
+		for _, p := range secretPrefixes {
+			if strings.HasPrefix(path, p) {
+				path = p + "<redacted>"
+				break
+			}
+		}
+		log.Info("request", "method", r.Method, "path", path, "status", rec.status, "duration", time.Since(start))
+	})
+}
+
+type statusRecorder struct {
+	http.ResponseWriter
+	status int
+}
+
+func (s *statusRecorder) WriteHeader(code int) {
+	s.status = code
+	s.ResponseWriter.WriteHeader(code)
+}
+
+// Flush passes through, so streamed responses (MCP's) still stream.
+func (s *statusRecorder) Flush() {
+	if f, ok := s.ResponseWriter.(http.Flusher); ok {
+		f.Flush()
 	}
 }

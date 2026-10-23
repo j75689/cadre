@@ -3,6 +3,7 @@ package runner
 import (
 	"log/slog"
 	"net/http"
+	"strings"
 
 	v1alpha1 "github.com/j75689/cadre/api/v1alpha1"
 	"github.com/j75689/cadre/internal/httpjson"
@@ -14,10 +15,16 @@ import (
 type Server struct {
 	m   *manager.Manager
 	log *slog.Logger
+	// mcpBase is the URL runners reach the per-run MCP endpoint at,
+	// without the token.
+	mcpBase string
 }
 
-// NewServer returns the protocol server.
-func NewServer(m *manager.Manager, log *slog.Logger) *Server { return &Server{m: m, log: log} }
+// NewServer returns the protocol server. publicURL is the address runners
+// reach cadre-server at; the claim response's MCP URL is built on it.
+func NewServer(m *manager.Manager, log *slog.Logger, publicURL string) *Server {
+	return &Server{m: m, log: log, mcpBase: strings.TrimRight(publicURL, "/") + "/mcp/run/"}
+}
 
 // Register adds the protocol's routes to mux.
 func (s *Server) Register(mux *http.ServeMux) {
@@ -50,6 +57,7 @@ func (s *Server) claim(w http.ResponseWriter, r *http.Request) {
 			Priority: t.Spec.Priority, ParentRef: t.Spec.ParentRef, Labels: t.Spec.Labels,
 		},
 		Agent:            claimedAgent(c),
+		MCP:              &ClaimedMCP{URL: s.mcpBase + c.MCPToken},
 		RunID:            c.RunID,
 		Mode:             c.Mode,
 		LeaseUntil:       c.LeaseUntil,

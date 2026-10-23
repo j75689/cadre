@@ -14,6 +14,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"strings"
 	"syscall"
 	"time"
 
@@ -23,7 +24,9 @@ import (
 
 	"github.com/j75689/cadre/internal/api"
 	"github.com/j75689/cadre/internal/controller"
+	"github.com/j75689/cadre/internal/httpjson"
 	"github.com/j75689/cadre/internal/manager"
+	"github.com/j75689/cadre/internal/mcp"
 	"github.com/j75689/cadre/internal/runner"
 	"github.com/j75689/cadre/internal/storage/kubernetes"
 )
@@ -37,7 +40,8 @@ func main() {
 
 func run() error {
 	var (
-		listen    = flag.String("listen", ":8080", "address to serve /api/v1, /runner/v1 and /healthz on")
+		listen    = flag.String("listen", ":8080", "address to serve /api/v1, /runner/v1, /mcp/run and /healthz on")
+		publicURL = flag.String("public-url", "", "URL runners reach this server at, for their per-run MCP endpoint (default http://localhost and the listen port)")
 		lease     = flag.Duration("lease", manager.DefaultConfig.Lease, "how long a claim or heartbeat keeps a run alive")
 		heartbeat = flag.Duration("heartbeat", manager.DefaultConfig.Heartbeat, "how often runners renew; also the reclaim grace")
 		reclaim   = flag.Duration("reclaim-interval", manager.DefaultLoopConfig.Reclaim, "how often expired leases are reclaimed")
@@ -85,7 +89,12 @@ func run() error {
 
 	m := manager.New(store, manager.Config{Lease: *lease, Heartbeat: *heartbeat, Agents: controller.Agents(ctrls)})
 	mux := http.NewServeMux()
-	runner.NewServer(m, log).Register(mux)
+	if *publicURL == "" {
+		_, port, _ := strings.Cut(*listen, ":")
+		*publicURL = "http://localhost:" + port
+	}
+	runner.NewServer(m, log, *publicURL).Register(mux)
+	mcp.NewServer(m, log).Register(mux)
 	api.NewServer(m, log).Register(mux)
 	mux.HandleFunc("GET /healthz", func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(http.StatusOK) })
 	mux.HandleFunc("GET /readyz", func(w http.ResponseWriter, r *http.Request) {
@@ -99,7 +108,7 @@ func run() error {
 
 	srv := &http.Server{
 		Addr:              *listen,
-		Handler:           boundRequests(mux, requestTimeout),
+		Handler:           httpjson.LogRequests(boundRequests(mux, requestTimeout), log, mcp.PathPrefix),
 		ReadHeaderTimeout: 10 * time.Second,
 		ReadTimeout:       30 * time.Second,
 		WriteTimeout:      requestTimeout + 5*time.Second,
