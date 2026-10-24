@@ -11,7 +11,6 @@ import (
 	"log/slog"
 	"net/http"
 	"strings"
-	"unicode/utf8"
 
 	sdk "github.com/anthropics/anthropic-sdk-go"
 	"github.com/anthropics/anthropic-sdk-go/option"
@@ -20,6 +19,7 @@ import (
 
 	v1alpha1 "github.com/j75689/cadre/api/v1alpha1"
 	"github.com/j75689/cadre/internal/builtin"
+	"github.com/j75689/cadre/internal/runes"
 	"github.com/j75689/cadre/internal/runner"
 )
 
@@ -103,9 +103,60 @@ func (p *Provider) Start(ctx context.Context, s builtin.Setup) (builtin.Conversa
 		// gateway.
 		fallbacks: s.Model.Type == v1alpha1.ProviderAnthropic && s.Model.BaseURL == "",
 	}
-	c.limit, c.params.MaxTokens = c.modelLimits(ctx)
+	if err := c.describe(ctx); err != nil {
+		return nil, err
+	}
 	c.params.Messages = []sdk.BetaMessageParam{sdk.NewBetaUserMessage(sdk.NewBetaTextBlock(s.Prompt(c.limit)))}
 	return c, nil
+}
+
+// describe reads what the model is from the Models API, once per run: its
+// context window, its output cap, and whether it takes adaptive thinking and
+// the asked effort. A transient failure fails Start, which the loop retries;
+// a definitive one (a gateway without the Models API, a model it does not
+// list) leaves the window unknown, the cap at maxTokens, and thinking and
+// effort to be probed on the first request.
+func (c *conversation) describe(ctx context.Context) error {
+	info, err := c.client.Models.Get(ctx, c.model, sdk.ModelGetParams{})
+	if err != nil {
+		err = classify(err)
+		if !builtin.IsPermanent(err) {
+			return err
+		}
+		c.log.Warn("the Models API does not describe the model; probing it instead", "model", c.model, "err", err)
+		c.params.MaxTokens, c.probe = maxTokens, true
+		return nil
+	}
+	c.limit, c.params.MaxTokens = info.MaxInputTokens, info.MaxTokens
+	if c.params.MaxTokens <= 0 {
+		c.params.MaxTokens = maxTokens
+	}
+	caps := info.Capabilities
+	c.thinking = caps.Thinking.Supported && caps.Thinking.Types.Adaptive.Supported
+	if !effortSupported(caps.Effort, c.effort) {
+		c.log.Warn("the model does not take this effort; leaving it out", "model", c.model, "effort", c.effort)
+		c.effort = ""
+	}
+	return nil
+}
+
+func effortSupported(e sdk.EffortCapability, level sdk.BetaOutputConfigEffort) bool {
+	if !e.Supported {
+		return false
+	}
+	switch level {
+	case sdk.BetaOutputConfigEffortLow:
+		return e.Low.Supported
+	case sdk.BetaOutputConfigEffortMedium:
+		return e.Medium.Supported
+	case sdk.BetaOutputConfigEffortHigh:
+		return e.High.Supported
+	case sdk.BetaOutputConfigEffortXhigh:
+		return e.Xhigh.Supported
+	case sdk.BetaOutputConfigEffortMax:
+		return e.Max.Supported
+	}
+	return false
 }
 
 // inputSchema turns a tool's JSON object schema into the SDK's parameter,
@@ -138,29 +189,15 @@ type conversation struct {
 	model  string
 	params sdk.BetaMessageNewParams
 	limit  int64
-	// Optional request features. A model that rejects one on the first
-	// request gets it again without it, and the run remembers. Later
-	// requests never change shape: the conversation carries what the
-	// first one started.
-	effort              sdk.BetaOutputConfigEffort // "" once rejected
+	// Optional request features, set from the Models API. Fallbacks, which
+	// it does not describe, and thinking and effort when it cannot be read
+	// (probe), are probed on the first request instead: a 400 naming one
+	// gets the request again without it. Later requests never change
+	// shape: the conversation carries what the first one started.
+	effort              sdk.BetaOutputConfigEffort // "" when left out
 	thinking, fallbacks bool
+	probe               bool // the Models API could not describe the model
 	started             bool // a request has been answered
-}
-
-// modelLimits reads the model's context window and output cap from the
-// Models API, once per run. Unreadable (a gateway without the Models API,
-// say), the window is 0 and the cap maxTokens.
-func (c *conversation) modelLimits(ctx context.Context) (window, output int64) {
-	info, err := c.client.Models.Get(ctx, c.model, sdk.ModelGetParams{})
-	if err != nil {
-		c.log.Warn("read the model's limits", "model", c.model, "err", classify(err))
-		return 0, maxTokens
-	}
-	output = info.MaxTokens
-	if output <= 0 {
-		output = maxTokens
-	}
-	return info.MaxInputTokens, output
 }
 
 // ContextLimit is the model's window, 0 when the Models API could not be
@@ -203,15 +240,17 @@ func (c *conversation) send(ctx context.Context) (*sdk.BetaMessage, error) {
 			return nil, classify(err)
 		}
 		switch feature := rejected(err); {
+		case feature == "fallbacks" && c.fallbacks:
+			c.log.Warn("the API rejects server-side fallbacks; continuing without them", "model", c.model)
+			c.fallbacks = false
+		case !c.probe:
+			return nil, classify(err)
 		case feature == "thinking" && c.thinking:
 			c.log.Warn("the model rejects adaptive thinking; continuing without it", "model", c.model)
 			c.thinking = false
 		case feature == "effort" && c.effort != "":
 			c.log.Warn("the model rejects effort; continuing without it", "model", c.model)
 			c.effort = ""
-		case feature == "fallbacks" && c.fallbacks:
-			c.log.Warn("the API rejects server-side fallbacks; continuing without them", "model", c.model)
-			c.fallbacks = false
 		default:
 			return nil, classify(err)
 		}
@@ -272,14 +311,24 @@ func classify(err error) error {
 	if !errors.As(err, &apiErr) {
 		return err
 	}
+	kind, _ := errorBody(apiErr)
 	reduced := apiError{status: apiErr.StatusCode, requestID: apiErr.RequestID, message: message(apiErr)}
 	switch s := apiErr.StatusCode; {
+	case permanentKinds[kind]:
+		// An error event in a stream comes with the stream's 200: its
+		// type says what it is.
+		return builtin.Permanent(reduced)
 	case s == http.StatusRequestTimeout, s == http.StatusConflict, s == http.StatusTooManyRequests, s >= 500:
 		return reduced
 	case s >= 400:
 		return builtin.Permanent(reduced)
 	}
 	return reduced
+}
+
+// permanentKinds are the API error types retrying cannot fix.
+var permanentKinds = map[string]bool{
+	"invalid_request_error": true, "authentication_error": true, "permission_error": true, "not_found_error": true,
 }
 
 // apiError is an API error without its response body.
@@ -303,8 +352,8 @@ func (e apiError) Error() string {
 // maxMessage bounds how much of an API error's message is kept.
 const maxMessage = 300
 
-// message is an API error's type and message, from its body, clipped.
-func message(e *sdk.Error) string {
+// errorBody is an API error's type and message, from its body.
+func errorBody(e *sdk.Error) (kind, msg string) {
 	var body struct {
 		Error struct {
 			Type    string `json:"type"`
@@ -312,17 +361,19 @@ func message(e *sdk.Error) string {
 		} `json:"error"`
 	}
 	if json.Unmarshal([]byte(e.RawJSON()), &body) != nil {
-		return ""
+		return "", ""
 	}
-	msg := strings.TrimSpace(body.Error.Type + ": " + body.Error.Message)
-	if len(msg) > maxMessage {
-		cut := maxMessage
-		for cut > 0 && !utf8.RuneStart(msg[cut]) {
-			cut--
-		}
-		msg = msg[:cut] + "…"
+	return body.Error.Type, body.Error.Message
+}
+
+// message is an API error's type and message, clipped.
+func message(e *sdk.Error) string {
+	kind, msg := errorBody(e)
+	out := strings.TrimPrefix(strings.TrimSpace(kind+": "+msg), ": ")
+	if len(out) > maxMessage {
+		out = runes.Cut(out, maxMessage) + "…"
 	}
-	return strings.TrimPrefix(msg, ": ")
+	return out
 }
 
 func (c *conversation) AddResults(results []builtin.ToolResult) {

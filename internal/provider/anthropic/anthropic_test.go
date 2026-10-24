@@ -27,7 +27,10 @@ var ctx = context.Background()
 type api struct {
 	*httptest.Server
 	mu       sync.Mutex
-	noModels bool // answer the Models API with 404, as a gateway might
+	noModels bool   // answer the Models API with 404, as a gateway might
+	models   []int  // statuses to answer the Models API with first, then 200
+	thinking bool   // the model takes adaptive thinking
+	efforts  string // the effort levels the model takes, as JSON fields
 	requests []map[string]any
 	headers  []http.Header
 	replies  []func(w http.ResponseWriter, body map[string]any)
@@ -35,15 +38,30 @@ type api struct {
 
 func newAPI(t *testing.T, replies ...func(w http.ResponseWriter, body map[string]any)) *api {
 	t.Helper()
-	a := &api{replies: replies}
+	a := &api{replies: replies, thinking: true,
+		efforts: `"low":{"supported":true},"medium":{"supported":true},"high":{"supported":true},"xhigh":{"supported":true},"max":{"supported":true}`}
 	a.Server = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Method == http.MethodGet && strings.HasPrefix(r.URL.Path, "/v1/models/") {
-			if a.noModels {
-				http.NotFound(w, r)
+			a.mu.Lock()
+			var status int
+			if len(a.models) > 0 {
+				status, a.models = a.models[0], a.models[1:]
+			}
+			a.mu.Unlock()
+			switch {
+			case a.noModels:
+				fail(404, "model not found")(w, nil)
+				return
+			case status != 0:
+				w.Header().Set("Content-Type", "application/json")
+				w.WriteHeader(status)
+				_, _ = io.WriteString(w, `{"type":"error","error":{"type":"overloaded_error","message":"overloaded"}}`)
 				return
 			}
 			w.Header().Set("Content-Type", "application/json")
-			_, _ = fmt.Fprintf(w, `{"id":%q,"type":"model","display_name":"x","created_at":"2026-01-01T00:00:00Z","max_input_tokens":1000000,"max_tokens":128000}`, strings.TrimPrefix(r.URL.Path, "/v1/models/"))
+			_, _ = fmt.Fprintf(w, `{"id":%q,"type":"model","display_name":"x","created_at":"2026-01-01T00:00:00Z","max_input_tokens":1000000,"max_tokens":128000,
+				"capabilities":{"thinking":{"supported":%t,"types":{"adaptive":{"supported":%t},"enabled":{"supported":false}}},"effort":{"supported":true,%s}}}`,
+				strings.TrimPrefix(r.URL.Path, "/v1/models/"), a.thinking, a.thinking, a.efforts)
 			return
 		}
 		var body map[string]any
@@ -173,6 +191,7 @@ func TestAConversation(t *testing.T) {
 // remembers.
 func TestOptionalFeatures(t *testing.T) {
 	a := newAPI(t, fail(400, "thinking type adaptive is not supported by this model"), fail(400, "effort is not supported"), sse("end_turn", "ok"), sse("end_turn", "again"))
+	a.noModels = true // a gateway without the Models API
 	s := setup(a.URL)
 	s.Model.BaseURL = a.URL // a gateway
 	conv, err := (&anthropic.Provider{}).Start(ctx, s)
@@ -248,6 +267,7 @@ func TestRefusal(t *testing.T) {
 // mentions one is an ordinary error, and the request keeps its shape.
 func TestFeaturesAreProbedOnTheFirstRequestOnly(t *testing.T) {
 	a := newAPI(t, sse("end_turn", "ok"), fail(400, "thinking blocks cannot be modified"))
+	a.noModels = true
 	conv, _ := (&anthropic.Provider{Endpoint: a.URL}).Start(ctx, setup(""))
 	if _, err := conv.Turn(ctx); err != nil {
 		t.Fatal(err)
@@ -285,5 +305,68 @@ func TestPausedTurns(t *testing.T) {
 	r, err := conv.Turn(ctx)
 	if err != nil || r.Stop != builtin.StopPaused || len(a.requests) != 6 {
 		t.Fatalf("reply %+v, %v after %d requests", r, err, len(a.requests))
+	}
+}
+
+// What the model takes comes from the Models API, with no probing: a model
+// without adaptive thinking or the asked effort gets neither, from the
+// first request on, and a 400 then is just an error.
+func TestCapabilitiesFromTheModelsAPI(t *testing.T) {
+	a := newAPI(t, sse("end_turn", "ok"))
+	a.thinking = false
+	a.efforts = `"low":{"supported":true},"medium":{"supported":true},"high":{"supported":true},"xhigh":{"supported":false},"max":{"supported":false}`
+	conv, err := (&anthropic.Provider{Endpoint: a.URL}).Start(ctx, setup(""))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := conv.Turn(ctx); err != nil {
+		t.Fatal(err)
+	}
+	first := a.requests[0]
+	if _, ok := first["thinking"]; ok {
+		t.Error("thinking was asked of a model without adaptive thinking")
+	}
+	if _, ok := first["output_config"]; ok {
+		t.Error("xhigh effort was asked of a model without it")
+	}
+
+	b := newAPI(t, fail(400, "thinking is not supported"))
+	conv, _ = (&anthropic.Provider{Endpoint: b.URL}).Start(ctx, setup(""))
+	if _, err := conv.Turn(ctx); !builtin.IsPermanent(err) || len(b.requests) != 1 {
+		t.Fatalf("a 400 with the Models API known: %v after %d requests; want no probing", err, len(b.requests))
+	}
+}
+
+// A transient Models API failure fails Start for the loop to retry; it
+// does not leave the run without its limits.
+func TestTheModelsAPIIsRetried(t *testing.T) {
+	a := newAPI(t)
+	a.models = []int{529, 529, 529} // the SDK tries three times itself
+	if _, err := (&anthropic.Provider{Endpoint: a.URL}).Start(ctx, setup("")); err == nil || builtin.IsPermanent(err) {
+		t.Fatalf("Start on an overloaded Models API: %v, want a retriable error", err)
+	}
+	conv, err := (&anthropic.Provider{Endpoint: a.URL}).Start(ctx, setup(""))
+	if err != nil || conv.ContextLimit() != 1000000 {
+		t.Fatalf("Start again: %v, limit %v", err, conv)
+	}
+}
+
+// An error event in the middle of a stream comes with HTTP 200; its type
+// decides whether retrying can help.
+func TestMidStreamErrors(t *testing.T) {
+	streamed := func(kind string) func(http.ResponseWriter, map[string]any) {
+		return func(w http.ResponseWriter, _ map[string]any) {
+			w.Header().Set("Content-Type", "text/event-stream")
+			_, _ = io.WriteString(w, "event: message_start\ndata: {\"type\":\"message_start\",\"message\":{\"id\":\"m\",\"type\":\"message\",\"role\":\"assistant\",\"model\":\"x\",\"content\":[],\"stop_reason\":null,\"usage\":{\"input_tokens\":1,\"output_tokens\":0}}}\n\n"+
+				"event: error\ndata: {\"type\":\"error\",\"error\":{\"type\":\""+kind+"\",\"message\":\"went wrong\"}}\n\n")
+		}
+	}
+	for kind, permanent := range map[string]bool{"invalid_request_error": true, "authentication_error": true, "overloaded_error": false, "api_error": false} {
+		a := newAPI(t, streamed(kind))
+		conv, _ := (&anthropic.Provider{Endpoint: a.URL}).Start(ctx, setup(""))
+		_, err := conv.Turn(ctx)
+		if err == nil || builtin.IsPermanent(err) != permanent {
+			t.Errorf("%s in the stream: %v, want permanent %v", kind, err, permanent)
+		}
 	}
 }

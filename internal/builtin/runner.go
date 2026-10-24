@@ -285,8 +285,10 @@ func (r *run) drive(ctx context.Context, s *session) ending {
 		// outage is not the task's.
 		return r.abandon(err)
 	}
-	conv, err := p.Start(ctx, setup)
-	if err != nil {
+	// Start reads the model's description; a transient failure of it is
+	// retried like the other start-up reads.
+	var conv Conversation
+	if err := r.retry(ctx, func() (err error) { conv, err = p.Start(ctx, setup); return err }); err != nil {
 		return r.failed(ctx, "This run could not start the model", err)
 	}
 

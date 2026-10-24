@@ -42,6 +42,9 @@ func run() error {
 	)
 	flag.Parse()
 	log := slog.New(slog.NewJSONHandler(os.Stderr, nil))
+	if strings.TrimSpace(*name) == "" {
+		return fmt.Errorf("--runner is empty and the host name could not be read; name this runner")
+	}
 
 	rest, err := ctrl.GetConfig()
 	if err != nil {
