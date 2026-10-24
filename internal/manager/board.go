@@ -126,6 +126,8 @@ type ThreadEntry struct {
 	// Call is the tool call a ToolCall, Approved, Denied or ToolResult
 	// entry is about.
 	Call *ToolCall `json:"call,omitempty"`
+	// ItemID is the outbox item that wrote a run's fenced entry.
+	ItemID string `json:"itemId,omitempty"`
 }
 
 // ThreadStream is the log stream holding a task's thread.
@@ -152,14 +154,10 @@ func (m *Manager) appendThread(ctx context.Context, key storage.Key, author Auth
 // appendEntry appends entry under the next sequence number, setting its Seq
 // and time.
 func (m *Manager) appendEntry(ctx context.Context, key storage.Key, entry *ThreadEntry) (*ThreadEntry, error) {
-	switch {
-	case entry.Author.Name == "" || strings.TrimSpace(entry.Body) == "":
-		return nil, fmt.Errorf("author and body are required: %w", ErrInvalid)
-	case !slices.Contains(authorKinds, entry.Author.Kind):
-		return nil, fmt.Errorf("author kind %q: %w", entry.Author.Kind, ErrInvalid)
-	case !slices.Contains(entryKinds, entry.Kind):
-		return nil, fmt.Errorf("entry kind %q: %w", entry.Kind, ErrInvalid)
-	case slices.Contains(callKinds, entry.Kind) != (entry.Call != nil):
+	if err := validEntry(entry.Author, entry.Kind, entry.Body); err != nil {
+		return nil, err
+	}
+	if slices.Contains(callKinds, entry.Kind) != (entry.Call != nil) {
 		return nil, fmt.Errorf("a %s entry and its call: %w", entry.Kind, ErrInvalid)
 	}
 	t, err := m.store.GetTask(ctx, key)
@@ -194,6 +192,19 @@ func (m *Manager) appendEntry(ctx context.Context, key storage.Key, entry *Threa
 		entry.Seq = last + 1
 	}
 	return nil, fmt.Errorf("thread %s: %w", key, ErrBusy)
+}
+
+// validEntry checks an entry's author, kind and body.
+func validEntry(author Author, kind EntryKind, body string) error {
+	switch {
+	case author.Name == "" || strings.TrimSpace(body) == "":
+		return fmt.Errorf("author and body are required: %w", ErrInvalid)
+	case !slices.Contains(authorKinds, author.Kind):
+		return fmt.Errorf("author kind %q: %w", author.Kind, ErrInvalid)
+	case !slices.Contains(entryKinds, kind):
+		return fmt.Errorf("entry kind %q: %w", kind, ErrInvalid)
+	}
+	return nil
 }
 
 // lastSeq returns the highest sequence number in the thread, given that
@@ -278,6 +289,11 @@ func (m *Manager) Answer(ctx context.Context, key storage.Key, author Author, bo
 	}
 	if w.Reason == v1alpha1.WaitingToolApproval {
 		return nil, nil, fmt.Errorf("the task waits for a tool approval; approve or deny it: %w", task.ErrInvalidTransition)
+	}
+	if w.ItemID != "" && w.ThreadSeq == 0 {
+		// The Question is committed but not in the thread yet: an answer
+		// now would come before it.
+		return nil, nil, ErrQuestionPending
 	}
 	since, err := m.ReadThread(ctx, key, w.ThreadSeq, 0)
 	if err != nil {

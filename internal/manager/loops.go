@@ -167,6 +167,16 @@ func (m *Manager) applyItem(ctx context.Context, parent *v1alpha1.Task, it v1alp
 			return nil
 		}
 		return err
+	case v1alpha1.OutboxAppendThread:
+		if it.Thread == nil {
+			return fmt.Errorf("no thread entry: %w", ErrInvalid)
+		}
+		return m.applyThread(ctx, parent, it)
+	case v1alpha1.OutboxWriteFile:
+		if it.File == nil {
+			return fmt.Errorf("no file: %w", ErrInvalid)
+		}
+		return m.applyFile(ctx, parent, it)
 	default:
 		return fmt.Errorf("unknown kind %q: %w", it.Kind, ErrInvalid)
 	}

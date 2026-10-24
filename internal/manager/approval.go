@@ -48,6 +48,10 @@ type ToolCaller interface {
 // MaxToolArguments bounds the arguments of a call that asks first.
 const MaxToolArguments = 1 << 20
 
+// ErrQuestionPending means a task waits on a question that is committed
+// but not written to the thread yet; it is, a moment later.
+var ErrQuestionPending = errors.New("the question is still being recorded; reply again in a moment")
+
 // ErrInProgress means another request is doing what was asked: an approved
 // call that may still be running. It comes as a *CallInProgress.
 var ErrInProgress = errors.New("in progress")

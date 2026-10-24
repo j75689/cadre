@@ -160,7 +160,11 @@ func printTask(out io.Writer, t *v1alpha1.Task) {
 	outf(out, "Name:      %s/%s\n", t.Namespace, t.Name)
 	outf(out, "Phase:     %s\n", phaseOf(t))
 	if w := t.Status.Waiting; w != nil {
-		outf(out, "Waiting:   %s since %s\n", w.Reason, w.Since.Format("2006-01-02 15:04:05"))
+		reason := string(w.Reason)
+		if w.ItemID != "" && w.ThreadSeq == 0 {
+			reason += " (question pending)"
+		}
+		outf(out, "Waiting:   %s since %s\n", reason, w.Since.Format("2006-01-02 15:04:05"))
 	}
 	outf(out, "Assignee:  %s\n", assignee(t))
 	outf(out, "Priority:  %s\n", orDash(string(t.Spec.Priority)))
@@ -216,6 +220,9 @@ func newTaskReply(g *globals) *cobra.Command {
 				return err
 			}
 			res, err := c.Reply(cmd.Context(), g.namespace, name, g.as, msg)
+			if client.IsCode(err, httpjson.CodeQuestionPending) {
+				return fmt.Errorf("%s: the agent's question is still being recorded; reply again in a moment", name)
+			}
 			if client.IsCode(err, httpjson.CodeInvalidTransition) {
 				if t, gerr := c.GetTask(cmd.Context(), g.namespace, name); gerr == nil && t.Status.Waiting != nil &&
 					t.Status.Waiting.Reason == v1alpha1.WaitingToolApproval {

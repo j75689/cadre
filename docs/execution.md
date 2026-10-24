@@ -138,12 +138,15 @@ What fencing guarantees for each tool in runtime mode, in M1:
 | Tool | Guarantee |
 | --- | --- |
 | `task_create_subtask` | fully fenced: the subtask enters the outbox in a conditional write on the Task that checks the run |
-| `thread_ask`, an `ask` tool | the run ends through Finish, which is fenced; the Question or ToolCall is appended just before it |
-| `thread_post`, `thread_ask`'s Question, an `ask` tool's ToolCall, `task_files_write` | checked, then written: a fresh read must show the run still holding the task, then the log entry is appended. A run that loses its task in the moment between the two can still land that one entry. |
+| `thread_ask`, an `ask` tool | the run ends through Finish, which is fenced; `thread_ask`'s Question is an outbox item of that same Finish, while an `ask` tool's ToolCall is appended just before it |
+| `thread_post`, `thread_ask`'s Question, `task_files_write` | fully fenced, in two phases: the content is written first as a blob, where nothing reads it, then committed by an outbox item in a conditional write on the Task that checks the run (for `thread_ask`, the Finish itself). The dispatcher writes the entry or version exactly once, at a position the item reserves on the Task first; the tool returns its sequence or version when it can apply it at once, and 0 while it is pending |
+| an `ask` tool's ToolCall | checked, then written: a fresh read must show the run still holding the task, then the log entry is appended. A run that loses its task in the moment between the two can still land that one entry; it moves to the two-phase write with step mode |
 
-A two-phase write would close that window: the content written first, then a pointer to it committed in a run-fenced write. It is planned for M2.
+How the two-phase write stays exactly once: the content goes to its own blob stream, `<ns>/<task>/blobs/<runId>.<itemId>`. The outbox item (`AppendThread` or `WriteFile`) first reserves where it writes, a thread sequence or file version, with a compare-and-set on the Task; every dispatcher applying it, and every replica hears the same watch event, then appends at that one key, create-only. If another write took the key first, the item reserves the next free one the same way. A thread reservation also moves the thread revision past it, so ordinary appends do not land on it. A blob whose item was never committed (its run lost the task in between) is garbage; collecting it is left for later.
 
-Task files are stored as one log stream of versions per path, `<ns>/<task>/files/<base64url(path)>`, plus an index stream, `<ns>/<task>/files-index`, recording each write's path, version and size. A write appends the version first and the index entry second. Reads use the version streams, so a write whose index entry was lost is still read, and the path is indexed again by its next write.
+While the Question of a `thread_ask` is committed but not yet in the thread, the task waits on its outbox item (`waiting.itemId`, `threadSeq` unset), and a reply is refused with `409 question_pending`, as the answer would come before the question. `cadre task get` shows the wait as "question pending".
+
+Task files are stored as one log stream of versions per path, `<ns>/<task>/files/<base64url(path)>`, each version a pointer to its content's blob, plus an index stream, `<ns>/<task>/files-index`, recording each write's path, version and size. A write appends the version first and the index entry second. Reads use the version streams, so a write whose index entry was lost is still read, and the path is indexed again by its next write. Every 64 index entries the dispatcher writes a snapshot of every path's latest version to `<ns>/<task>/files-snapshots`, keyed by the index position it covers; `task_files_list` reads the newest snapshot and the index entries after it.
 
 ## Correctness: three layers
 

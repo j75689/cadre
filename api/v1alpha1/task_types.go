@@ -109,10 +109,17 @@ type Waiting struct {
 	Since metav1.Time `json:"since"`
 
 	// ThreadSeq is the thread entry that asked for the human, if any. Thread
-	// sequences start at 1, so an unset ThreadSeq means none.
+	// sequences start at 1, so an unset ThreadSeq means none, or one not
+	// written yet: see ItemID.
 	// +kubebuilder:validation:Minimum=1
 	// +optional
 	ThreadSeq int64 `json:"threadSeq,omitempty"`
+
+	// ItemID is the outbox item that writes the entry asking for the
+	// human, when the run ended before it was written; ThreadSeq is set
+	// once it is.
+	// +optional
+	ItemID string `json:"itemId,omitempty"`
 }
 
 // RunMode is who drives the agent loop of a run.
@@ -164,7 +171,7 @@ type Run struct {
 }
 
 // OutboxKind is the kind of side effect an outbox item asks for.
-// +kubebuilder:validation:Enum=CreateSubtask;RunEnded
+// +kubebuilder:validation:Enum=CreateSubtask;RunEnded;AppendThread;WriteFile
 type OutboxKind string
 
 // Outbox kinds.
@@ -173,7 +180,53 @@ const (
 	OutboxCreateSubtask OutboxKind = "CreateSubtask"
 	// OutboxRunEnded appends Run to the task's run history.
 	OutboxRunEnded OutboxKind = "RunEnded"
+	// OutboxAppendThread appends a run's thread entry, its body written
+	// beforehand as a blob.
+	OutboxAppendThread OutboxKind = "AppendThread"
+	// OutboxWriteFile writes a new version of a task file, its content
+	// written beforehand as a blob.
+	OutboxWriteFile OutboxKind = "WriteFile"
 )
+
+// ThreadAppend is a thread entry a run committed: the second phase of a
+// fenced write, after its body was written as a blob.
+type ThreadAppend struct {
+	// Blob is the key of the body in the task's blob stream.
+	// +kubebuilder:validation:MinLength=1
+	Blob string `json:"blob"`
+	// Kind is the entry kind, Comment or Question.
+	// +kubebuilder:validation:MinLength=1
+	Kind string `json:"kind"`
+	// Author is the agent writing it.
+	// +kubebuilder:validation:MinLength=1
+	Author string `json:"author"`
+	// RunID is the run that wrote it.
+	RunID string `json:"runId"`
+	// After is the thread revision when the item was committed: the entry,
+	// if an earlier apply wrote it, is after it.
+	// +kubebuilder:validation:Minimum=0
+	// +optional
+	After int64 `json:"after,omitempty"`
+}
+
+// FileWrite is a task file version a run committed: the second phase of a
+// fenced write, after its content was written as a blob.
+type FileWrite struct {
+	// Blob is the key of the content in the task's blob stream.
+	// +kubebuilder:validation:MinLength=1
+	Blob string `json:"blob"`
+	// Path is the file's path.
+	// +kubebuilder:validation:MinLength=1
+	Path string `json:"path"`
+	// Size is the content's size in bytes.
+	// +kubebuilder:validation:Minimum=0
+	Size int64 `json:"size"`
+	// After is the file's latest version when the item was committed: the
+	// version, if an earlier apply wrote it, is after it.
+	// +kubebuilder:validation:Minimum=0
+	// +optional
+	After int64 `json:"after,omitempty"`
+}
 
 // RunEndReason says why a run ended.
 // +kubebuilder:validation:Enum=Finished;Interrupted;Cancelled
@@ -238,6 +291,8 @@ type RunRecord struct {
 //
 // +kubebuilder:validation:XValidation:rule="self.kind != 'CreateSubtask' || has(self.spec)",message="a CreateSubtask item needs spec"
 // +kubebuilder:validation:XValidation:rule="self.kind != 'RunEnded' || has(self.run)",message="a RunEnded item needs run"
+// +kubebuilder:validation:XValidation:rule="self.kind != 'AppendThread' || has(self.thread)",message="an AppendThread item needs thread"
+// +kubebuilder:validation:XValidation:rule="self.kind != 'WriteFile' || has(self.file)",message="a WriteFile item needs file"
 type OutboxItem struct {
 	// ID is a ULID and the item's idempotency key.
 	//
@@ -261,6 +316,21 @@ type OutboxItem struct {
 	// Run is the ended run to record, for kind RunEnded.
 	// +optional
 	Run *RunRecord `json:"run,omitempty"`
+
+	// Thread is the entry to append, for kind AppendThread.
+	// +optional
+	Thread *ThreadAppend `json:"thread,omitempty"`
+
+	// File is the version to write, for kind WriteFile.
+	// +optional
+	File *FileWrite `json:"file,omitempty"`
+
+	// Seq is where an AppendThread or WriteFile item writes, its thread
+	// sequence or file version, reserved here before it is written so
+	// every dispatcher applying the item writes the same key.
+	// +kubebuilder:validation:Minimum=0
+	// +optional
+	Seq int64 `json:"seq,omitempty"`
 }
 
 // ThreadStatus points at the task's thread in the log.

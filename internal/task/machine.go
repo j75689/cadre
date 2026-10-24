@@ -45,6 +45,8 @@ const (
 	KindCancel    Kind = "Cancel"
 	KindAckOutbox Kind = "AckOutbox"
 	KindThread    Kind = "ThreadAdvanced"
+	KindWaitingAt Kind = "WaitingAt"
+	KindReserve   Kind = "ReserveItem"
 )
 
 // unborn is the phase of a Task object that exists but has not been numbered.
@@ -68,6 +70,8 @@ var From = map[Kind][]v1alpha1.Phase{
 	KindCancel:    allPhases,
 	KindAckOutbox: allPhases,
 	KindThread:    append([]v1alpha1.Phase{unborn}, allPhases...),
+	KindWaitingAt: allPhases,
+	KindReserve:   allPhases,
 }
 
 // Event is one input to the state machine.
@@ -157,7 +161,10 @@ type Finish struct {
 	Outcome   Outcome
 	Reason    v1alpha1.WaitingReason // required for OutcomeWaiting
 	ThreadSeq int64                  // optional, for OutcomeWaiting
-	Outbox    []v1alpha1.OutboxItem
+	// WaitingItem, for OutcomeWaiting, is an AppendThread item in Outbox
+	// that writes the entry the wait is on; its sequence is not known yet.
+	WaitingItem string
+	Outbox      []v1alpha1.OutboxItem
 }
 
 // Reply is a human answer or approval that ends the wait. A non-zero
@@ -196,6 +203,33 @@ type ThreadAdvanced struct {
 }
 
 func (ThreadAdvanced) kind() Kind { return KindThread }
+
+// WaitingAt records the thread entry a wait is on, once the outbox item
+// ItemID has written it as Seq. It changes nothing unless the task still
+// waits on that item without a sequence: a wait that ended, or moved on,
+// is left alone.
+type WaitingAt struct {
+	ItemID string
+	Seq    int64
+}
+
+func (WaitingAt) kind() Kind { return KindWaitingAt }
+
+// ReserveItem moves where outbox item ID writes, from From to To. It is a
+// compare-and-set: it changes nothing if the item is gone (applied) or
+// reserved elsewhere already, so of dispatchers reserving at once one wins
+// and the others read its choice.
+//
+// A reservation in the thread (Thread set) also moves the thread revision
+// to at least To in the same write, so an ordinary append, which takes the
+// revision's next number, does not land on the reserved key.
+type ReserveItem struct {
+	ID       string
+	From, To int64
+	Thread   bool
+}
+
+func (ReserveItem) kind() Kind { return KindReserve }
 
 func (Create) kind() Kind    { return KindCreate }
 func (Claim) kind() Kind     { return KindClaim }
@@ -320,8 +354,13 @@ func Apply(t *v1alpha1.Task, ev Event, now time.Time) (Result, error) {
 			if ev.ThreadSeq < 0 {
 				return Result{}, fmt.Errorf("thread sequence %d: %w", ev.ThreadSeq, ErrInvalidEvent)
 			}
+			if ev.WaitingItem != "" && (ev.ThreadSeq != 0 || !slices.ContainsFunc(ev.Outbox, func(it v1alpha1.OutboxItem) bool {
+				return it.ID == ev.WaitingItem && it.Kind == v1alpha1.OutboxAppendThread
+			})) {
+				return Result{}, fmt.Errorf("waiting item %q is not an entry this finish writes: %w", ev.WaitingItem, ErrInvalidEvent)
+			}
 			s.Phase = v1alpha1.PhaseWaiting
-			s.Waiting = &v1alpha1.Waiting{Reason: ev.Reason, Since: metaTime(now), ThreadSeq: ev.ThreadSeq}
+			s.Waiting = &v1alpha1.Waiting{Reason: ev.Reason, Since: metaTime(now), ThreadSeq: ev.ThreadSeq, ItemID: ev.WaitingItem}
 		default:
 			return Result{}, fmt.Errorf("outcome %q: %w", ev.Outcome, ErrInvalidEvent)
 		}
@@ -358,6 +397,31 @@ func Apply(t *v1alpha1.Task, ev Event, now time.Time) (Result, error) {
 		}
 		s.Waiting = nil
 		s.Phase = v1alpha1.PhaseCancelled
+
+	case ReserveItem:
+		if ev.To < 1 || ev.To == ev.From {
+			return Result{}, fmt.Errorf("reserve %d for item %q: %w", ev.To, ev.ID, ErrInvalidEvent)
+		}
+		for i := range s.Outbox {
+			if s.Outbox[i].ID != ev.ID || s.Outbox[i].Seq != ev.From {
+				continue
+			}
+			s.Outbox[i].Seq = ev.To
+			if ev.Thread {
+				if s.Thread == nil {
+					s.Thread = &v1alpha1.ThreadStatus{}
+				}
+				s.Thread.Revision = max(s.Thread.Revision, ev.To)
+			}
+		}
+
+	case WaitingAt:
+		if ev.ItemID == "" || ev.Seq < 1 {
+			return Result{}, fmt.Errorf("waiting at %q/%d: %w", ev.ItemID, ev.Seq, ErrInvalidEvent)
+		}
+		if w := s.Waiting; s.Phase == v1alpha1.PhaseWaiting && w != nil && w.ItemID == ev.ItemID && w.ThreadSeq == 0 {
+			w.ThreadSeq = ev.Seq
+		}
 
 	case ThreadAdvanced:
 		if ev.Seq < 1 {
@@ -433,11 +497,18 @@ func endRun(res *Result, reason v1alpha1.RunEndReason, outcome Outcome, now time
 // item the dispatcher fails on forever.
 func appendOutbox(s *v1alpha1.TaskStatus, items []v1alpha1.OutboxItem) error {
 	for _, it := range items {
-		if it.ID == "" || it.Kind != v1alpha1.OutboxCreateSubtask || it.Spec == nil {
-			return fmt.Errorf("outbox item %q: %w", it.ID, ErrInvalidEvent)
-		}
-		if err := ValidateSpec(it.Spec); err != nil {
-			return fmt.Errorf("outbox item %q: %w", it.ID, err)
+		switch {
+		case it.ID == "":
+			return fmt.Errorf("outbox item without an id: %w", ErrInvalidEvent)
+		case it.Kind == v1alpha1.OutboxCreateSubtask && it.Spec != nil:
+			if err := ValidateSpec(it.Spec); err != nil {
+				return fmt.Errorf("outbox item %q: %w", it.ID, err)
+			}
+		case it.Kind == v1alpha1.OutboxAppendThread && it.Thread != nil && it.Thread.Blob != "" && it.Thread.Author != "" &&
+			(it.Thread.Kind == "Comment" || it.Thread.Kind == "Question"):
+		case it.Kind == v1alpha1.OutboxWriteFile && it.File != nil && it.File.Blob != "" && it.File.Path != "" && it.File.Size >= 0:
+		default:
+			return fmt.Errorf("outbox item %q of kind %q: %w", it.ID, it.Kind, ErrInvalidEvent)
 		}
 		if slices.ContainsFunc(s.Outbox, func(o v1alpha1.OutboxItem) bool { return o.ID == it.ID }) {
 			return fmt.Errorf("duplicate outbox item %q: %w", it.ID, ErrInvalidEvent)

@@ -337,23 +337,26 @@ func (teamGone) GetTeam(context.Context, string) (*v1alpha1.Team, error) {
 	return nil, storage.ErrNotFound
 }
 
-// A thread_ask whose ending of the run failed is retried: the thread keeps
-// one Question, and the retry ends the run.
+// thread_ask is one write: the Question rides on the Finish. A retry after
+// the Finish landed (its answer lost, say) is answered as finished, and the
+// thread keeps one Question, the first attempt's, which the wait names.
 func TestRunAskWritesOneQuestion(t *testing.T) {
 	e := newEnv(t, 1)
 	key := e.addTask(t, "t", v1alpha1.AssigneeAgent)
 	c := e.claim(t)
-	// The Question's revision advance lands; the Finish write fails.
-	m := e.manager(&failSecondWrite{Driver: e.store})
-	if _, err := m.RunAsk(ctx, key, c.RunID, "Staging or production?"); err == nil {
-		t.Fatal("first ask: want the injected failure")
+	first, err := e.m.RunAsk(ctx, key, c.RunID, "Staging or production?")
+	if err != nil || first.Seq != 1 {
+		t.Fatalf("ask: %+v, %v", first, err)
 	}
-	entry, err := e.m.RunAsk(ctx, key, c.RunID, "Staging or production?")
-	if err != nil || entry.Seq != 1 || entry.RunID != c.RunID {
-		t.Fatalf("retried ask: %+v, %v", entry, err)
+	again, err := e.m.RunAsk(ctx, key, c.RunID, "Staging or production?")
+	if !errors.Is(err, task.ErrRunMismatch) && (err != nil || again.ItemID != first.ItemID) {
+		t.Fatalf("retried ask: %+v, %v; want the first Question or the run gone", again, err)
+	}
+	if err := e.m.Dispatch(ctx); err != nil {
+		t.Fatal(err)
 	}
 	thread, _ := e.m.ReadThread(ctx, key, 0, 0)
-	if len(thread) != 1 {
+	if len(thread) != 1 || thread[0].Kind != EntryQuestion {
 		t.Fatalf("%d entries, want one Question: %+v", len(thread), thread)
 	}
 	if tk := e.get(t, key); tk.Status.Phase != v1alpha1.PhaseWaiting || tk.Status.Waiting.ThreadSeq != 1 {
@@ -371,13 +374,22 @@ func (f takenFiles) Append(c context.Context, stream, key string, data []byte) e
 	return f.Driver.Append(c, stream, key, data)
 }
 
-// A write that cannot win a version is reported busy and indexes nothing.
+// A write that cannot win a version stays pending: the tool reports no
+// version yet, the dispatcher reports itself busy, and nothing is indexed.
 func TestWriteFileGivesUpOnAnEndlessVersionRace(t *testing.T) {
 	e := newEnv(t, 1)
 	key := e.addTask(t, "t", v1alpha1.AssigneeAgent)
 	c := e.claim(t)
-	if _, err := e.manager(takenFiles{e.store}).RunWriteFile(ctx, key, c.RunID, "a.txt", "x"); !errors.Is(err, ErrBusy) {
-		t.Fatalf("write: %v, want ErrBusy", err)
+	m := e.manager(takenFiles{e.store})
+	info, err := m.RunWriteFile(ctx, key, c.RunID, "a.txt", "x")
+	if err != nil || info.Version != 0 {
+		t.Fatalf("write: %+v, %v; want it pending", info, err)
+	}
+	if err := m.Dispatch(ctx); !errors.Is(err, ErrBusy) {
+		t.Fatalf("dispatch: %v, want ErrBusy", err)
+	}
+	if out := e.get(t, key).Status.Outbox; len(out) != 1 || out[0].Kind != v1alpha1.OutboxWriteFile {
+		t.Fatalf("outbox %+v, want the write still pending", out)
 	}
 	if files, err := e.m.RunListFiles(ctx, key, c.RunID); err != nil || len(files) != 0 {
 		t.Fatalf("index after a lost write: %+v, %v", files, err)
