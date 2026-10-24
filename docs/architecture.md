@@ -32,9 +32,12 @@ Cadre is not a SaaS, not a workflow engine, not an LLM gateway and not a sandbox
 ## Components
 
 ### Web UI and API
-- Board: columns by phase, ordering by priority, search, subtask tree.
-- Thread: the conversation between humans and the agent, tool call records, files.
-- Approval queue: deliverable drafts, approve, reject, publish (plugin, see below).
+- The web UI is a React and TypeScript app in `web/`, built with Vite into `internal/web/dist` and embedded in cadre-server with `go:embed`: cadre-server serves it beside its own routes, so there is no separate Deployment: GET at `/`, under `/t/` (the app's routes, which get `index.html`, served uncached) and under `/assets/` (the build's hashed files, cached for a year). Every other path stays cadre-server's, so a wrong method on an API route is still a 405 and an unknown path a 404. `make ui` builds it (needs Node, see `web/.nvmrc`) and must run before `make build` for a cadre-server that carries it; the cadre-server image always does. A binary built without it serves a page at `/` saying how to build it.
+- Team picker at `/`, from `GET /api/v1/teams`. The team is in the URL, `/t/<namespace>`, so a board can be linked to.
+- Board at `/t/<namespace>`: the seven phases as columns, each read with the API's phase filter and paging and in its order (priority, then number), a page of 50 at a time with "load more". A card shows the number, title, assignee, priority, labels and, while Waiting, the reason. Search filters the loaded pages in the browser, and says so. The board polls every five seconds while the tab is visible.
+- Task page at `/t/<namespace>/tasks/<name>`: the spec and status, read-only so far. Thread, reply, comment, approve, cancel, runs and a create form come next.
+- Identity, until sign-in: the UI asks for a display name once and keeps it in the browser; it is the author of what the user does, as `--as` is for the CLI. Nothing checks it. OIDC replaces it.
+- Planned: subtask tree, deliverable approval queue (approve, reject, publish; plugin, see below).
 - The API serves the CLI and external systems; the MCP endpoint lets external agents (Claude Code, for example) create tasks, comment and read progress.
 - Stateless and horizontally scalable. Every state change is delegated to the Task Manager.
 
@@ -76,7 +79,7 @@ Runtime-mode backends differ only in who starts the runner process. For the Kube
 
 ### Events
 - Work hints ("run X has a next step") are optional and may be lost or duplicated. Correctness rests on conditional writes alone. The kubernetes driver gets hints for free from informer watches; a message queue is a later latency optimisation. Today they number a task applied with kubectl, and create a run's subtasks, as soon as the watch sees the change; the periodic scan (`--dispatch-interval`) stays as the fallback.
-- UI events are watch events on Task resources and only say "something changed, refetch". `thread.revision` on the Task status makes thread appends visible through the same watch. No Redis, no message queue.
+- UI events are watch events on Task resources and only say "something changed, refetch". Until the API exposes them, the UI polls. `thread.revision` on the Task status makes thread appends visible through the same watch. No Redis, no message queue.
 
 ## Identity and access
 

@@ -1,5 +1,5 @@
 bin/
-dist/
+/dist/
 *.test
 *.out
 coverage.*
@@ -7,3 +7,6 @@ coverage.*
 .idea/
 .vscode/
 .DS_Store
+web/node_modules/
+internal/web/dist/*
+!internal/web/dist/.gitkeep

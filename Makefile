@@ -23,16 +23,27 @@ define go-install
 	mkdir -p $(TOOLS); mv $$tmp/$$(basename $(2)) $(1); rm -rf $$tmp
 endef
 
-.PHONY: all build test smoke chaos fmt vet lint check tidy clean generate manifests verify-generated verify-tidy tools image images
+.PHONY: all build test smoke chaos fmt vet lint check tidy clean generate manifests verify-generated verify-tidy tools image images ui ui-check
 
 all: build
 
-build: ## Build all binaries into bin/
+build: ## Build all binaries into bin/; for cadre-server with the web UI, run make ui first
 	@mkdir -p $(BIN)
 	@for c in $(CMDS); do echo "building $$c"; go build $(GOFLAGS) -o $(BIN)/$$c ./cmd/$$c; done
 
+# web/node_modules is installed from the lockfile, again when it changes.
+web/node_modules/.package-lock.json: web/package-lock.json
+	cd web && npm ci
+	@touch $@
+
+ui: web/node_modules/.package-lock.json ## Build the web UI into internal/web/dist, which cadre-server embeds (needs Node, see web/.nvmrc)
+	cd web && npm run build
+
+ui-check: web/node_modules/.package-lock.json ## Typecheck, lint and unit-test the web UI
+	cd web && npm run typecheck && npm run lint && npm test
+
 image: ## Build one command's image: make image CMD=cadre-server [TAG=dev]
-	@test -n "$(CMD)" || { echo "set CMD to one of: $(CMDS)"; exit 1; }
+	@case " $(CMDS) " in *" $(CMD) "*) [ -n "$(CMD)" ] ;; *) false ;; esac || { echo "set CMD to one of: $(CMDS)"; exit 1; }
 	DOCKER_BUILDKIT=1 docker build --build-arg CMD=$(CMD) --build-arg VERSION=$(TAG) -t $(REGISTRY)/$(CMD):$(TAG) .
 
 images: ## Build every command's image [TAG=dev]
@@ -52,7 +63,7 @@ chaos: $(ENVTEST) ## Run the full 60s chaos test locally (CADRE_CHAOS_SEED, CADR
 	KUBEBUILDER_ASSETS="$$assets" go test -race -count=1 -timeout 15m -v -run TestChaos ./test/chaos/
 
 fmt: ## Check formatting
-	@test -z "$$(gofmt -l .)" || { echo "unformatted files:"; gofmt -l .; exit 1; }
+	@dirs=$$(go list -f '{{.Dir}}' ./...); test -z "$$(gofmt -l $$dirs)" || { echo "unformatted files:"; gofmt -l $$dirs; exit 1; }
 
 vet:
 	go vet ./...
@@ -76,7 +87,7 @@ tidy:
 verify-tidy: ## Fail if go.mod or go.sum is not tidy
 	go mod tidy && git diff --exit-code go.mod go.sum
 
-check: verify-tidy fmt vet lint verify-generated test ## Everything CI runs
+check: verify-tidy fmt vet lint verify-generated ui-check test ## Everything CI runs
 
 tools: $(CONTROLLER_GEN) $(GOLANGCI_LINT) $(ENVTEST) ## Install pinned tools into bin/tools
 

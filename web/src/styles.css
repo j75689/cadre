@@ -1,0 +1,174 @@
+:root {
+  --bg: #f6f7f9;
+  --fg: #1d2330;
+  --muted: #687082;
+  --card: #ffffff;
+  --line: #dde1e8;
+  --accent: #2f5bd3;
+  --urgent: #c43c3c;
+  --high: #d9822b;
+  font-family: system-ui, -apple-system, "Segoe UI", sans-serif;
+  color: var(--fg);
+  background: var(--bg);
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg: #14171d;
+    --fg: #e4e7ee;
+    --muted: #98a0b1;
+    --card: #1e232c;
+    --line: #2e3542;
+    --accent: #7b9cff;
+  }
+}
+
+body {
+  margin: 0;
+}
+
+a {
+  color: var(--accent);
+}
+
+nav.top {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 1rem;
+  padding: 0.5rem 1rem;
+  border-bottom: 1px solid var(--line);
+  background: var(--card);
+}
+
+.brand {
+  font-weight: 700;
+  text-decoration: none;
+  color: var(--fg);
+}
+
+.identity {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  font-size: 0.9rem;
+}
+
+.hint,
+.ns,
+.count {
+  color: var(--muted);
+  font-size: 0.85rem;
+}
+
+main {
+  padding: 1rem;
+}
+
+.error {
+  color: var(--urgent);
+}
+
+.board-header {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 1rem;
+  flex-wrap: wrap;
+}
+
+.board-header h1 {
+  margin: 0 0 0.5rem;
+}
+
+.columns {
+  display: grid;
+  grid-template-columns: repeat(7, minmax(12rem, 1fr));
+  gap: 0.75rem;
+  overflow-x: auto;
+}
+
+.column {
+  background: color-mix(in srgb, var(--line) 35%, transparent);
+  border-radius: 6px;
+  padding: 0.5rem;
+  min-height: 4rem;
+}
+
+.column h2 {
+  font-size: 0.95rem;
+  margin: 0.25rem 0 0.5rem;
+}
+
+.card {
+  display: block;
+  background: var(--card);
+  border: 1px solid var(--line);
+  border-left: 3px solid var(--line);
+  border-radius: 4px;
+  padding: 0.5rem;
+  margin-bottom: 0.5rem;
+  color: inherit;
+  text-decoration: none;
+  font-size: 0.875rem;
+}
+
+.card:hover {
+  border-color: var(--accent);
+}
+
+.card.priority-urgent {
+  border-left-color: var(--urgent);
+}
+
+.card.priority-high {
+  border-left-color: var(--high);
+}
+
+.card-top {
+  display: flex;
+  justify-content: space-between;
+  color: var(--muted);
+  font-size: 0.8rem;
+}
+
+.title {
+  margin: 0.25rem 0;
+  font-weight: 600;
+}
+
+.assignee,
+.waiting {
+  color: var(--muted);
+  font-size: 0.8rem;
+}
+
+.waiting {
+  color: var(--high);
+}
+
+.labels {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.25rem;
+  margin-top: 0.25rem;
+}
+
+.label {
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  padding: 0 0.4rem;
+  font-size: 0.75rem;
+}
+
+.more {
+  width: 100%;
+}
+
+.task pre {
+  background: var(--card);
+  border: 1px solid var(--line);
+  padding: 0.75rem;
+  overflow-x: auto;
+  font-size: 0.8rem;
+}
