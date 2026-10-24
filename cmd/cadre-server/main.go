@@ -100,7 +100,9 @@ func run() error {
 	}
 	var runnerOpts []runner.Option
 	if *auth == "required" {
-		runnerOpts = append(runnerOpts, runner.WithAuth(runner.Cached(controller.TokenReviews(ctrls.GetClient())), *builtin))
+		reviews := runner.Cached(controller.TokenReviews(ctrls.GetClient()))
+		auth := controller.Runners(ctrls.GetClient(), reviews, *builtin)
+		runnerOpts = append(runnerOpts, runner.WithAuth(auth, *builtin))
 	} else {
 		log.Warn("runners are not authenticated (--runner-auth=none): any client may claim and finish runs")
 	}

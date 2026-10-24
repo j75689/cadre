@@ -28,6 +28,9 @@ type ClaimRequest struct {
 	Identity   string
 	Namespaces []string          // empty means every Team namespace
 	Labels     map[string]string // decide which agents' tasks the runner may take (see claimableBy)
+	// Scope, when set, limits the claim to its namespaces, each with its
+	// own labels in place of Labels.
+	Scope map[string]map[string]string
 }
 
 // Claimed is a task handed to a runner.
@@ -63,6 +66,9 @@ func (m *Manager) Claim(ctx context.Context, req ClaimRequest) (*Claimed, error)
 	namespaces, err := m.namespaces(ctx, req.Namespaces, true)
 	if err != nil {
 		return nil, err
+	}
+	if req.Scope != nil {
+		namespaces = slices.DeleteFunc(namespaces, func(ns string) bool { _, ok := req.Scope[ns]; return !ok })
 	}
 	if len(namespaces) == 0 {
 		return nil, nil
@@ -103,6 +109,9 @@ func (m *Manager) claimIn(ctx context.Context, ns string, req ClaimRequest) (*Cl
 	// The run is held by the identity; claimed without one, by nobody in
 	// particular, and runnerName alone says who.
 	labels, holder := req.Labels, req.Identity
+	if req.Scope != nil {
+		labels = req.Scope[ns]
+	}
 	todo, err := m.store.ListTasks(ctx, storage.Query{Namespace: ns, Phases: []v1alpha1.Phase{v1alpha1.PhaseTodo}})
 	if err != nil {
 		return nil, err

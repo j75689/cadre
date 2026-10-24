@@ -18,6 +18,10 @@ import (
 type Identity struct {
 	Name    string    // system:serviceaccount:<namespace>:<name>, say
 	Expires time.Time // zero if the credential does not say
+	// Scope is where the runner may claim: the labels its claims are
+	// matched with, by namespace, taken from its Runners. Nil means the
+	// claim's own namespaces and labels stand, as for cadre-runner.
+	Scope map[string]map[string]string
 }
 
 // An Authenticator turns a runner's bearer token into its identity. It
@@ -43,8 +47,10 @@ type identityKey struct{}
 
 // identityOf is the authenticated identity of a request; empty when the
 // server does not authenticate runners.
-func identityOf(r *http.Request) string {
-	id, _ := r.Context().Value(identityKey{}).(string)
+func identityOf(r *http.Request) string { return authOf(r).Name }
+
+func authOf(r *http.Request) Identity {
+	id, _ := r.Context().Value(identityKey{}).(Identity)
 	return id
 }
 
@@ -71,7 +77,7 @@ func (s *Server) authenticated(h http.HandlerFunc) http.HandlerFunc {
 			httpjson.WriteError(w, http.StatusServiceUnavailable, CodeUnavailable, "temporarily unavailable; retry")
 			return
 		}
-		h(w, r.WithContext(context.WithValue(r.Context(), identityKey{}, id.Name)))
+		h(w, r.WithContext(context.WithValue(r.Context(), identityKey{}, id)))
 	}
 }
 
@@ -121,11 +127,18 @@ const (
 // tokens cannot turn into a flood of reviews. Other errors are never
 // remembered.
 func Cached(next Authenticator) Authenticator {
+	return &cached{next: next, entries: map[[32]byte]*list.Element{}, order: list.New(), now: time.Now, keep: true}
+}
+
+// Refusals remembers next's refusals only, as Cached does: an identity is
+// asked again every time, so a revoked credential stops at once.
+func Refusals(next Authenticator) Authenticator {
 	return &cached{next: next, entries: map[[32]byte]*list.Element{}, order: list.New(), now: time.Now}
 }
 
 type cached struct {
 	next    Authenticator
+	keep    bool // remember identities too, not only refusals
 	mu      sync.Mutex
 	entries map[[32]byte]*list.Element
 	order   *list.List // most recently used first
@@ -162,6 +175,9 @@ func (c *cached) Authenticate(ctx context.Context, token string) (Identity, erro
 	refused := errors.Is(err, ErrUnauthenticated)
 	if err != nil && !refused {
 		return Identity{}, err
+	}
+	if !refused && !c.keep {
+		return id, nil
 	}
 	until := now.Add(cacheTTL)
 	switch {

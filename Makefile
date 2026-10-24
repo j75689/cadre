@@ -33,9 +33,10 @@ test: $(ENVTEST) ## Run all tests, the chaos test in its short form; downloads e
 	assets=$$($(ENVTEST) use $(ENVTEST_K8S_VERSION) --bin-dir $(TOOLS)/envtest -p path) && \
 	KUBEBUILDER_ASSETS="$$assets" go test -race -short -count=1 ./...
 
-smoke: ## Run the builtin loop against the real Anthropic API (needs CADRE_SMOKE_ANTHROPIC_KEY; costs a few cents)
+smoke: $(ENVTEST) ## Run the builtin loop against the real Anthropic API, authenticated with a real ServiceAccount token (needs CADRE_SMOKE_ANTHROPIC_KEY; costs a few cents)
 	@test -n "$$CADRE_SMOKE_ANTHROPIC_KEY" || { echo "set CADRE_SMOKE_ANTHROPIC_KEY"; exit 1; }
-	go test -tags smoke -count=1 -v -run TestSmoke ./internal/provider/anthropic/
+	assets=$$($(ENVTEST) use $(ENVTEST_K8S_VERSION) --bin-dir $(TOOLS)/envtest -p path) && \
+	KUBEBUILDER_ASSETS="$$assets" go test -tags smoke -count=1 -v -run TestSmoke ./internal/provider/anthropic/
 
 chaos: $(ENVTEST) ## Run the full 60s chaos test locally (CADRE_CHAOS_SEED, CADRE_CHAOS_DURATION)
 	assets=$$($(ENVTEST) use $(ENVTEST_K8S_VERSION) --bin-dir $(TOOLS)/envtest -p path) && \

@@ -19,10 +19,12 @@ import (
 const (
 	indexModelRef = "spec.modelRef"
 	indexToolRefs = "spec.toolRefs"
+	// indexRunnerSA finds the Runners naming a ServiceAccount.
+	indexRunnerSA = "spec.serviceAccount.name"
 )
 
 // setupIndexes lets a ModelProvider or ToolServer change find the Agents
-// that reference it.
+// that reference it, and a ServiceAccount's token find its Runners.
 func setupIndexes(mgr ctrl.Manager) error {
 	idx := mgr.GetFieldIndexer()
 	if err := idx.IndexField(context.Background(), &v1alpha1.Agent{}, indexModelRef, func(o client.Object) []string {
@@ -30,8 +32,16 @@ func setupIndexes(mgr ctrl.Manager) error {
 	}); err != nil {
 		return err
 	}
-	return idx.IndexField(context.Background(), &v1alpha1.Agent{}, indexToolRefs, func(o client.Object) []string {
+	if err := idx.IndexField(context.Background(), &v1alpha1.Agent{}, indexToolRefs, func(o client.Object) []string {
 		return o.(*v1alpha1.Agent).Spec.ToolRefs
+	}); err != nil {
+		return err
+	}
+	return idx.IndexField(context.Background(), &v1alpha1.Runner{}, indexRunnerSA, func(o client.Object) []string {
+		if sa := o.(*v1alpha1.Runner).Spec.ServiceAccount; sa != nil {
+			return []string{sa.Name}
+		}
+		return nil
 	})
 }
 

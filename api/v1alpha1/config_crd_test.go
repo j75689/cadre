@@ -91,6 +91,19 @@ func TestConfigCRDs(t *testing.T) {
 		expect(t, c, "Agent "+name, &v1alpha1.Agent{ObjectMeta: meta(), Spec: tc.spec}, tc.valid)
 	}
 
+	for name, tc := range map[string]struct {
+		spec  v1alpha1.RunnerSpec
+		valid bool
+	}{
+		"minted token":             {v1alpha1.RunnerSpec{Labels: map[string]string{"pool": "gpu"}}, true},
+		"service account":          {v1alpha1.RunnerSpec{ServiceAccount: &v1alpha1.ServiceAccountRef{Name: "ci"}, Labels: map[string]string{"pool": "ci"}}, true},
+		"service account, no name": {v1alpha1.RunnerSpec{ServiceAccount: &v1alpha1.ServiceAccountRef{}, Labels: map[string]string{"pool": "ci"}}, false},
+		"no labels":                {v1alpha1.RunnerSpec{}, false},
+		"reserved label prefix":    {v1alpha1.RunnerSpec{Labels: map[string]string{"cadre.dev/runtime": "builtin"}}, false},
+	} {
+		expect(t, c, "Runner "+name, &v1alpha1.Runner{ObjectMeta: meta(), Spec: tc.spec}, tc.valid)
+	}
+
 	// Defaults: an Agent applied without a runtime is builtin (sent as raw
 	// YAML would be: the typed client always sends a runtime object); a
 	// ToolServer without a transport speaks streamable HTTP.

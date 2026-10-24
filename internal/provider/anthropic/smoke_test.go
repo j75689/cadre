@@ -9,18 +9,27 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"path/filepath"
 	"testing"
 	"time"
 
+	authnv1 "k8s.io/api/authentication/v1"
+	corev1 "k8s.io/api/core/v1"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/client-go/kubernetes"
+	"sigs.k8s.io/controller-runtime/pkg/client"
+
 	v1alpha1 "github.com/j75689/cadre/api/v1alpha1"
 	"github.com/j75689/cadre/internal/builtin"
-	"github.com/j75689/cadre/internal/client"
+	cadreclient "github.com/j75689/cadre/internal/client"
+	"github.com/j75689/cadre/internal/controller"
 	"github.com/j75689/cadre/internal/manager"
 	"github.com/j75689/cadre/internal/mcp"
 	"github.com/j75689/cadre/internal/provider/anthropic"
 	"github.com/j75689/cadre/internal/runner"
 	"github.com/j75689/cadre/internal/storage"
 	"github.com/j75689/cadre/internal/storage/memory"
+	"github.com/j75689/cadre/internal/testenv"
 )
 
 // envSecret hands the run the smoke key, as a ModelProvider's Secret would.
@@ -43,6 +52,32 @@ func TestSmoke(t *testing.T) {
 	agents.Agents[ns+"/greeter"].Spec.Instructions = "Call thread_post exactly once with a one-line greeting. Then call thread_ask exactly once, asking whether to continue. Do nothing else."
 	agents.ModelProviders[ns+"/claude"].Spec.Auth = &v1alpha1.Auth{SecretRef: v1alpha1.SecretKeyRef{Name: "anthropic", Key: "api-key"}}
 	m := manager.New(memory.NewBackend().Open(), manager.Config{Agents: agents})
+
+	// The runner authenticates as cadre-runner's ServiceAccount, with a
+	// real token for the audience cadre, reviewed by a real API server.
+	cfg := testenv.APIServer(t)
+	kube, err := client.New(cfg, client.Options{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	cs := kubernetes.NewForConfigOrDie(cfg)
+	if _, err := cs.CoreV1().Namespaces().Create(context.Background(), &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: "cadre-system"}}, metav1.CreateOptions{}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := cs.CoreV1().ServiceAccounts("cadre-system").Create(context.Background(), &corev1.ServiceAccount{ObjectMeta: metav1.ObjectMeta{Name: "cadre-runner"}}, metav1.CreateOptions{}); err != nil {
+		t.Fatal(err)
+	}
+	tr, err := cs.CoreV1().ServiceAccounts("cadre-system").CreateToken(context.Background(), "cadre-runner",
+		&authnv1.TokenRequest{Spec: authnv1.TokenRequestSpec{Audiences: []string{controller.RunnerAudience}}}, metav1.CreateOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	tokenFile := filepath.Join(t.TempDir(), "token")
+	if err := os.WriteFile(tokenFile, []byte(tr.Status.Token), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	const builtinSA = "system:serviceaccount:cadre-system:cadre-runner"
+	auth := controller.Runners(kube, runner.Cached(controller.TokenReviews(kube)), builtinSA)
 	log := slog.New(slog.NewTextHandler(io.Discard, nil))
 	if testing.Verbose() {
 		log = slog.New(slog.NewTextHandler(os.Stderr, nil))
@@ -50,7 +85,7 @@ func TestSmoke(t *testing.T) {
 	mux := http.NewServeMux()
 	srv := httptest.NewServer(mux)
 	t.Cleanup(srv.Close)
-	runner.NewServer(m, log, srv.URL).Register(mux)
+	runner.NewServer(m, log, srv.URL, runner.WithAuth(auth, builtinSA)).Register(mux)
 	mcp.NewServer(m, log).Register(mux)
 	ctx := context.Background()
 	if _, err := m.InitTeam(ctx, ns, v1alpha1.TeamSpec{}); err != nil {
@@ -62,7 +97,8 @@ func TestSmoke(t *testing.T) {
 
 	runCtx, cancel := context.WithTimeout(ctx, 5*time.Minute)
 	defer cancel()
-	err := builtin.Run(runCtx, client.New(srv.URL, nil), builtin.Options{
+	hc, _ := cadreclient.RunnerHTTP(tokenFile)
+	err = builtin.Run(runCtx, cadreclient.New(srv.URL, hc), builtin.Options{
 		Runner: "smoke", Once: true, Poll: 10 * time.Millisecond, Secrets: envSecret(apiKey), Log: log, MaxTurns: 6,
 		Providers: map[v1alpha1.ProviderType]builtin.Provider{
 			// Anthropic's own API, named outright whatever the environment
