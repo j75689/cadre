@@ -111,7 +111,8 @@ jobs:
           registry: ghcr.io
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
-      # A tag's version is the tag; main's is main-<short sha>.
+      # A tag's version is the tag; main's is main-<short sha>, which is also
+      # its tag.
       - id: version
         run: |
           if [ "$GITHUB_REF_TYPE" = tag ]; then echo "version=$GITHUB_REF_NAME"; else echo "version=main-${GITHUB_SHA::7}"; fi >> "$GITHUB_OUTPUT"
@@ -119,13 +120,12 @@ jobs:
         uses: docker/metadata-action@v5
         with:
           images: ghcr.io/${{ github.repository_owner }}/${{ matrix.cmd }}
-          # vX.Y.Z, vX.Y and latest on a tag; main and sha-<short> on main.
+          # vX.Y.Z, vX.Y and latest on a tag; main and main-<short sha> on main.
           tags: |
             type=semver,pattern=v{{version}}
             type=semver,pattern=v{{major}}.{{minor}}
+            type=raw,value=${{ steps.version.outputs.version }},enable={{is_default_branch}}
             type=raw,value=main,enable={{is_default_branch}}
-            type=sha,prefix=sha-,enable={{is_default_branch}}
-          flavor: latest=auto
       - uses: docker/build-push-action@v6
         with:
           context: .
