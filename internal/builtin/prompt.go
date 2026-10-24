@@ -5,6 +5,7 @@ import (
 	"strings"
 
 	"github.com/j75689/cadre/internal/manager"
+	"github.com/j75689/cadre/internal/runes"
 	"github.com/j75689/cadre/internal/runner"
 )
 
@@ -33,11 +34,8 @@ func clip(s string) string {
 	if len(s) <= maxShown {
 		return s
 	}
-	cut := maxShown
-	for cut > 0 && (s[cut]&0xC0) == 0x80 {
-		cut--
-	}
-	return s[:cut] + fmt.Sprintf("\n[clipped: %d of %d bytes shown; thread_read has the whole entry]", cut, len(s))
+	cut := runes.Cut(s, maxShown)
+	return cut + fmt.Sprintf("\n[clipped: %d of %d bytes shown; thread_read has the whole entry]", len(cut), len(s))
 }
 
 // defaultPromptBudget bounds the first message when the model's context

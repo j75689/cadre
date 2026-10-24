@@ -285,8 +285,10 @@ func (r *run) drive(ctx context.Context, s *session) ending {
 		// outage is not the task's.
 		return r.abandon(err)
 	}
-	conv, err := p.Start(ctx, setup)
-	if err != nil {
+	// Start reads the model's description; a transient failure of it is
+	// retried like the other start-up reads.
+	var conv Conversation
+	if err := r.retry(ctx, func() (err error) { conv, err = p.Start(ctx, setup); return err }); err != nil {
 		return r.failed(ctx, "This run could not start the model", err)
 	}
 
@@ -305,6 +307,10 @@ func (r *run) drive(ctx context.Context, s *session) ending {
 			return finishWith(v1alpha1.RunOutcomeFailed, why+".")
 		case StopMaxTokens:
 			return finishWith(v1alpha1.RunOutcomeFailed, "The model's reply was cut off at its output limit, so the run stopped.")
+		case StopPaused:
+			return finishWith(v1alpha1.RunOutcomeReview, "This run stopped because the model's turn was paused too often. A new run starts again from the thread.")
+		case StopContextFull:
+			return finishWith(v1alpha1.RunOutcomeReview, "This run stopped because the model's context window is full. A new run starts again from the thread.")
 		}
 		if len(reply.Calls) == 0 {
 			summary := strings.TrimSpace(reply.Text)

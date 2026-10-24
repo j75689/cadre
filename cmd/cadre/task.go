@@ -14,6 +14,7 @@ import (
 	"github.com/j75689/cadre/internal/client"
 	"github.com/j75689/cadre/internal/httpjson"
 	"github.com/j75689/cadre/internal/manager"
+	"github.com/j75689/cadre/internal/runes"
 )
 
 func newTaskCmd(g *globals) *cobra.Command {
@@ -241,7 +242,7 @@ func clip(s string, n int) string {
 	if len(s) <= n {
 		return s
 	}
-	return strings.ToValidUTF8(s[:n], "") + "…"
+	return runes.Cut(s, n) + "…"
 }
 
 // newTaskDecide is "task approve" or, with approve false, "task deny".

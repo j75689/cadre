@@ -13,12 +13,12 @@ import (
 	"strings"
 	"sync"
 	"time"
-	"unicode/utf8"
 
 	sdk "github.com/modelcontextprotocol/go-sdk/mcp"
 
 	v1alpha1 "github.com/j75689/cadre/api/v1alpha1"
 	"github.com/j75689/cadre/internal/manager"
+	"github.com/j75689/cadre/internal/runes"
 	"github.com/j75689/cadre/internal/storage"
 )
 
@@ -506,11 +506,7 @@ func shapeResult(res *sdk.CallToolResult) *sdk.CallToolResult {
 		}
 		text := tc.Text
 		if len(text) > budget {
-			cut := budget
-			for cut > 0 && !utf8.RuneStart(text[cut]) {
-				cut--
-			}
-			text = text[:cut]
+			text = runes.Cut(text, budget)
 			truncated = true
 			notes = append(notes, fmt.Sprintf("[the result was truncated at %d bytes]", maxResultBytes))
 		}
