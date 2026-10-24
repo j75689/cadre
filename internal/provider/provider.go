@@ -1,16 +1,33 @@
 // Package provider holds what the builtin loop's model providers share:
 // how a model API's error is reduced for the log and classified for the
-// loop's retries.
+// loop's retries, and which SDK build a conversation was opened with.
 package provider
 
 import (
 	"fmt"
 	"net/http"
+	"runtime/debug"
 	"strings"
 
 	"github.com/j75689/cadre/internal/builtin"
 	"github.com/j75689/cadre/internal/runes"
 )
+
+// ModuleVersion is module path@version as this binary was built with it, or
+// path@unknown when the build does not say.
+func ModuleVersion(path string) string {
+	if info, ok := debug.ReadBuildInfo(); ok {
+		for _, d := range info.Deps {
+			if d.Path == path {
+				if d.Replace != nil {
+					d = d.Replace
+				}
+				return path + "@" + d.Version
+			}
+		}
+	}
+	return path + "@unknown"
+}
 
 // MaxMessage bounds how much of an API error's message is kept.
 const MaxMessage = 300

@@ -11,6 +11,7 @@ import (
 	"fmt"
 	"log/slog"
 	"net/http"
+	"slices"
 	"strings"
 
 	oai "github.com/openai/openai-go/v3"
@@ -41,6 +42,67 @@ type Provider struct {
 // headers from the environment: the credential is the ModelProvider's
 // Secret and nothing else.
 func (p *Provider) Start(_ context.Context, s builtin.Setup) (builtin.Conversation, error) {
+	c, err := p.open(s)
+	if err != nil {
+		return nil, err
+	}
+	// The window is not known here (the Models API of these endpoints does
+	// not say), so the prompt is rendered for an unknown window.
+	c.params.Messages = []oai.ChatCompletionMessageParamUnion{oai.SystemMessage(s.System), oai.UserMessage(s.Prompt(0))}
+	return c, nil
+}
+
+// sdkModule is the SDK whose request building a recorded conversation
+// depends on.
+const sdkModule = "github.com/openai/openai-go/v3"
+
+// Begin renders the first message, as Start does, and returns it with the
+// rest of the conversation's opening.
+func (p *Provider) Begin(_ context.Context, s builtin.Setup) (*builtin.Opening, error) {
+	c, err := p.open(s)
+	if err != nil {
+		return nil, err
+	}
+	return &builtin.Opening{
+		Provider: v1alpha1.ProviderOpenAI, SDK: provider.ModuleVersion(sdkModule), Model: s.Model.Model,
+		System: s.System, Prompt: s.Prompt(0), Tools: s.Tools, Settings: c.settings(),
+	}, nil
+}
+
+// Resume rebuilds a conversation from its opening and its recorded steps:
+// the same parameters, settings and history it had live.
+func (p *Provider) Resume(_ context.Context, s builtin.Setup, o *builtin.Opening, steps []builtin.Recorded) (builtin.StepConversation, error) {
+	s.Model.Model, s.System, s.Tools = o.Model, o.System, o.Tools
+	c, err := p.open(s)
+	if err != nil {
+		return nil, err
+	}
+	c.apply(o.Settings)
+	c.params.Messages = []oai.ChatCompletionMessageParamUnion{oai.SystemMessage(o.System), oai.UserMessage(o.Prompt)}
+	for i, st := range steps {
+		for _, raw := range st.Messages {
+			var m oai.ChatCompletionMessageParamUnion
+			if err := json.Unmarshal(raw, &m); err != nil {
+				return nil, builtin.Permanent(fmt.Errorf("recorded step %d: %w", i, err))
+			}
+			c.params.Messages = append(c.params.Messages, m)
+			if m.OfAssistant != nil {
+				c.pending(m.OfAssistant.ToolCalls)
+			}
+		}
+		if st.Settings != nil {
+			c.apply(*st.Settings)
+		}
+		if len(st.Results) > 0 {
+			c.AddResults(st.Results)
+		}
+	}
+	return c, nil
+}
+
+// open builds a conversation from s, with its chat service and the
+// parameters every request carries, and no messages.
+func (p *Provider) open(s builtin.Setup) (*conversation, error) {
 	if s.Credential == "" {
 		return nil, builtin.Permanent(errors.New("an openai ModelProvider needs auth.secretRef"))
 	}
@@ -74,21 +136,28 @@ func (p *Provider) Start(_ context.Context, s builtin.Setup) (builtin.Conversati
 	if effort == "" {
 		effort = v1alpha1.EffortHigh
 	}
-	c := &conversation{
+	return &conversation{
 		chat: chat, log: log,
-		params: oai.ChatCompletionNewParams{
-			Model: s.Model.Model,
-			Tools: tools,
-			// The window is not known here (the Models API of these
-			// endpoints does not say), so the prompt is rendered for an
-			// unknown window, and the output cap is the server's.
-			Messages: []oai.ChatCompletionMessageParamUnion{oai.SystemMessage(s.System), oai.UserMessage(s.Prompt(0))},
-		},
+		// The output cap is the server's.
+		params: oai.ChatCompletionNewParams{Model: s.Model.Model, Tools: tools},
 		effort: shared.ReasoningEffort(effort),
 		usage:  true,
-	}
-	return c, nil
+	}, nil
 }
+
+// settings are the conversation's settings, to record.
+func (c *conversation) settings() builtin.Settings {
+	return builtin.Settings{Effort: string(c.effort), StreamUsage: c.usage, Started: c.started}
+}
+
+// apply takes recorded settings back.
+func (c *conversation) apply(s builtin.Settings) {
+	c.effort, c.usage, c.started = shared.ReasoningEffort(s.Effort), s.StreamUsage, s.Started
+}
+
+// LastTurn is what the last Turn appended, as it is sent back, and the
+// settings when the turn changed them.
+func (c *conversation) LastTurn() builtin.Recorded { return c.last }
 
 type conversation struct {
 	chat   oai.ChatCompletionService
@@ -108,6 +177,7 @@ type conversation struct {
 	unanswered map[string]string
 	order      []string
 	zeroUsage  bool // warned about a server that reports no usage
+	last       builtin.Recorded
 }
 
 // ContextLimit is unknown for these endpoints: the loop has no ceiling of
@@ -116,6 +186,28 @@ type conversation struct {
 func (c *conversation) ContextLimit() int64 { return 0 }
 
 func (c *conversation) Turn(ctx context.Context) (*builtin.Reply, error) {
+	before, from := c.settings(), len(c.params.Messages)
+	r, err := c.turn(ctx)
+	if err != nil {
+		return nil, err
+	}
+	var rec builtin.Recorded
+	for _, m := range c.params.Messages[from:] {
+		raw, err := json.Marshal(m)
+		if err != nil {
+			c.params.Messages = c.params.Messages[:from]
+			return nil, builtin.Permanent(fmt.Errorf("record the model's reply: %w", err))
+		}
+		rec.Messages = append(rec.Messages, raw)
+	}
+	if now := c.settings(); now != before {
+		rec.Settings = &now
+	}
+	c.last = rec
+	return r, nil
+}
+
+func (c *conversation) turn(ctx context.Context) (*builtin.Reply, error) {
 	for {
 		completion, err := c.stream(ctx)
 		if err == nil {
@@ -210,6 +302,27 @@ func (c *conversation) AddResults(results []builtin.ToolResult) {
 	c.unanswered, c.order = nil, nil
 }
 
+// pending notes the calls of a reply in order, and answers itself the ones
+// it does not hand to the loop: a kind of tool it does not offer, arguments
+// that are not JSON.
+func (c *conversation) pending(calls []oai.ChatCompletionMessageToolCallUnionParam) {
+	c.unanswered, c.order = map[string]string{}, nil
+	for _, call := range calls {
+		switch {
+		case call.OfFunction != nil:
+			id := call.OfFunction.ID
+			c.order = append(c.order, id)
+			if !json.Valid([]byte(call.OfFunction.Function.Arguments)) {
+				c.unanswered[id] = "Error: the call's arguments are not valid JSON, so it was not made. Call it again with JSON arguments."
+			}
+		case call.OfCustom != nil:
+			id := call.OfCustom.ID
+			c.order = append(c.order, id)
+			c.unanswered[id] = fmt.Sprintf("Error: tools of type %q are not offered; call one of the functions you were given.", "custom")
+		}
+	}
+}
+
 func (c *conversation) reply(completion *oai.ChatCompletion) *builtin.Reply {
 	choice := completion.Choices[0]
 	u := completion.Usage
@@ -235,15 +348,14 @@ func (c *conversation) reply(completion *oai.ChatCompletion) *builtin.Reply {
 		out.Stop = builtin.StopMaxTokens
 		return out
 	}
-	c.unanswered = map[string]string{}
+	c.pending(choice.Message.ToParam().OfAssistant.ToolCalls)
 	for _, call := range choice.Message.ToolCalls {
-		c.order = append(c.order, call.ID)
-		switch {
-		case call.Type != "" && call.Type != "function":
+		switch _, answered := c.unanswered[call.ID]; {
+		case !slices.Contains(c.order, call.ID):
+			// A kind of call the SDK has no parameter for.
+			c.order = append(c.order, call.ID)
 			c.unanswered[call.ID] = fmt.Sprintf("Error: tools of type %q are not offered; call one of the functions you were given.", call.Type)
-		case !json.Valid([]byte(call.Function.Arguments)):
-			c.unanswered[call.ID] = "Error: the call's arguments are not valid JSON, so it was not made. Call it again with JSON arguments."
-		default:
+		case !answered:
 			out.Calls = append(out.Calls, builtin.ToolCall{ID: call.ID, Name: call.Function.Name, Input: json.RawMessage(call.Function.Arguments)})
 		}
 	}

@@ -37,9 +37,9 @@ type Setup struct {
 
 // Tool is a tool offered to the model.
 type Tool struct {
-	Name        string
-	Description string
-	InputSchema json.RawMessage // a JSON object schema
+	Name        string          `json:"name"`
+	Description string          `json:"description,omitempty"`
+	InputSchema json.RawMessage `json:"inputSchema"` // a JSON object schema
 }
 
 // A Conversation keeps its provider's own history types, append-only, so
@@ -92,9 +92,68 @@ type ToolCall struct {
 
 // ToolResult is what a call returned.
 type ToolResult struct {
-	CallID  string
-	Text    string
-	IsError bool
+	CallID  string `json:"callId"`
+	Text    string `json:"text"`
+	IsError bool   `json:"isError,omitempty"`
+}
+
+// A StepProvider can also run a conversation a step at a time, each step
+// perhaps on another worker: the conversation is rebuilt from what its
+// steps recorded, and sends the same requests it would have sent live.
+type StepProvider interface {
+	Provider
+	// Begin describes the model and builds the conversation's opening,
+	// sending nothing: step 0's record.
+	Begin(ctx context.Context, s Setup) (*Opening, error)
+	// Resume rebuilds the conversation from its opening and the steps
+	// recorded since, in order. Of s it takes the model's endpoint and
+	// the credential; the rest is the opening's.
+	Resume(ctx context.Context, s Setup, o *Opening, steps []Recorded) (StepConversation, error)
+}
+
+// Opening is what a conversation's first request is built from, the same
+// way every time: the inputs, not the request.
+type Opening struct {
+	Provider v1alpha1.ProviderType `json:"provider"`
+	SDK      string                `json:"sdk"` // the provider's SDK module@version
+	Model    string                `json:"model"`
+	System   string                `json:"system"`
+	Prompt   string                `json:"prompt"` // the first user message, as rendered
+	Tools    []Tool                `json:"tools"`
+	Settings Settings              `json:"settings"`
+}
+
+// Settings are what a provider learned about the model, from its Models API
+// or its first request, and the optional request features it uses.
+type Settings struct {
+	ContextLimit int64  `json:"contextLimit,omitempty"`
+	MaxTokens    int64  `json:"maxTokens,omitempty"`
+	Effort       string `json:"effort,omitempty"` // "" when left out
+	Thinking     bool   `json:"thinking,omitempty"`
+	Fallbacks    bool   `json:"fallbacks,omitempty"`
+	StreamUsage  bool   `json:"streamUsage,omitempty"`
+	// Probe is a model the Models API could not describe, whose features
+	// the first request probes.
+	Probe bool `json:"probe,omitempty"`
+	// Started is a conversation whose first request was answered: its
+	// features are settled.
+	Started bool `json:"started,omitempty"`
+}
+
+// Recorded is what one step added to a conversation: a turn's messages, as
+// the provider sends them back, and its settings when the turn changed
+// them; or the results of the turn's calls.
+type Recorded struct {
+	Messages []json.RawMessage `json:"messages,omitempty"`
+	Settings *Settings         `json:"settings,omitempty"`
+	Results  []ToolResult      `json:"results,omitempty"`
+}
+
+// A StepConversation is a Conversation whose turns can be recorded.
+type StepConversation interface {
+	Conversation
+	// LastTurn is what the last Turn added, to record.
+	LastTurn() Recorded
 }
 
 // Permanent marks an error that retrying cannot fix: a bad request, a

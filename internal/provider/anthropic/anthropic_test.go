@@ -32,6 +32,7 @@ type api struct {
 	thinking bool   // the model takes adaptive thinking
 	efforts  string // the effort levels the model takes, as JSON fields
 	requests []map[string]any
+	bodies   [][]byte // the requests as sent
 	headers  []http.Header
 	replies  []func(w http.ResponseWriter, body map[string]any)
 }
@@ -64,10 +65,12 @@ func newAPI(t *testing.T, replies ...func(w http.ResponseWriter, body map[string
 				strings.TrimPrefix(r.URL.Path, "/v1/models/"), a.thinking, a.thinking, a.efforts)
 			return
 		}
+		raw, _ := io.ReadAll(r.Body)
 		var body map[string]any
-		_ = json.NewDecoder(r.Body).Decode(&body)
+		_ = json.Unmarshal(raw, &body)
 		a.mu.Lock()
 		a.requests = append(a.requests, body)
+		a.bodies = append(a.bodies, raw)
 		a.headers = append(a.headers, r.Header.Clone())
 		n := len(a.requests)
 		a.mu.Unlock()
