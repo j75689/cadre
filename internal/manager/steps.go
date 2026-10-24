@@ -121,14 +121,16 @@ func (m *Manager) stepKind(ctx context.Context, key storage.Key, runID string, s
 	if prev == nil {
 		return "", fmt.Errorf("transcript of run %s has no step %d: %w", runID, step-1, storage.ErrNotFound)
 	}
-	return nextKind(prev), nil
+	return NextKind(prev), nil
 }
 
 // StopToolUse is an llm_turn's stop when the model asked for calls, even
 // ones its provider answered itself, so the turn has none to make.
 const StopToolUse = "tool_use"
 
-func nextKind(prev *TranscriptEntry) StepKind {
+// NextKind is the kind of the step after prev, a committed entry: what
+// a step does follows from the one before it.
+func NextKind(prev *TranscriptEntry) StepKind {
 	switch {
 	case prev.Kind == StepLLMTurn && len(prev.Calls) == 0 && prev.Stop != StopToolUse:
 		return StepFinish

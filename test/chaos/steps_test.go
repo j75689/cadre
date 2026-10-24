@@ -13,6 +13,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -20,9 +21,11 @@ import (
 	"github.com/j75689/cadre/internal/builtin"
 	"github.com/j75689/cadre/internal/client"
 	"github.com/j75689/cadre/internal/manager"
+	"github.com/j75689/cadre/internal/mcp"
 	"github.com/j75689/cadre/internal/runner"
 	"github.com/j75689/cadre/internal/storage"
 	"github.com/j75689/cadre/internal/storage/kubernetes"
+	"github.com/j75689/cadre/internal/task"
 )
 
 // Step mode under chaos: step workers (builtin.RunSteps, on a fake model)
@@ -62,15 +65,18 @@ type stepRecorder struct {
 	held   map[stepKey][]*held // in claim order
 	calls  map[string][]int    // successful model calls by the run's nonce, per turn
 	// tokens counts the step tokens checked dead after their commit, and
-	// tokenErrs what was found alive.
+	// tokenErrs what was found alive; checks waits for the checks.
 	tokens    int
 	tokenErrs []string
-	deaths    int
+	checks    sync.WaitGroup
+	workers   sync.WaitGroup // every step worker, killed or not
+	deaths    int            // workers killed around an append or a commit
+	adopted   int            // entries a worker found written by an earlier one
 }
 
 func newStepRecorder(mcpBase string) *stepRecorder {
 	return &stepRecorder{
-		mcpURL: mcpBase + "/mcp/run",
+		mcpURL: mcpBase + mcp.Path,
 		takes:  map[stepKey]int{}, kinds: map[stepKey]string{}, held: map[stepKey][]*held{}, calls: map[string][]int{},
 	}
 }
@@ -142,18 +148,27 @@ func (*turn) AddResults([]builtin.ToolResult) {}
 func (*turn) ContextLimit() int64             { return 0 }
 
 // stepSlot keeps one step worker alive, killing and replacing it at random
-// moments, often in the middle of a step.
+// moments, often in the middle of a step. A worker killed around a write is
+// replaced at once: what is left of it fails every request it still tries,
+// and is waited for (rec.workers) before the checks.
 func stepSlot(chaos context.Context, base string, rnd *lockedRand, rec *stepRecorder, name string) {
 	m := &model{rnd: rnd, rec: rec}
 	for chaos.Err() == nil {
 		life, kill := context.WithTimeout(chaos, rnd.between(4*time.Second, 20*time.Second))
 		w := &watched{worker: name, rec: rec, rnd: rnd, kill: kill, next: http.DefaultTransport}
-		_ = builtin.RunSteps(life, client.New(base, &http.Client{Transport: w}), builtin.Options{
-			Runner: name, Poll: 50 * time.Millisecond, Log: slog.New(slog.DiscardHandler),
-			Providers: map[v1alpha1.ProviderType]builtin.Provider{v1alpha1.ProviderBedrock: m},
-			RetryFor:  500 * time.Millisecond, StepTimeout: 5 * time.Second, Backoff: 100 * time.Millisecond, MaxBackoff: time.Second,
-			CallTimeout: 5 * time.Second,
-		})
+		rec.workers.Add(1)
+		go func() {
+			defer rec.workers.Done()
+			_ = builtin.RunSteps(life, client.New(base, &http.Client{Transport: w}), builtin.Options{
+				Runner: name, Poll: 50 * time.Millisecond, Log: slog.New(slog.DiscardHandler),
+				Providers: map[v1alpha1.ProviderType]builtin.Provider{v1alpha1.ProviderBedrock: m},
+				// A failed model call is retried within the take; one that
+				// keeps failing gives the step back.
+				RetryFor: 3 * time.Second, StepTimeout: 8 * time.Second, Backoff: 100 * time.Millisecond, MaxBackoff: time.Second,
+				CallTimeout: 5 * time.Second,
+			})
+		}()
+		<-life.Done()
 		kill()
 		sleep(chaos, rnd.between(0, 500*time.Millisecond))
 	}
@@ -163,13 +178,14 @@ func stepSlot(chaos context.Context, base string, rnd *lockedRand, rec *stepReco
 // steps the worker took and how long it believed it held them, checks that
 // a committed step's MCP token is dead, and now and then kills the worker
 // around a transcript append or a commit: before the request goes out, or
-// right after it went through.
+// right after it went through. A killed worker sends nothing more.
 type watched struct {
 	worker string
 	rec    *stepRecorder
 	rnd    *lockedRand
 	kill   context.CancelFunc
 	next   http.RoundTripper
+	dead   atomic.Bool
 
 	mu    sync.Mutex
 	cur   stepKey
@@ -180,19 +196,21 @@ type watched struct {
 var errDied = errors.New("injected: the worker died")
 
 func (w *watched) RoundTrip(r *http.Request) (*http.Response, error) {
-	var body []byte
-	if r.Body != nil {
-		body, _ = io.ReadAll(r.Body)
-		r.Body = io.NopCloser(bytes.NewReader(body))
+	if w.dead.Load() {
+		return nil, errDied
 	}
 	path := r.URL.Path
+	var reqBody []byte
+	if path == runner.PathHeartbeat && r.Body != nil {
+		reqBody, _ = io.ReadAll(r.Body)
+		r.Body = io.NopCloser(bytes.NewReader(reqBody))
+	}
 	dies := (path == runner.PathStepAppend || path == runner.PathStepAdvance) && w.rnd.Float64() < 0.08
 	if dies && w.rnd.Float64() < 0.5 {
 		w.die()
 		return nil, errDied
 	}
-	ending := path == runner.PathStepAdvance || path == runner.PathStepRelease || path == runner.PathFinish
-	if ending {
+	if path == runner.PathStepAdvance || path == runner.PathStepRelease || path == runner.PathFinish {
 		w.end()
 	}
 	resp, err := w.next.RoundTrip(r)
@@ -204,23 +222,35 @@ func (w *watched) RoundTrip(r *http.Request) (*http.Response, error) {
 		w.die()
 		return nil, errDied
 	}
-	data, _ := io.ReadAll(resp.Body)
-	_ = resp.Body.Close()
-	resp.Body = io.NopCloser(bytes.NewReader(data))
-	if resp.StatusCode == http.StatusOK {
+	if resp.StatusCode != http.StatusOK {
+		return resp, nil
+	}
+	switch path {
+	case runner.PathClaim, runner.PathHeartbeat, runner.PathStepAppend:
+		data, _ := io.ReadAll(resp.Body)
+		_ = resp.Body.Close()
+		resp.Body = io.NopCloser(bytes.NewReader(data))
 		switch path {
 		case runner.PathClaim:
 			w.claimed(data)
 		case runner.PathHeartbeat:
-			w.renewed(body, data)
-		case runner.PathStepAdvance:
-			w.committed()
+			w.renewed(reqBody, data)
+		default:
+			var app struct{ Adopted bool }
+			if json.Unmarshal(data, &app) == nil && app.Adopted {
+				w.rec.mu.Lock()
+				w.rec.adopted++
+				w.rec.mu.Unlock()
+			}
 		}
+	case runner.PathStepAdvance:
+		w.committed()
 	}
 	return resp, nil
 }
 
 func (w *watched) die() {
+	w.dead.Store(true)
 	w.rec.mu.Lock()
 	w.rec.deaths++
 	w.rec.mu.Unlock()
@@ -286,7 +316,9 @@ func (w *watched) committed() {
 	if token == "" {
 		return
 	}
+	w.rec.checks.Add(1)
 	go func() {
+		defer w.rec.checks.Done()
 		status := 0
 		for range 20 {
 			req, _ := http.NewRequest(http.MethodPost, w.rec.mcpURL, strings.NewReader(`{"jsonrpc":"2.0","id":1,"method":"tools/list"}`))
@@ -319,14 +351,24 @@ func (w *watched) committed() {
 func orphanStep(t *testing.T, cl *client.Client) {
 	t.Helper()
 	ctx := context.Background()
-	if _, err := cl.CreateTask(ctx, "chaos-a", "", v1alpha1.TaskSpec{Title: "orphan", Assignee: &v1alpha1.Assignee{Kind: v1alpha1.AssigneeAgent, Name: "stepper"}}); err != nil {
+	var err error
+	for range 20 {
+		if _, err = cl.CreateTask(ctx, "chaos-a", "", v1alpha1.TaskSpec{Title: "orphan", Assignee: &v1alpha1.Assignee{Kind: v1alpha1.AssigneeAgent, Name: "stepper"}}); err == nil {
+			break
+		}
+		time.Sleep(200 * time.Millisecond)
+	}
+	if err != nil {
 		t.Fatalf("create the orphan's task: %v", err)
 	}
 	labels := map[string]string{v1alpha1.LabelRuntime: string(v1alpha1.RuntimeBuiltin)}
 	deadline := time.Now().Add(30 * time.Second)
 	for time.Now().Before(deadline) {
 		c, err := cl.Claim(ctx, runner.ClaimRequest{Runner: "orphan", Labels: labels, Mode: v1alpha1.RunModeStep})
-		if err != nil || c == nil {
+		if err != nil || c == nil || c.Attempt >= c.MaxAttempts {
+			// A step at its last attempt would fail its run as taken too
+			// often when given back, not for want of a worker: it is left
+			// to its lease, and another taken.
 			time.Sleep(200 * time.Millisecond)
 			continue
 		}
@@ -354,10 +396,12 @@ func checkSteps(t *testing.T, cfg kubernetes.Config, rec *stepRecorder) {
 	}
 	defer func() { _ = drv.Close() }()
 	m := manager.New(drv, managerConfig)
+	rec.workers.Wait() // what is left of killed workers
+	rec.checks.Wait()  // the token checks still in flight
 	rec.mu.Lock()
 	defer rec.mu.Unlock()
 
-	stepRuns, steps, idle, posts := 0, 0, 0, 0
+	stepRuns, steps, idle, exhausted, posts := 0, 0, 0, 0, 0
 	for ns := range teams {
 		tasks, err := drv.ListTasks(ctx, storage.Query{Namespace: ns})
 		if err != nil {
@@ -379,8 +423,14 @@ func checkSteps(t *testing.T, cfg kubernetes.Config, rec *stepRecorder) {
 				if strings.HasPrefix(e.Body, "post ") && bodies[e.Body] > 1 {
 					t.Errorf("%s: %q is in the thread %d times", key, e.Body, bodies[e.Body])
 				}
-				if strings.Contains(e.Body, "no worker took step") {
+				switch {
+				case e.Author.Kind != manager.AuthorSystem:
+				case strings.Contains(e.Body, "no worker took step"):
 					idle++
+				case strings.Contains(e.Body, fmt.Sprintf("was taken %d times", task.MaxAttempts)):
+					// A step whose model calls kept failing three takes in a
+					// row: expected now and then, with a failing model.
+					exhausted++
 				}
 			}
 			for _, run := range runs {
@@ -411,8 +461,12 @@ func checkSteps(t *testing.T, cfg kubernetes.Config, rec *stepRecorder) {
 	for _, e := range rec.tokenErrs {
 		t.Error(e)
 	}
-	t.Logf("step mode: %d runs, %d entries, %d posts checked, %d takes, %d workers killed mid-step, %d dead tokens checked, %d runs failed idle",
-		stepRuns, steps, posts, len(rec.takes), rec.deaths, rec.tokens, idle)
+	takes := 0
+	for _, n := range rec.takes {
+		takes += n
+	}
+	t.Logf("step mode: %d runs, %d entries, %d posts checked, %d takes of %d steps, %d workers killed mid-step, %d entries adopted, %d dead tokens checked, %d runs failed idle, %d ran out of attempts",
+		stepRuns, steps, posts, takes, len(rec.takes), rec.deaths, rec.adopted, rec.tokens, idle, exhausted)
 	switch {
 	case stepRuns == 0 || steps == 0:
 		t.Error("no step-mode run happened; the chaos test exercised nothing of step mode")
@@ -443,7 +497,11 @@ func checkTranscript(t *testing.T, key storage.Key, run v1alpha1.RunRecord, entr
 		if int64(i) != e.Step {
 			t.Errorf("%s run %s: entry %d says it is step %d", key, run.ID, i, e.Step)
 		}
-		if want := expectedKind(prev); e.Kind != want {
+		want := manager.StepStart
+		if prev != nil {
+			want = manager.NextKind(prev)
+		}
+		if e.Kind != want {
 			t.Errorf("%s run %s: step %d is %s, want %s", key, run.ID, i, e.Kind, want)
 		}
 		switch e.Kind {
@@ -453,6 +511,9 @@ func checkTranscript(t *testing.T, key storage.Key, run v1alpha1.RunRecord, entr
 			}
 			turns++
 		case manager.StepExecTools:
+			if prev == nil {
+				break // reported above: exec_tools cannot come first
+			}
 			// A post the endpoint answered is in the thread once; one that
 			// failed (a store fault, say: the model sees the error) is in
 			// it at most once.
@@ -487,17 +548,4 @@ func checkTranscript(t *testing.T, key storage.Key, run v1alpha1.RunRecord, entr
 		}
 	}
 	return posts
-}
-
-// expectedKind is the kind of the step after prev, as the server decides.
-func expectedKind(prev *manager.TranscriptEntry) manager.StepKind {
-	switch {
-	case prev == nil:
-		return manager.StepStart
-	case prev.Kind == manager.StepLLMTurn && len(prev.Calls) == 0 && prev.Stop != manager.StopToolUse:
-		return manager.StepFinish
-	case prev.Kind == manager.StepLLMTurn:
-		return manager.StepExecTools
-	}
-	return manager.StepLLMTurn
 }
