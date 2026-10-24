@@ -4,8 +4,10 @@
 // checks the invariants of docs/storage.md: no task ever runs twice, every
 // run ends exactly once and for the right reason, outbox effects land
 // exactly once, the Team semaphore holds, and the index rebuilds completely.
-// Half the tasks are run a step at a time by step workers that die in the
-// middle of steps too; steps_test.go checks step mode's own invariants.
+// A third of the tasks are run a step at a time by step workers that die in
+// the middle of steps too (steps_test.go checks step mode's own invariants),
+// and a third by Jobs cadre-server starts, whose pods a fake kubelet runs,
+// kills and leaves Pending (jobs_test.go).
 //
 // CADRE_CHAOS_SEED replays a seed; CADRE_CHAOS_DURATION sets how long the
 // chaos lasts (60s by default, 20s with -short).
@@ -18,6 +20,7 @@ import (
 	"os"
 	"strconv"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -92,6 +95,9 @@ func TestChaos(t *testing.T) {
 	cfg := kubernetes.Config{REST: restCfg, S3: testenv.S3(t)}
 	admin := adminClient(t, restCfg)
 	ctx := context.Background()
+	if err := admin.Create(ctx, &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: leaderNS}}); err != nil {
+		t.Fatal(err)
+	}
 	for ns, maxRuns := range teams {
 		if err := admin.Create(ctx, &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: ns}}); err != nil {
 			t.Fatal(err)
@@ -117,6 +123,11 @@ func TestChaos(t *testing.T) {
 				t.Fatal(err)
 			}
 		}
+		for _, obj := range jobObjects(ns) {
+			if err := admin.Create(ctx, obj); err != nil {
+				t.Fatal(err)
+			}
+		}
 	}
 
 	px := newProxy(rnd)
@@ -124,7 +135,10 @@ func TestChaos(t *testing.T) {
 	cl := client.New(px.URL, nil)
 	var srvMu sync.Mutex
 	servers := map[string]*server{}
-	start := func(name string) {
+	var start, kill func(name string)
+	var restarts sync.WaitGroup
+	var stopping atomic.Bool
+	start = func(name string) {
 		s, err := startServer(name, cfg, rnd, px.URL)
 		if err != nil {
 			t.Errorf("start %s: %v", name, err)
@@ -134,8 +148,26 @@ func TestChaos(t *testing.T) {
 		servers[name] = s
 		srvMu.Unlock()
 		px.set(name, s.srv.URL)
+		// A server whose controllers stop while it lives exits, as
+		// cadre-server does, and is started again.
+		restarts.Add(1)
+		go func() {
+			defer restarts.Done()
+			select {
+			case err := <-s.lost:
+				srvMu.Lock()
+				current := servers[name] == s
+				srvMu.Unlock()
+				if current && !stopping.Load() {
+					t.Logf("%s lost its controllers (%v): restarting it", name, err)
+					kill(name)
+					start(name)
+				}
+			case <-s.loops:
+			}
+		}()
 	}
-	kill := func(name string) {
+	kill = func(name string) {
 		srvMu.Lock()
 		s := servers[name]
 		delete(servers, name)
@@ -148,8 +180,10 @@ func TestChaos(t *testing.T) {
 	start("server-1")
 	start("server-2")
 	defer func() {
+		stopping.Store(true)
 		kill("server-1")
 		kill("server-2")
+		restarts.Wait()
 	}()
 
 	rec := newRecorder()
@@ -166,10 +200,7 @@ func TestChaos(t *testing.T) {
 	spawn(func() {
 		for chaos.Err() == nil {
 			for ns := range teams {
-				agent := "coder"
-				if created%2 == 1 {
-					agent = "stepper"
-				}
+				agent := []string{"coder", "stepper", jobAgentName}[created%3]
 				if _, err := cl.CreateTask(chaos, ns, "", v1alpha1.TaskSpec{
 					Title:    fmt.Sprintf("task %d", created),
 					Assignee: &v1alpha1.Assignee{Kind: v1alpha1.AssigneeAgent, Name: agent},
@@ -186,6 +217,14 @@ func TestChaos(t *testing.T) {
 	for i := range runners {
 		spawn(func() { runnerSlot(chaos, cl, rnd, rec, fmt.Sprintf("runner-%d", i)) })
 	}
+	// The fake kubelet and the Job monitor run until the checks are done:
+	// Jobs still finish while the system quiesces.
+	jrec := newJobRecorder()
+	kubeCtx, stopKube := context.WithCancel(ctx)
+	kubeDone := make(chan struct{})
+	go func() { defer close(kubeDone); kubelet(kubeCtx, admin, rnd, rec, jrec) }()
+	go monitorJobs(kubeCtx, admin, jrec)
+	defer func() { stopKube(); <-kubeDone }()
 	steps := newStepRecorder(px.URL)
 	for i := range stepWorkers {
 		spawn(func() { stepSlot(chaos, px.URL, rnd, steps, fmt.Sprintf("worker-%d", i)) })
@@ -228,10 +267,13 @@ func TestChaos(t *testing.T) {
 	// The step workers are gone with the chaos: a step given back now is
 	// taken by nobody, and its run must fail at the idle deadline.
 	orphanStep(t, cl)
+	began := time.Now()
 	quiesce(t, admin)
+	t.Logf("quiesced in %s", time.Since(began).Round(100*time.Millisecond))
 
 	check(t, admin, cfg, rec)
 	checkSteps(t, cfg, steps)
+	checkJobs(t, jrec)
 }
 
 // runnerSlot keeps one runner alive, killing and replacing it at random
@@ -356,7 +398,10 @@ func sampleSemaphore(chaos context.Context, admin ctrlclient.Client, rec *record
 // is numbered and every Team's running count is 0.
 func quiesce(t *testing.T, admin ctrlclient.Client) {
 	t.Helper()
-	deadline := time.Now().Add(60 * time.Second)
+	// jobber's Todo tasks still wait for Jobs, within the Team's slots and
+	// maxPending, with runs of up to three leases and frozen pods to clear:
+	// that takes up to a minute on a loaded machine.
+	deadline := time.Now().Add(2 * time.Minute)
 	for {
 		pending := settledProblems(admin)
 		if len(pending) == 0 {
@@ -394,6 +439,9 @@ func settledProblems(admin ctrlclient.Client) []string {
 		if team.Status.Running != 0 {
 			problems = append(problems, fmt.Sprintf("team %s running %d", ns, team.Status.Running))
 		}
+		// jobber's work is done by Jobs, which kubelet still runs: none
+		// may be waiting or running any more.
+		problems = append(problems, jobProblems(admin, ns, list.Items)...)
 	}
 	return problems
 }
