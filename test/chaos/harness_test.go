@@ -104,6 +104,10 @@ type server struct {
 	driver *kubernetes.Driver
 	cancel context.CancelFunc
 	loops  chan struct{}
+	// lost is sent why the controllers stopped while the server lived (a
+	// leader that missed its renewal): cadre-server exits then, so the
+	// server is to die and be started again.
+	lost chan error
 }
 
 // startServer starts an instance; publicURL is where runners reach the
@@ -133,7 +137,13 @@ func startServer(name string, cfg kubernetes.Config, rnd *lockedRand, publicURL 
 		_ = drv.Close()
 		return nil, err
 	}
-	go func() { _ = ctrls.Start(ctx) }()
+	lost := make(chan error, 1)
+	go func() {
+		err := ctrls.Start(ctx)
+		if ctx.Err() == nil {
+			lost <- err
+		}
+	}()
 	mcfg := managerConfig
 	mcfg.Agents = controller.Agents(ctrls)
 	m := manager.New(&chaosStore{Driver: drv, rnd: rnd}, mcfg)
@@ -142,7 +152,7 @@ func startServer(name string, cfg kubernetes.Config, rnd *lockedRand, publicURL 
 	runner.NewServer(m, log, publicURL).Register(mux)
 	api.NewServer(m, log).Register(mux)
 	mcp.NewServer(m, log).Register(mux)
-	s := &server{name: name, srv: httptest.NewServer(mux), driver: drv, cancel: cancel, loops: make(chan struct{})}
+	s := &server{name: name, srv: httptest.NewServer(mux), driver: drv, cancel: cancel, loops: make(chan struct{}), lost: lost}
 	go func() {
 		defer close(s.loops)
 		m.Run(ctx, loopConfig, log)

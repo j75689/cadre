@@ -20,6 +20,7 @@ import (
 	"os"
 	"strconv"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -134,7 +135,10 @@ func TestChaos(t *testing.T) {
 	cl := client.New(px.URL, nil)
 	var srvMu sync.Mutex
 	servers := map[string]*server{}
-	start := func(name string) {
+	var start, kill func(name string)
+	var restarts sync.WaitGroup
+	var stopping atomic.Bool
+	start = func(name string) {
 		s, err := startServer(name, cfg, rnd, px.URL)
 		if err != nil {
 			t.Errorf("start %s: %v", name, err)
@@ -144,8 +148,26 @@ func TestChaos(t *testing.T) {
 		servers[name] = s
 		srvMu.Unlock()
 		px.set(name, s.srv.URL)
+		// A server whose controllers stop while it lives exits, as
+		// cadre-server does, and is started again.
+		restarts.Add(1)
+		go func() {
+			defer restarts.Done()
+			select {
+			case err := <-s.lost:
+				srvMu.Lock()
+				current := servers[name] == s
+				srvMu.Unlock()
+				if current && !stopping.Load() {
+					t.Logf("%s lost its controllers (%v): restarting it", name, err)
+					kill(name)
+					start(name)
+				}
+			case <-s.loops:
+			}
+		}()
 	}
-	kill := func(name string) {
+	kill = func(name string) {
 		srvMu.Lock()
 		s := servers[name]
 		delete(servers, name)
@@ -158,8 +180,10 @@ func TestChaos(t *testing.T) {
 	start("server-1")
 	start("server-2")
 	defer func() {
+		stopping.Store(true)
 		kill("server-1")
 		kill("server-2")
+		restarts.Wait()
 	}()
 
 	rec := newRecorder()
@@ -243,7 +267,9 @@ func TestChaos(t *testing.T) {
 	// The step workers are gone with the chaos: a step given back now is
 	// taken by nobody, and its run must fail at the idle deadline.
 	orphanStep(t, cl)
+	began := time.Now()
 	quiesce(t, admin)
+	t.Logf("quiesced in %s", time.Since(began).Round(100*time.Millisecond))
 
 	check(t, admin, cfg, rec)
 	checkSteps(t, cfg, steps)
@@ -372,7 +398,10 @@ func sampleSemaphore(chaos context.Context, admin ctrlclient.Client, rec *record
 // is numbered and every Team's running count is 0.
 func quiesce(t *testing.T, admin ctrlclient.Client) {
 	t.Helper()
-	deadline := time.Now().Add(60 * time.Second)
+	// jobber's Todo tasks still wait for Jobs, within the Team's slots and
+	// maxPending, with runs of up to three leases and frozen pods to clear:
+	// that takes up to a minute on a loaded machine.
+	deadline := time.Now().Add(2 * time.Minute)
 	for {
 		pending := settledProblems(admin)
 		if len(pending) == 0 {
