@@ -175,7 +175,10 @@ type Run struct {
 	// +optional
 	StepItems []StepItem `json:"stepItems,omitempty"`
 
-	// LeaseUntil is when the run may be reclaimed unless it is renewed.
+	// LeaseUntil is when the run may be reclaimed unless it is renewed. In
+	// step mode it is the current step's lease; a free step (no Runner)
+	// keeps the time it was freed, as the field is required, and a free
+	// step is told by its empty Runner, never by this time.
 	LeaseUntil metav1.Time `json:"leaseUntil"`
 
 	// MCPTokenHash is the hex SHA-256 of the run's per-run MCP token. The
