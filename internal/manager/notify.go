@@ -11,8 +11,10 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"slices"
 	"strings"
+	"sync"
 	"time"
 
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -81,7 +83,8 @@ func (s StaticNotifiers) Warn(_ context.Context, t *v1alpha1.Task, reason, messa
 }
 
 // notifyEvent is what a transition from before to after tells: entering
-// Waiting, for its reason, or ending. "" for anything else.
+// Waiting, for its reason, entering Review (how a run hands its work to a
+// human), or ending. "" for anything else.
 func notifyEvent(before, after *v1alpha1.TaskStatus) v1alpha1.NotifyEvent {
 	switch after.Phase {
 	case v1alpha1.PhaseWaiting:
@@ -90,6 +93,11 @@ func notifyEvent(before, after *v1alpha1.TaskStatus) v1alpha1.NotifyEvent {
 			return ""
 		}
 		return v1alpha1.NotifyEvent(w.Reason)
+	case v1alpha1.PhaseReview:
+		if before.Phase == after.Phase {
+			return ""
+		}
+		return v1alpha1.NotifyReview
 	case v1alpha1.PhaseDone, v1alpha1.PhaseFailed, v1alpha1.PhaseCancelled:
 		if before.Phase == after.Phase {
 			return ""
@@ -101,26 +109,35 @@ func notifyEvent(before, after *v1alpha1.TaskStatus) v1alpha1.NotifyEvent {
 
 // addNotify adds a Notify item to next, the status a transition of t is
 // about to write, when the transition tells something a Notifier of t's
-// namespace listens for. No Notifier listening, no item: the write is the
-// same as without Notifiers.
-func (m *Manager) addNotify(ctx context.Context, t *v1alpha1.Task, next *v1alpha1.TaskStatus) error {
+// namespace listens for, naming those Notifiers: the item goes to them and
+// no others. No Notifier listening, no item: the write is the same as
+// without Notifiers. Notifiers that cannot be listed cost the notification,
+// never the transition.
+func (m *Manager) addNotify(ctx context.Context, t *v1alpha1.Task, next *v1alpha1.TaskStatus) {
 	ev := notifyEvent(&t.Status, next)
 	if ev == "" || m.cfg.Notifiers == nil {
-		return nil
+		return
 	}
 	notifiers, err := m.cfg.Notifiers.ListNotifiers(ctx, t.Namespace)
 	if err != nil {
-		return err
+		m.log.Warn("cannot list Notifiers: the notification is not sent", "task", t.Namespace+"/"+t.Name, "event", ev, "err", err)
+		return
 	}
-	if !slices.ContainsFunc(notifiers, func(n v1alpha1.Notifier) bool { return n.Listens(ev) }) {
-		return nil
+	var to []string
+	for _, n := range notifiers {
+		if n.Listens(ev) {
+			to = append(to, n.Name)
+		}
 	}
-	n := &v1alpha1.Notification{Event: ev, At: metav1.NewTime(m.now())}
-	if next.Waiting != nil {
-		n.ThreadSeq = next.Waiting.ThreadSeq
+	if len(to) == 0 {
+		return
+	}
+	slices.Sort(to)
+	n := &v1alpha1.Notification{Event: ev, At: metav1.NewTime(m.now()), To: to}
+	if w := next.Waiting; next.Phase == v1alpha1.PhaseWaiting && w != nil {
+		n.ThreadSeq, n.WaitingItem = w.ThreadSeq, w.ItemID
 	}
 	next.Outbox = append(next.Outbox, v1alpha1.OutboxItem{ID: m.newID(), Kind: v1alpha1.OutboxNotify, Notify: n})
-	return nil
 }
 
 // NotifyTTL bounds how long a notification is retried: past it, the item
@@ -128,8 +145,19 @@ func (m *Manager) addNotify(ctx context.Context, t *v1alpha1.Task, next *v1alpha
 // dead webhook does not pin a task's outbox.
 const NotifyTTL = 24 * time.Hour
 
-// notifyTimeout bounds one delivery.
-const notifyTimeout = 10 * time.Second
+// notifyTimeout bounds one delivery; notifyTurn is how long a server has
+// a notification to itself, comfortably more.
+const (
+	notifyTimeout = 10 * time.Second
+	notifyTurn    = 3 * notifyTimeout
+)
+
+// How many tasks' notifications are sent at once, and how many deliveries
+// of one notification.
+const (
+	notifyTasks    = 8
+	notifyDelivers = 4
+)
 
 // Payload is the JSON a webhook receives.
 type Payload struct {
@@ -151,70 +179,162 @@ type PayloadTask struct {
 	Assignee  *v1alpha1.Assignee `json:"assignee,omitempty"`
 }
 
-// undelivered is a Notify item some Notifiers took and others did not yet.
-type undelivered struct {
-	took []string
-	err  error
+// DeliverNotifications sends every pending notification. It runs on its own
+// ticker, apart from the dispatcher and the reclaim, so a webhook that does
+// not answer delays nothing else: tasks are worked a few at a time, and a
+// notification's deliveries at once.
+func (m *Manager) DeliverNotifications(ctx context.Context) error {
+	if m.cfg.Notifiers == nil {
+		return nil
+	}
+	return m.forEachTeam(ctx, func(ns string) error {
+		tasks, err := m.store.ListTasks(ctx, storage.Query{Namespace: ns})
+		if err != nil {
+			return err
+		}
+		sem := make(chan struct{}, notifyTasks)
+		var mu sync.Mutex
+		var wg sync.WaitGroup
+		var errs []error
+		for _, t := range tasks {
+			if !slices.ContainsFunc(t.Status.Outbox, func(it v1alpha1.OutboxItem) bool { return it.Kind == v1alpha1.OutboxNotify }) {
+				continue
+			}
+			key := storage.Key{Namespace: ns, Name: t.Name}
+			sem <- struct{}{}
+			wg.Go(func() {
+				defer func() { <-sem }()
+				if err := m.notifyTask(ctx, key); err != nil {
+					mu.Lock()
+					errs = append(errs, err)
+					mu.Unlock()
+				}
+			})
+		}
+		wg.Wait()
+		return errors.Join(errs...)
+	})
 }
 
-func (u *undelivered) Error() string { return u.err.Error() }
-func (u *undelivered) Unwrap() error { return u.err }
-
-// applyNotify delivers a Notify item to every Notifier listening for its
-// event that has not taken it. It succeeds once all have, or once the item
-// is older than NotifyTTL; otherwise it returns an *undelivered naming the
-// ones that took it this time.
-func (m *Manager) applyNotify(ctx context.Context, t *v1alpha1.Task, it v1alpha1.OutboxItem) error {
-	n := it.Notify
-	all, err := m.cfg.Notifiers.ListNotifiers(ctx, t.Namespace)
+// notifyTask sends a task's pending notifications and acks the ones done.
+func (m *Manager) notifyTask(ctx context.Context, key storage.Key) error {
+	t, err := m.store.GetTask(ctx, key)
+	if errors.Is(err, storage.ErrNotFound) {
+		return nil
+	}
 	if err != nil {
 		return err
 	}
-	var pending []v1alpha1.Notifier
-	for _, nf := range all {
-		if nf.Listens(n.Event) && !slices.Contains(n.Delivered, nf.Name) {
+	all, err := m.cfg.Notifiers.ListNotifiers(ctx, key.Namespace)
+	if err != nil {
+		return err
+	}
+	byName := map[string]*v1alpha1.Notifier{}
+	for i := range all {
+		byName[all[i].Name] = &all[i]
+	}
+	var done []string
+	var errs []error
+	for _, it := range t.Status.Outbox {
+		if it.Kind != v1alpha1.OutboxNotify || it.Notify == nil {
+			continue
+		}
+		ok, err := m.notifyItem(ctx, key, it, byName)
+		if err != nil {
+			errs = append(errs, fmt.Errorf("notification %s: %w", it.ID, err))
+		}
+		if ok {
+			done = append(done, it.ID)
+		}
+	}
+	if len(done) > 0 {
+		if _, err := m.transition(ctx, key, task.AckOutbox{IDs: done}); err != nil {
+			errs = append(errs, err)
+		}
+	}
+	return errors.Join(errs...)
+}
+
+// notifyItem sends one notification to those of its Notifiers that have
+// not taken it; a Notifier that no longer exists counts as having taken
+// it. It reports whether the item is done: all took it, or it outlived
+// NotifyTTL.
+func (m *Manager) notifyItem(ctx context.Context, key storage.Key, it v1alpha1.OutboxItem, byName map[string]*v1alpha1.Notifier) (bool, error) {
+	n := it.Notify
+	var pending []*v1alpha1.Notifier
+	for _, name := range n.To {
+		if nf, ok := byName[name]; ok && !slices.Contains(n.Delivered, name) {
 			pending = append(pending, nf)
 		}
 	}
 	if len(pending) == 0 {
-		return nil
+		return true, nil
 	}
-	// Notify.At is the item's ULID time, on the manager's clock.
 	if m.now().Sub(n.At.Time) > NotifyTTL {
 		names := make([]string, len(pending))
 		for i := range pending {
 			names[i] = pending[i].Name
 		}
+		t, err := m.store.GetTask(ctx, key)
+		if err != nil {
+			return false, err
+		}
 		m.cfg.Notifiers.Warn(ctx, t, "NotificationDropped", fmt.Sprintf("the %s notification %s was not taken within %s by: %s", n.Event, it.ID, NotifyTTL, strings.Join(names, ", ")))
-		return nil
+		return true, nil
+	}
+	// One server at a time: the claim is a conditional write on the Task,
+	// and the task it returns is what the payload is built from, so an
+	// entry placed by the dispatcher this same pass is in it.
+	t, err := m.transition(ctx, key, task.NotifyClaim{ID: it.ID, By: m.id, Until: m.now().Add(notifyTurn)})
+	if errors.Is(err, task.ErrNotifySending) {
+		return false, nil
+	}
+	if err != nil {
+		return false, err
 	}
 	body, err := json.Marshal(m.payload(t, it))
 	if err != nil {
-		return err
+		return false, err
 	}
+	sem := make(chan struct{}, notifyDelivers)
+	var mu sync.Mutex
+	var wg sync.WaitGroup
 	var took []string
 	var errs []error
-	for i := range pending {
-		nf := &pending[i]
-		err := m.deliver(ctx, nf, it.ID, body)
-		m.cfg.Notifiers.Delivered(ctx, nf, m.now(), err)
-		if err != nil {
-			errs = append(errs, fmt.Errorf("notifier %s: %w", nf.Name, err))
-			continue
-		}
-		took = append(took, nf.Name)
+	for _, nf := range pending {
+		sem <- struct{}{}
+		wg.Go(func() {
+			defer func() { <-sem }()
+			err := m.deliver(ctx, nf, it.ID, body)
+			if !errors.Is(err, errNotReady) {
+				m.cfg.Notifiers.Delivered(ctx, nf, m.now(), err)
+			}
+			mu.Lock()
+			defer mu.Unlock()
+			if err != nil {
+				errs = append(errs, fmt.Errorf("notifier %s: %w", nf.Name, err))
+				return
+			}
+			took = append(took, nf.Name)
+		})
 	}
-	if len(errs) == 0 {
-		return nil
+	wg.Wait()
+	if len(took) == len(pending) {
+		return true, nil
 	}
-	return &undelivered{took: took, err: errors.Join(errs...)}
+	// Record who took it, and end this server's turn.
+	if _, err := m.transition(ctx, key, task.NotifyDelivered{ID: it.ID, To: took, By: m.id}); err != nil {
+		errs = append(errs, err)
+	}
+	return false, errors.Join(errs...)
 }
 
 func (m *Manager) payload(t *v1alpha1.Task, it v1alpha1.OutboxItem) Payload {
 	n := it.Notify
 	seq := n.ThreadSeq
-	// A Question's entry may reach the thread after the wait began.
-	if w := t.Status.Waiting; seq == 0 && w != nil && t.Status.Phase == v1alpha1.PhaseWaiting && v1alpha1.NotifyEvent(w.Reason) == n.Event {
+	// A Question's entry may reach the thread after the wait began: its
+	// sequence is the wait's, as long as the task still waits on it.
+	if w := t.Status.Waiting; seq == 0 && n.WaitingItem != "" && w != nil && t.Status.Phase == v1alpha1.PhaseWaiting && w.ItemID == n.WaitingItem {
 		seq = w.ThreadSeq
 	}
 	p := Payload{
@@ -227,18 +347,23 @@ func (m *Manager) payload(t *v1alpha1.Task, it v1alpha1.OutboxItem) Payload {
 	return p
 }
 
+// errNotReady is a delivery not attempted: the Notifier is not Ready.
+var errNotReady = errors.New("the Notifier is not Ready")
+
 // deliver POSTs body to nf's webhook: signed if it has a secret, never
 // following a redirect, within notifyTimeout. Only a 2xx is a delivery.
+// Errors name the webhook without any credentials in its URL.
 func (m *Manager) deliver(ctx context.Context, nf *v1alpha1.Notifier, id string, body []byte) error {
 	if !nf.Status.ReadyFor(nf.Generation) {
-		return errors.New("the Notifier is not Ready")
+		return errNotReady
 	}
 	ctx, cancel := context.WithTimeout(ctx, notifyTimeout)
 	defer cancel()
 	wh := nf.Spec.Webhook
+	shown := redact(wh.URL)
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, wh.URL, bytes.NewReader(body))
 	if err != nil {
-		return err
+		return fmt.Errorf("webhook %s: not a URL", shown)
 	}
 	for k, v := range wh.Headers {
 		req.Header.Set(k, v)
@@ -257,6 +382,10 @@ func (m *Manager) deliver(ctx context.Context, nf *v1alpha1.Notifier, id string,
 	}
 	res, err := notifyClient.Do(req)
 	if err != nil {
+		var ue *url.Error
+		if errors.As(err, &ue) {
+			return fmt.Errorf("%s %s: %w", ue.Op, shown, ue.Err)
+		}
 		return err
 	}
 	defer func() {
@@ -264,22 +393,21 @@ func (m *Manager) deliver(ctx context.Context, nf *v1alpha1.Notifier, id string,
 		_ = res.Body.Close()
 	}()
 	if res.StatusCode < 200 || res.StatusCode > 299 {
-		return fmt.Errorf("%s answered %s", wh.URL, res.Status)
+		return fmt.Errorf("%s answered %s", shown, res.Status)
 	}
 	return nil
+}
+
+// redact is a webhook URL fit to show: without user info or query.
+func redact(raw string) string {
+	u, err := url.Parse(raw)
+	if err != nil {
+		return "the webhook"
+	}
+	u.User, u.RawQuery, u.Fragment = nil, "", ""
+	return u.String()
 }
 
 // notifyClient follows no redirect: a webhook that moved says so with an
 // error, rather than the notification going wherever it points.
 var notifyClient = &http.Client{CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}
-
-// markDelivered records the Notifiers that took Notify items.
-func (m *Manager) markDelivered(ctx context.Context, key storage.Key, took map[string][]string) error {
-	var errs []error
-	for id, names := range took {
-		if _, err := m.transition(ctx, key, task.NotifyDelivered{ID: id, To: names}); err != nil {
-			errs = append(errs, err)
-		}
-	}
-	return errors.Join(errs...)
-}

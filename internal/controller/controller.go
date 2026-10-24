@@ -162,6 +162,17 @@ func (b base) setReady(ctx context.Context, obj client.Object, status *v1alpha1.
 // writeStatus is setReady, writing also when changed says other status
 // fields changed.
 func (b base) writeStatus(ctx context.Context, obj client.Object, status *v1alpha1.ConfigStatus, ready bool, reason, message string, changed bool) error {
+	err := b.writeStatusOrConflict(ctx, obj, status, ready, reason, message, changed)
+	if apierrors.IsConflict(err) {
+		return nil // someone else wrote it; the watch brings us back
+	}
+	return err
+}
+
+// writeStatusOrConflict is writeStatus, returning a conflict for a
+// reconciler whose object other writers update too, and which must try
+// again rather than wait for a watch event that will not come.
+func (b base) writeStatusOrConflict(ctx context.Context, obj client.Object, status *v1alpha1.ConfigStatus, ready bool, reason, message string, changed bool) error {
 	cond := metav1.Condition{Type: v1alpha1.ConditionReady, Status: metav1.ConditionFalse, Reason: reason, Message: message, ObservedGeneration: obj.GetGeneration()}
 	if ready {
 		cond.Status = metav1.ConditionTrue
@@ -174,11 +185,7 @@ func (b base) writeStatus(ctx context.Context, obj client.Object, status *v1alph
 	if !changed {
 		return nil
 	}
-	err := b.client.Status().Update(ctx, obj)
-	if apierrors.IsConflict(err) {
-		return nil // someone else wrote it; the watch brings us back
-	}
-	return err
+	return b.client.Status().Update(ctx, obj)
 }
 
 // isReady reports whether obj is Ready for its current spec.

@@ -64,7 +64,7 @@ func TestNotifiers(t *testing.T) {
 	e.create(orphan)
 	e.ready(orphan, metav1.ConditionFalse, "NoTeam")
 	e.create(&corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: ns}}, &v1alpha1.Team{ObjectMeta: meta2(ns, v1alpha1.TeamName)})
-	hostless := &v1alpha1.Notifier{ObjectMeta: meta2(ns, "hostless"), Spec: v1alpha1.NotifierSpec{On: []v1alpha1.NotifyEvent{v1alpha1.NotifyDone}, Webhook: v1alpha1.Webhook{URL: "https://"}}}
+	hostless := &v1alpha1.Notifier{ObjectMeta: meta2(ns, "hostless"), Spec: v1alpha1.NotifierSpec{On: []v1alpha1.NotifyEvent{v1alpha1.NotifyDone}, Webhook: v1alpha1.Webhook{URL: "http://:8080/x"}}}
 	unsigned := &v1alpha1.Notifier{ObjectMeta: meta2(ns, "unsigned"), Spec: v1alpha1.NotifierSpec{On: []v1alpha1.NotifyEvent{v1alpha1.NotifyDone},
 		Webhook: v1alpha1.Webhook{URL: "https://hooks.example.test/x", SecretRef: &v1alpha1.SecretKeyRef{Name: "hook", Key: "key"}}}}
 	e.create(hostless, unsigned)
@@ -104,7 +104,7 @@ func TestNotifiers(t *testing.T) {
 	if _, _, err := m.Finish(ctx, key, manager.FinishRequest{RunID: cl.RunID, Outcome: task.OutcomeWaiting, Reason: v1alpha1.WaitingQuestion}); err != nil {
 		t.Fatal(err)
 	}
-	if err := m.Dispatch(ctx); err != nil {
+	if err := m.DeliverNotifications(ctx); err != nil {
 		t.Fatal(err)
 	}
 	mu.Lock()
@@ -128,7 +128,7 @@ func TestNotifiers(t *testing.T) {
 	if _, err := m.Cancel(ctx, key); err != nil {
 		t.Fatal(err)
 	}
-	if err := m.Dispatch(ctx); err != nil {
+	if err := m.DeliverNotifications(ctx); err != nil {
 		t.Fatal(err) // nobody listens for Cancelled: nothing to send
 	}
 	asks2 := &v1alpha1.Notifier{ObjectMeta: meta2(ns, "ends"), Spec: v1alpha1.NotifierSpec{On: []v1alpha1.NotifyEvent{v1alpha1.NotifyDone}, Webhook: v1alpha1.Webhook{URL: hook.URL}}}
@@ -143,13 +143,13 @@ func TestNotifiers(t *testing.T) {
 	if _, _, err := m.Finish(ctx, key2, manager.FinishRequest{RunID: cl.RunID, Outcome: task.OutcomeDone}); err != nil {
 		t.Fatal(err)
 	}
-	_ = m.Dispatch(ctx) // the 503
+	_ = m.DeliverNotifications(ctx) // the 503
 	eventually(t, 10*time.Second, func() (bool, string) {
 		_ = c.Get(ctx, client.ObjectKeyFromObject(asks2), asks2)
 		return asks2.Status.LastError != nil && strings.Contains(asks2.Status.LastError.Message, "503"), "no lastError"
 	})
 	now = now.Add(manager.NotifyTTL + time.Minute)
-	if err := m.Dispatch(ctx); err != nil {
+	if err := m.DeliverNotifications(ctx); err != nil {
 		t.Fatal(err)
 	}
 	eventually(t, 10*time.Second, func() (bool, string) {

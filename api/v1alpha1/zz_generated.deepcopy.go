@@ -335,10 +335,19 @@ func (in *ModelProviderSpec) DeepCopy() *ModelProviderSpec {
 func (in *Notification) DeepCopyInto(out *Notification) {
 	*out = *in
 	in.At.DeepCopyInto(&out.At)
+	if in.To != nil {
+		in, out := &in.To, &out.To
+		*out = make([]string, len(*in))
+		copy(*out, *in)
+	}
 	if in.Delivered != nil {
 		in, out := &in.Delivered, &out.Delivered
 		*out = make([]string, len(*in))
 		copy(*out, *in)
+	}
+	if in.SendingUntil != nil {
+		in, out := &in.SendingUntil, &out.SendingUntil
+		*out = (*in).DeepCopy()
 	}
 }
 

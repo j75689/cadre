@@ -24,8 +24,9 @@ const (
 //
 // +kubebuilder:validation:XValidation:rule="!has(self.headers) || !self.headers.exists(k, k.lowerAscii() == 'authorization')",message="headers are static and readable by anyone who can read the Notifier: put no credential there; set secretRef, and the receiver checks the signature"
 type Webhook struct {
-	// URL receives the POSTs.
-	// +kubebuilder:validation:Pattern=`^https?://`
+	// URL receives the POSTs. It holds no credentials: they would travel
+	// as an Authorization header; sign with SecretRef instead.
+	// +kubebuilder:validation:Pattern=`^https?://[^/@?#]+(?:[/?#].*)?$`
 	URL string `json:"url"`
 
 	// SecretRef is a Secret key holding a signing secret: when set, every

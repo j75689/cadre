@@ -76,6 +76,7 @@ var validEvents = []struct {
 	{WaitingAt{ItemID: "01JB0000000000000000000001", Seq: 1}, step},
 	{ReserveItem{ID: "01JB0000000000000000000001", To: 1}, step},
 	{NotifyDelivered{ID: "01JB0000000000000000000001", To: []string{"hook"}}, step},
+	{NotifyClaim{ID: "01JB0000000000000000000001", By: "s1", Until: time.Now().Add(time.Hour)}, step},
 }
 
 func TestTableIsExhaustive(t *testing.T) {
@@ -658,5 +659,37 @@ func TestNotifyDelivered(t *testing.T) {
 	}
 	if tk.Status.Outbox[1].Notify != nil {
 		t.Errorf("another item changed: %+v", tk.Status.Outbox[1])
+	}
+}
+
+// One server at a time sends a notification: another's turn holds until it
+// runs out or is ended by its record of deliveries.
+func TestNotifyClaim(t *testing.T) {
+	const id = "01JB0000000000000000000001"
+	now := time.Date(2026, 10, 25, 9, 0, 0, 0, time.UTC)
+	tk := taskIn(v1alpha1.PhaseWaiting, step)
+	tk.Status.Outbox = []v1alpha1.OutboxItem{{ID: id, Kind: v1alpha1.OutboxNotify, Notify: &v1alpha1.Notification{Event: v1alpha1.NotifyQuestion}}}
+	claim := func(by string, at time.Time) error {
+		res, err := Apply(tk, NotifyClaim{ID: id, By: by, Until: at.Add(30 * time.Second)}, at)
+		if err == nil {
+			tk.Status = res.Status
+		}
+		return err
+	}
+	if err := claim("s1", now); err != nil {
+		t.Fatal(err)
+	}
+	if err := claim("s2", now.Add(time.Second)); !errors.Is(err, ErrNotifySending) {
+		t.Errorf("s2 during s1's turn: %v", err)
+	}
+	if err := claim("s1", now.Add(time.Second)); err != nil {
+		t.Errorf("s1 again: %v", err)
+	}
+	if err := claim("s2", now.Add(time.Minute)); err != nil {
+		t.Errorf("s2 once s1's turn ran out: %v", err)
+	}
+	res, err := Apply(tk, NotifyDelivered{ID: id, To: []string{"a"}, By: "s2"}, now.Add(time.Minute))
+	if err != nil || res.Status.Outbox[0].Notify.SendingBy != "" {
+		t.Errorf("a record of deliveries keeps the turn: %+v %v", res.Status.Outbox[0].Notify, err)
 	}
 }

@@ -237,13 +237,29 @@ type Notification struct {
 	// ThreadSeq is the thread entry the task waits on, if known yet.
 	// +optional
 	ThreadSeq int64 `json:"threadSeq,omitempty"`
+	// WaitingItem is the outbox item of the entry the task waits on, when
+	// the entry was not in the thread yet: its sequence is filled in from
+	// the task's wait only while the task still waits on that item.
+	// +optional
+	WaitingItem string `json:"waitingItem,omitempty"`
 	// At is when it happened.
 	At metav1.Time `json:"at"`
+	// To names the Notifiers listening when it happened: the only ones it
+	// goes to.
+	// +listType=set
+	// +optional
+	To []string `json:"to,omitempty"`
 	// Delivered names the Notifiers that took it, so a pass that finds
 	// one still failing does not send it to the others again.
 	// +listType=set
 	// +optional
 	Delivered []string `json:"delivered,omitempty"`
+	// SendingBy and SendingUntil are the server sending it now, and until
+	// when it may: no other server sends it meanwhile.
+	// +optional
+	SendingBy string `json:"sendingBy,omitempty"`
+	// +optional
+	SendingUntil *metav1.Time `json:"sendingUntil,omitempty"`
 }
 
 // ThreadAppend is a thread entry a run committed: the second phase of a

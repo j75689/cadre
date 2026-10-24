@@ -99,8 +99,10 @@ spec:
                     - name
                     type: object
                   url:
-                    description: URL receives the POSTs.
-                    pattern: ^https?://
+                    description: |-
+                      URL receives the POSTs. It holds no credentials: they would travel
+                      as an Authorization header; sign with SecretRef instead.
+                    pattern: ^https?://[^/@?#]+(?:[/?#].*)?$
                     type: string
                 required:
                 - url

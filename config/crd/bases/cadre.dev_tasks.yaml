@@ -262,11 +262,33 @@ spec:
                           - Failed
                           - Cancelled
                           type: string
+                        sendingBy:
+                          description: |-
+                            SendingBy and SendingUntil are the server sending it now, and until
+                            when it may: no other server sends it meanwhile.
+                          type: string
+                        sendingUntil:
+                          format: date-time
+                          type: string
                         threadSeq:
                           description: ThreadSeq is the thread entry the task waits
                             on, if known yet.
                           format: int64
                           type: integer
+                        to:
+                          description: |-
+                            To names the Notifiers listening when it happened: the only ones it
+                            goes to.
+                          items:
+                            type: string
+                          type: array
+                          x-kubernetes-list-type: set
+                        waitingItem:
+                          description: |-
+                            WaitingItem is the outbox item of the entry the task waits on, when
+                            the entry was not in the thread yet: its sequence is filled in from
+                            the task's wait only while the task still waits on that item.
+                          type: string
                       required:
                       - at
                       - event

@@ -108,22 +108,16 @@ func (m *Manager) dispatchTask(ctx context.Context, key storage.Key) error {
 	}
 	var applied []string
 	var errs []error
-	took := map[string][]string{}
 	for _, it := range t.Status.Outbox {
+		// Notifications go out on their own loop (DeliverNotifications).
+		if it.Kind == v1alpha1.OutboxNotify {
+			continue
+		}
 		if err := m.applyItem(ctx, t, it); err != nil {
-			var u *undelivered
-			if errors.As(err, &u) && len(u.took) > 0 {
-				took[it.ID] = u.took
-			}
 			errs = append(errs, fmt.Errorf("outbox item %s: %w", it.ID, err))
 			continue
 		}
 		applied = append(applied, it.ID)
-	}
-	if len(took) > 0 {
-		if err := m.markDelivered(ctx, key, took); err != nil {
-			errs = append(errs, err)
-		}
 	}
 	if len(applied) > 0 {
 		if _, err := m.transition(ctx, key, task.AckOutbox{IDs: applied}); err != nil {
@@ -193,13 +187,7 @@ func (m *Manager) applyItem(ctx context.Context, parent *v1alpha1.Task, it v1alp
 		}
 		return m.applyFile(ctx, parent, it)
 	case v1alpha1.OutboxNotify:
-		if it.Notify == nil {
-			return fmt.Errorf("no notification: %w", ErrInvalid)
-		}
-		if m.cfg.Notifiers == nil {
-			return nil // nobody to tell
-		}
-		return m.applyNotify(ctx, parent, it)
+		return fmt.Errorf("a notification is sent by DeliverNotifications: %w", ErrInvalid)
 	default:
 		return fmt.Errorf("unknown kind %q: %w", it.Kind, ErrInvalid)
 	}
@@ -504,6 +492,22 @@ func (m *Manager) Run(ctx context.Context, cfg LoopConfig, log *slog.Logger) {
 		cfg.Dispatch = DefaultLoopConfig.Dispatch
 	}
 	m.FollowHints(ctx, log)
+	// Notifications go out on their own ticker: a webhook that does not
+	// answer must not hold up a reclaim or the outbox.
+	go func() {
+		tick := time.NewTicker(cfg.Dispatch)
+		defer tick.Stop()
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-tick.C:
+				if err := m.DeliverNotifications(ctx); err != nil {
+					log.Warn("deliver notifications", "err", err)
+				}
+			}
+		}
+	}()
 	reclaim := time.NewTicker(cfg.Reclaim)
 	dispatch := time.NewTicker(cfg.Dispatch)
 	defer reclaim.Stop()

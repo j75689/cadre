@@ -306,12 +306,12 @@ status:
 
 | Field | |
 |---|---|
-| `on` | required, at least one, each once: `Question`, `ToolApproval` and `Review` (a task starting to wait, for that reason), `Done`, `Failed` and `Cancelled` (a task ending) |
-| `webhook.url` | required, http or https; every notification is POSTed there |
+| `on` | required, at least one, each once: `Question` and `ToolApproval` (a task starting to wait, for that reason), `Review` (a run handing its work to a human: the `Review` phase, or a wait for a review), `Done`, `Failed` and `Cancelled` (a task ending) |
+| `webhook.url` | required, http or https, without credentials (`user:password@`), which would travel as an `Authorization` header; every notification is POSTed there |
 | `webhook.secretRef` | a Secret key holding a signing secret: every delivery then carries `X-Cadre-Signature: sha256=<hex HMAC-SHA256 of the body>` |
 | `webhook.headers` | static headers sent with each delivery. An `Authorization` header is refused: headers are readable by anyone who can read the Notifier, so a credential does not belong there; the receiver checks the signature instead |
 
-Ready is False with reason `InvalidURL` (no host, or not http or https), `SecretMissing` (the signing Secret or its key cannot be read), or `NoTeam`; otherwise it is True. The reconciler only decides Ready; it never delivers. `status.lastSent` is the last delivery, and `status.lastError` the last that failed, with its message and time.
+Ready is False with reason `InvalidURL` (no host, credentials in it, or not http or https), `SecretMissing` (the signing Secret or its key cannot be read), or `NoTeam`; otherwise it is True. The reconciler only decides Ready; it never delivers. `status.lastSent` is the last delivery, and `status.lastError` the last that failed, with its message (which names the webhook without user info or query) and time; a Notifier that is not Ready is not tried, and that is not recorded.
 
 **What is sent.** A POST of `Content-Type: application/json`, with `Idempotency-Key: <id>`, `User-Agent: cadre-server/<version>`, the static headers and the signature, within 10 seconds, following no redirect. Only a 2xx counts as delivered. The body:
 
@@ -326,7 +326,7 @@ Ready is False with reason `InvalidURL` (no host, or not http or https), `Secret
 
 `url` is the task's page at cadre-server's `--external-url`. `threadSeq` is the entry the task waits on, when it is known.
 
-**At least once.** A notification is an outbox item on the Task, written in the same conditional write as the transition it tells of, and only when a Notifier in the namespace listens for the event. The dispatcher delivers it on its next pass to every Notifier listening for the event. A Notifier that took it is recorded on the item, so a failing one does not make the others receive it again; the item stays until all have taken it, retried at the dispatcher's pace. A receiver may still get one twice, when a dispatcher dies between the delivery and the record: it deduplicates on `id`, which is also the `Idempotency-Key`. A notification not taken within 24 hours is dropped, with a Warning Event `NotificationDropped` on the Task naming the Notifiers that never took it, so a dead webhook does not pin the task's outbox. Cancelling a task keeps its notifications, and tells `Cancelled` too.
+**At least once.** A notification is an outbox item on the Task, written in the same conditional write as the transition it tells of, and only when a Notifier in the namespace listens for the event. The item names those Notifiers (`to`): it goes to them and no others, and one deleted since counts as having taken it. A Notifier list that cannot be read costs the notification, never the transition. Notifications go out on their own loop, at the dispatcher's pace but apart from it and from the reclaim, a few tasks and a few deliveries at a time, so a webhook that does not answer delays nothing else. One server sends a notification at a time: it takes a short turn on the item with a conditional write first, and the task that write returns is what the body describes, so a question's entry placed meanwhile is in it. A Notifier that took it is recorded on the item, so a failing one does not make the others receive it again; the item stays until all have taken it. A receiver may still get one twice, when a server dies between the delivery and the record: it deduplicates on `id`, which is also the `Idempotency-Key`. A notification not taken within 24 hours is dropped, with a Warning Event `NotificationDropped` on the Task naming the Notifiers that never took it, so a dead webhook does not pin the task's outbox. Cancelling a task keeps its notifications, and tells `Cancelled` too.
 
 **Egress.** The URL is whatever the Notifier says, and cadre-server does not filter private addresses. Creating a Notifier needs Kubernetes RBAC on the CRD: it is an admin's lever, granted as such.
 

@@ -2,13 +2,15 @@ package controller
 
 import (
 	"context"
+	"encoding/json"
 	"net/url"
 	"time"
 
 	corev1 "k8s.io/api/core/v1"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/client-go/tools/events"
-	"k8s.io/client-go/util/retry"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/builder"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -40,25 +42,43 @@ func (r *notifierReconciler) Reconcile(ctx context.Context, req reconcile.Reques
 	if err := r.client.Get(ctx, req.NamespacedName, &n); err != nil {
 		return reconcile.Result{}, client.IgnoreNotFound(err)
 	}
-	again := reconcile.Result{RequeueAfter: r.resync}
-	if ok, err := r.hasTeam(ctx, req.Namespace); err != nil {
+	ready, reason, msg, err := r.decide(ctx, &n)
+	if err != nil {
 		return reconcile.Result{}, err
-	} else if !ok {
-		return again, r.setReady(ctx, &n, &n.Status.ConfigStatus, false, "NoTeam", "namespace "+req.Namespace+" has no Team")
 	}
-	if u, err := url.Parse(n.Spec.Webhook.URL); err != nil || u.Host == "" || (u.Scheme != "http" && u.Scheme != "https") {
-		return again, r.setReady(ctx, &n, &n.Status.ConfigStatus, false, "InvalidURL", "webhook URL "+n.Spec.Webhook.URL+" is not an http or https URL")
+	// Deliveries write this status too: a write that loses to one is
+	// tried again at once, as only a spec change would bring the
+	// Notifier back otherwise.
+	switch err := r.writeStatusOrConflict(ctx, &n, &n.Status.ConfigStatus, ready, reason, msg, false); {
+	case apierrors.IsConflict(err):
+		return reconcile.Result{RequeueAfter: 100 * time.Millisecond}, nil
+	case err != nil:
+		return reconcile.Result{}, err
+	}
+	return reconcile.Result{RequeueAfter: r.resync}, nil
+}
+
+// decide says whether n can be delivered to, and if not why.
+func (r *notifierReconciler) decide(ctx context.Context, n *v1alpha1.Notifier) (bool, string, string, error) {
+	if ok, err := r.hasTeam(ctx, n.Namespace); err != nil || !ok {
+		return false, "NoTeam", "namespace " + n.Namespace + " has no Team", err
+	}
+	u, err := url.Parse(n.Spec.Webhook.URL)
+	switch {
+	case err != nil || u.Hostname() == "" || (u.Scheme != "http" && u.Scheme != "https"):
+		return false, "InvalidURL", "the webhook URL is not an http or https URL", nil
+	case u.User != nil:
+		// It would be sent as an Authorization header, which the spec
+		// refuses: credentials go in the Secret.
+		return false, "InvalidURL", "the webhook URL holds credentials: sign deliveries with secretRef instead", nil
 	}
 	if ref := n.Spec.Webhook.SecretRef; ref != nil {
 		ok, _, msg, err := r.secretHasKey(ctx, n.Namespace, *ref)
-		if err != nil {
-			return reconcile.Result{}, err
-		}
-		if !ok {
-			return again, r.setReady(ctx, &n, &n.Status.ConfigStatus, false, "SecretMissing", msg)
+		if err != nil || !ok {
+			return false, "SecretMissing", msg, err
 		}
 	}
-	return again, r.setReady(ctx, &n, &n.Status.ConfigStatus, true, "Ready", "")
+	return true, "Ready", "", nil
 }
 
 // Notifiers gives the Task Manager cached reads of Notifiers, fresh reads
@@ -81,22 +101,24 @@ func (n notifiers) ListNotifiers(ctx context.Context, ns string) ([]v1alpha1.Not
 	return list.Items, nil
 }
 
-// Delivered writes lastSent or lastError, on a fresh copy, retried on a
-// conflict and otherwise given up: it is a record, not a decision.
+// Delivered writes lastSent or lastError as a merge patch of the status,
+// which cannot conflict with the reconciler's conditions; the same error
+// again is not written. It is a record, not a decision: a failure is given
+// up.
 func (n notifiers) Delivered(ctx context.Context, nf *v1alpha1.Notifier, at time.Time, err error) {
-	_ = retry.RetryOnConflict(retry.DefaultRetry, func() error {
-		var cur v1alpha1.Notifier
-		if gerr := n.fresh.Get(ctx, client.ObjectKeyFromObject(nf), &cur); gerr != nil {
-			return gerr
-		}
-		t := metav1.NewTime(at)
-		if err == nil {
-			cur.Status.LastSent = &t
-		} else {
-			cur.Status.LastError = &v1alpha1.DeliveryError{Message: err.Error(), At: t}
-		}
-		return n.client.Status().Update(ctx, &cur)
-	})
+	if err != nil && nf.Status.LastError != nil && nf.Status.LastError.Message == err.Error() {
+		return
+	}
+	t := metav1.NewTime(at)
+	status := map[string]any{"lastSent": t}
+	if err != nil {
+		status = map[string]any{"lastError": v1alpha1.DeliveryError{Message: err.Error(), At: t}}
+	}
+	data, merr := json.Marshal(map[string]any{"status": status})
+	if merr != nil {
+		return
+	}
+	_ = n.client.Status().Patch(ctx, nf.DeepCopy(), client.RawPatch(types.MergePatchType, data))
 }
 
 func (n notifiers) Warn(_ context.Context, t *v1alpha1.Task, reason, message string) {

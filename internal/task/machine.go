@@ -11,6 +11,8 @@ import (
 	"strings"
 	"time"
 
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+
 	v1alpha1 "github.com/j75689/cadre/api/v1alpha1"
 )
 
@@ -35,6 +37,8 @@ var (
 	// step was freed or taken again. The worker must stop.
 	ErrAttemptMismatch = errors.New("attempt does not match the step's current attempt")
 	ErrInvalidEvent    = errors.New("invalid event")
+	// ErrNotifySending means another server is sending the notification.
+	ErrNotifySending = errors.New("the notification is being sent by another server")
 )
 
 // Kind names an event.
@@ -59,6 +63,7 @@ const (
 	KindWaitingAt Kind = "WaitingAt"
 	KindReserve   Kind = "ReserveItem"
 	KindDelivered Kind = "NotifyDelivered"
+	KindSending   Kind = "NotifyClaim"
 )
 
 // unborn is the phase of a Task object that exists but has not been numbered.
@@ -87,6 +92,7 @@ var From = map[Kind][]v1alpha1.Phase{
 	KindWaitingAt: allPhases,
 	KindReserve:   allPhases,
 	KindDelivered: allPhases,
+	KindSending:   allPhases,
 }
 
 // Event is one input to the state machine.
@@ -302,13 +308,26 @@ type ReserveItem struct {
 func (ReserveItem) kind() Kind { return KindReserve }
 
 // NotifyDelivered records that the Notifiers To took the Notify item ID,
-// so later passes send it only to the others.
+// so later passes send it only to the others, and ends By's turn sending
+// it.
 type NotifyDelivered struct {
 	ID string
 	To []string
+	By string
 }
 
 func (NotifyDelivered) kind() Kind { return KindDelivered }
+
+// NotifyClaim makes By the one server sending the Notify item ID, until
+// Until. It fails with ErrNotifySending while another server's turn has not
+// run out.
+type NotifyClaim struct {
+	ID    string
+	By    string
+	Until time.Time
+}
+
+func (NotifyClaim) kind() Kind { return KindSending }
 
 func (Create) kind() Kind    { return KindCreate }
 func (Claim) kind() Kind     { return KindClaim }
@@ -570,6 +589,25 @@ func Apply(t *v1alpha1.Task, ev Event, now time.Time) (Result, error) {
 				}
 			}
 			slices.Sort(n.Delivered)
+			if ev.By != "" && n.SendingBy == ev.By {
+				n.SendingBy, n.SendingUntil = "", nil
+			}
+		}
+
+	case NotifyClaim:
+		if ev.By == "" || !ev.Until.After(now) {
+			return Result{}, fmt.Errorf("claim notification %q by %q until %s: %w", ev.ID, ev.By, ev.Until, ErrInvalidEvent)
+		}
+		for i := range s.Outbox {
+			n := s.Outbox[i].Notify
+			if s.Outbox[i].ID != ev.ID || n == nil {
+				continue
+			}
+			if n.SendingBy != "" && n.SendingBy != ev.By && n.SendingUntil != nil && n.SendingUntil.After(now) {
+				return Result{}, ErrNotifySending
+			}
+			until := metav1.NewTime(ev.Until)
+			n.SendingBy, n.SendingUntil = ev.By, &until
 		}
 
 	case WaitingAt:
