@@ -48,7 +48,7 @@ describe("Actions", () => {
   it("are enabled with a login, and send no author", async () => {
     const bodies: string[] = [];
     vi.stubGlobal("fetch", (url: string, init?: RequestInit) => {
-      if (url.endsWith("/me")) return json({ mode: "oidc", username: "dana@example.test", name: "Dana" });
+      if (url.endsWith("/me")) return json({ mode: "oidc", username: "dana@example.test", name: "Dana", roles: { a: "member" } });
       bodies.push(String(init?.body));
       return json({ seq: 1, kind: "Comment", author: { kind: "User", name: "dana@example.test" }, body: "hi", at: "" }, 201);
     });
@@ -68,7 +68,7 @@ describe("Actions", () => {
     cleanup();
     renderActions(task("Waiting", { waiting: { reason: "ToolApproval" } }));
     expect(screen.queryByRole("button", { name: "Reply" })).toBeNull();
-    expect(screen.getByRole("button", { name: "Approve" })).toBeTruthy();
+    expect(await screen.findByRole("button", { name: "Approve" })).toBeTruthy();
     expect(screen.getByRole("button", { name: "Reject" })).toBeTruthy();
   });
 

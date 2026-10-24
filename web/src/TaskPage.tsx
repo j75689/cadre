@@ -2,6 +2,7 @@ import { useRef, useState } from "react";
 import { Link, useParams } from "react-router";
 import { APIError, getTask, readThread, type Task, type ThreadEntry } from "./api";
 import { Actions } from "./Actions";
+import { RoleLine } from "./Identity";
 import { Runs } from "./Runs";
 import { Thread } from "./Thread";
 import { usePolling } from "./usePolling";
@@ -63,6 +64,7 @@ export function TaskPage() {
             {task.status?.number !== undefined && <span className="number">#{task.status.number} </span>}
             {task.spec.title}
           </h1>
+          <RoleLine ns={ns} />
           {task.spec.parentRef && (
             <p className="parent">
               subtask of <Link to={`${board}/tasks/${encodeURIComponent(task.spec.parentRef.name)}`}>{task.spec.parentRef.name}</Link>

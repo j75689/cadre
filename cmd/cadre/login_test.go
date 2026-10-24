@@ -16,6 +16,7 @@ import (
 	"github.com/j75689/cadre/internal/api"
 	"github.com/j75689/cadre/internal/auth"
 	"github.com/j75689/cadre/internal/auth/oidctest"
+	"github.com/j75689/cadre/internal/authz"
 	"github.com/j75689/cadre/internal/client"
 	"github.com/j75689/cadre/internal/manager"
 	"github.com/j75689/cadre/internal/storage"
@@ -52,7 +53,7 @@ func TestLoginFromTheCLI(t *testing.T) {
 	}
 	mux := http.NewServeMux()
 	authn.Register(mux, api.Base)
-	api.NewServer(m, log).Register(mux)
+	api.NewServer(m, log, api.WithPolicy(&authz.Policy{AdminUsers: []string{"dana@example.test"}})).Register(mux)
 	srv.Config.Handler = authn.Wrap(mux, api.Base)
 	// The browser approves at once and follows the redirect home.
 	opened := ""

@@ -57,10 +57,14 @@ type Info struct {
 	Scopes      []string `json:"scopes,omitempty"`
 }
 
-// Me is GET /api/v1/me: the mode, and with OIDC the caller's identity.
+// Me is GET /api/v1/me: the mode, and with OIDC the caller's identity, their
+// role on each team they may see, by namespace, and whether they are a
+// bootstrap admin.
 type Me struct {
 	Mode string `json:"mode"`
 	*Identity
+	Roles map[string]string `json:"roles,omitempty"`
+	Admin bool              `json:"admin,omitempty"`
 }
 
 // Authenticator authenticates requests in one mode.
@@ -71,6 +75,6 @@ type Authenticator interface {
 	// would serve, and leaves every other path alone.
 	Wrap(next http.Handler, base string) http.Handler
 	// Register adds the login routes, if the mode has any, and GET
-	// <base>/auth and <base>/me.
+	// <base>/auth. The API serves <base>/me.
 	Register(mux *http.ServeMux, base string)
 }

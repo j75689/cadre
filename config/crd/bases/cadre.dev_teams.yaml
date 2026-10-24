@@ -74,6 +74,48 @@ spec:
                 format: int32
                 minimum: 1
                 type: integer
+              roles:
+                description: |-
+                  Roles give people a role on the team's board, by user or by group.
+                  Someone matching several entries has the strongest of their roles.
+                items:
+                  description: TeamRole gives a role to its subjects.
+                  properties:
+                    role:
+                      description: Role is admin, member or viewer.
+                      enum:
+                      - admin
+                      - member
+                      - viewer
+                      type: string
+                    subjects:
+                      description: Subjects hold the role.
+                      items:
+                        description: RoleSubject is a user or a group.
+                        properties:
+                          kind:
+                            description: Kind is group or user.
+                            enum:
+                            - group
+                            - user
+                            type: string
+                          name:
+                            description: Name is the group's or the user's name.
+                            minLength: 1
+                            type: string
+                        required:
+                        - kind
+                        - name
+                        type: object
+                      minItems: 1
+                      type: array
+                      x-kubernetes-list-type: atomic
+                  required:
+                  - role
+                  - subjects
+                  type: object
+                type: array
+                x-kubernetes-list-type: atomic
             type: object
           status:
             description: TeamStatus is the control state of a team, written only by

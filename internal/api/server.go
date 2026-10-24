@@ -1,6 +1,7 @@
 package api
 
 import (
+	"errors"
 	"fmt"
 	"log/slog"
 	"net/http"
@@ -13,6 +14,7 @@ import (
 
 	v1alpha1 "github.com/j75689/cadre/api/v1alpha1"
 	"github.com/j75689/cadre/internal/auth"
+	"github.com/j75689/cadre/internal/authz"
 	"github.com/j75689/cadre/internal/httpjson"
 	"github.com/j75689/cadre/internal/manager"
 	"github.com/j75689/cadre/internal/storage"
@@ -20,30 +22,111 @@ import (
 
 // Server serves /api/v1 on a Task Manager.
 type Server struct {
-	m   *manager.Manager
-	log *slog.Logger
+	m      *manager.Manager
+	log    *slog.Logger
+	policy *authz.Policy // nil without logins: everyone may do anything
 }
 
+// Option adjusts NewServer.
+type Option func(*Server)
+
+// WithPolicy enforces p's roles on every route. Requests must carry an
+// identity (auth.Authenticator.Wrap gives one).
+func WithPolicy(p *authz.Policy) Option { return func(s *Server) { s.policy = p } }
+
 // NewServer returns the API server.
-func NewServer(m *manager.Manager, log *slog.Logger) *Server { return &Server{m: m, log: log} }
+func NewServer(m *manager.Manager, log *slog.Logger, opts ...Option) *Server {
+	s := &Server{m: m, log: log}
+	for _, o := range opts {
+		o(s)
+	}
+	return s
+}
 
 // Register adds the API's routes to mux.
 func (s *Server) Register(mux *http.ServeMux) {
 	const tasks = Base + "/namespaces/{ns}/tasks"
 	const one = tasks + "/{name}"
-	mux.HandleFunc("POST "+tasks, s.createTask)
-	mux.HandleFunc("GET "+tasks, s.listTasks)
-	mux.HandleFunc("GET "+one, s.getTask)
-	mux.HandleFunc("POST "+one+"/cancel", s.cancel)
-	mux.HandleFunc("POST "+one+"/comments", s.comment)
-	mux.HandleFunc("GET "+one+"/thread", s.thread)
-	mux.HandleFunc("POST "+one+"/reply", s.reply)
-	mux.HandleFunc("POST "+one+approveSuffix, s.approve)
-	mux.HandleFunc("GET "+one+"/runs", s.runs)
-	mux.HandleFunc("GET "+one+"/runs/{run}/events", s.events)
-	mux.HandleFunc("PUT "+Base+"/namespaces/{ns}/team", s.initTeam)
+	// Every route under a namespace names what it does on the team's board,
+	// and the policy decides whether the caller may.
+	for _, route := range []struct {
+		pattern string
+		action  authz.Action
+		h       http.HandlerFunc
+	}{
+		{"POST " + tasks, authz.CreateTask, s.createTask},
+		{"GET " + tasks, authz.Read, s.listTasks},
+		{"GET " + one, authz.Read, s.getTask},
+		{"POST " + one + "/cancel", authz.Cancel, s.cancel},
+		{"POST " + one + "/comments", authz.Comment, s.comment},
+		{"GET " + one + "/thread", authz.Read, s.thread},
+		{"POST " + one + "/reply", authz.Reply, s.reply},
+		{"POST " + one + approveSuffix, authz.Approve, s.approve},
+		{"GET " + one + "/runs", authz.Read, s.runs},
+		{"GET " + one + "/runs/{run}/events", authz.Read, s.events},
+		// Creating a Team needs a bootstrap admin: nobody has a role on a
+		// team that does not exist.
+		{"PUT " + Base + "/namespaces/{ns}/team", authz.ManageTeam, s.initTeam},
+		{"GET " + Base + "/namespaces/{ns}/agents", authz.Read, s.listAgents},
+	} {
+		mux.HandleFunc(route.pattern, s.guard(route.action, route.h))
+	}
 	mux.HandleFunc("GET "+Base+"/teams", s.listTeams)
-	mux.HandleFunc("GET "+Base+"/namespaces/{ns}/agents", s.listAgents)
+	mux.HandleFunc("GET "+Base+"/me", s.me)
+}
+
+// guard lets a request through when the caller's role on the team of its
+// namespace allows action. A team the caller has no role on, or that does
+// not exist, is refused with 403, so its existence is not told; a bootstrap
+// admin passes, and the handler answers 404 for what is not there.
+func (s *Server) guard(action authz.Action, h http.HandlerFunc) http.HandlerFunc {
+	if s.policy == nil {
+		return h
+	}
+	return func(w http.ResponseWriter, r *http.Request) {
+		id, ok := auth.FromContext(r.Context())
+		if !ok {
+			httpjson.WriteError(w, http.StatusUnauthorized, httpjson.CodeUnauthenticated, "log in first")
+			return
+		}
+		ns := r.PathValue("ns")
+		team, err := s.m.Team(r.Context(), ns)
+		switch {
+		case errors.Is(err, storage.ErrNotFound):
+			team = nil
+		case err != nil:
+			httpjson.Fail(w, s.log, err)
+			return
+		}
+		role, _ := s.policy.Role(id, team)
+		if !authz.Allowed(role, action) {
+			httpjson.WriteError(w, http.StatusForbidden, httpjson.CodeForbidden, authz.Refusal(ns, role, action))
+			return
+		}
+		h(w, r)
+	}
+}
+
+// me says who the caller is and, with logins, their role on each team they
+// may see.
+func (s *Server) me(w http.ResponseWriter, r *http.Request) {
+	id, ok := auth.FromContext(r.Context())
+	if s.policy == nil || !ok {
+		httpjson.Write(w, http.StatusOK, auth.Me{Mode: auth.ModeNone})
+		return
+	}
+	teams, err := s.m.ListTeams(r.Context())
+	if err != nil {
+		httpjson.Fail(w, s.log, err)
+		return
+	}
+	out := auth.Me{Mode: auth.ModeOIDC, Identity: id, Admin: s.policy.Bootstrap(id), Roles: map[string]string{}}
+	for i := range teams {
+		if role, ok := s.policy.Role(id, &teams[i]); ok {
+			out.Roles[teams[i].Namespace] = role.String()
+		}
+	}
+	httpjson.Write(w, http.StatusOK, out)
 }
 
 func taskKey(r *http.Request) storage.Key {
@@ -253,11 +336,23 @@ func summarize(a *v1alpha1.Agent) AgentSummary {
 	return out
 }
 
+// listTeams lists the Teams the caller has a role on: every one, without
+// logins or for a bootstrap admin.
 func (s *Server) listTeams(w http.ResponseWriter, r *http.Request) {
 	items, err := s.m.ListTeams(r.Context())
 	if err != nil {
 		httpjson.Fail(w, s.log, err)
 		return
+	}
+	if s.policy != nil {
+		id, _ := auth.FromContext(r.Context())
+		items = slices.DeleteFunc(items, func(t v1alpha1.Team) bool {
+			_, ok := s.policy.Role(id, &t)
+			return !ok
+		})
+	}
+	if items == nil {
+		items = []v1alpha1.Team{}
 	}
 	httpjson.Write(w, http.StatusOK, TeamList{Items: items})
 }

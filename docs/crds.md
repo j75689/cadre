@@ -35,6 +35,13 @@ spec:
   displayName: Backend
   maxConcurrentRuns: 5
   archiveAfter: 720h
+  roles:
+    - role: admin
+      subjects: [{ kind: user, name: lead@example.test }]
+    - role: member
+      subjects: [{ kind: group, name: backend }]
+    - role: viewer
+      subjects: [{ kind: group, name: everyone }]
 status:
   nextNumber: 124
   slots:                      # the runs holding a slot of maxConcurrentRuns
@@ -48,7 +55,13 @@ Three roles:
 2. **Counter.** `status.nextNumber` is claimed with a conditional write and copied to `Task.status.number`, so humans can say "#123".
 3. **Semaphore.** `status.slots` is the set of runs holding a slot, keyed by run id. A claim mints its run id, then adds it to the set with a conditional write on Team (only while the set has fewer than `maxConcurrentRuns` entries), then makes the conditional claim on the Task; if the Task claim loses, the run id is removed again. Taking the slot first and deciding afterwards would overshoot. Adding a run id that is already there, and removing one that is not, are no-ops, so every release can be retried safely and none can be counted twice.
 
-Role mapping for SSO (the equivalent of Argo CD's `AppProject` roles) hangs here.
+**Roles.** `spec.roles` gives people a role on the team's board (the equivalent of Argo CD's `AppProject` roles). Each entry is a `role` (`admin`, `member` or `viewer`) and its `subjects`, at least one. A subject is a `kind` (`group` or `user`) and a non-empty `name`. A `user` subject matches the login's username; a `group` subject matches any of its groups. Someone matching several entries has the strongest of their roles. The schema checks the role, the kind and the name. Roles take effect with logins (`--auth=oidc`); see [architecture.md](architecture.md#authorization).
+
+| Role | May |
+| --- | --- |
+| `viewer` | read: list and get tasks, their threads, runs and events, the team's agents, and the Team |
+| `member` | what a viewer may, and create tasks, comment, reply, approve or deny tool calls, cancel tasks |
+| `admin` | what a member may, and initialise or edit the Team |
 
 | Field | Rule |
 | --- | --- |

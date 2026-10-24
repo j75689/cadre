@@ -1,0 +1,36 @@
+# A Dex configuration whose user has groups, for trying roles by group.
+# Apply it over hack/dex/dex.yaml and restart Dex:
+#
+#   kubectl apply -f hack/dex/groups.yaml
+#   kubectl -n dex rollout restart deployment/dex
+#
+# Dex's mock connector logs in at once, with no form, as
+# kilgore@kilgore.trout in the group "authors".
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: dex
+  namespace: dex
+data:
+  config.yaml: |
+    issuer: http://localhost:5556/dex
+    storage:
+      type: memory
+    web:
+      http: 0.0.0.0:5556
+    oauth2:
+      skipApprovalScreen: true
+    connectors:
+      - type: mockCallback
+        id: mock
+        name: Mock
+    staticClients:
+      - id: cadre
+        name: Cadre
+        secret: cadre-dev-not-a-secret
+        redirectURIs:
+          - http://localhost:8080/auth/callback
+      - id: cadre-cli
+        name: Cadre CLI
+        public: true

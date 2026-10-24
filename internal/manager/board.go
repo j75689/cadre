@@ -390,6 +390,22 @@ func (m *Manager) ListAgents(ctx context.Context, namespace string) ([]v1alpha1.
 	return m.agents.ListAgents(ctx, namespace)
 }
 
+// Team reads a namespace's Team from the board index, as fresh as the
+// index is: for deciding access on every request without a read of the
+// store each time.
+func (m *Manager) Team(ctx context.Context, namespace string) (*v1alpha1.Team, error) {
+	teams, err := m.store.ListTeams(ctx)
+	if err != nil {
+		return nil, err
+	}
+	for i := range teams {
+		if teams[i].Namespace == namespace {
+			return &teams[i], nil
+		}
+	}
+	return nil, fmt.Errorf("team %s: %w", namespace, storage.ErrNotFound)
+}
+
 // ListTeams lists every Team.
 func (m *Manager) ListTeams(ctx context.Context) ([]v1alpha1.Team, error) {
 	return m.store.ListTeams(ctx)

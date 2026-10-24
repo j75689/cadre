@@ -20,6 +20,13 @@ import (
 
 const base = "/api/v1"
 
+// me answers who Wrap found, as the API's /me does.
+func me(w http.ResponseWriter, r *http.Request) {
+	id, _ := auth.FromContext(r.Context())
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(auth.Me{Mode: auth.ModeOIDC, Identity: id})
+}
+
 // server is a cadre-server stand-in: the auth routes, one API route that
 // says who it saw, and a page to land on.
 type server struct {
@@ -63,6 +70,7 @@ func start(t *testing.T) *server {
 	}
 	s.authn = authn
 	authn.Register(mux, base)
+	mux.HandleFunc("GET "+base+"/me", me)
 	mux.HandleFunc(base+"/whoami", func(w http.ResponseWriter, r *http.Request) {
 		_, _ = io.WriteString(w, auth.Author(r, r.URL.Query().Get("author")))
 	})
@@ -364,6 +372,7 @@ func TestCookiesBehindHTTPS(t *testing.T) {
 	}
 	mux := http.NewServeMux()
 	authn.Register(mux, base)
+	mux.HandleFunc("GET "+base+"/me", me)
 	// Reached over plain http, the login would lose its Secure cookies:
 	// refused with a pointer to the https URL.
 	w := httptest.NewRecorder()
@@ -440,6 +449,7 @@ func TestEmailVerifiedForAnotherUsernameClaim(t *testing.T) {
 	}
 	mux := http.NewServeMux()
 	authn.Register(mux, base)
+	mux.HandleFunc("GET "+base+"/me", me)
 	w := httptest.NewRecorder()
 	req := httptest.NewRequest(http.MethodGet, base+"/me", nil)
 	req.Header.Set("Authorization", "Bearer "+idp.IDToken(oidctest.ClientID, "", 0))
@@ -504,6 +514,7 @@ func TestDiscoveryRetries(t *testing.T) {
 	}
 	mux := http.NewServeMux()
 	authn.Register(mux, base)
+	mux.HandleFunc("GET "+base+"/me", me)
 	h := authn.Wrap(mux, base)
 	serve := func(path string, header http.Header) int {
 		w := httptest.NewRecorder()

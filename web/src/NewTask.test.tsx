@@ -51,7 +51,7 @@ describe("NewTask", () => {
         <App />
       </MemoryRouter>,
     );
-    fireEvent.click(screen.getByRole("button", { name: "Create task" }));
+    fireEvent.click(await screen.findByRole("button", { name: "Create task" }));
     expect(screen.getByRole("alert").textContent).toMatch(/title/i);
     expect(posts).toHaveLength(0);
 
@@ -79,7 +79,7 @@ describe("NewTask", () => {
         <App />
       </MemoryRouter>,
     );
-    fireEvent.change(screen.getByLabelText("Kind"), { target: { value: "Agent" } });
+    fireEvent.change(await screen.findByLabelText("Kind"), { target: { value: "Agent" } });
     expect(await screen.findByText(/Could not load the agents: the cache is not synced/)).toBeTruthy();
     expect(screen.queryByText(/no agents/)).toBeNull();
     fireEvent.click(screen.getByRole("button", { name: "Retry" }));
@@ -103,8 +103,8 @@ describe("NewTask", () => {
         <App />
       </MemoryRouter>,
     );
-    fireEvent.change(screen.getByLabelText("Title"), { target: { value: "For team a" } });
+    fireEvent.change(await screen.findByLabelText("Title"), { target: { value: "For team a" } });
     act(() => nav.go("/t/b/new"));
-    expect((screen.getByLabelText("Title") as HTMLInputElement).value).toBe("");
+    expect(((await screen.findByLabelText("Title")) as HTMLInputElement).value).toBe("");
   });
 });

@@ -165,6 +165,10 @@ export interface Me {
   username?: string;
   name?: string;
   groups?: string[];
+  // roles is the caller's role on each team they may see, by namespace;
+  // admin says they are a bootstrap admin.
+  roles?: Record<string, string>;
+  admin?: boolean;
 }
 
 export const getMe = (signal?: AbortSignal) => get<Me>("/me", signal);

@@ -1,18 +1,19 @@
 import { useState, type ReactNode } from "react";
 import { APIError, approve, cancel, comment, reply, terminalPhases, type Task } from "./api";
-import { useIdentity } from "./Identity";
+import { useIdentity, useRole } from "./Identity";
+import { can as canDo } from "./roles";
 
 // What a task in this state lets a human do, as the API decides it: reply
 // while it waits on a human (a question or a review), approve or deny while
 // it waits on a tool approval, comment and cancel until it ends.
-export function allowed(task: Task) {
+export function allowed(task: Task, mayWork = true) {
   const phase = task.status?.phase ?? "Todo";
   const waiting = phase === "Waiting" ? task.status?.waiting : undefined;
-  const open = !terminalPhases.includes(phase);
+  const open = mayWork && !terminalPhases.includes(phase);
   return {
     comment: open,
-    reply: waiting !== undefined && waiting.reason !== "ToolApproval",
-    approve: waiting?.reason === "ToolApproval",
+    reply: open && waiting !== undefined && waiting.reason !== "ToolApproval",
+    approve: open && waiting?.reason === "ToolApproval",
     cancel: open,
   };
 }
@@ -28,10 +29,21 @@ interface Props {
 }
 
 export function Actions({ task, onTask, onRefresh }: Props) {
-  const can = allowed(task);
+  const role = useRole(task.metadata.namespace);
+  // What the task's state allows, of what the caller's role does.
+  const can = allowed(task, canDo(role, "work"));
   const { namespace: ns, name } = task.metadata;
-  const { mode, author, ready } = useIdentity();
-  if (!can.comment && !can.reply && !can.approve && !can.cancel) return null;
+  const { mode, author, ready, refresh } = useIdentity();
+  // A refusal outlives the actions it hides: the role is read again and
+  // they may go, but the reason stays.
+  const [refused, setRefused] = useState("");
+  if (!can.comment && !can.reply && !can.approve && !can.cancel) {
+    return refused ? (
+      <p className="error" role="alert">
+        {refused}
+      </p>
+    ) : null;
+  }
   const run = async <T,>(call: () => Promise<T>, done: (r: T) => void): Promise<string> => {
     try {
       done(await call());
@@ -39,6 +51,11 @@ export function Actions({ task, onTask, onRefresh }: Props) {
       return "";
     } catch (e) {
       if (e instanceof APIError && e.status === 409) onRefresh();
+      // Refused: the role changed since the page read it.
+      if (e instanceof APIError && e.status === 403) {
+        setRefused((e as Error).message);
+        refresh();
+      }
       return (e as Error).message;
     }
   };

@@ -222,10 +222,6 @@ func (o *OIDC) Register(mux *http.ServeMux, base string) {
 	mux.HandleFunc("GET /auth/callback", o.callback)
 	mux.HandleFunc("POST /auth/logout", o.logout)
 	mux.HandleFunc("GET "+base+"/auth", func(w http.ResponseWriter, _ *http.Request) { httpjson.Write(w, http.StatusOK, o.Info()) })
-	mux.HandleFunc("GET "+base+"/me", func(w http.ResponseWriter, r *http.Request) {
-		id, _ := FromContext(r.Context()) // Wrap requires one
-		httpjson.Write(w, http.StatusOK, Me{Mode: ModeOIDC, Identity: id})
-	})
 }
 
 // SafeNext returns next, cleaned, if it is a path on this server, and "/"

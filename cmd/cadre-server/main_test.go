@@ -82,7 +82,7 @@ func TestResolvePublicURL(t *testing.T) {
 func TestRoutesCoexist(t *testing.T) {
 	log := slog.New(slog.NewTextHandler(io.Discard, nil))
 	m := manager.New(memory.NewBackend().Open(), manager.Config{})
-	mux := newMux(m, log, "http://localhost", auth.None{}, nil)
+	mux := newMux(m, log, "http://localhost", auth.None{}, nil, nil)
 	for _, c := range []struct {
 		method, path string
 		code         int
@@ -129,7 +129,7 @@ func TestNewAuthenticator(t *testing.T) {
 	}
 	// Every route still registers beside the login's, and the API wants
 	// an identity while the UI and the probes do not.
-	mux := newMux(manager.New(memory.NewBackend().Open(), manager.Config{}), log, "http://localhost:8080", a, nil)
+	mux := newMux(manager.New(memory.NewBackend().Open(), manager.Config{}), log, "http://localhost:8080", a, newPolicy(a, "", "", log), nil)
 	for _, c := range []struct {
 		path string
 		code int
