@@ -19,6 +19,7 @@ import (
 	"github.com/j75689/cadre/internal/controller"
 	"github.com/j75689/cadre/internal/httpjson"
 	"github.com/j75689/cadre/internal/manager"
+	"github.com/j75689/cadre/internal/mcp"
 	"github.com/j75689/cadre/internal/runner"
 	"github.com/j75689/cadre/internal/storage"
 	"github.com/j75689/cadre/internal/storage/kubernetes"
@@ -89,7 +90,7 @@ func (c *chaosStore) UpdateTeamStatus(ctx context.Context, team *v1alpha1.Team) 
 
 // timings are short so a minute covers many leases.
 var (
-	managerConfig = manager.Config{Lease: 3 * time.Second, Heartbeat: time.Second}
+	managerConfig = manager.Config{Lease: 3 * time.Second, Heartbeat: time.Second, StepIdle: stepIdle}
 	loopConfig    = manager.LoopConfig{Reclaim: 200 * time.Millisecond, Dispatch: 300 * time.Millisecond}
 )
 
@@ -103,7 +104,9 @@ type server struct {
 	loops  chan struct{}
 }
 
-func startServer(name string, cfg kubernetes.Config, rnd *lockedRand) (*server, error) {
+// startServer starts an instance; publicURL is where runners reach the
+// servers, for the per-run MCP endpoint.
+func startServer(name string, cfg kubernetes.Config, rnd *lockedRand, publicURL string) (*server, error) {
 	ctx, cancel := context.WithCancel(context.Background())
 	drv, err := kubernetes.Open(ctx, cfg)
 	if err != nil {
@@ -129,8 +132,9 @@ func startServer(name string, cfg kubernetes.Config, rnd *lockedRand) (*server, 
 	m := manager.New(&chaosStore{Driver: drv, rnd: rnd}, mcfg)
 	log := slog.New(slog.NewTextHandler(io.Discard, nil))
 	mux := http.NewServeMux()
-	runner.NewServer(m, log, "http://cadre.test").Register(mux)
+	runner.NewServer(m, log, publicURL).Register(mux)
 	api.NewServer(m, log).Register(mux)
+	mcp.NewServer(m, log).Register(mux)
 	s := &server{name: name, srv: httptest.NewServer(mux), driver: drv, cancel: cancel, loops: make(chan struct{})}
 	go func() {
 		defer close(s.loops)

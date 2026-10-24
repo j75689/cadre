@@ -4,6 +4,8 @@
 // checks the invariants of docs/storage.md: no task ever runs twice, every
 // run ends exactly once and for the right reason, outbox effects land
 // exactly once, the Team semaphore holds, and the index rebuilds completely.
+// Half the tasks are run a step at a time by step workers that die in the
+// middle of steps too; steps_test.go checks step mode's own invariants.
 //
 // CADRE_CHAOS_SEED replays a seed; CADRE_CHAOS_DURATION sets how long the
 // chaos lasts (60s by default, 20s with -short).
@@ -106,6 +108,10 @@ func TestChaos(t *testing.T) {
 			&v1alpha1.Agent{ObjectMeta: metav1.ObjectMeta{Name: "coder", Namespace: ns}, Spec: v1alpha1.AgentSpec{
 				ModelRef: "claude", Runtime: v1alpha1.AgentRuntime{Type: v1alpha1.RuntimeBuiltin},
 			}},
+			// Its tasks are run a step at a time, by the step workers.
+			&v1alpha1.Agent{ObjectMeta: metav1.ObjectMeta{Name: "stepper", Namespace: ns}, Spec: v1alpha1.AgentSpec{
+				ModelRef: "claude", Runtime: v1alpha1.AgentRuntime{Type: v1alpha1.RuntimeBuiltin, Execution: v1alpha1.RunModeStep},
+			}},
 		} {
 			if err := admin.Create(ctx, obj); err != nil {
 				t.Fatal(err)
@@ -119,7 +125,7 @@ func TestChaos(t *testing.T) {
 	var srvMu sync.Mutex
 	servers := map[string]*server{}
 	start := func(name string) {
-		s, err := startServer(name, cfg, rnd)
+		s, err := startServer(name, cfg, rnd, px.URL)
 		if err != nil {
 			t.Errorf("start %s: %v", name, err)
 			return
@@ -160,9 +166,13 @@ func TestChaos(t *testing.T) {
 	spawn(func() {
 		for chaos.Err() == nil {
 			for ns := range teams {
+				agent := "coder"
+				if created%2 == 1 {
+					agent = "stepper"
+				}
 				if _, err := cl.CreateTask(chaos, ns, "", v1alpha1.TaskSpec{
 					Title:    fmt.Sprintf("task %d", created),
-					Assignee: &v1alpha1.Assignee{Kind: v1alpha1.AssigneeAgent, Name: "coder"},
+					Assignee: &v1alpha1.Assignee{Kind: v1alpha1.AssigneeAgent, Name: agent},
 				}); err == nil {
 					created++
 				}
@@ -172,9 +182,13 @@ func TestChaos(t *testing.T) {
 	})
 	spawn(func() { human(chaos, cl, rnd, rec) })
 
-	// Runners come and go.
+	// Runners come and go, and so do step workers.
 	for i := range runners {
 		spawn(func() { runnerSlot(chaos, cl, rnd, rec, fmt.Sprintf("runner-%d", i)) })
+	}
+	steps := newStepRecorder(px.URL)
+	for i := range stepWorkers {
+		spawn(func() { stepSlot(chaos, px.URL, rnd, steps, fmt.Sprintf("worker-%d", i)) })
 	}
 
 	// Servers die and come back; each restart rebuilds the index from a list.
@@ -211,9 +225,13 @@ func TestChaos(t *testing.T) {
 	if t.Failed() {
 		t.FailNow()
 	}
+	// The step workers are gone with the chaos: a step given back now is
+	// taken by nobody, and its run must fail at the idle deadline.
+	orphanStep(t, cl)
 	quiesce(t, admin)
 
 	check(t, admin, cfg, rec)
+	checkSteps(t, cfg, steps)
 }
 
 // runnerSlot keeps one runner alive, killing and replacing it at random
