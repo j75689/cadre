@@ -217,6 +217,10 @@ type FinishRequest struct {
 	Reason    v1alpha1.WaitingReason
 	ThreadSeq int64
 	Subtasks  []Subtask
+	// WaitingItem and Outbox, for a finish that waits on an entry it
+	// writes: the entry's fenced outbox item, and the item's id.
+	WaitingItem string
+	Outbox      []v1alpha1.OutboxItem
 }
 
 // Finish ends the run. If this same finish already landed (a retry), it
@@ -237,7 +241,7 @@ func (m *Manager) Finish(ctx context.Context, key storage.Key, req FinishRequest
 	}
 	t, err := m.transition(ctx, key, task.Finish{
 		RunID: req.RunID, Runner: req.Runner, Step: req.Step, Outcome: req.Outcome,
-		Reason: req.Reason, ThreadSeq: req.ThreadSeq, Outbox: items,
+		Reason: req.Reason, ThreadSeq: req.ThreadSeq, WaitingItem: req.WaitingItem, Outbox: append(items, req.Outbox...),
 	})
 	if errors.Is(err, task.ErrRunMismatch) && t != nil {
 		rec, lookupErr := m.endedRun(ctx, t, req.RunID)

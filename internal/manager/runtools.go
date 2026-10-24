@@ -2,8 +2,6 @@ package manager
 
 import (
 	"context"
-	"encoding/base64"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"strings"
@@ -46,42 +44,50 @@ func agentAuthor(t *v1alpha1.Task) Author {
 	return Author{Kind: AuthorAgent, Name: name}
 }
 
-// RunPost appends the agent's comment to the thread.
+// RunPost posts the agent's comment to the thread. The comment is fenced:
+// its body is written as a blob first, where nothing reads it, then
+// committed with an outbox item in a run-fenced write, which the
+// dispatcher turns into the thread entry. A run that lost its task cannot
+// land one. The entry is applied at once when it can be; the returned
+// entry's Seq is 0 when it is still pending, as the dispatcher writes it a
+// moment later.
 func (m *Manager) RunPost(ctx context.Context, key storage.Key, runID, body string) (*ThreadEntry, error) {
 	t, err := m.activeRun(ctx, key, runID)
 	if err != nil {
 		return nil, err
 	}
-	return m.appendThread(ctx, key, agentAuthor(t), EntryComment, body, runID)
+	item, err := m.threadItem(ctx, key, t, runID, EntryComment, body)
+	if err != nil {
+		return nil, err
+	}
+	if _, err := m.transition(ctx, key, task.Record{RunID: runID, Outbox: []v1alpha1.OutboxItem{item}}); err != nil {
+		return nil, err
+	}
+	return m.appliedEntry(ctx, key, item), nil
 }
 
-// RunAsk appends the agent's question and ends the run as
-// Waiting{Question}. When it returns without error the run is over: the
-// runner must stop, without finishing.
-//
-// There is one Question per ask: if the thread's latest entry is already
-// this run's Question with the same text (a retry after ending the run
-// failed), it is reused and only the run is ended.
+// RunAsk posts the agent's question and ends the run as Waiting{Question},
+// in one fenced write: the Finish carries the Question's outbox item, and
+// the wait names it until the dispatcher has written it. When it returns
+// without error the run is over: the runner must stop, without finishing.
+// A retry after the Finish landed fails as the run is gone, and the one
+// Question is the first attempt's.
 func (m *Manager) RunAsk(ctx context.Context, key storage.Key, runID, question string) (*ThreadEntry, error) {
 	t, err := m.activeRun(ctx, key, runID)
 	if err != nil {
 		return nil, err
 	}
-	entry, err := m.lastEntry(ctx, key)
+	item, err := m.threadItem(ctx, key, t, runID, EntryQuestion, question)
 	if err != nil {
 		return nil, err
 	}
-	if entry == nil || entry.Kind != EntryQuestion || entry.RunID != runID || entry.Body != question {
-		if entry, err = m.appendThread(ctx, key, agentAuthor(t), EntryQuestion, question, runID); err != nil {
-			return nil, err
-		}
-	}
 	if _, _, err := m.Finish(ctx, key, FinishRequest{
-		RunID: runID, Outcome: task.OutcomeWaiting, Reason: v1alpha1.WaitingQuestion, ThreadSeq: entry.Seq,
+		RunID: runID, Outcome: task.OutcomeWaiting, Reason: v1alpha1.WaitingQuestion,
+		WaitingItem: item.ID, Outbox: []v1alpha1.OutboxItem{item},
 	}); err != nil {
-		return entry, err
+		return nil, err
 	}
-	return entry, nil
+	return m.appliedEntry(ctx, key, item), nil
 }
 
 // MaxThreadPage is the most thread entries a run reads in one call.
@@ -181,23 +187,6 @@ type File struct {
 	Content string `json:"content"`
 }
 
-// A task's files: each path has its own stream of versions,
-// <ns>/<task>/files/<base64url(path)>, keyed by version; the path is one
-// segment, so no file stream sits under another stream's entry. An index
-// stream, <ns>/<task>/files-index, records every write's path, version and
-// size, so files can be listed without reading their contents. A write
-// appends the version first and the index entry second; reads go to the
-// version streams, so a write whose index entry was lost is still read, and
-// the next write of that path indexes it again.
-
-func filesIndexStream(key storage.Key) string {
-	return key.Namespace + "/" + key.Name + "/files-index"
-}
-
-func fileStream(key storage.Key, path string) string {
-	return key.Namespace + "/" + key.Name + "/files/" + base64.RawURLEncoding.EncodeToString([]byte(path))
-}
-
 func validFile(path string, content *string) error {
 	switch {
 	case path == "" || len(path) > MaxFilePath || !utf8.ValidString(path):
@@ -212,7 +201,10 @@ func validFile(path string, content *string) error {
 	return nil
 }
 
-// RunWriteFile writes a new version of a task file.
+// RunWriteFile writes a new version of a task file, fenced as RunPost is:
+// the content as a blob, then a run-fenced outbox item the dispatcher
+// turns into the version. The returned Version is 0 when it is still
+// pending.
 func (m *Manager) RunWriteFile(ctx context.Context, key storage.Key, runID, path, content string) (*FileInfo, error) {
 	if err := validFile(path, &content); err != nil {
 		return nil, err
@@ -220,31 +212,23 @@ func (m *Manager) RunWriteFile(ctx context.Context, key storage.Key, runID, path
 	if _, err := m.activeRun(ctx, key, runID); err != nil {
 		return nil, err
 	}
-	stream := fileStream(key, path)
-	latest, err := m.latestVersion(ctx, stream)
+	after, err := m.latestFileVersion(ctx, key, path)
 	if err != nil {
 		return nil, err
 	}
-	info := &FileInfo{Path: path, Version: latest + 1, Size: len(content)}
-	for attempt := 0; ; attempt++ {
-		if attempt == maxSeqRaces {
-			return nil, fmt.Errorf("file %q: %w", path, ErrBusy)
-		}
-		err := m.store.Append(ctx, stream, storage.SeqKey(info.Version), []byte(content))
-		if err == nil {
-			break
-		}
-		if !errors.Is(err, storage.ErrAlreadyExists) {
-			return nil, err
-		}
-		info.Version++ // another write took this version
-	}
-	data, err := json.Marshal(info)
-	if err != nil {
+	item := v1alpha1.OutboxItem{ID: m.newID(), Kind: v1alpha1.OutboxWriteFile}
+	blob := blobName(runID, item.ID)
+	if err := m.writeBlob(ctx, key, blob, []byte(content)); err != nil {
 		return nil, err
 	}
-	if err := m.appendSeq(ctx, filesIndexStream(key), data); err != nil {
+	item.File = &v1alpha1.FileWrite{Blob: blob, Path: path, Size: int64(len(content)), After: after}
+	if _, err := m.transition(ctx, key, task.Record{RunID: runID, Outbox: []v1alpha1.OutboxItem{item}}); err != nil {
 		return nil, err
+	}
+	info := &FileInfo{Path: path, Size: len(content)}
+	m.applyNow(ctx, key)
+	if v, ok, err := m.findVersion(ctx, key, path, after, item.ID); err == nil && ok {
+		info.Version = v.Version
 	}
 	return info, nil
 }
@@ -255,20 +239,21 @@ func (m *Manager) latestVersion(ctx context.Context, stream string) (int64, erro
 	return m.latestSeq(ctx, stream, 0)
 }
 
-// appendSeq appends data under the next free sequence number.
-func (m *Manager) appendSeq(ctx context.Context, stream string, data []byte) error {
-	seq, err := m.latestSeq(ctx, stream, 0)
+// appendSeq appends data under the next free sequence number after from,
+// a number known to be taken (or 0), and returns it.
+func (m *Manager) appendSeq(ctx context.Context, stream string, from int64, data []byte) (int64, error) {
+	seq, err := m.latestSeq(ctx, stream, from)
 	if err != nil {
-		return err
+		return 0, err
 	}
 	for range maxSeqRaces {
 		seq++
 		err := m.store.Append(ctx, stream, storage.SeqKey(seq), data)
 		if !errors.Is(err, storage.ErrAlreadyExists) {
-			return err
+			return seq, err
 		}
 	}
-	return fmt.Errorf("%s: %w", stream, ErrBusy)
+	return 0, fmt.Errorf("%s: %w", stream, ErrBusy)
 }
 
 // RunReadFile reads the latest version of a task file.
@@ -287,38 +272,26 @@ func (m *Manager) RunReadFile(ctx context.Context, key storage.Key, runID, path 
 	if latest == 0 {
 		return nil, fmt.Errorf("file %q: %w", path, storage.ErrNotFound)
 	}
-	entries, err := m.store.Read(ctx, stream, storage.SeqKey(latest-1), 1)
+	versions, err := readStream[fileVersion](ctx, m.store, stream, storage.SeqKey(latest-1), 1)
 	if err != nil {
 		return nil, err
 	}
-	if len(entries) == 0 {
+	if len(versions) == 0 {
 		return nil, fmt.Errorf("file %q: %w", path, storage.ErrNotFound)
 	}
-	return &File{FileInfo: FileInfo{Path: path, Version: latest, Size: len(entries[0].Data)}, Content: string(entries[0].Data)}, nil
+	content, err := m.readBlob(ctx, key, versions[0].Blob)
+	if err != nil {
+		return nil, err
+	}
+	return &File{FileInfo: FileInfo{Path: path, Version: latest, Size: len(content)}, Content: string(content)}, nil
 }
 
-// RunListFiles lists the task's files with their latest version and size.
+// RunListFiles lists the task's files with their latest version and size,
+// from the newest snapshot of the files index and the index entries after
+// it.
 func (m *Manager) RunListFiles(ctx context.Context, key storage.Key, runID string) ([]FileInfo, error) {
 	if _, err := m.activeRun(ctx, key, runID); err != nil {
 		return nil, err
 	}
-	writes, err := readStream[FileInfo](ctx, m.store, filesIndexStream(key), "", 0)
-	if err != nil {
-		return nil, err
-	}
-	latest := map[string]FileInfo{}
-	var order []string
-	for _, w := range writes {
-		if _, seen := latest[w.Path]; !seen {
-			order = append(order, w.Path)
-		}
-		if w.Version >= latest[w.Path].Version {
-			latest[w.Path] = w
-		}
-	}
-	out := make([]FileInfo, 0, len(order))
-	for _, p := range order {
-		out = append(out, latest[p])
-	}
-	return out, nil
+	return m.listFiles(ctx, key, 0)
 }

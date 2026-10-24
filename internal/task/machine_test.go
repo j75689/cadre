@@ -67,6 +67,8 @@ var validEvents = []struct {
 	{Cancel{}, step},
 	{AckOutbox{}, step},
 	{ThreadAdvanced{Seq: 1}, step},
+	{WaitingAt{ItemID: "01JB0000000000000000000001", Seq: 1}, step},
+	{ReserveItem{ID: "01JB0000000000000000000001", To: 1}, step},
 }
 
 func TestTableIsExhaustive(t *testing.T) {
@@ -464,4 +466,49 @@ func TestOnlyTheHolderMayActOnTheRun(t *testing.T) {
 	if run.Runner != "sa:holder" || run.RunnerName != "pod-1" {
 		t.Fatalf("claimed run: %+v", run)
 	}
+}
+
+// A finish can wait on an entry its outbox writes; WaitingAt then records
+// the entry's sequence, once, and only for that wait.
+func TestWaitingOnAnEntryNotWrittenYet(t *testing.T) {
+	q := v1alpha1.OutboxItem{ID: "01JB0000000000000000000007", Kind: v1alpha1.OutboxAppendThread,
+		Thread: &v1alpha1.ThreadAppend{Blob: "b", Kind: "Question", Author: "coder", RunID: runA}}
+	fin := Finish{RunID: runA, Outcome: OutcomeWaiting, Reason: v1alpha1.WaitingQuestion, WaitingItem: q.ID, Outbox: []v1alpha1.OutboxItem{q}}
+	waiting := apply(t, taskIn(v1alpha1.PhaseRunning, runtime), fin)
+	if w := waiting.Status.Waiting; w == nil || w.ItemID != q.ID || w.ThreadSeq != 0 {
+		t.Fatalf("waiting %+v", w)
+	}
+	tk := taskIn(v1alpha1.PhaseWaiting, runtime)
+	tk.Status = waiting.Status
+	if w := apply(t, tk, WaitingAt{ItemID: "01JB0000000000000000000009", Seq: 5}).Status.Waiting; w.ThreadSeq != 0 {
+		t.Fatalf("another item set the wait's entry: %+v", w)
+	}
+	tk.Status = apply(t, tk, WaitingAt{ItemID: q.ID, Seq: 5}).Status
+	if w := tk.Status.Waiting; w.ThreadSeq != 5 {
+		t.Fatalf("waiting %+v, want entry 5", w)
+	}
+	if w := apply(t, tk, WaitingAt{ItemID: q.ID, Seq: 9}).Status.Waiting; w.ThreadSeq != 5 {
+		t.Fatalf("a second WaitingAt moved the wait: %+v", w)
+	}
+	// The waiting item must be one the finish writes.
+	bad := fin
+	bad.Outbox = nil
+	wantErr(t, taskIn(v1alpha1.PhaseRunning, runtime), bad, ErrInvalidEvent)
+}
+
+// ReserveItem is a compare-and-set on where an item writes.
+func TestReserveItem(t *testing.T) {
+	tk := taskIn(v1alpha1.PhaseRunning, runtime)
+	id := tk.Status.Outbox[0].ID
+	tk.Status = apply(t, tk, ReserveItem{ID: id, From: 0, To: 4}).Status
+	if tk.Status.Outbox[0].Seq != 4 {
+		t.Fatalf("reserved %d, want 4", tk.Status.Outbox[0].Seq)
+	}
+	if got := apply(t, tk, ReserveItem{ID: id, From: 0, To: 7}).Status.Outbox[0].Seq; got != 4 {
+		t.Fatalf("a stale reserve moved it to %d", got)
+	}
+	if got := apply(t, tk, ReserveItem{ID: id, From: 4, To: 7}).Status.Outbox[0].Seq; got != 7 {
+		t.Fatalf("moving on from 4: %d", got)
+	}
+	wantErr(t, tk, ReserveItem{ID: id, From: 4, To: 0}, ErrInvalidEvent)
 }

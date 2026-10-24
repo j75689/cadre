@@ -186,6 +186,35 @@ spec:
                     state change that caused it. The dispatcher applies it idempotently and then
                     clears it with another conditional write.
                   properties:
+                    file:
+                      description: File is the version to write, for kind WriteFile.
+                      properties:
+                        after:
+                          description: |-
+                            After is the file's latest version when the item was committed: the
+                            version, if an earlier apply wrote it, is after it.
+                          format: int64
+                          minimum: 0
+                          type: integer
+                        blob:
+                          description: Blob is the key of the content in the task's
+                            blob stream.
+                          minLength: 1
+                          type: string
+                        path:
+                          description: Path is the file's path.
+                          minLength: 1
+                          type: string
+                        size:
+                          description: Size is the content's size in bytes.
+                          format: int64
+                          minimum: 0
+                          type: integer
+                      required:
+                      - blob
+                      - path
+                      - size
+                      type: object
                     id:
                       description: |-
                         ID is a ULID and the item's idempotency key.
@@ -204,6 +233,8 @@ spec:
                       enum:
                       - CreateSubtask
                       - RunEnded
+                      - AppendThread
+                      - WriteFile
                       type: string
                     run:
                       description: Run is the ended run to record, for kind RunEnded.
@@ -257,6 +288,14 @@ spec:
                       - mode
                       - reason
                       type: object
+                    seq:
+                      description: |-
+                        Seq is where an AppendThread or WriteFile item writes, its thread
+                        sequence or file version, reserved here before it is written so
+                        every dispatcher applying the item writes the same key.
+                      format: int64
+                      minimum: 0
+                      type: integer
                     spec:
                       description: Spec is the subtask to create, for kind CreateSubtask.
                       properties:
@@ -317,6 +356,38 @@ spec:
                       required:
                       - title
                       type: object
+                    thread:
+                      description: Thread is the entry to append, for kind AppendThread.
+                      properties:
+                        after:
+                          description: |-
+                            After is the thread revision when the item was committed: the entry,
+                            if an earlier apply wrote it, is after it.
+                          format: int64
+                          minimum: 0
+                          type: integer
+                        author:
+                          description: Author is the agent writing it.
+                          minLength: 1
+                          type: string
+                        blob:
+                          description: Blob is the key of the body in the task's blob
+                            stream.
+                          minLength: 1
+                          type: string
+                        kind:
+                          description: Kind is the entry kind, Comment or Question.
+                          minLength: 1
+                          type: string
+                        runId:
+                          description: RunID is the run that wrote it.
+                          type: string
+                      required:
+                      - author
+                      - blob
+                      - kind
+                      - runId
+                      type: object
                   required:
                   - id
                   - kind
@@ -326,6 +397,10 @@ spec:
                     rule: self.kind != 'CreateSubtask' || has(self.spec)
                   - message: a RunEnded item needs run
                     rule: self.kind != 'RunEnded' || has(self.run)
+                  - message: an AppendThread item needs thread
+                    rule: self.kind != 'AppendThread' || has(self.thread)
+                  - message: a WriteFile item needs file
+                    rule: self.kind != 'WriteFile' || has(self.file)
                 type: array
                 x-kubernetes-list-map-keys:
                 - id
@@ -421,6 +496,12 @@ spec:
               waiting:
                 description: Waiting is set only while the phase is Waiting.
                 properties:
+                  itemId:
+                    description: |-
+                      ItemID is the outbox item that writes the entry asking for the
+                      human, when the run ended before it was written; ThreadSeq is set
+                      once it is.
+                    type: string
                   reason:
                     description: Reason is what the task waits for.
                     enum:
@@ -435,7 +516,8 @@ spec:
                   threadSeq:
                     description: |-
                       ThreadSeq is the thread entry that asked for the human, if any. Thread
-                      sequences start at 1, so an unset ThreadSeq means none.
+                      sequences start at 1, so an unset ThreadSeq means none, or one not
+                      written yet: see ItemID.
                     format: int64
                     minimum: 1
                     type: integer
