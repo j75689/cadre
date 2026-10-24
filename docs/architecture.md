@@ -48,6 +48,7 @@ Cadre is not a SaaS, not a workflow engine, not an LLM gateway and not a sandbox
 - The only place that changes task state: claim, lease, finish, hand-off, wait, approve.
 - Every transition is a single-object conditional write (see [execution.md](execution.md)).
 - Side effects (dispatching a run, notifying) go through an outbox embedded in the task object and written in the same conditional write.
+- Notifiers tell a webhook, or call a tool on a ToolServer through the same forwarder runs use, when a task needs a human or ends ([crds.md](crds.md#notifier)).
 - Stateless: any instance can handle any task, so it scales by adding replicas.
 
 In phase one the API and the Task Manager ship in one binary, `cadre-server`, because both are stateless and splitting them has no benefit yet.

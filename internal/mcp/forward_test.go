@@ -573,3 +573,25 @@ func TestCredentialIsHostScoped(t *testing.T) {
 type roundTrip func(*http.Request) (*http.Response, error)
 
 func (f roundTrip) RoundTrip(r *http.Request) (*http.Response, error) { return f(r) }
+
+// A tool that does not answer in time is a failed call, not an answer.
+func TestHangingToolIsAFailedCall(t *testing.T) {
+	server := sdk.NewServer(&sdk.Implementation{Name: "slow", Version: "v0"}, nil)
+	sdk.AddTool(server, &sdk.Tool{Name: "post"}, func(ctx context.Context, _ *sdk.CallToolRequest, _ struct{}) (*sdk.CallToolResult, any, error) {
+		select {
+		case <-ctx.Done():
+		case <-time.After(time.Second):
+		}
+		return &sdk.CallToolResult{Content: []sdk.Content{&sdk.TextContent{Text: "late"}}}, nil, nil
+	})
+	slow := httptest.NewServer(sdk.NewStreamableHTTPHandler(func(*http.Request) *sdk.Server { return server }, &sdk.StreamableHTTPOptions{Stateless: true}))
+	t.Cleanup(slow.Close)
+	ts := ready(&v1alpha1.ToolServer{ObjectMeta: metav1.ObjectMeta{Namespace: ns, Name: "slow", Generation: 1}, Spec: v1alpha1.ToolServerSpec{URL: slow.URL, Notifications: true}})
+	f := mcp.NewForwarder(&sources{toolServers: map[string]*v1alpha1.ToolServer{"slow": ts}}, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	c, cancel := context.WithTimeout(ctx, 500*time.Millisecond)
+	defer cancel()
+	res := f.CallForNotification(c, ns, manager.ToolCall{ToolServer: "slow", Tool: "post", Arguments: []byte(`{}`)})
+	if !res.IsError || res.NotMade != manager.NotMadeFailed {
+		t.Errorf("a hanging tool: %+v", res)
+	}
+}

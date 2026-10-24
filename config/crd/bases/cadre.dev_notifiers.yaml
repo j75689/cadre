@@ -21,6 +21,9 @@ spec:
     - jsonPath: .spec.webhook.url
       name: URL
       type: string
+    - jsonPath: .spec.toolServer.tool
+      name: Tool
+      type: string
     - jsonPath: .status.conditions[?(@.type=="Ready")].status
       name: Ready
       type: string
@@ -53,7 +56,8 @@ spec:
           metadata:
             type: object
           spec:
-            description: NotifierSpec says what to notify of, and where.
+            description: 'NotifierSpec says what to notify of, and where: a webhook
+              or a tool.'
             properties:
               "on":
                 description: On lists the events notified.
@@ -72,8 +76,35 @@ spec:
                 minItems: 1
                 type: array
                 x-kubernetes-list-type: set
+              toolServer:
+                description: ToolServer is an MCP tool notifications are sent to.
+                properties:
+                  arguments:
+                    additionalProperties:
+                      type: string
+                    description: Arguments are static arguments passed with every
+                      call.
+                    type: object
+                  name:
+                    description: Name is the ToolServer.
+                    minLength: 1
+                    type: string
+                  tool:
+                    description: |-
+                      Tool is the tool called. The ToolServer's permissions must allow it:
+                      a notification cannot wait for a human to approve the call.
+                    minLength: 1
+                    type: string
+                required:
+                - name
+                - tool
+                type: object
+                x-kubernetes-validations:
+                - message: the argument notification is the notification itself
+                  rule: '!has(self.arguments) || !(''notification'' in self.arguments)'
               webhook:
-                description: Webhook is where notifications go.
+                description: Webhook is an HTTP endpoint notifications are POSTed
+                  to.
                 properties:
                   headers:
                     additionalProperties:
@@ -115,8 +146,10 @@ spec:
                     == ''authorization'')'
             required:
             - "on"
-            - webhook
             type: object
+            x-kubernetes-validations:
+            - message: set exactly one of webhook and toolServer
+              rule: has(self.webhook) != has(self.toolServer)
           status:
             description: NotifierStatus is a Notifier's status.
             properties:

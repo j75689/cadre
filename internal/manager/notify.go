@@ -293,7 +293,7 @@ func (m *Manager) notifyItem(ctx context.Context, key storage.Key, it v1alpha1.O
 	if len(pending) == 0 {
 		return true, nil, nil
 	}
-	if !slices.ContainsFunc(pending, func(nf *v1alpha1.Notifier) bool { return nf.Status.ReadyFor(nf.Generation) }) &&
+	if !slices.ContainsFunc(pending, m.canTry) &&
 		m.now().Sub(it.Notify.At.Time) <= NotifyTTL {
 		return false, nil, nil
 	}
@@ -325,9 +325,12 @@ func (m *Manager) notifyItem(ctx context.Context, key storage.Key, it v1alpha1.O
 		for i := range pending {
 			names[i] = pending[i].Name
 		}
-		drop = func() {
-			m.cfg.Notifiers.Warn(ctx, t, "NotificationDropped", fmt.Sprintf("the %s notification %s was not taken within %s by: %s", n.Event, it.ID, NotifyTTL, strings.Join(names, ", ")))
+		msg := fmt.Sprintf("the %s notification %s was not taken within %s by: %s", n.Event, it.ID, NotifyTTL, strings.Join(names, ", "))
+		// Said as it is when nothing was ever tried.
+		if !slices.ContainsFunc(pending, m.canTry) {
+			msg = fmt.Sprintf("the %s notification %s was dropped after %s without being tried: %s were not Ready, or this server calls no ToolServers for them", n.Event, it.ID, NotifyTTL, strings.Join(names, ", "))
 		}
+		drop = func() { m.cfg.Notifiers.Warn(ctx, t, "NotificationDropped", msg) }
 		if err := endTurn(); err != nil {
 			return false, nil, err
 		}
@@ -347,7 +350,7 @@ func (m *Manager) notifyItem(ctx context.Context, key storage.Key, it v1alpha1.O
 		wg.Go(func() {
 			defer func() { <-sem }()
 			err := m.deliver(ctx, nf, it.ID, body)
-			if !errors.Is(err, errNotReady) {
+			if !errors.Is(err, errNotReady) && !errors.Is(err, errNoCaller) {
 				m.cfg.Notifiers.Delivered(ctx, nf, m.now(), err)
 			}
 			mu.Lock()
@@ -397,19 +400,44 @@ func (m *Manager) payload(t *v1alpha1.Task, it v1alpha1.OutboxItem) Payload {
 	return p
 }
 
-// errNotReady is a delivery not attempted: the Notifier is not Ready.
-var errNotReady = errors.New("the Notifier is not Ready")
+// Deliveries not attempted: the Notifier is not Ready, or this server
+// has no caller for its tool, which is not the Notifier's fault. Neither is
+// recorded on the Notifier.
+var (
+	errNotReady = errors.New("the Notifier is not Ready")
+	errNoCaller = errors.New("this server calls no ToolServers for notifications")
+)
+
+// untried says why nf is not tried from this server, nil if it can be.
+func (m *Manager) untried(nf *v1alpha1.Notifier) error {
+	if !nf.Status.ReadyFor(nf.Generation) {
+		return errNotReady
+	}
+	if _, ok := m.cfg.Tools.(NotificationCaller); nf.Spec.ToolServer != nil && !ok {
+		return errNoCaller
+	}
+	return nil
+}
+
+// canTry reports whether nf can be delivered to from this server.
+func (m *Manager) canTry(nf *v1alpha1.Notifier) bool { return m.untried(nf) == nil }
 
 // deliver POSTs body to nf's webhook: signed if it has a secret, never
 // following a redirect, within notifyTimeout. Only a 2xx is a delivery.
 // Errors name the webhook without any credentials in its URL.
 func (m *Manager) deliver(ctx context.Context, nf *v1alpha1.Notifier, id string, body []byte) error {
-	if !nf.Status.ReadyFor(nf.Generation) {
-		return errNotReady
+	if err := m.untried(nf); err != nil {
+		return err
 	}
 	ctx, cancel := context.WithTimeout(ctx, notifyTimeout)
 	defer cancel()
+	if nf.Spec.ToolServer != nil {
+		return m.notifyTool(ctx, nf, m.cfg.Tools.(NotificationCaller), body) // untried checked it
+	}
 	wh := nf.Spec.Webhook
+	if wh == nil {
+		return errors.New("the Notifier has no channel")
+	}
 	shown := redact(wh.URL)
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, wh.URL, bytes.NewReader(body))
 	if err != nil {
@@ -444,6 +472,34 @@ func (m *Manager) deliver(ctx context.Context, nf *v1alpha1.Notifier, id string,
 	}()
 	if res.StatusCode < 200 || res.StatusCode > 299 {
 		return fmt.Errorf("%s answered %s", shown, res.Status)
+	}
+	return nil
+}
+
+// notifyTool calls nf's tool through the forwarder's notification entry
+// point, which calls only a ToolServer that takes notifications and a tool
+// its permissions allow, with the notification under the argument
+// notification and nf's static arguments beside it. A call not made, or
+// one the tool answers with an error, is not a delivery; the error names
+// the ToolServer, the tool and why a call was not made, never the
+// arguments nor what the tool answered.
+func (m *Manager) notifyTool(ctx context.Context, nf *v1alpha1.Notifier, caller NotificationCaller, body []byte) error {
+	ts := nf.Spec.ToolServer
+	args := map[string]any{}
+	for k, v := range ts.Arguments {
+		args[k] = v
+	}
+	args["notification"] = json.RawMessage(body)
+	raw, err := json.Marshal(args)
+	if err != nil {
+		return err
+	}
+	res := caller.CallForNotification(ctx, nf.Namespace, ToolCall{ToolServer: ts.Name, Tool: ts.Tool, Arguments: raw})
+	switch {
+	case res.NotMade != "":
+		return fmt.Errorf("tool %s on ToolServer %s was not called: %s", ts.Tool, ts.Name, res.NotMade)
+	case res.IsError:
+		return fmt.Errorf("tool %s on ToolServer %s answered with an error", ts.Tool, ts.Name)
 	}
 	return nil
 }

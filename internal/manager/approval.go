@@ -31,18 +31,43 @@ type ToolCall struct {
 }
 
 // ToolResult is what an approved call returned, as text for the agent.
+// NotMade, when set, says why the call was never made, in words safe to
+// show anyone: one of the NotMade reasons.
 type ToolResult struct {
 	Body    string
 	IsError bool
+	NotMade string
 }
 
-// ToolCaller makes an approved call on its ToolServer, which it reads
-// fresh. It never fails: a call it cannot or may not make comes back as an
-// error result saying why. It bounds the call itself, by CallTimeout.
+// Why a call was not made.
+const (
+	NotMadeNoForwarder         = "this server forwards no ToolServers"
+	NotMadeNotReady            = "the ToolServer is gone or not Ready"
+	NotMadeDenied              = "the ToolServer's permissions do not allow the tool"
+	NotMadeNotForNotifications = "the ToolServer does not take notifications"
+	NotMadeNoCredential        = "the ToolServer's credential cannot be read"
+	NotMadeUnreachable         = "the ToolServer could not be reached"
+	// NotMadeFailed is a call that did not come back with an answer: it
+	// timed out, or the connection broke after it was sent. The tool may or
+	// may not have acted.
+	NotMadeFailed = "the call to the ToolServer failed without an answer"
+)
+
+// ToolCaller makes a call a human approved on its ToolServer, which it
+// reads fresh: one its permissions allow or ask for. It never fails: a call
+// it cannot or may not make comes back as an error result saying why. It
+// bounds the call itself, by CallTimeout.
 type ToolCaller interface {
 	CallTool(ctx context.Context, namespace string, call ToolCall) ToolResult
 	// CallTimeout is the longest a call may take.
 	CallTimeout() time.Duration
+}
+
+// NotificationCaller makes the calls of Notifiers: only on a ToolServer
+// that takes notifications, only of a tool its permissions allow, since
+// nobody approves a notification. Like ToolCaller it never fails.
+type NotificationCaller interface {
+	CallForNotification(ctx context.Context, namespace string, call ToolCall) ToolResult
 }
 
 // MaxToolArguments bounds the arguments of a call that asks first.

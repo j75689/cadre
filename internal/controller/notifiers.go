@@ -14,6 +14,8 @@ import (
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/builder"
 	"sigs.k8s.io/controller-runtime/pkg/client"
+	"sigs.k8s.io/controller-runtime/pkg/handler"
+	"sigs.k8s.io/controller-runtime/pkg/log"
 	"sigs.k8s.io/controller-runtime/pkg/predicate"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
@@ -29,12 +31,40 @@ import (
 
 type notifierReconciler struct{ base }
 
+// indexNotifierTool indexes Notifiers by the ToolServer they send to.
+const indexNotifierTool = "spec.toolServer.name"
+
 func (r *notifierReconciler) setup(mgr ctrl.Manager) error {
-	// Deliveries write the status too; only spec changes and the periodic
-	// re-check of the Secret bring a Notifier back.
+	if err := mgr.GetFieldIndexer().IndexField(context.Background(), &v1alpha1.Notifier{}, indexNotifierTool, func(o client.Object) []string {
+		if ts := o.(*v1alpha1.Notifier).Spec.ToolServer; ts != nil {
+			return []string{ts.Name}
+		}
+		return nil
+	}); err != nil {
+		return err
+	}
+	// Deliveries write the status too; only spec changes, the ToolServer
+	// a Notifier sends to, and the periodic re-check of the Secret bring a
+	// Notifier back.
 	return ctrl.NewControllerManagedBy(mgr).
 		For(&v1alpha1.Notifier{}, builder.WithPredicates(predicate.GenerationChangedPredicate{})).
+		Watches(&v1alpha1.ToolServer{}, handler.EnqueueRequestsFromMapFunc(r.sendingTo)).
 		Named("notifier").WithOptions(r.options()).Complete(r)
+}
+
+// sendingTo maps a ToolServer to the Notifiers that send to it.
+func (r *notifierReconciler) sendingTo(ctx context.Context, o client.Object) []reconcile.Request {
+	var list v1alpha1.NotifierList
+	if err := r.client.List(ctx, &list, client.InNamespace(o.GetNamespace()), client.MatchingFields{indexNotifierTool: o.GetName()}); err != nil {
+		// Its Notifiers are looked at again at the resync.
+		log.FromContext(ctx).Error(err, "list the Notifiers of a ToolServer", "toolServer", o.GetNamespace()+"/"+o.GetName())
+		return nil
+	}
+	reqs := make([]reconcile.Request, 0, len(list.Items))
+	for _, n := range list.Items {
+		reqs = append(reqs, reconcile.Request{NamespacedName: types.NamespacedName{Namespace: n.Namespace, Name: n.Name}})
+	}
+	return reqs
 }
 
 func (r *notifierReconciler) Reconcile(ctx context.Context, req reconcile.Request) (reconcile.Result, error) {
@@ -62,6 +92,24 @@ func (r *notifierReconciler) Reconcile(ctx context.Context, req reconcile.Reques
 func (r *notifierReconciler) decide(ctx context.Context, n *v1alpha1.Notifier) (bool, string, string, error) {
 	if ok, err := r.hasTeam(ctx, n.Namespace); err != nil || !ok {
 		return false, "NoTeam", "namespace " + n.Namespace + " has no Team", err
+	}
+	if tool := n.Spec.ToolServer; tool != nil {
+		var ts v1alpha1.ToolServer
+		switch err := r.client.Get(ctx, client.ObjectKey{Namespace: n.Namespace, Name: tool.Name}, &ts); {
+		case apierrors.IsNotFound(err):
+			return false, "ToolServerMissing", "ToolServer " + tool.Name + " does not exist", nil
+		case err != nil:
+			return false, "", "", err
+		case !ts.Status.ReadyFor(ts.Generation):
+			return false, "ToolServerNotReady", "ToolServer " + tool.Name + " is not Ready", nil
+		}
+		if ok, reason, msg := ts.ForNotification(tool.Tool); !ok {
+			return false, reason, msg, nil
+		}
+		return true, "Ready", "", nil
+	}
+	if n.Spec.Webhook == nil {
+		return false, "InvalidURL", "the Notifier has no channel", nil
 	}
 	u, err := url.Parse(n.Spec.Webhook.URL)
 	switch {

@@ -40,15 +40,42 @@ type Webhook struct {
 	Headers map[string]string `json:"headers,omitempty"`
 }
 
-// NotifierSpec says what to notify of, and where.
+// NotifierToolServer is an MCP tool that receives each notification: called
+// on a ToolServer of the namespace with the notification under the argument
+// notification, and Arguments beside it.
+//
+// +kubebuilder:validation:XValidation:rule="!has(self.arguments) || !('notification' in self.arguments)",message="the argument notification is the notification itself"
+type NotifierToolServer struct {
+	// Name is the ToolServer.
+	// +kubebuilder:validation:MinLength=1
+	Name string `json:"name"`
+
+	// Tool is the tool called. The ToolServer's permissions must allow it:
+	// a notification cannot wait for a human to approve the call.
+	// +kubebuilder:validation:MinLength=1
+	Tool string `json:"tool"`
+
+	// Arguments are static arguments passed with every call.
+	// +optional
+	Arguments map[string]string `json:"arguments,omitempty"`
+}
+
+// NotifierSpec says what to notify of, and where: a webhook or a tool.
+//
+// +kubebuilder:validation:XValidation:rule="has(self.webhook) != has(self.toolServer)",message="set exactly one of webhook and toolServer"
 type NotifierSpec struct {
 	// On lists the events notified.
 	// +kubebuilder:validation:MinItems=1
 	// +listType=set
 	On []NotifyEvent `json:"on"`
 
-	// Webhook is where notifications go.
-	Webhook Webhook `json:"webhook"`
+	// Webhook is an HTTP endpoint notifications are POSTed to.
+	// +optional
+	Webhook *Webhook `json:"webhook,omitempty"`
+
+	// ToolServer is an MCP tool notifications are sent to.
+	// +optional
+	ToolServer *NotifierToolServer `json:"toolServer,omitempty"`
 }
 
 // DeliveryError is a delivery that failed.
@@ -79,6 +106,7 @@ type NotifierStatus struct {
 // +kubebuilder:resource:scope=Namespaced
 // +kubebuilder:printcolumn:name="On",type=string,JSONPath=`.spec.on`
 // +kubebuilder:printcolumn:name="URL",type=string,JSONPath=`.spec.webhook.url`
+// +kubebuilder:printcolumn:name="Tool",type=string,JSONPath=`.spec.toolServer.tool`
 // +kubebuilder:printcolumn:name="Ready",type=string,JSONPath=`.status.conditions[?(@.type=="Ready")].status`
 // +kubebuilder:printcolumn:name="Last sent",type=string,JSONPath=`.status.lastSent`
 // +kubebuilder:printcolumn:name="Age",type=date,JSONPath=`.metadata.creationTimestamp`

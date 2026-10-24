@@ -63,7 +63,7 @@ func (r *receiver) deliveries() []delivery {
 func notifier(name, url string, secret *v1alpha1.SecretKeyRef, on ...v1alpha1.NotifyEvent) v1alpha1.Notifier {
 	n := v1alpha1.Notifier{
 		ObjectMeta: metav1.ObjectMeta{Namespace: ns, Name: name, Generation: 1},
-		Spec:       v1alpha1.NotifierSpec{On: on, Webhook: v1alpha1.Webhook{URL: url, SecretRef: secret, Headers: map[string]string{"X-Team": "a"}}},
+		Spec:       v1alpha1.NotifierSpec{On: on, Webhook: &v1alpha1.Webhook{URL: url, SecretRef: secret, Headers: map[string]string{"X-Team": "a"}}},
 	}
 	n.Status.ObservedGeneration = 1
 	n.Status.Conditions = []metav1.Condition{{Type: v1alpha1.ConditionReady, Status: metav1.ConditionTrue, ObservedGeneration: 1, Reason: "Ready"}}
@@ -615,5 +615,124 @@ func TestNotifyWithoutNotifiersHonoursATurn(t *testing.T) {
 	}
 	if items := notifyItems(e.get(t, key)); len(items) != 1 {
 		t.Errorf("acked under another server's turn: %+v", items)
+	}
+}
+
+// fakeTools records the calls it is asked to make, and through which entry
+// point: only notifications may come in through CallForNotification.
+type fakeTools struct {
+	mu      sync.Mutex
+	calls   []ToolCall
+	fail    bool
+	notMade string
+	viaTool int // calls through CallTool, the approved-call path
+}
+
+func (f *fakeTools) CallTool(context.Context, string, ToolCall) ToolResult {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.viaTool++
+	return ToolResult{Body: "ok"}
+}
+
+func (f *fakeTools) CallForNotification(_ context.Context, _ string, call ToolCall) ToolResult {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.calls = append(f.calls, call)
+	if f.notMade != "" {
+		return ToolResult{Body: "The call was not made.", IsError: true, NotMade: f.notMade}
+	}
+	return ToolResult{Body: "ok", IsError: f.fail}
+}
+
+func (f *fakeTools) CallTimeout() time.Duration { return time.Second }
+
+// The notification goes under the argument notification, whatever the
+// static arguments say; a tool answering with an error has not taken it.
+func TestNotifyThroughATool(t *testing.T) {
+	nf := notifier("chat", "", nil, v1alpha1.NotifyQuestion)
+	nf.Spec.Webhook = nil
+	nf.Spec.ToolServer = &v1alpha1.NotifierToolServer{Name: "chat", Tool: "post", Arguments: map[string]string{"channel": "#oncall", "notification": "spoofed"}}
+	e, recorded := notifyEnv(t, nf)
+	tools := &fakeTools{fail: true}
+	e.m.cfg.Tools = tools
+	key := e.addTask(t, "x", v1alpha1.AssigneeAgent)
+	e.question(t, key)
+	_ = e.m.DeliverNotifications(ctx)
+	if len(notifyItems(e.get(t, key))) != 1 {
+		t.Fatal("an error from the tool counted as delivered")
+	}
+	if last := (*recorded)[len(*recorded)-1]; last != "delivered chat: tool post on ToolServer chat answered with an error" {
+		t.Errorf("recorded %q", last)
+	}
+	tools.fail = false
+	if err := e.m.DeliverNotifications(ctx); err != nil {
+		t.Fatal(err)
+	}
+	call := tools.calls[len(tools.calls)-1]
+	var args struct {
+		Notification Payload `json:"notification"`
+		Channel      string  `json:"channel"`
+	}
+	if err := json.Unmarshal(call.Arguments, &args); err != nil {
+		t.Fatalf("arguments %s: %v", call.Arguments, err)
+	}
+	if call.ToolServer != "chat" || call.Tool != "post" || args.Channel != "#oncall" || args.Notification.Event != v1alpha1.NotifyQuestion || args.Notification.Task.Name != "x" {
+		t.Errorf("call %+v, arguments %s", call, call.Arguments)
+	}
+	if len(notifyItems(e.get(t, key))) != 0 {
+		t.Error("delivered through the tool, the item stayed")
+	}
+	if tools.viaTool != 0 {
+		t.Errorf("%d notification calls through the approved-call path", tools.viaTool)
+	}
+}
+
+// A call never made says why, not that the tool erred.
+func TestNotifyToolNotMade(t *testing.T) {
+	nf := notifier("chat", "", nil, v1alpha1.NotifyQuestion)
+	nf.Spec.Webhook, nf.Spec.ToolServer = nil, &v1alpha1.NotifierToolServer{Name: "chat", Tool: "post"}
+	e, recorded := notifyEnv(t, nf)
+	e.m.cfg.Tools = &fakeTools{notMade: NotMadeDenied}
+	key := e.addTask(t, "x", v1alpha1.AssigneeAgent)
+	e.question(t, key)
+	_ = e.m.DeliverNotifications(ctx)
+	if last := (*recorded)[len(*recorded)-1]; last != "delivered chat: tool post on ToolServer chat was not called: "+NotMadeDenied {
+		t.Errorf("recorded %q", last)
+	}
+}
+
+// A server that cannot call tools leaves a tool's notifications alone: no
+// write, no attempt, no blame on the Notifier.
+func TestNotifyWithoutTools(t *testing.T) {
+	nf := notifier("chat", "", nil, v1alpha1.NotifyQuestion)
+	nf.Spec.Webhook, nf.Spec.ToolServer = nil, &v1alpha1.NotifierToolServer{Name: "chat", Tool: "post"}
+	e, recorded := notifyEnv(t, nf)
+	key := e.addTask(t, "x", v1alpha1.AssigneeAgent)
+	e.question(t, key)
+	var writes int
+	e.m.store = countWrites{e.store, &writes}
+	_ = e.m.DeliverNotifications(ctx)
+	if writes != 0 || len(*recorded) != 0 {
+		t.Errorf("%d writes, recorded %v", writes, *recorded)
+	}
+}
+
+// A notification dropped without ever being tried says so.
+func TestNotifyDropUntried(t *testing.T) {
+	nf := notifier("chat", "", nil, v1alpha1.NotifyQuestion)
+	nf.Spec.Webhook, nf.Spec.ToolServer = nil, &v1alpha1.NotifierToolServer{Name: "chat", Tool: "post"}
+	e, recorded := notifyEnv(t, nf)
+	key := e.addTask(t, "x", v1alpha1.AssigneeAgent)
+	e.question(t, key)
+	e.clock.add(NotifyTTL + time.Minute)
+	if err := e.m.DeliverNotifications(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if len(notifyItems(e.get(t, key))) != 0 {
+		t.Fatal("not dropped")
+	}
+	if last := (*recorded)[len(*recorded)-1]; !strings.Contains(last, "without being tried: chat") {
+		t.Errorf("recorded %q", last)
 	}
 }
