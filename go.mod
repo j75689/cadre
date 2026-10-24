@@ -15,9 +15,9 @@ require (
 	github.com/openai/openai-go/v3 v3.86.0
 	github.com/spf13/cobra v1.10.2
 	golang.org/x/sync v0.24.0
-	k8s.io/api v0.37.0
+	k8s.io/api v0.37.1
 	k8s.io/apimachinery v0.37.1
-	k8s.io/client-go v0.37.0
+	k8s.io/client-go v0.37.1
 	k8s.io/utils v0.0.0-20260626114624-be93311217bd
 	sigs.k8s.io/controller-runtime v0.25.2
 )
