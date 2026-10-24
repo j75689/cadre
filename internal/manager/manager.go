@@ -8,6 +8,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log/slog"
 	"sync"
 	"time"
 
@@ -35,6 +36,13 @@ type Config struct {
 	// StepIdle is how long a free step of a step-mode run waits for a
 	// worker before the run fails.
 	StepIdle time.Duration
+
+	// Notifiers are told when a task waits on a human or ends. Without
+	// them nobody is.
+	Notifiers Notifiers
+	// ExternalURL is where people's browsers reach the board, for the link
+	// in a notification; Version names this server in its User-Agent.
+	ExternalURL, Version string
 }
 
 // DefaultConfig is the configuration used when a field is zero.
@@ -52,6 +60,9 @@ type Manager struct {
 	agents Agents
 	now    func() time.Time
 	newID  func() string
+	// id names this instance, as the sender holding a notification.
+	id  string
+	log *slog.Logger
 }
 
 // Option configures a Manager.
@@ -77,7 +88,8 @@ func New(store storage.Driver, cfg Config, opts ...Option) *Manager {
 	if cfg.Agents == nil {
 		cfg.Agents = StaticAgents{}
 	}
-	m := &Manager{busyKeys: map[storage.Key]int{}, store: store, cfg: cfg, agents: cfg.Agents, now: time.Now, newID: func() string { return ulid.Make().String() }}
+	m := &Manager{busyKeys: map[storage.Key]int{}, store: store, cfg: cfg, agents: cfg.Agents, now: time.Now, newID: func() string { return ulid.Make().String() },
+		id: ulid.Make().String(), log: slog.Default()}
 	for _, o := range opts {
 		o(m)
 	}
@@ -123,6 +135,8 @@ func (m *Manager) transition(ctx context.Context, key storage.Key, ev task.Event
 		if err != nil {
 			return t, err
 		}
+		// Written with the transition that tells it, or not at all.
+		m.addNotify(ctx, t, &res.Status)
 		if !res.ReleasesSlot && equality.Semantic.DeepEqual(&t.Status, &res.Status) {
 			// Nothing changed (a thread revision already past this entry,
 			// say): no write, and no watch event telling anyone otherwise.

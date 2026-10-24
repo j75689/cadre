@@ -168,6 +168,31 @@ func testRedeliveredStepAdvancesOnce(t *testing.T, s *suite) {
 	}
 }
 
+// A Notify item, and what it records of its delivery, is read back whole
+// by another driver.
+func testNotifyItemRoundTrips(t *testing.T, s *suite) {
+	first := s.open()
+	s.newTask(first, "told", 1, "")
+	tk := s.get(first, "told")
+	at := metav1.NewTime(time.Date(2026, 10, 25, 9, 0, 0, 0, time.UTC))
+	tk.Status.Outbox = append(tk.Status.Outbox, v1alpha1.OutboxItem{ID: runID(200), Kind: v1alpha1.OutboxNotify,
+		Notify: &v1alpha1.Notification{Event: v1alpha1.NotifyQuestion, ThreadSeq: 3, At: at}})
+	if err := first.UpdateTaskStatus(s.ctx, tk); err != nil {
+		t.Fatalf("write the item: %v", err)
+	}
+	if err := transition(s.ctx, first, s.key("told"), task.NotifyDelivered{ID: runID(200), To: []string{"hook"}}); err != nil {
+		t.Fatalf("record a delivery: %v", err)
+	}
+	got := s.get(s.open(), "told").Status.Outbox
+	if len(got) != 1 || got[0].Kind != v1alpha1.OutboxNotify || got[0].Notify == nil {
+		t.Fatalf("outbox %+v", got)
+	}
+	n := got[0].Notify
+	if n.Event != v1alpha1.NotifyQuestion || n.ThreadSeq != 3 || !n.At.Equal(&at) || len(n.Delivered) != 1 || n.Delivered[0] != "hook" {
+		t.Errorf("notification %+v", n)
+	}
+}
+
 // Outbox items are reprocessed after the dispatcher dies and take effect
 // exactly once.
 func testOutboxAppliedOnce(t *testing.T, s *suite) {

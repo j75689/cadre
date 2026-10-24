@@ -211,7 +211,7 @@ type StepItem struct {
 }
 
 // OutboxKind is the kind of side effect an outbox item asks for.
-// +kubebuilder:validation:Enum=CreateSubtask;RunEnded;AppendThread;WriteFile
+// +kubebuilder:validation:Enum=CreateSubtask;RunEnded;AppendThread;WriteFile;Notify
 type OutboxKind string
 
 // Outbox kinds.
@@ -226,7 +226,41 @@ const (
 	// OutboxWriteFile writes a new version of a task file, its content
 	// written beforehand as a blob.
 	OutboxWriteFile OutboxKind = "WriteFile"
+	// OutboxNotify tells the Notifiers listening for Notify.Event.
+	OutboxNotify OutboxKind = "Notify"
 )
+
+// Notification is what a Notify item tells, and to whom it was told.
+type Notification struct {
+	// Event is what happened.
+	Event NotifyEvent `json:"event"`
+	// ThreadSeq is the thread entry the task waits on, if known yet.
+	// +optional
+	ThreadSeq int64 `json:"threadSeq,omitempty"`
+	// WaitingItem is the outbox item of the entry the task waits on, when
+	// the entry was not in the thread yet: its sequence is filled in from
+	// the task's wait only while the task still waits on that item.
+	// +optional
+	WaitingItem string `json:"waitingItem,omitempty"`
+	// At is when it happened.
+	At metav1.Time `json:"at"`
+	// To names the Notifiers listening when it happened: the only ones it
+	// goes to.
+	// +listType=set
+	// +optional
+	To []string `json:"to,omitempty"`
+	// Delivered names the Notifiers that took it, so a pass that finds
+	// one still failing does not send it to the others again.
+	// +listType=set
+	// +optional
+	Delivered []string `json:"delivered,omitempty"`
+	// SendingBy and SendingUntil are the server sending it now, and until
+	// when it may: no other server sends it meanwhile.
+	// +optional
+	SendingBy string `json:"sendingBy,omitempty"`
+	// +optional
+	SendingUntil *metav1.Time `json:"sendingUntil,omitempty"`
+}
 
 // ThreadAppend is a thread entry a run committed: the second phase of a
 // fenced write, after its body was written as a blob.
@@ -339,6 +373,7 @@ type RunRecord struct {
 // +kubebuilder:validation:XValidation:rule="self.kind != 'RunEnded' || has(self.run)",message="a RunEnded item needs run"
 // +kubebuilder:validation:XValidation:rule="self.kind != 'AppendThread' || has(self.thread)",message="an AppendThread item needs thread"
 // +kubebuilder:validation:XValidation:rule="self.kind != 'WriteFile' || has(self.file)",message="a WriteFile item needs file"
+// +kubebuilder:validation:XValidation:rule="self.kind != 'Notify' || has(self.notify)",message="a Notify item needs notify"
 type OutboxItem struct {
 	// ID is a ULID and the item's idempotency key.
 	//
@@ -370,6 +405,10 @@ type OutboxItem struct {
 	// File is the version to write, for kind WriteFile.
 	// +optional
 	File *FileWrite `json:"file,omitempty"`
+
+	// Notify is the notification, for kind Notify.
+	// +optional
+	Notify *Notification `json:"notify,omitempty"`
 
 	// Seq is where an AppendThread or WriteFile item writes, its thread
 	// sequence or file version, reserved here before it is written so

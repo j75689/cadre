@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"slices"
 	"sync"
 	"time"
 
@@ -76,6 +77,12 @@ func (m *Manager) numberTask(ctx context.Context, key storage.Key) (*v1alpha1.Ta
 	return m.transition(ctx, key, task.Create{Number: n})
 }
 
+// hasDispatchable reports whether t's outbox holds something the dispatcher
+// applies: anything but notifications, which have their own loop.
+func hasDispatchable(t *v1alpha1.Task) bool {
+	return slices.ContainsFunc(t.Status.Outbox, func(it v1alpha1.OutboxItem) bool { return it.Kind != v1alpha1.OutboxNotify })
+}
+
 // Dispatch applies every pending outbox item and acks the applied ones.
 // Items are idempotent, so an item applied by an instance that died before
 // acking is applied again without effect.
@@ -87,7 +94,7 @@ func (m *Manager) Dispatch(ctx context.Context) error {
 		}
 		var errs []error
 		for _, t := range tasks {
-			if len(t.Status.Outbox) == 0 {
+			if !hasDispatchable(&t) {
 				continue
 			}
 			if err := m.dispatchTask(ctx, storage.Key{Namespace: ns, Name: t.Name}); err != nil {
@@ -109,6 +116,10 @@ func (m *Manager) dispatchTask(ctx context.Context, key storage.Key) error {
 	var applied []string
 	var errs []error
 	for _, it := range t.Status.Outbox {
+		// Notifications go out on their own loop (DeliverNotifications).
+		if it.Kind == v1alpha1.OutboxNotify {
+			continue
+		}
 		if err := m.applyItem(ctx, t, it); err != nil {
 			errs = append(errs, fmt.Errorf("outbox item %s: %w", it.ID, err))
 			continue
@@ -182,6 +193,8 @@ func (m *Manager) applyItem(ctx context.Context, parent *v1alpha1.Task, it v1alp
 			return fmt.Errorf("no file: %w", ErrInvalid)
 		}
 		return m.applyFile(ctx, parent, it)
+	case v1alpha1.OutboxNotify:
+		return fmt.Errorf("a notification is sent by DeliverNotifications: %w", ErrInvalid)
 	default:
 		return fmt.Errorf("unknown kind %q: %w", it.Kind, ErrInvalid)
 	}
@@ -404,7 +417,7 @@ func (m *Manager) FollowHints(ctx context.Context, log *slog.Logger) {
 	var queued sync.Map // keys queued and not yet taken, so a burst of
 	// changes to one task queues it once
 	n.NotifyTasks(func(t *v1alpha1.Task) {
-		if ctx.Err() != nil || (t.Status.Phase != "" && len(t.Status.Outbox) == 0) {
+		if ctx.Err() != nil || (t.Status.Phase != "" && !hasDispatchable(t)) {
 			return
 		}
 		key := storage.Key{Namespace: t.Namespace, Name: t.Name}
@@ -458,7 +471,7 @@ func (m *Manager) handleHint(ctx context.Context, key storage.Key) error {
 			return err
 		}
 	}
-	if len(t.Status.Outbox) > 0 {
+	if hasDispatchable(t) {
 		return m.dispatchTask(ctx, key)
 	}
 	return nil
@@ -486,6 +499,22 @@ func (m *Manager) Run(ctx context.Context, cfg LoopConfig, log *slog.Logger) {
 		cfg.Dispatch = DefaultLoopConfig.Dispatch
 	}
 	m.FollowHints(ctx, log)
+	// Notifications go out on their own ticker: a webhook that does not
+	// answer must not hold up a reclaim or the outbox.
+	go func() {
+		tick := time.NewTicker(cfg.Dispatch)
+		defer tick.Stop()
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-tick.C:
+				if err := m.DeliverNotifications(ctx); err != nil {
+					log.Warn("deliver notifications", "err", err)
+				}
+			}
+		}
+	}()
 	reclaim := time.NewTicker(cfg.Reclaim)
 	dispatch := time.NewTicker(cfg.Dispatch)
 	defer reclaim.Stop()
