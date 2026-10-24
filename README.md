@@ -3,7 +3,7 @@
 **A self-hosted, cloud-native platform for humans and AI agents to work together.**
 Declare agents, models and tools as Kubernetes CRDs. Run the work on a board. Keep every credential inside the cluster.
 
-> Status: M0 complete (October 2026): the task state machine, the kubernetes storage driver, the Task Manager, `/api/v1`, `/runner/v1`, a CLI and a chaos test that runs in CI. No agents yet; M1 is in progress. See [Roadmap](#roadmap).
+> Status: M0 and M1 complete (October 2026). Agents, models and tool servers are CRDs; `cadre-runner` runs builtin agents on Claude or any OpenAI-compatible endpoint; runs reach their tools through a per-run MCP endpoint; runners authenticate with ServiceAccount tokens. No web UI yet; M2 is next. See [Roadmap](#roadmap).
 
 ## What it is
 
@@ -47,7 +47,7 @@ Not a SaaS. Not a workflow engine. Not an LLM gateway. Not a sandbox. Cadre inte
 | Milestone | Scope | Done when |
 | --- | --- | --- |
 | **M0** state machine (done) | `Task` and `Team` CRDs, storage interface, conformance suite, kubernetes driver, every transition, outbox dispatcher, `cadre` CLI with a fake runner | two managers survive the chaos test; no task runs twice |
-| **M1** runner | `Agent`, `ModelProvider`, `ToolServer`, runner protocol, per-run MCP, `cadre-runner` builtin loop (Anthropic, OpenAI-compatible) | `kubectl apply` a Task, the agent asks a question, a human answers from the CLI, the agent finishes |
+| **M1** runner (done) | `Agent`, `ModelProvider`, `ToolServer`, runner protocol, per-run MCP, `cadre-runner` builtin loop (Anthropic, OpenAI-compatible) | `kubectl apply` a Task, the agent asks a question, a human answers from the CLI, the agent finishes |
 | **M2** execution | builtin loop in step mode, Job backend, managed ToolServers | a rolling update of workers never interrupts a run |
 | **M3** platform | web UI, OIDC and policy RBAC, `Schedule`, `Notifier`, Helm chart | a team uses Cadre day to day without kubectl |
 | **M4** extensions | postgres driver, operator, plugin interface, deliverables and publishers, Agent Sandbox, agentgateway | a publisher attaches as a plugin |
