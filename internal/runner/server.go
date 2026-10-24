@@ -1,6 +1,7 @@
 package runner
 
 import (
+	"encoding/json"
 	"log/slog"
 	"net/http"
 	"strings"
@@ -10,6 +11,7 @@ import (
 	"github.com/j75689/cadre/internal/httpjson"
 	"github.com/j75689/cadre/internal/manager"
 	"github.com/j75689/cadre/internal/storage"
+	"github.com/j75689/cadre/internal/task"
 )
 
 // Server serves /runner/v1 on a Task Manager.
@@ -42,14 +44,42 @@ func (s *Server) Register(mux *http.ServeMux) {
 	mux.HandleFunc("POST "+PathHeartbeat, s.authenticated(s.heartbeat))
 	mux.HandleFunc("POST "+PathEvents, s.authenticated(s.events))
 	mux.HandleFunc("POST "+PathFinish, s.authenticated(s.finish))
+	mux.HandleFunc("POST "+PathStepAppend, s.authenticated(s.builtinOnly(s.stepAppend)))
+	mux.HandleFunc("POST "+PathStepAdvance, s.authenticated(s.builtinOnly(s.stepAdvance)))
+	mux.HandleFunc("POST "+PathStepRelease, s.authenticated(s.builtinOnly(s.stepRelease)))
+	mux.HandleFunc("POST "+PathStepTranscript, s.authenticated(s.builtinOnly(s.stepTranscript)))
 }
+
+// builtinOnly wraps a step endpoint: steps are of builtin agents only, run
+// by cadre-runner, so on an authenticating server every other identity is
+// refused before the task is read.
+func (s *Server) builtinOnly(h http.HandlerFunc) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if s.auth != nil && identityOf(r) != s.builtin {
+			httpjson.WriteError(w, http.StatusForbidden, CodeForbidden, msgStepsBuiltinOnly)
+			return
+		}
+		h(w, r)
+	}
+}
+
+const msgStepsBuiltinOnly = "only cadre-runner works on steps"
 
 func (s *Server) claim(w http.ResponseWriter, r *http.Request) {
 	var req ClaimRequest
 	if !httpjson.Decode(w, r, &req) {
 		return
 	}
-	creq := manager.ClaimRequest{Runner: req.Runner, Identity: identityOf(r), Namespaces: req.Namespaces, Labels: s.claimLabels(r, req.Labels)}
+	if req.Mode != "" && req.Mode != v1alpha1.RunModeRuntime && req.Mode != v1alpha1.RunModeStep {
+		httpjson.WriteError(w, http.StatusBadRequest, CodeInvalid, "mode must be runtime or step")
+		return
+	}
+	if req.Mode == v1alpha1.RunModeStep && s.auth != nil && identityOf(r) != s.builtin {
+		// Steps are of builtin agents only, run by cadre-runner.
+		httpjson.WriteError(w, http.StatusForbidden, CodeForbidden, msgStepsBuiltinOnly)
+		return
+	}
+	creq := manager.ClaimRequest{Runner: req.Runner, Identity: identityOf(r), Namespaces: req.Namespaces, Labels: s.claimLabels(r, req.Labels), Mode: req.Mode}
 	if id := authOf(r); s.auth != nil && id.Name != s.builtin && id.Scope != nil {
 		// A runner claims where its Runners say, with their labels; what
 		// it sends is not taken.
@@ -79,6 +109,10 @@ func (s *Server) claim(w http.ResponseWriter, r *http.Request) {
 		LeaseUntil:       c.LeaseUntil,
 		LeaseSeconds:     int(cfg.Lease.Seconds()),
 		HeartbeatSeconds: int(cfg.Heartbeat.Seconds()),
+		Step:             c.Step,
+		Attempt:          c.Attempt,
+		MaxAttempts:      maxAttempts(c),
+		StepKind:         string(c.Kind),
 	})
 }
 
@@ -87,7 +121,7 @@ func (s *Server) heartbeat(w http.ResponseWriter, r *http.Request) {
 	if !httpjson.Decode(w, r, &req) || !validRef(w, req.Task, req.RunID) {
 		return
 	}
-	until, err := s.m.Heartbeat(r.Context(), key(req.Task), manager.StepRequest{RunID: req.RunID, Runner: identityOf(r)})
+	until, err := s.m.Heartbeat(r.Context(), key(req.Task), manager.StepRequest{RunID: req.RunID, Step: req.Step, Attempt: req.Attempt, Runner: identityOf(r)})
 	if err != nil {
 		httpjson.Fail(w, s.log, err)
 		return
@@ -122,7 +156,7 @@ func (s *Server) finish(w http.ResponseWriter, r *http.Request) {
 		httpjson.WriteError(w, http.StatusBadRequest, CodeInvalid, "waiting is required exactly when the outcome is Waiting")
 		return
 	}
-	mreq := manager.FinishRequest{RunID: req.RunID, Runner: identityOf(r), Step: req.Step, Outcome: req.Outcome}
+	mreq := manager.FinishRequest{RunID: req.RunID, Runner: identityOf(r), Step: req.Step, Attempt: req.Attempt, Outcome: req.Outcome}
 	if req.Waiting != nil {
 		mreq.Reason, mreq.ThreadSeq = req.Waiting.Reason, req.Waiting.ThreadSeq
 	}
@@ -169,4 +203,77 @@ func validRef(w http.ResponseWriter, ref TaskRef, runID string) bool {
 		return false
 	}
 	return true
+}
+
+func maxAttempts(c *manager.Claimed) int32 {
+	if c.Mode != v1alpha1.RunModeStep {
+		return 0
+	}
+	return task.MaxAttempts
+}
+
+func stepRequest(r *http.Request, ref StepRef) manager.StepRequest {
+	return manager.StepRequest{RunID: ref.RunID, Step: ref.Step, Attempt: ref.Attempt, Runner: identityOf(r)}
+}
+
+func (s *Server) stepAppend(w http.ResponseWriter, r *http.Request) {
+	var req StepAppendRequest
+	if !httpjson.DecodeLimit(w, r, &req, MaxStepAppend) || !validRef(w, req.Task, req.RunID) {
+		return
+	}
+	var entry manager.TranscriptEntry
+	if err := json.Unmarshal(req.Entry, &entry); err != nil {
+		httpjson.WriteError(w, http.StatusBadRequest, CodeInvalid, "entry: "+err.Error())
+		return
+	}
+	got, adopted, err := s.m.AppendStep(r.Context(), key(req.Task), stepRequest(r, req.StepRef), entry)
+	if err != nil {
+		httpjson.Fail(w, s.log, err)
+		return
+	}
+	httpjson.WriteVerbatim(w, http.StatusOK, StepAppendResponse{Entry: got, Adopted: adopted})
+}
+
+func (s *Server) stepAdvance(w http.ResponseWriter, r *http.Request) {
+	var req StepAdvanceRequest
+	if !httpjson.Decode(w, r, &req) || !validRef(w, req.Task, req.RunID) {
+		return
+	}
+	var subtasks []manager.Subtask
+	for _, st := range req.Subtasks {
+		subtasks = append(subtasks, manager.Subtask{ID: st.ID, Spec: st.Spec})
+	}
+	t, err := s.m.Advance(r.Context(), key(req.Task), stepRequest(r, req.StepRef), subtasks)
+	if err != nil {
+		httpjson.Fail(w, s.log, err)
+		return
+	}
+	httpjson.Write(w, http.StatusOK, FinishResponse{Phase: t.Status.Phase})
+}
+
+func (s *Server) stepRelease(w http.ResponseWriter, r *http.Request) {
+	var req StepReleaseRequest
+	if !httpjson.Decode(w, r, &req) || !validRef(w, req.Task, req.RunID) {
+		return
+	}
+	if err := s.m.ReleaseStep(r.Context(), key(req.Task), stepRequest(r, req.StepRef), req.Error); err != nil {
+		httpjson.Fail(w, s.log, err)
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
+}
+
+// stepTranscript reads the run's transcript, for the worker holding its
+// current step.
+func (s *Server) stepTranscript(w http.ResponseWriter, r *http.Request) {
+	var req StepRef
+	if !httpjson.Decode(w, r, &req) || !validRef(w, req.Task, req.RunID) {
+		return
+	}
+	entries, err := s.m.StepTranscript(r.Context(), key(req.Task), stepRequest(r, req))
+	if err != nil {
+		httpjson.Fail(w, s.log, err)
+		return
+	}
+	httpjson.WriteVerbatim(w, http.StatusOK, StepTranscript{Entries: entries})
 }
