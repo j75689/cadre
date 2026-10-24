@@ -1,4 +1,6 @@
 # The defaults, with only what has none.
+server:
+  externalURL: https://cadre.example.test
 auth:
   oidc:
     issuer: https://dex.example.test

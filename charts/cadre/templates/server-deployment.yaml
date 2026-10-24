@@ -1,5 +1,8 @@
 {{- $oidc := eq .Values.auth.mode "oidc" -}}
 {{- $s3 := .Values.storage.s3 -}}
+{{- if and $oidc (not (include "cadre.externalURL" .)) }}
+{{- fail "auth.mode oidc needs the URL browsers reach cadre-server at, for logins to return to: set ingress.enabled with ingress.host, or server.externalURL" }}
+{{- end }}
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -35,7 +38,7 @@ spec:
       containers:
         - name: cadre-server
           image: {{ include "cadre.image" (dict "root" . "name" "cadre-server") }}
-          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          imagePullPolicy: {{ include "cadre.pullPolicy" . }}
           args:
             - --listen=:8080
             - --public-url={{ include "cadre.publicURL" . }}

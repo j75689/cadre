@@ -53,9 +53,9 @@ spec:
       containers:
         - name: cadre-runner
           image: {{ include "cadre.image" (dict "root" $ "name" "cadre-runner") }}
-          imagePullPolicy: {{ $.Values.image.pullPolicy }}
+          imagePullPolicy: {{ include "cadre.pullPolicy" $ }}
           args:
-            - --server=http://{{ include "cadre.server" $ }}.{{ $.Release.Namespace }}.svc:{{ $.Values.server.service.port }}
+            - --server={{ include "cadre.publicURL" $ }}
             # Every replica its own name, shown in status.run.runner.
             - --runner=$(POD_NAME)
             - --mode={{ .mode }}

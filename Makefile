@@ -91,16 +91,17 @@ chart-files: ## Copy the CRDs and RBAC into charts/cadre
 	@cp config/rbac/workloads.yaml charts/cadre/files/server-workloads.yaml
 	@cp config/runner/rbac.yaml charts/cadre/files/runner-role.yaml
 
-# chart-lint lints the chart and validates what it renders, CRDs included,
-# against Kubernetes' schemas, for each values file under ci/.
-# The CRDs are left out of kubeconform, which has no schema for them; envtest
-# loads them in every test run.
+# chart-lint lints the chart and validates what it renders against
+# Kubernetes' schemas, for each values file under ci/. The CRDs are left out:
+# kubeconform's schema catalogue has none for CustomResourceDefinition, and
+# envtest loads them in every test run. The render goes to a variable first,
+# so that a failing helm template fails the target.
 chart-lint: $(HELM) $(KUBECONFORM) ## Lint the Helm chart and validate its output
 	@set -e; for f in charts/cadre/ci/*.yaml; do \
 		echo "chart: $$f"; \
 		$(HELM) lint --strict charts/cadre -f $$f; \
-		$(HELM) template cadre charts/cadre -n cadre-system -f $$f | \
-			$(KUBECONFORM) -strict -summary -kubernetes-version $(ENVTEST_K8S_VERSION) -; \
+		out=$$($(HELM) template cadre charts/cadre -n cadre-system -f $$f); \
+		printf '%s\n' "$$out" | $(KUBECONFORM) -strict -summary -kubernetes-version $(ENVTEST_K8S_VERSION) -; \
 	done
 
 verify-generated: generate manifests ## Fail if generated files are out of date

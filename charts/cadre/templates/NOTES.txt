@@ -1,12 +1,15 @@
-cadre-server is at {{ include "cadre.externalURL" . | default (include "cadre.publicURL" .) }}
-{{- if not (include "cadre.externalURL" .) }}
-(the in-cluster Service; set ingress.enabled or server.externalURL to reach
-it from a browser, or: kubectl -n {{ .Release.Namespace }} port-forward svc/{{ include "cadre.server" . }} {{ .Values.server.service.port }})
+{{- with include "cadre.externalURL" . }}
+cadre-server is at {{ . }}
+{{- else }}
+cadre-server is at {{ include "cadre.publicURL" . }}, inside the cluster only.
+From a workstation: kubectl -n {{ .Release.Namespace }} port-forward svc/{{ include "cadre.server" . }} {{ .Values.server.service.port }}
 {{- end }}
+Runners reach it at {{ include "cadre.publicURL" . }}.
 {{ if eq .Values.auth.mode "oidc" }}
-First login: open the URL, or run cadre login --server <URL>.
+First login: open {{ include "cadre.externalURL" . }}, or run
+cadre --server {{ include "cadre.externalURL" . }} login.
 {{- if or .Values.auth.admins.users .Values.auth.admins.groups }}
-The admins in auth.admins may create teams: cadre --server <URL> -n <namespace> team init.
+The admins in auth.admins may create teams: cadre --server {{ include "cadre.externalURL" . }} -n <namespace> team init.
 {{- else }}
 No admins are set (auth.admins), so nobody can create a team yet.
 {{- end }}
@@ -14,8 +17,9 @@ No admins are set (auth.admins), so nobody can create a team yet.
 Session cookies are encrypted with the key in Secret
 {{ .Release.Namespace }}/{{ include "cadre.sessionKeySecret" . }}, under key "key".
 {{- if not .Values.auth.sessionKey.existingSecret }}
-The chart made it and keeps it across upgrades and uninstalls; delete it to
-sign everyone out.
+The chart made it and keeps it across upgrades and uninstalls. cadre-server
+reads it at start: to sign everyone out, delete the Secret, helm upgrade (which
+makes a new one), then kubectl -n {{ .Release.Namespace }} rollout restart deployment/{{ include "cadre.server" . }}.
 {{- end }}
 {{- else }}
 WARNING: auth.mode is none: anyone who reaches cadre-server may act as anyone.

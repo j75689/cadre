@@ -3,6 +3,7 @@
 image:
   registry: ghcr.io/j75689
   tag: ""
+  # pullPolicy is Always regardless when the tag is main or latest.
   pullPolicy: IfNotPresent
 imagePullSecrets: []
 
@@ -11,8 +12,9 @@ server:
   # publicURL is where runners reach cadre-server, for their per-run MCP
   # endpoint. Default: the in-cluster Service.
   publicURL: ""
-  # externalURL is where people's browsers reach it. Default: the Ingress
-  # host when the Ingress is enabled; otherwise publicURL.
+  # externalURL is where people's browsers reach it, and where logins
+  # return to. Default: the Ingress host when the Ingress is enabled;
+  # required otherwise with auth.mode oidc.
   externalURL: ""
   # runnerAuth: required (runners authenticate with a ServiceAccount token
   # for the audience cadre) or none (tests and local development only).

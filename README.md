@@ -52,7 +52,7 @@ cadre-server serves the board, task pages with their threads and actions, and a 
 helm install cadre oci://ghcr.io/j75689/charts/cadre -n cadre-system --create-namespace
 ```
 
-with an OIDC issuer and client, bootstrap admins and an S3 bucket set: see the chart's [README](charts/cadre/README.md) for the values, the per-Team RBAC and upgrading the CRDs.
+with an OIDC issuer and client, the URL browsers reach it at (an Ingress host or `server.externalURL`), bootstrap admins and an S3 bucket set: see the chart's [README](charts/cadre/README.md) for the values, the per-Team RBAC and upgrading the CRDs.
 
 ## Images
 

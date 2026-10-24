@@ -31,7 +31,7 @@ http://{{ include "cadre.server" . }}.{{ .Release.Namespace }}.svc:{{ .Values.se
 {{- if .Values.server.externalURL -}}
 {{ .Values.server.externalURL }}
 {{- else if and .Values.ingress.enabled .Values.ingress.host -}}
-{{ ternary "https" "http" (ne .Values.ingress.tlsSecret "") }}://{{ .Values.ingress.host }}
+{{ if .Values.ingress.tlsSecret }}https{{ else }}http{{ end }}://{{ .Values.ingress.host }}
 {{- end -}}
 {{- end -}}
 
@@ -39,12 +39,24 @@ http://{{ include "cadre.server" . }}.{{ .Release.Namespace }}.svc:{{ .Values.se
 {{ .Values.auth.sessionKey.existingSecret | default (printf "%s-session-key" (include "cadre.fullname" .)) }}
 {{- end -}}
 
-{{/* Rules of the first document of kind ClusterRole in a file. */}}
+{{/* Rules of the one document of kind ClusterRole in a file; a second
+     fails, so that a file gaining a role cannot widen a grant unseen. */}}
 {{- define "cadre.rules" -}}
+{{- $roles := list -}}
 {{- range splitList "\n---\n" (.root.Files.Get .file) -}}
 {{- $doc := fromYaml . -}}
 {{- if eq (get $doc "kind") "ClusterRole" -}}
-{{ toYaml (get $doc "rules") }}
+{{- $roles = append $roles $doc -}}
 {{- end -}}
 {{- end -}}
+{{- if ne (len $roles) 1 -}}
+{{- fail (printf "%s has %d ClusterRoles, not one" .file (len $roles)) -}}
+{{- end -}}
+{{ toYaml (get (first $roles) "rules") }}
+{{- end -}}
+
+{{/* Always for a moving tag (main, latest), else image.pullPolicy. */}}
+{{- define "cadre.pullPolicy" -}}
+{{- $tag := .Values.image.tag | default .Chart.AppVersion -}}
+{{- if has $tag (list "main" "latest") -}}Always{{- else -}}{{ .Values.image.pullPolicy }}{{- end -}}
 {{- end -}}

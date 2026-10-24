@@ -56,19 +56,19 @@
           "additionalProperties": false,
           "properties": {
             "lease": {
-              "type": "string"
+              "$ref": "#/definitions/duration"
             },
             "heartbeat": {
-              "type": "string"
+              "$ref": "#/definitions/duration"
             },
             "stepIdle": {
-              "type": "string"
+              "$ref": "#/definitions/duration"
             },
             "reclaimInterval": {
-              "type": "string"
+              "$ref": "#/definitions/duration"
             },
             "dispatchInterval": {
-              "type": "string"
+              "$ref": "#/definitions/duration"
             }
           }
         },
@@ -288,7 +288,7 @@
           "minimum": 0
         },
         "stepTimeout": {
-          "type": "string"
+          "$ref": "#/definitions/duration"
         },
         "resources": {
           "type": "object"
@@ -306,6 +306,13 @@
           "type": "object"
         }
       }
+    }
+  },
+  "definitions": {
+    "duration": {
+      "description": "A Go duration such as 30s or 1h30m; empty for the default.",
+      "type": "string",
+      "pattern": "^(([0-9]+(\\.[0-9]+)?(ns|us|µs|ms|s|m|h))+)?$"
     }
   }
 }
