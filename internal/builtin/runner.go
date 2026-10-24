@@ -56,6 +56,13 @@ type Options struct {
 	// CallTimeout bounds one request to the run's MCP endpoint; default a
 	// little over the server's bound for it.
 	CallTimeout time.Duration
+
+	// StepTimeout bounds one step in step mode; default 10 minutes.
+	StepTimeout time.Duration
+	// StepDone, if set, is called in step mode after a step's entry is
+	// appended, before the step is committed; returning false stops the
+	// worker there, as if it died. It is for tests.
+	StepDone func(step int64, kind string) bool
 }
 
 // Defaults.
@@ -63,6 +70,7 @@ const (
 	DefaultMaxTurns    = 100
 	DefaultRetryFor    = 5 * time.Minute
 	DefaultCallTimeout = 105 * time.Second // cadre-server bounds an MCP request at 90s
+	DefaultStepTimeout = 10 * time.Minute
 	// contextCeiling is the share of the model's window at which a run
 	// stops and hands the task to a human.
 	contextCeiling = 0.8
@@ -71,32 +79,25 @@ const (
 // Run claims and works builtin agents' tasks until ctx is done, or after one
 // run with Once.
 func Run(ctx context.Context, c *client.Client, o Options) error {
-	if o.Poll <= 0 {
-		o.Poll = time.Second
-	}
-	if o.MaxTurns <= 0 {
-		o.MaxTurns = DefaultMaxTurns
-	}
-	if o.RetryFor <= 0 {
-		o.RetryFor = DefaultRetryFor
-	}
-	if o.Backoff <= 0 {
-		o.Backoff = 5 * time.Second
-	}
-	if o.MaxBackoff < o.Backoff {
-		o.MaxBackoff = max(5*time.Minute, o.Backoff)
-	}
-	if o.CallTimeout <= 0 {
-		o.CallTimeout = DefaultCallTimeout
-	}
-	if o.Log == nil {
-		o.Log = slog.New(slog.DiscardHandler)
-	}
+	o = o.withDefaults()
+	return claims(ctx, c, o, v1alpha1.RunModeRuntime, func(claim *runner.ClaimResponse, sent time.Time) bool {
+		return (&run{o: o, c: c, claim: claim, ref: runner.TaskRef{Namespace: claim.Task.Namespace, Name: claim.Task.Name}}).work(ctx, sent)
+	})
+}
+
+// claims claims work in mode until ctx is done, or after one with Once, and
+// has work do each; work reports whether to wait before claiming again.
+func claims(ctx context.Context, c *client.Client, o Options, mode v1alpha1.RunMode, work func(*runner.ClaimResponse, time.Time) bool) error {
+	o = o.withDefaults()
 	labels := maps.Clone(o.Labels)
 	if labels == nil {
 		labels = map[string]string{}
 	}
 	labels[v1alpha1.LabelRuntime] = string(v1alpha1.RuntimeBuiltin)
+	req := runner.ClaimRequest{Runner: o.Runner, Namespaces: o.Namespaces, Labels: labels}
+	if mode == v1alpha1.RunModeStep {
+		req.Mode = mode
+	}
 	// A failed claim, and a run abandoned because its MCP endpoint did not
 	// answer (it still holds a Team slot until its lease runs out), make
 	// the next claim wait, longer with each in a row: a broken server or
@@ -116,7 +117,7 @@ func Run(ctx context.Context, c *client.Client, o Options) error {
 	}
 	for {
 		sent := time.Now()
-		claim, err := c.Claim(ctx, runner.ClaimRequest{Runner: o.Runner, Namespaces: o.Namespaces, Labels: labels})
+		claim, err := c.Claim(ctx, req)
 		switch {
 		case ctx.Err() != nil:
 			return nil
@@ -134,7 +135,7 @@ func Run(ctx context.Context, c *client.Client, o Options) error {
 			}
 			continue
 		}
-		abandoned := (&run{o: o, c: c, claim: claim, ref: runner.TaskRef{Namespace: claim.Task.Namespace, Name: claim.Task.Name}}).work(ctx, sent)
+		abandoned := work(claim, sent)
 		if o.Once || ctx.Err() != nil {
 			return nil
 		}
@@ -148,6 +149,34 @@ func Run(ctx context.Context, c *client.Client, o Options) error {
 			return nil
 		}
 	}
+}
+
+func (o Options) withDefaults() Options {
+	if o.Poll <= 0 {
+		o.Poll = time.Second
+	}
+	if o.MaxTurns <= 0 {
+		o.MaxTurns = DefaultMaxTurns
+	}
+	if o.RetryFor <= 0 {
+		o.RetryFor = DefaultRetryFor
+	}
+	if o.Backoff <= 0 {
+		o.Backoff = 5 * time.Second
+	}
+	if o.MaxBackoff < o.Backoff {
+		o.MaxBackoff = max(5*time.Minute, o.Backoff)
+	}
+	if o.CallTimeout <= 0 {
+		o.CallTimeout = DefaultCallTimeout
+	}
+	if o.StepTimeout <= 0 {
+		o.StepTimeout = DefaultStepTimeout
+	}
+	if o.Log == nil {
+		o.Log = slog.New(slog.DiscardHandler)
+	}
+	return o
 }
 
 // run is one claimed run.
@@ -237,24 +266,9 @@ func (r *run) work(ctx context.Context, claimSent time.Time) (abandoned bool) {
 // drive runs the agent loop and says how the run ends.
 func (r *run) drive(ctx context.Context, s *session) ending {
 	agent := r.claim.Agent
-	if agent == nil || agent.Model == nil {
-		return finishWith(v1alpha1.RunOutcomeFailed, "This run could not start: the claim names no model for the agent.")
-	}
-	p, ok := r.o.Providers[agent.Model.Type]
-	if !ok {
-		return finishWith(v1alpha1.RunOutcomeFailed, fmt.Sprintf("This run could not start: cadre-runner does not support ModelProvider type %q yet.", agent.Model.Type))
-	}
-	var credential string
-	if ref := agent.Model.SecretRef; ref != nil {
-		if r.o.Secrets == nil {
-			return finishWith(v1alpha1.RunOutcomeFailed, "This run could not start: cadre-runner cannot read Secrets.")
-		}
-		v, err := r.o.Secrets.Value(ctx, r.ref.Namespace, *ref)
-		if err != nil {
-			r.o.Log.Warn("read the model's credential", "secret", ref.Name, "key", ref.Key, "err", err)
-			return finishWith(v1alpha1.RunOutcomeFailed, fmt.Sprintf("This run could not start: the model's credential, key %s of Secret %s, could not be read.", ref.Key, ref.Name))
-		}
-		credential = strings.TrimRight(v, "\r\n")
+	p, credential, failure := model(ctx, r.o, r.ref.Namespace, agent)
+	if failure != "" {
+		return finishWith(v1alpha1.RunOutcomeFailed, failure)
 	}
 
 	var setup Setup
@@ -345,6 +359,30 @@ func (r *run) drive(ctx context.Context, s *session) ending {
 		}
 	}
 	return finishWith(v1alpha1.RunOutcomeReview, fmt.Sprintf("This run stopped after %d model turns, its limit. A new run starts again from the thread.", r.o.MaxTurns))
+}
+
+// model is the claimed agent's provider and its credential, or why the run
+// cannot start.
+func model(ctx context.Context, o Options, namespace string, agent *runner.ClaimedAgent) (p Provider, credential, failure string) {
+	if agent == nil || agent.Model == nil {
+		return nil, "", "This run could not start: the claim names no model for the agent."
+	}
+	p, ok := o.Providers[agent.Model.Type]
+	if !ok {
+		return nil, "", fmt.Sprintf("This run could not start: cadre-runner does not support ModelProvider type %q yet.", agent.Model.Type)
+	}
+	if ref := agent.Model.SecretRef; ref != nil {
+		if o.Secrets == nil {
+			return nil, "", "This run could not start: cadre-runner cannot read Secrets."
+		}
+		v, err := o.Secrets.Value(ctx, namespace, *ref)
+		if err != nil {
+			o.Log.Warn("read the model's credential", "secret", ref.Name, "key", ref.Key, "err", err)
+			return nil, "", fmt.Sprintf("This run could not start: the model's credential, key %s of Secret %s, could not be read.", ref.Key, ref.Name)
+		}
+		credential = strings.TrimRight(v, "\r\n")
+	}
+	return p, credential, ""
 }
 
 // failed ends the run Failed. The thread is read by everyone on the board,

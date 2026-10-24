@@ -104,11 +104,17 @@ func (m *Manager) threadItem(ctx context.Context, key storage.Key, t *v1alpha1.T
 // entry's call takes the item's id as its own, so every entry about the
 // call names it.
 func (m *Manager) callItem(ctx context.Context, key storage.Key, t *v1alpha1.Task, runID string, kind EntryKind, body string, call *ToolCall) (v1alpha1.OutboxItem, error) {
-	if err := validEntry(agentAuthor(t), kind, body); err != nil {
-		return v1alpha1.OutboxItem{}, err
-	}
 	id, err := m.itemID(ctx, key, t)
 	if err != nil {
+		return v1alpha1.OutboxItem{}, err
+	}
+	return m.entryItem(ctx, key, t, runID, id, kind, body, call)
+}
+
+// entryItem writes an entry's blob and returns the item, of id, committing
+// it.
+func (m *Manager) entryItem(ctx context.Context, key storage.Key, t *v1alpha1.Task, runID, id string, kind EntryKind, body string, call *ToolCall) (v1alpha1.OutboxItem, error) {
+	if err := validEntry(agentAuthor(t), kind, body); err != nil {
 		return v1alpha1.OutboxItem{}, err
 	}
 	item := v1alpha1.OutboxItem{ID: id, Kind: v1alpha1.OutboxAppendThread}

@@ -27,6 +27,9 @@ type session struct {
 	*sdk.ClientSession
 	timeout time.Duration
 	status  *lastStatus
+	// callIDs sends each model call's id with it, in _meta, as a step-mode
+	// worker does: the server derives what the call records from it.
+	callIDs bool
 }
 
 // errRunGone is the endpoint answering 404: the run's token no longer
@@ -85,10 +88,10 @@ func connect(ctx context.Context, m *runner.ClaimedMCP, transport http.RoundTrip
 // callTool makes one request, bounded by the session's timeout. An error
 // the endpoint answered (an unknown tool, a malformed call) comes back as
 // it is; one it did not answer is errTransport.
-func (s *session) callTool(ctx context.Context, name string, args any) (*sdk.CallToolResult, error) {
+func (s *session) callTool(ctx context.Context, name string, args any, meta sdk.Meta) (*sdk.CallToolResult, error) {
 	callCtx, cancel := context.WithTimeout(ctx, s.timeout)
 	defer cancel()
-	res, err := s.CallTool(callCtx, &sdk.CallToolParams{Name: name, Arguments: args})
+	res, err := s.CallTool(callCtx, &sdk.CallToolParams{Name: name, Arguments: args, Meta: meta})
 	switch {
 	case err == nil, ctx.Err() != nil:
 		return res, err
@@ -157,7 +160,11 @@ func (s *session) call(ctx context.Context, c ToolCall) (result, error) {
 	if len(c.Input) > 0 {
 		args = c.Input
 	}
-	res, err := s.callTool(ctx, c.Name, args)
+	var meta sdk.Meta
+	if s.callIDs {
+		meta = sdk.Meta{mcp.MetaCallID: c.ID}
+	}
+	res, err := s.callTool(ctx, c.Name, args, meta)
 	if err != nil {
 		if ctx.Err() != nil || errors.Is(err, errTransport) || errors.Is(err, errRunGone) {
 			return result{}, err
@@ -189,7 +196,7 @@ func resultText(res *sdk.CallToolResult) string {
 
 // structured calls a core tool and decodes its structured result.
 func (s *session) structured(ctx context.Context, name string, args, out any) error {
-	res, err := s.callTool(ctx, name, args)
+	res, err := s.callTool(ctx, name, args, nil)
 	if err != nil {
 		return err
 	}

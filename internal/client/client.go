@@ -221,6 +221,34 @@ func (c *Client) Finish(ctx context.Context, req runner.FinishRequest) (*runner.
 	return &out, err
 }
 
+// StepAppend appends a step's transcript entry and returns the step's
+// entry, adopted when another worker wrote it first.
+func (c *Client) StepAppend(ctx context.Context, req runner.StepAppendRequest) (*runner.StepAppendResponse, error) {
+	var out runner.StepAppendResponse
+	_, err := c.do(ctx, http.MethodPost, runner.PathStepAppend, req, &out)
+	return &out, err
+}
+
+// StepAdvance commits a step.
+func (c *Client) StepAdvance(ctx context.Context, req runner.StepAdvanceRequest) (*runner.FinishResponse, error) {
+	var out runner.FinishResponse
+	_, err := c.do(ctx, http.MethodPost, runner.PathStepAdvance, req, &out)
+	return &out, err
+}
+
+// StepRelease gives a step back for another worker.
+func (c *Client) StepRelease(ctx context.Context, req runner.StepReleaseRequest) error {
+	_, err := c.do(ctx, http.MethodPost, runner.PathStepRelease, req, nil)
+	return err
+}
+
+// StepTranscript reads a run's committed steps, for the step's holder.
+func (c *Client) StepTranscript(ctx context.Context, ref runner.StepRef) (*runner.StepTranscript, error) {
+	var out runner.StepTranscript
+	_, err := c.do(ctx, http.MethodPost, runner.PathStepTranscript, ref, &out)
+	return &out, err
+}
+
 // DefaultTokenFile is where a runner in a pod finds its projected token.
 const DefaultTokenFile = "/var/run/secrets/cadre/token"
 

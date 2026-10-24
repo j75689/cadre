@@ -78,6 +78,17 @@ POST /runner/v1/steps/transcript  run_id, step, attempt → the run's committed 
 
 A call on a step the run has moved past gets `409 step_mismatch`, and on an attempt that is over, `409 attempt_mismatch`.
 
+### The builtin loop in step mode
+
+`cadre-runner --mode=step` takes one step at a time, and any worker can take the next. It runs the runtime loop's turn a step at a time:
+
+- **start** connects to the step's MCP endpoint, reads the task, its thread and its files, describes the model, and records the conversation's opening in entry 0: the provider, the SDK build, the model, the system prompt, the first message as rendered, the tools, and what the Models API said. It calls no model and writes nothing to the thread.
+- **llm_turn** rebuilds the conversation from the opening and the entries since, and makes one model call. It records the model's messages as the provider sends them back, thinking blocks and a call's input as the model wrote them, so the rebuilt conversation sends the same bytes and the prompt cache holds across workers; also the calls, the text, the usage, and the settings the turn's first request learned (a feature the model refused). A worker whose provider is not the opening's refuses; one with another SDK build logs it.
+- **exec_tools** makes the turn's calls, in order, through the step's MCP endpoint, each with the model's call id in `_meta`, and records their results. A result that ends the run (`thread_ask`, an `ask` tool) ends the step there: the run is over, and nothing is committed.
+- **finish** posts the last turn's text as the agent's summary with the finish (`comment`), and the run goes to `Review`. The limits of runtime mode hold across workers: at 100 turns, or a context 80% full, an `llm_turn` step finishes `Review` with a comment instead of calling the model.
+
+A step whose entry is already there when it is taken (its worker died after writing it) is committed as it is; so is the entry another worker wrote first. A model call that keeps failing for five minutes, a step past `--step-timeout` (10 minutes) and an MCP endpoint that does not answer give the step back, its attempt counted. A failure retrying cannot fix (a refused credential, a refusal, a reply cut off) finishes the run `Failed` with a comment, burning no attempt. `--parallel N` works N steps at once, each worker under a name of its own.
+
 ### Runtime mode
 
 The loop lives in someone else's process: an ACP agent such as Claude Code, a kagent agent, a custom container. Cadre cannot cut it into steps, so:
@@ -86,7 +97,7 @@ The loop lives in someone else's process: an ACP agent such as Claude Code, a ka
 - Tool calls still go to Cadre's per-run MCP endpoint.
 - How the runner works internally is not Cadre's business.
 
-Step-mode workers only run inside the cluster; a process outside the cluster is always a runtime-mode runner. Kubernetes Job, Agent Sandbox and a user's own machine are all runtime mode; they differ only in who starts the runner process. The builtin loop first ships as a runtime-mode runner (`cadre-runner`) and becomes step mode later.
+Step-mode workers only run inside the cluster; a process outside the cluster is always a runtime-mode runner. Kubernetes Job, Agent Sandbox and a user's own machine are all runtime mode; they differ only in who starts the runner process. The builtin loop runs either way: `cadre-runner` works whole runs by default, and with `--mode=step` the steps of builtin agents set to `runtime.execution: step` (the default stays `runtime`).
 
 ### The builtin loop in runtime mode
 
@@ -104,7 +115,7 @@ Step-mode workers only run inside the cluster; a process outside the cluster is 
 
 On Chat Completions it streams every turn with usage, and asks for the Agent's `effort` as `reasoning_effort`; a server that rejects either on the first request gets it again without it, for the rest of the run. Its credential is the Secret only, as for `anthropic`: none of the `OPENAI_*` environment variables is read. These endpoints do not say a model's context window, so the first message keeps to 200 KiB, there is no 80% ceiling, and a server's context-length error ends the run; the output cap is the server's. A tool result's failure is said in its text, as the API has no error flag for it. A call whose arguments are not JSON, or of a tool kind other than a function, is not made: the provider answers it with an error for the model. A reply cut off at its output limit makes none of its calls. The history keeps the standard Chat Completions fields only, so a server's extra fields on an assistant message, such as `reasoning_content`, are not sent back: in M1, models that require it back on tool-calling turns are not supported.
 
-**Deploying it.** `cadre-runner` runs in the cluster under its own ServiceAccount, and needs `get` on Secrets in each Team namespace whose builtin agents it runs: `config/runner/` holds what to apply: `serviceaccount.yaml` (the ServiceAccount, in `cadre-system`), `rbac.yaml` (a ClusterRole for that and a RoleBinding to copy into each such namespace) and `deployment.yaml` (an example Deployment; there is no published image yet). It reads each Secret fresh for every run and caches none. It authenticates to cadre-server with a projected ServiceAccount token for the audience `cadre` (the example Deployment mounts one, valid for ten minutes), read from `--token-file` before every request, as the kubelet rotates it. Without `--token-file` it uses `/var/run/secrets/cadre/token` when that file exists, and otherwise sends no token, saying so once: that works only against `--runner-auth=none`. `cadre runner fake` takes the same flag. Flags: `--server` (cadre-server's URL), `--runner` (its name, by default the host name), `--namespaces` (comma-separated, by default every Team namespace) and `--max-turns`.
+**Deploying it.** `cadre-runner` runs in the cluster under its own ServiceAccount, and needs `get` on Secrets in each Team namespace whose builtin agents it runs: `config/runner/` holds what to apply: `serviceaccount.yaml` (the ServiceAccount, in `cadre-system`), `rbac.yaml` (a ClusterRole for that and a RoleBinding to copy into each such namespace) and `deployment.yaml` (an example Deployment; there is no published image yet). It reads each Secret fresh for every run and caches none. It authenticates to cadre-server with a projected ServiceAccount token for the audience `cadre` (the example Deployment mounts one, valid for ten minutes), read from `--token-file` before every request, as the kubelet rotates it. Without `--token-file` it uses `/var/run/secrets/cadre/token` when that file exists, and otherwise sends no token, saying so once: that works only against `--runner-auth=none`. `cadre runner fake` takes the same flag. Flags: `--server` (cadre-server's URL), `--runner` (its name, by default the host name), `--namespaces` (comma-separated, by default every Team namespace), `--max-turns`, `--mode` (`runtime` or `step`), and in step mode `--parallel` and `--step-timeout`.
 
 ## Runner protocol
 
@@ -119,7 +130,7 @@ Pull based. A runner is any process that speaks it. In-cluster runners authentic
 POST /runner/v1/claim      labels → one task, a run_id and an MCP token; claimed by conditional write; 204 when there is no work
 POST /runner/v1/heartbeat  run_id → extends the lease; 409 on run_id mismatch, the runner must stop
 POST /runner/v1/events     run_id, seq → usage, context size, progress (for the UI and hand-off decisions)
-POST /runner/v1/finish     run_id, outcome: Done | Review | Waiting{reason} | Failed
+POST /runner/v1/finish     run_id, outcome: Done | Review | Waiting{reason} | Failed, and an optional comment, posted by the agent in the same write
 ```
 
 Claiming matches a task's agent to the runner:
