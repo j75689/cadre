@@ -255,7 +255,7 @@ status:
 | Field | |
 |---|---|
 | `cron` | required; a standard five-field cron expression, or a descriptor such as `@daily`; no `TZ=` or `CRON_TZ=` prefix, and ticks at least a minute apart (`@every 1m` or longer) |
-| `timezone` | the IANA zone `cron` is read in; default UTC; `Local` is refused |
+| `timezone` | the IANA zone `cron` is read in; default UTC; `Local` is refused. As with a Kubernetes CronJob, on a day the clocks go back a time inside the repeated hour ticks twice (two tasks), and on a day they go forward a time inside the skipped hour does not tick |
 | `jitter` | delays each tick's task by up to this long, by an amount fixed by the Schedule's UID and the tick; keep it shorter than the interval between ticks |
 | `suspend` | no task is created while it is true |
 | `task` | the spec of every task created; `parentRef` is refused, since a scheduled task has no parent |

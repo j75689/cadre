@@ -337,8 +337,9 @@ func TestSchedules(t *testing.T) {
 		v := e.schedule(ns, "blank-title", v1alpha1.ScheduleSpec{Cron: "0 * * * *"})
 		e.ready(v, metav1.ConditionTrue, "Scheduled")
 		e.update(v, func(spec *v1alpha1.ScheduleSpec) { spec.Task.Title = " " })
-		e.clock.set(hourly(v.CreationTimestamp.Time, 1).Add(time.Second))
+		// Refused as soon as it is seen, before any tick.
 		e.ready(v, metav1.ConditionFalse, "InvalidSchedule")
+		e.clock.set(hourly(v.CreationTimestamp.Time, 1).Add(time.Second))
 		if v.Status.ActiveSince != nil || v.Status.NextScheduleTime != nil {
 			t.Errorf("activeSince %v, nextScheduleTime %v while invalid", v.Status.ActiveSince, v.Status.NextScheduleTime)
 		}

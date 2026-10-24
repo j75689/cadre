@@ -1,9 +1,12 @@
 package controller
 
 import (
+	"fmt"
 	"strings"
 	"testing"
 	"time"
+
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
 	v1alpha1 "github.com/j75689/cadre/api/v1alpha1"
 )
@@ -35,19 +38,38 @@ func TestLatestDueFiresTicksInOrder(t *testing.T) {
 	}
 }
 
+// An @every Schedule far behind keeps its ticks counted from after, whatever
+// each leader's clock says.
+func TestLatestDueKeepsEveryOnItsGrid(t *testing.T) {
+	sched, err := parseSchedule(v1alpha1.ScheduleSpec{Cron: "@every 1m"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	after := time.Date(2030, 1, 1, 9, 0, 30, 0, time.UTC)
+	now := after.Add(2*maxScan*time.Minute + 10*time.Second)
+	noJitter := func(tick time.Time) time.Time { return tick }
+	want := after.Add(2 * maxScan * time.Minute)
+	for _, clock := range []time.Time{now, now.Add(-3 * time.Millisecond), now.Add(5 * time.Millisecond)} {
+		if due, missed := latestDue(sched, after, clock, noJitter); !due.Equal(want) || missed != fmt.Sprint(2*maxScan-1) {
+			t.Errorf("at %v: due %v, missed %q; want %v, %d", clock, due, missed, want, 2*maxScan-1)
+		}
+	}
+}
+
 func TestParseScheduleRefuses(t *testing.T) {
 	for name, spec := range map[string]v1alpha1.ScheduleSpec{
-		"a TZ prefix":      {Cron: "TZ=Asia/Tokyo 0 9 * * *"},
-		"a CRON_TZ prefix": {Cron: "CRON_TZ=Asia/Tokyo 0 9 * * *"},
-		"a bare TZ":        {Cron: "TZ=UTC"},
-		"every 30 seconds": {Cron: "@every 30s"},
-		"the pod's zone":   {Cron: "0 9 * * *", Timezone: "Local"},
-		"six fields":       {Cron: "0 0 9 * * *"},
-		"an unknown zone":  {Cron: "0 9 * * *", Timezone: "Mars/Olympus_Mons"},
+		"a TZ prefix":       {Cron: "TZ=Asia/Tokyo 0 9 * * *"},
+		"a CRON_TZ prefix":  {Cron: "CRON_TZ=Asia/Tokyo 0 9 * * *"},
+		"a bare TZ":         {Cron: "TZ=UTC"},
+		"every 30 seconds":  {Cron: "@every 30s"},
+		"the pod's zone":    {Cron: "0 9 * * *", Timezone: "Local"},
+		"six fields":        {Cron: "0 0 9 * * *"},
+		"an unknown zone":   {Cron: "0 9 * * *", Timezone: "Mars/Olympus_Mons"},
+		"a negative jitter": {Cron: "0 9 * * *", Jitter: &metav1.Duration{Duration: -5 * time.Minute}},
 	} {
 		if _, err := parseSchedule(spec); err == nil {
 			t.Errorf("%s: accepted", name)
-		} else if !strings.Contains(err.Error(), "cron") && !strings.Contains(err.Error(), "timezone") {
+		} else if !strings.Contains(err.Error(), "cron") && !strings.Contains(err.Error(), "timezone") && !strings.Contains(err.Error(), "jitter") {
 			t.Errorf("%s: %v does not name the field", name, err)
 		}
 	}

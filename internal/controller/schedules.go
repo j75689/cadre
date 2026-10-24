@@ -89,6 +89,11 @@ func (r *scheduleReconciler) Reconcile(ctx context.Context, req reconcile.Reques
 		return inactive(false, "NoTeam", "namespace "+req.Namespace+" has no Team")
 	}
 	sched, err := parseSchedule(s.Spec)
+	if err == nil {
+		if verr := task.ValidateSpec(&s.Spec.Task); verr != nil {
+			err = fmt.Errorf("its task is invalid: %w", verr)
+		}
+	}
 	switch {
 	case err != nil:
 		return inactive(false, "InvalidSchedule", err.Error())
@@ -119,9 +124,6 @@ func (r *scheduleReconciler) Reconcile(ctx context.Context, req reconcile.Reques
 
 	due, missed := latestDue(sched, after, now, fire)
 	if !due.IsZero() {
-		if err := task.ValidateSpec(&s.Spec.Task); err != nil {
-			return inactive(false, "InvalidSchedule", "its task is invalid: "+err.Error())
-		}
 		name := fmt.Sprintf("%s-%s", s.Name, due.UTC().Format("200601021504"))
 		created := &v1alpha1.Task{
 			ObjectMeta: metav1.ObjectMeta{
@@ -135,8 +137,12 @@ func (r *scheduleReconciler) Reconcile(ctx context.Context, req reconcile.Reques
 		switch err := r.store.CreateTask(ctx, created); {
 		case err == nil:
 			if missed != "" {
-				r.events.Eventf(&s, nil, corev1.EventTypeWarning, "MissedTicks", "Schedule",
-					"%s earlier ticks were missed and skipped; only the latest, %s, fired", missed, due.UTC().Format(time.RFC3339))
+				ticks := "ticks were"
+				if missed == "1" {
+					ticks = "tick was"
+				}
+				r.events.Eventf(&s, nil, corev1.EventTypeWarning, "MissedTicks", "SkipTicks",
+					"%s earlier %s missed and skipped; only the latest, %s, fired", missed, ticks, due.UTC().Format(time.RFC3339))
 			}
 		case errors.Is(err, storage.ErrInvalid):
 			return inactive(false, "InvalidSchedule", "its task is refused: "+err.Error())
@@ -184,6 +190,9 @@ func parseSchedule(spec v1alpha1.ScheduleSpec) (cron.Schedule, error) {
 			return nil, fmt.Errorf("timezone %q: %w", spec.Timezone, err)
 		}
 	}
+	if spec.Jitter != nil && spec.Jitter.Duration < 0 {
+		return nil, fmt.Errorf("jitter %s: must not be negative", spec.Jitter.Duration)
+	}
 	if expr := strings.TrimSpace(spec.Cron); strings.HasPrefix(expr, "TZ=") || strings.HasPrefix(expr, "CRON_TZ=") {
 		return nil, fmt.Errorf("cron %q: set the zone with timezone, not a prefix", spec.Cron)
 	}
@@ -207,7 +216,10 @@ type inZone struct {
 func (z inZone) Next(t time.Time) time.Time { return z.Schedule.Next(t.In(z.loc)) }
 
 // maxScan bounds the ticks latestDue counts: a minutely Schedule two months
-// behind. Past it, the ticks up to the last day are skipped uncounted.
+// behind. Past it, the ticks up to the last day are skipped uncounted. An
+// @every Schedule is scanned to the end instead: its ticks are counted from
+// after, and starting again from a day before now would move them by
+// whatever now is on each leader.
 const maxScan = 100_000
 
 // latestDue returns the latest tick after after whose fire time has come by
@@ -219,7 +231,7 @@ func latestDue(sched cron.Schedule, after, now time.Time, fire func(time.Time) t
 	var n, seen int
 	var far bool
 	for t := sched.Next(after); !t.IsZero() && !t.After(now); t = sched.Next(t) {
-		if seen++; seen == maxScan && t.Before(now.Add(-24*time.Hour)) {
+		if seen++; seen == maxScan && t.Before(now.Add(-24*time.Hour)) && !constantDelay(sched) {
 			far, t = true, sched.Next(now.Add(-24*time.Hour))
 			if t.IsZero() || t.After(now) {
 				break
@@ -243,6 +255,15 @@ func latestDue(sched cron.Schedule, after, now time.Time, fire func(time.Time) t
 		return due, fmt.Sprint(n)
 	}
 	return due, ""
+}
+
+// constantDelay reports whether sched is an @every one.
+func constantDelay(sched cron.Schedule) bool {
+	if z, ok := sched.(inZone); ok {
+		sched = z.Schedule
+	}
+	_, ok := sched.(cron.ConstantDelaySchedule)
+	return ok
 }
 
 // jitterOffset is how long after tick a Schedule's task is due: a fixed

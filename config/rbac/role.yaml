@@ -13,14 +13,6 @@ rules:
   - delete
   - get
 - apiGroups:
-  - ""
-  - events.k8s.io
-  resources:
-  - events
-  verbs:
-  - create
-  - patch
-- apiGroups:
   - apps
   resources:
   - deployments
@@ -92,3 +84,10 @@ rules:
   - create
   - get
   - update
+- apiGroups:
+  - events.k8s.io
+  resources:
+  - events
+  verbs:
+  - create
+  - patch
