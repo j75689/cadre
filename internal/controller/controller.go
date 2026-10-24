@@ -197,6 +197,16 @@ func LeaderElection(namespace string) ManagerOption {
 	}
 }
 
+// LeaderLease sets how long an elected leader's Lease lasts without a
+// renewal (default 15 seconds), the renewal deadline and the retry period
+// following from it: how fast a replica takes over from one that died.
+func LeaderLease(d time.Duration) ManagerOption {
+	return func(o *ctrl.Options) {
+		renew, retry := d*2/3, d/4
+		o.LeaseDuration, o.RenewDeadline, o.RetryPeriod = &d, &renew, &retry
+	}
+}
+
 // NewManager returns a controller manager for cadre-server: no metrics or
 // health endpoints of its own, leader election only with LeaderElection,
 // and Secrets kept out of the cache even if a client asks for one.

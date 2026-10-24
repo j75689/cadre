@@ -4,8 +4,10 @@
 // checks the invariants of docs/storage.md: no task ever runs twice, every
 // run ends exactly once and for the right reason, outbox effects land
 // exactly once, the Team semaphore holds, and the index rebuilds completely.
-// Half the tasks are run a step at a time by step workers that die in the
-// middle of steps too; steps_test.go checks step mode's own invariants.
+// A third of the tasks are run a step at a time by step workers that die in
+// the middle of steps too (steps_test.go checks step mode's own invariants),
+// and a third by Jobs cadre-server starts, whose pods a fake kubelet runs,
+// kills and leaves Pending (jobs_test.go).
 //
 // CADRE_CHAOS_SEED replays a seed; CADRE_CHAOS_DURATION sets how long the
 // chaos lasts (60s by default, 20s with -short).
@@ -92,6 +94,9 @@ func TestChaos(t *testing.T) {
 	cfg := kubernetes.Config{REST: restCfg, S3: testenv.S3(t)}
 	admin := adminClient(t, restCfg)
 	ctx := context.Background()
+	if err := admin.Create(ctx, &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: leaderNS}}); err != nil {
+		t.Fatal(err)
+	}
 	for ns, maxRuns := range teams {
 		if err := admin.Create(ctx, &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: ns}}); err != nil {
 			t.Fatal(err)
@@ -113,6 +118,11 @@ func TestChaos(t *testing.T) {
 				ModelRef: "claude", Runtime: v1alpha1.AgentRuntime{Type: v1alpha1.RuntimeBuiltin, Execution: v1alpha1.RunModeStep},
 			}},
 		} {
+			if err := admin.Create(ctx, obj); err != nil {
+				t.Fatal(err)
+			}
+		}
+		for _, obj := range jobObjects(ns) {
 			if err := admin.Create(ctx, obj); err != nil {
 				t.Fatal(err)
 			}
@@ -166,10 +176,7 @@ func TestChaos(t *testing.T) {
 	spawn(func() {
 		for chaos.Err() == nil {
 			for ns := range teams {
-				agent := "coder"
-				if created%2 == 1 {
-					agent = "stepper"
-				}
+				agent := []string{"coder", "stepper", jobAgentName}[created%3]
 				if _, err := cl.CreateTask(chaos, ns, "", v1alpha1.TaskSpec{
 					Title:    fmt.Sprintf("task %d", created),
 					Assignee: &v1alpha1.Assignee{Kind: v1alpha1.AssigneeAgent, Name: agent},
@@ -186,6 +193,14 @@ func TestChaos(t *testing.T) {
 	for i := range runners {
 		spawn(func() { runnerSlot(chaos, cl, rnd, rec, fmt.Sprintf("runner-%d", i)) })
 	}
+	// The fake kubelet and the Job monitor run until the checks are done:
+	// Jobs still finish while the system quiesces.
+	jrec := newJobRecorder()
+	kubeCtx, stopKube := context.WithCancel(ctx)
+	kubeDone := make(chan struct{})
+	go func() { defer close(kubeDone); kubelet(kubeCtx, admin, rnd, rec, jrec) }()
+	go monitorJobs(kubeCtx, admin, jrec)
+	defer func() { stopKube(); <-kubeDone }()
 	steps := newStepRecorder(px.URL)
 	for i := range stepWorkers {
 		spawn(func() { stepSlot(chaos, px.URL, rnd, steps, fmt.Sprintf("worker-%d", i)) })
@@ -232,6 +247,7 @@ func TestChaos(t *testing.T) {
 
 	check(t, admin, cfg, rec)
 	checkSteps(t, cfg, steps)
+	checkJobs(t, admin, jrec)
 }
 
 // runnerSlot keeps one runner alive, killing and replacing it at random

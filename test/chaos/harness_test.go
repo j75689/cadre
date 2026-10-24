@@ -115,13 +115,15 @@ func startServer(name string, cfg kubernetes.Config, rnd *lockedRand, publicURL 
 	}
 	// Each server runs its own controllers, as cadre-server does: they
 	// mark the Agent Ready, and claims read it.
-	ctrls, err := controller.NewManager(cfg.REST)
+	// The controllers elect a leader, as cadre-server's replicas do, with
+	// a short Lease so a killed server's place is taken within the chaos.
+	ctrls, err := controller.NewManager(cfg.REST, controller.LeaderElection(leaderNS), controller.LeaderLease(leaderLease))
 	if err != nil {
 		cancel()
 		_ = drv.Close()
 		return nil, err
 	}
-	if err := controller.Setup(ctrls, controller.Options{}, controller.SkipNameValidation()); err != nil {
+	if err := controller.Setup(ctrls, controller.Options{ServerURL: publicURL, Lease: managerConfig.Lease, Resync: jobResync}, controller.SkipNameValidation()); err != nil {
 		cancel()
 		_ = drv.Close()
 		return nil, err
