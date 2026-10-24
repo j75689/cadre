@@ -6,9 +6,14 @@ import (
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
+	"github.com/j75689/cadre/internal/auth"
+	"github.com/j75689/cadre/internal/auth/oidctest"
 	"github.com/j75689/cadre/internal/manager"
 	"github.com/j75689/cadre/internal/storage/memory"
 )
@@ -77,7 +82,7 @@ func TestResolvePublicURL(t *testing.T) {
 func TestRoutesCoexist(t *testing.T) {
 	log := slog.New(slog.NewTextHandler(io.Discard, nil))
 	m := manager.New(memory.NewBackend().Open(), manager.Config{})
-	mux := newMux(m, log, "http://localhost", nil)
+	mux := newMux(m, log, "http://localhost", auth.None{}, nil)
 	for _, c := range []struct {
 		method, path string
 		code         int
@@ -95,6 +100,44 @@ func TestRoutesCoexist(t *testing.T) {
 		mux.ServeHTTP(w, httptest.NewRequest(c.method, c.path, nil))
 		if w.Code != c.code {
 			t.Errorf("%s %s: %d, want %d", c.method, c.path, w.Code, c.code)
+		}
+	}
+}
+
+func TestNewAuthenticator(t *testing.T) {
+	log := slog.New(slog.NewTextHandler(io.Discard, nil))
+	ctx := context.Background()
+	if a, err := newAuthenticator(ctx, "", false, oidcFlags{}, "http://localhost:8080", log); err != nil || a.Info().Mode != auth.ModeNone {
+		t.Errorf("outside a cluster: %v, %v", a, err)
+	}
+	// In a cluster logins are the default, and need their flags.
+	if _, err := newAuthenticator(ctx, "", true, oidcFlags{}, "https://cadre.example.test", log); err == nil || !strings.Contains(err.Error(), "--oidc-issuer") {
+		t.Errorf("in a cluster without OIDC flags: %v", err)
+	}
+	if _, err := newAuthenticator(ctx, "basic", false, oidcFlags{}, "http://localhost:8080", log); err == nil {
+		t.Error("--auth=basic accepted")
+	}
+	idp := oidctest.New(t)
+	key := filepath.Join(t.TempDir(), "key")
+	if err := os.WriteFile(key, []byte(strings.Repeat("ab", 32)+"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	f := oidcFlags{issuer: idp.URL, clientID: oidctest.ClientID, scopes: "openid, email groups", usernameClaim: "email", groupsClaim: "groups", sessionKeyFile: key}
+	a, err := newAuthenticator(ctx, "oidc", false, f, "http://localhost:8080", log)
+	if err != nil || a.Info().Mode != auth.ModeOIDC || strings.Join(a.Info().Scopes, " ") != "openid email groups" {
+		t.Fatalf("oidc: %+v, %v", a, err)
+	}
+	// Every route still registers beside the login's, and the API wants
+	// an identity while the UI and the probes do not.
+	mux := newMux(manager.New(memory.NewBackend().Open(), manager.Config{}), log, "http://localhost:8080", a, nil)
+	for _, c := range []struct {
+		path string
+		code int
+	}{{"/api/v1/teams", http.StatusUnauthorized}, {"/api/v1/auth", http.StatusOK}, {"/healthz", http.StatusOK}, {"/t/a", http.StatusOK}, {"/auth/login", http.StatusFound}} {
+		w := httptest.NewRecorder()
+		mux.ServeHTTP(w, httptest.NewRequest(http.MethodGet, c.path, nil))
+		if w.Code != c.code {
+			t.Errorf("GET %s: %d, want %d", c.path, w.Code, c.code)
 		}
 	}
 }

@@ -38,8 +38,8 @@ Cadre is not a SaaS, not a workflow engine, not an LLM gateway and not a sandbox
 - Task page at `/t/<namespace>/tasks/<name>`: the spec (the description as plain text; markdown is not rendered yet), the parent of a subtask, the status (phase, number, what it waits for, the run in progress, conditions), the thread and the run history. The thread is read once from the start, then only past the last entry seen, every five seconds; the entry the task waits on is marked. A human can comment until the task ends, reply while it waits on a question or a review, approve or reject while it waits on a tool approval (with a note), and cancel it, after a confirmation, until it ends. After an action the task and the thread are read again at once (the thread from the last entry held, so what others wrote meanwhile is not skipped); an action's error shows beside it, and a conflict (the task moved on) reads them again too. A run expands to its events, read once.
 - New task at `/t/<namespace>/new`, linked from the board: title, description, an assignee (an Agent picked from the team's, a not-Ready one saying why, or a user by name), priority and labels; the server names the task. It is checked as the server would before it is sent.
 - A subtask's card and page link to its parent. Listing a task's subtasks needs a parent filter in the storage index, which comes later.
-- Identity, until sign-in: the UI asks for a display name once and keeps it in the browser; it is the author of what the user does, as `--as` is for the CLI. Nothing checks it. OIDC replaces it.
-- The routes the UI uses, under `/api/v1`: `GET /teams`; under `/namespaces/<namespace>`: `GET /agents` (each Agent's name, whether it is Ready, and if not why), `GET /tasks` (`phase`, `offset`, `limit`), `POST /tasks`, and under `/tasks/<name>`: `GET`, `GET /thread` (`after`, `limit`), `POST /comments`, `POST /reply`, `POST /approve`, `POST /cancel`, `GET /runs` and `GET /runs/<run>/events`.
+- Identity: with logins the UI asks `GET /api/v1/me` who it is, shows the user with a logout, and sends no author; any request answered 401 sends the browser to log in and back to the page. Without logins (`--auth=none`) it asks for a display name once, keeps it in the browser and sends it as the author, as `--as` does for the CLI. See [Identity and access](#identity-and-access).
+- The routes the UI uses, under `/api/v1`: `GET /auth`, `GET /me`, `GET /teams`; under `/namespaces/<namespace>`: `GET /agents` (each Agent's name, whether it is Ready, and if not why), `GET /tasks` (`phase`, `offset`, `limit`), `POST /tasks`, and under `/tasks/<name>`: `GET`, `GET /thread` (`after`, `limit`), `POST /comments`, `POST /reply`, `POST /approve`, `POST /cancel`, `GET /runs` and `GET /runs/<run>/events`.
 - Planned: subtask tree, deliverable approval queue (approve, reject, publish; plugin, see below).
 - The API serves the CLI and external systems; the MCP endpoint lets external agents (Claude Code, for example) create tasks, comment and read progress.
 - Stateless and horizontally scalable. Every state change is delegated to the Task Manager.
@@ -90,6 +90,44 @@ Two layers, as in Argo CD:
 
 - **Kubernetes RBAC** governs the GitOps path: who may apply `Agent`, `ToolServer`, `Task` resources.
 - **Cadre's own SSO**: OIDC (or Dex), groups mapped to per-team roles, a policy file for board actions (who may approve, assign, or only view), and a local bootstrap admin. Board users such as reviewers do not need a kubeconfig.
+
+### Authentication
+
+People log in with any OIDC provider; there is no provider-specific code. This covers the web UI, the API and the CLI. Runners (ServiceAccount tokens checked with TokenReview, or minted Runner tokens) and the per-run MCP endpoint authenticate their own way and are not affected.
+
+- **Modes.** `--auth=oidc` requires a login for every `/api/v1` route except `GET /api/v1/auth`. `--auth=none` requires nothing: a request's author is whatever the client names, so anyone may act as anyone; cadre-server logs a warning, as for `--runner-auth=none`. The default is `oidc` in a cluster and `none` outside one.
+- **Flags.**
+  - `--oidc-issuer`: the provider's discovery document is read from it at start, and its keys are cached and refreshed.
+  - `--oidc-client-id` and `--oidc-client-secret-file`: the web UI's client, which is confidential.
+  - `--oidc-cli-client-id`: a public client for `cadre login`, by default the same client. ID tokens for either client are accepted. Most providers will not let one client be both confidential (for the browser) and public (for a CLI without a secret), hence the second client.
+  - `--oidc-scopes`: default `openid profile email groups`.
+  - `--oidc-username-claim`: default `email`; a token without it is refused.
+  - `--oidc-groups-claim`: default `groups`.
+  - `--session-key-file`: 32 bytes, raw or 64 hex characters, required with `oidc`. Every replica must have the same key. Until the Helm chart makes it, create the Secret by hand: `kubectl -n cadre-system create secret generic cadre-session-key --from-literal=key=$(openssl rand -hex 32)`, and mount it.
+  - The callback is `<--public-url>/auth/callback`.
+- **Browser.**
+  - `GET /auth/login?next=<path>` starts the authorization code flow with PKCE. `next` must be a path on this site; anything else becomes `/`. The state, nonce, PKCE verifier and `next` are kept, encrypted, in a cookie for ten minutes.
+  - `GET /auth/callback` checks the state, exchanges the code, and verifies the ID token: signature, issuer, audience, expiry and nonce.
+  - It then sets the session cookie: the subject, username, display name (the `name` claim) and groups, encrypted and authenticated with the session key, so any replica reads it. It expires with the ID token, and after 12 hours at most. There is no refresh: an expired session logs in again.
+  - The cookie is `HttpOnly`, `SameSite=Lax` and path `/`. Behind https it is also `Secure` and named with the `__Host-` prefix.
+  - `POST /auth/logout` clears it.
+  - A change made with the cookie (any method but GET or HEAD) must carry an `Origin`, or failing that a `Referer`, of the public URL, or it is refused with 403.
+- **CLI.**
+  - `cadre login` asks `GET /api/v1/auth` for the issuer, client and scopes. It then runs the same code flow with PKCE in the browser, with the callback on a localhost listener.
+  - It keeps the ID token, and nothing else, in `$XDG_CONFIG_HOME/cadre/credentials` (by default `~/.config`), mode 0600, by server URL.
+  - Every request to that server then sends `Authorization: Bearer <ID token>`, verified like the browser's; bearer requests need no `Origin`. An expired token means logging in again.
+  - `--as` is refused by a server with logins ("identity comes from login") and still names the author with `--auth=none`.
+- **Identity in the API.** The author of a comment, reply or approval is the caller's username. The `author` fields of those requests count only with `--auth=none`. `GET /api/v1/me` returns the mode and the identity.
+- **Not yet.** Roles per team and their enforcement come next. The MCP endpoint for outside agents is not behind the login yet.
+
+**Developing with Dex.** `hack/dex/dex.yaml` runs Dex in a local cluster with one user (`dev@example.test`, password `password`), the web client `cadre` and the public client `cadre-cli`. To use it:
+
+1. `kubectl apply -f hack/dex/dex.yaml`
+2. `kubectl -n dex port-forward svc/dex 5556:5556`
+3. Write a session key: `openssl rand -hex 32 > /tmp/cadre-session-key`.
+4. Run cadre-server outside the cluster with `--auth=oidc --oidc-issuer=http://localhost:5556/dex --oidc-client-id=cadre --oidc-cli-client-id=cadre-cli --oidc-client-secret-file=<a file holding cadre-dev-not-a-secret> --session-key-file=/tmp/cadre-session-key`.
+
+The browser and cadre-server then both reach the issuer at the same address. Dex's static users have no groups.
 
 ## Installation
 

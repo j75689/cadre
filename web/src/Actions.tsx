@@ -30,7 +30,7 @@ interface Props {
 export function Actions({ task, onTask, onRefresh }: Props) {
   const can = allowed(task);
   const { namespace: ns, name } = task.metadata;
-  const author = useIdentity();
+  const { author, ready } = useIdentity();
   if (!can.comment && !can.reply && !can.approve && !can.cancel) return null;
   const run = async <T,>(call: () => Promise<T>, done: (r: T) => void): Promise<string> => {
     try {
@@ -44,12 +44,12 @@ export function Actions({ task, onTask, onRefresh }: Props) {
   };
   return (
     <section className="actions" aria-label="Actions">
-      {author === "" && <p className="hint">Give your name at the top to act on this task.</p>}
+      {!ready && <p className="hint">Give your name at the top to act on this task.</p>}
       {can.reply && (
         <TextAction
           label="Reply"
           placeholder={task.status?.waiting?.reason === "Review" ? "Your review" : "Your answer"}
-          disabled={author === ""}
+          disabled={!ready}
           onSubmit={(body) =>
             run(
               () => reply(ns, name, author, body),
@@ -58,11 +58,11 @@ export function Actions({ task, onTask, onRefresh }: Props) {
           }
         />
       )}
-      {can.approve && <Approval disabled={author === ""} onDecide={(ok, note) => run(() => approve(ns, name, author, ok, note), (r) => onTask(r.task))} />}
+      {can.approve && <Approval disabled={!ready} onDecide={(ok, note) => run(() => approve(ns, name, author, ok, note), (r) => onTask(r.task))} />}
       {can.comment && (
-        <TextAction label="Comment" placeholder="Add to the thread" disabled={author === ""} onSubmit={(body) => run(() => comment(ns, name, author, body), () => {})} />
+        <TextAction label="Comment" placeholder="Add to the thread" disabled={!ready} onSubmit={(body) => run(() => comment(ns, name, author, body), () => {})} />
       )}
-      {can.cancel && <Cancel disabled={author === ""} onCancel={() => run(() => cancel(ns, name), onTask)} />}
+      {can.cancel && <Cancel disabled={!ready} onCancel={() => run(() => cancel(ns, name), onTask)} />}
     </section>
   );
 }

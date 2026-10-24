@@ -1,0 +1,87 @@
+# Dex for developing and testing Cadre's logins, in a local cluster (kind,
+# OrbStack, Docker Desktop). Not for production: one static user, fake
+# secrets, in-memory storage. See docs/architecture.md, "Identity and
+# access".
+#
+#   kubectl apply -f hack/dex/dex.yaml
+#   kubectl -n dex port-forward svc/dex 5556:5556
+#
+# The issuer is http://localhost:5556/dex, so run cadre-server outside the
+# cluster too, where both it and the browser reach that address.
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: dex
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: dex
+  namespace: dex
+data:
+  config.yaml: |
+    issuer: http://localhost:5556/dex
+    storage:
+      type: memory
+    web:
+      http: 0.0.0.0:5556
+    oauth2:
+      skipApprovalScreen: true
+    enablePasswordDB: true
+    # The only user: dev@example.test, password "password".
+    staticPasswords:
+      - email: dev@example.test
+        hash: "$2a$10$2b2cU8CPhOTaGrs1HRQuAueS7JTT5ZHsHSzYiFPm1leZck7Mc8T4W"
+        username: dev
+        userID: 08a8684b-db88-4b73-90a9-3cd1661f5466
+    staticClients:
+      # The web UI: a confidential client.
+      - id: cadre
+        name: Cadre
+        secret: cadre-dev-not-a-secret
+        redirectURIs:
+          - http://localhost:8080/auth/callback
+      # cadre login: a public client. Dex lets a public client come back
+      # to http://localhost on any port.
+      - id: cadre-cli
+        name: Cadre CLI
+        public: true
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: dex
+  namespace: dex
+spec:
+  replicas: 1
+  selector:
+    matchLabels: { app: dex }
+  template:
+    metadata:
+      labels: { app: dex }
+    spec:
+      containers:
+        - name: dex
+          image: ghcr.io/dexidp/dex:v2.44.0
+          args: ["dex", "serve", "/etc/dex/config.yaml"]
+          ports:
+            - containerPort: 5556
+          volumeMounts:
+            - name: config
+              mountPath: /etc/dex
+      volumes:
+        - name: config
+          configMap:
+            name: dex
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: dex
+  namespace: dex
+spec:
+  selector: { app: dex }
+  ports:
+    - port: 5556
+      targetPort: 5556

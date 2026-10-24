@@ -12,6 +12,7 @@ import (
 
 	v1alpha1 "github.com/j75689/cadre/api/v1alpha1"
 	"github.com/j75689/cadre/internal/api"
+	"github.com/j75689/cadre/internal/auth"
 	"github.com/j75689/cadre/internal/client"
 	"github.com/j75689/cadre/internal/manager"
 	"github.com/j75689/cadre/internal/storage/memory"
@@ -74,5 +75,28 @@ func TestListAgents(t *testing.T) {
 		if got.Items[i] != want[i] {
 			t.Errorf("agent %d: %+v, want %+v", i, got.Items[i], want[i])
 		}
+	}
+}
+
+// With a login, the author of a comment, a reply or an approval is the
+// caller, whatever the request names.
+func TestAuthorIsTheCaller(t *testing.T) {
+	m := manager.New(memory.NewBackend().Open(), manager.Config{Agents: manager.ReadyBuiltin(ns, "coder", "claude")})
+	mux := http.NewServeMux()
+	api.NewServer(m, slog.New(slog.NewTextHandler(io.Discard, nil))).Register(mux)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		mux.ServeHTTP(w, r.WithContext(auth.WithIdentity(r.Context(), &auth.Identity{Username: "dana@example.test"})))
+	}))
+	t.Cleanup(srv.Close)
+	c := client.New(srv.URL, nil)
+	if _, err := c.InitTeam(ctx, ns, api.TeamRequest{}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := c.CreateTask(ctx, ns, "x", v1alpha1.TaskSpec{Title: "x"}); err != nil {
+		t.Fatal(err)
+	}
+	entry, err := c.Comment(ctx, ns, "x", "mallory", "hello")
+	if err != nil || entry.Author.Name != "dana@example.test" {
+		t.Fatalf("comment as mallory: %+v, %v", entry, err)
 	}
 }

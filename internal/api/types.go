@@ -33,6 +33,8 @@ type TaskList struct {
 }
 
 // CommentRequest writes to a task's thread, or answers a waiting task.
+// Author is used only by a server run with --auth=none: with a login, the
+// author is the caller's username, whatever the request says.
 type CommentRequest struct {
 	Author string `json:"author"`
 	Body   string `json:"body"`
@@ -50,7 +52,8 @@ type ReplyResponse struct {
 }
 
 // ApproveRequest approves or denies the tool call a task waits on. Approve
-// is required, so a request cannot deny by leaving it out.
+// is required, so a request cannot deny by leaving it out. Author, as in
+// CommentRequest, counts only with --auth=none.
 type ApproveRequest struct {
 	Author  string `json:"author"`
 	Approve *bool  `json:"approve"`
