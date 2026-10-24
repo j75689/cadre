@@ -450,7 +450,7 @@ func TestNotifyAfterAnotherServer(t *testing.T) {
 	if _, err := e.m.transition(ctx, key, task.NotifyDelivered{ID: stale.ID, To: []string{"a"}}); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := e.m.notifyItem(ctx, key, stale, byName); err != nil {
+	if _, _, err := e.m.notifyItem(ctx, key, stale, byName); err != nil {
 		t.Fatal(err)
 	}
 	if na, nb := len(a.deliveries()), len(b.deliveries()); na != 0 || nb != 1 {
@@ -460,7 +460,7 @@ func TestNotifyAfterAnotherServer(t *testing.T) {
 	if _, err := e.m.transition(ctx, key, task.AckOutbox{IDs: []string{stale.ID}}); err != nil {
 		t.Fatal(err)
 	}
-	if done, err := e.m.notifyItem(ctx, key, stale, byName); err != nil || done {
+	if done, _, err := e.m.notifyItem(ctx, key, stale, byName); err != nil || done {
 		t.Errorf("a gone item: done %v, %v", done, err)
 	}
 	if na, nb := len(a.deliveries()), len(b.deliveries()); na != 0 || nb != 1 {
@@ -517,5 +517,103 @@ func TestNotifyWithoutNotifiers(t *testing.T) {
 	}
 	if items := notifyItems(e.get(t, key)); len(items) != 0 || len(rec.deliveries()) != 0 {
 		t.Errorf("items %+v, deliveries %d", items, len(rec.deliveries()))
+	}
+}
+
+// countWrites counts task status writes.
+type countWrites struct {
+	storage.Driver
+	n *int
+}
+
+func (c countWrites) UpdateTaskStatus(ctx context.Context, t *v1alpha1.Task) error {
+	*c.n++
+	return c.Driver.UpdateTaskStatus(ctx, t)
+}
+
+// A notification nobody Ready can take costs no write, pass after pass.
+func TestNotifyNotReadyCostsNoWrite(t *testing.T) {
+	rec := newReceiver(t)
+	nf := notifier("hook", rec.URL, nil, v1alpha1.NotifyQuestion)
+	nf.Generation = 2
+	e, _ := notifyEnv(t, nf)
+	key := e.addTask(t, "x", v1alpha1.AssigneeAgent)
+	e.question(t, key)
+	var writes int
+	e.m.store = countWrites{e.store, &writes}
+	for range 3 {
+		_ = e.m.DeliverNotifications(ctx)
+	}
+	if writes != 0 {
+		t.Errorf("%d task writes for a Notifier not Ready", writes)
+	}
+}
+
+// Finished by another server since it was read: the turn is ended and the
+// item acked, with nothing sent.
+func TestNotifyFinishedMeanwhile(t *testing.T) {
+	rec := newReceiver(t)
+	e, _ := notifyEnv(t, notifier("hook", rec.URL, nil, v1alpha1.NotifyQuestion))
+	key := e.addTask(t, "x", v1alpha1.AssigneeAgent)
+	e.question(t, key)
+	stale := notifyItems(e.get(t, key))[0]
+	if _, err := e.m.transition(ctx, key, task.NotifyDelivered{ID: stale.ID, To: []string{"hook"}}); err != nil {
+		t.Fatal(err)
+	}
+	nfs, _ := e.m.cfg.Notifiers.ListNotifiers(ctx, ns)
+	done, _, err := e.m.notifyItem(ctx, key, stale, map[string]*v1alpha1.Notifier{"hook": &nfs[0]})
+	if err != nil || !done || len(rec.deliveries()) != 0 {
+		t.Fatalf("done %v, %v, %d deliveries", done, err, len(rec.deliveries()))
+	}
+	if n := notifyItems(e.get(t, key))[0].Notify; n.SendingBy != "" {
+		t.Errorf("the turn outlived the work: %+v", n)
+	}
+}
+
+// A dropped notification is told of only once the drop is written; the
+// turn ends either way.
+func TestNotifyDropIsToldAfterTheAck(t *testing.T) {
+	bad := newReceiver(t)
+	bad.answer(http.StatusBadGateway)
+	e, recorded := notifyEnv(t, notifier("dead", bad.URL, nil, v1alpha1.NotifyQuestion))
+	key := e.addTask(t, "x", v1alpha1.AssigneeAgent)
+	e.question(t, key)
+	e.clock.add(NotifyTTL + time.Minute)
+	e.m.store = failAcks{e.store}
+	_ = e.m.DeliverNotifications(ctx)
+	for _, r := range *recorded {
+		if strings.HasPrefix(r, "warn") {
+			t.Errorf("told of a drop that did not happen: %s", r)
+		}
+	}
+	if n := notifyItems(e.get(t, key))[0].Notify; n.SendingBy != "" {
+		t.Errorf("the turn outlived a failed drop: %+v", n)
+	}
+	e.m.store = e.store
+	if err := e.m.DeliverNotifications(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if last := (*recorded)[len(*recorded)-1]; !strings.HasPrefix(last, "warn team-a/x NotificationDropped") {
+		t.Errorf("recorded %v", *recorded)
+	}
+}
+
+// A server without Notifiers leaves alone a notification another server is
+// sending.
+func TestNotifyWithoutNotifiersHonoursATurn(t *testing.T) {
+	rec := newReceiver(t)
+	e, _ := notifyEnv(t, notifier("hook", rec.URL, nil, v1alpha1.NotifyQuestion))
+	key := e.addTask(t, "x", v1alpha1.AssigneeAgent)
+	e.question(t, key)
+	id := notifyItems(e.get(t, key))[0].ID
+	if _, err := e.m.transition(ctx, key, task.NotifyClaim{ID: id, By: "another server", Until: e.clock.now().Add(time.Minute)}); err != nil {
+		t.Fatal(err)
+	}
+	e.m.cfg.Notifiers = nil
+	if err := e.m.DeliverNotifications(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if items := notifyItems(e.get(t, key)); len(items) != 1 {
+		t.Errorf("acked under another server's turn: %+v", items)
 	}
 }

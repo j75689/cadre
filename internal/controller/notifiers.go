@@ -118,6 +118,9 @@ func (n notifiers) Delivered(ctx context.Context, nf *v1alpha1.Notifier, at time
 	if merr != nil {
 		return
 	}
+	// Bounded: a slow API server must not hold the delivery up.
+	ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
+	defer cancel()
 	_ = n.client.Status().Patch(ctx, nf.DeepCopy(), client.RawPatch(types.MergePatchType, data))
 }
 
