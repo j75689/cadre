@@ -511,8 +511,4 @@ func TestReserveItem(t *testing.T) {
 		t.Fatalf("moving on from 4: %d", got)
 	}
 	wantErr(t, tk, ReserveItem{ID: id, From: 4, To: 0}, ErrInvalidEvent)
-	// In the thread, the revision moves past the reservation with it.
-	if s := apply(t, tk, ReserveItem{ID: id, From: 4, To: 9, Thread: true}).Status; s.Thread == nil || s.Thread.Revision != 9 {
-		t.Fatalf("thread after a thread reservation: %+v", s.Thread)
-	}
 }

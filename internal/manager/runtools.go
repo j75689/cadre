@@ -70,8 +70,8 @@ func (m *Manager) RunPost(ctx context.Context, key storage.Key, runID, body stri
 // in one fenced write: the Finish carries the Question's outbox item, and
 // the wait names it until the dispatcher has written it. When it returns
 // without error the run is over: the runner must stop, without finishing.
-// A retry after the Finish landed is answered as finished, and the one
-// Question is the first one's.
+// A retry after the Finish landed fails as the run is gone, and the one
+// Question is the first attempt's.
 func (m *Manager) RunAsk(ctx context.Context, key storage.Key, runID, question string) (*ThreadEntry, error) {
 	t, err := m.activeRun(ctx, key, runID)
 	if err != nil {
@@ -86,10 +86,6 @@ func (m *Manager) RunAsk(ctx context.Context, key storage.Key, runID, question s
 		WaitingItem: item.ID, Outbox: []v1alpha1.OutboxItem{item},
 	}); err != nil {
 		return nil, err
-	}
-	// After a retry, the wait is on the first attempt's Question.
-	if t, err := m.store.GetTask(ctx, key); err == nil && t.Status.Waiting != nil && t.Status.Waiting.ItemID != "" {
-		item.ID = t.Status.Waiting.ItemID
 	}
 	return m.appliedEntry(ctx, key, item), nil
 }
@@ -216,7 +212,7 @@ func (m *Manager) RunWriteFile(ctx context.Context, key storage.Key, runID, path
 	if _, err := m.activeRun(ctx, key, runID); err != nil {
 		return nil, err
 	}
-	after, err := m.latestVersion(ctx, fileStream(key, path))
+	after, err := m.latestFileVersion(ctx, key, path)
 	if err != nil {
 		return nil, err
 	}
@@ -230,10 +226,9 @@ func (m *Manager) RunWriteFile(ctx context.Context, key storage.Key, runID, path
 		return nil, err
 	}
 	info := &FileInfo{Path: path, Size: len(content)}
-	if err := m.dispatchTask(ctx, key); err == nil {
-		if v, ok, err := m.findVersion(ctx, key, path, after, item.ID); err == nil && ok {
-			info.Version = v.Version
-		}
+	m.applyNow(ctx, key)
+	if v, ok, err := m.findVersion(ctx, key, path, after, item.ID); err == nil && ok {
+		info.Version = v.Version
 	}
 	return info, nil
 }
@@ -244,10 +239,10 @@ func (m *Manager) latestVersion(ctx context.Context, stream string) (int64, erro
 	return m.latestSeq(ctx, stream, 0)
 }
 
-// appendSeq appends data under the next free sequence number, and returns
-// it.
-func (m *Manager) appendSeq(ctx context.Context, stream string, data []byte) (int64, error) {
-	seq, err := m.latestSeq(ctx, stream, 0)
+// appendSeq appends data under the next free sequence number after from,
+// a number known to be taken (or 0), and returns it.
+func (m *Manager) appendSeq(ctx context.Context, stream string, from int64, data []byte) (int64, error) {
+	seq, err := m.latestSeq(ctx, stream, from)
 	if err != nil {
 		return 0, err
 	}

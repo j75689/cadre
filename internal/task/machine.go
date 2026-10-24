@@ -220,13 +220,12 @@ func (WaitingAt) kind() Kind { return KindWaitingAt }
 // reserved elsewhere already, so of dispatchers reserving at once one wins
 // and the others read its choice.
 //
-// A reservation in the thread (Thread set) also moves the thread revision
-// to at least To in the same write, so an ordinary append, which takes the
-// revision's next number, does not land on the reserved key.
+// A reservation writes nothing to the stream: the keys there stay dense
+// and in order. An ordinary append may take the reserved key first; the
+// item then reserves the next.
 type ReserveItem struct {
 	ID       string
 	From, To int64
-	Thread   bool
 }
 
 func (ReserveItem) kind() Kind { return KindReserve }
@@ -403,15 +402,8 @@ func Apply(t *v1alpha1.Task, ev Event, now time.Time) (Result, error) {
 			return Result{}, fmt.Errorf("reserve %d for item %q: %w", ev.To, ev.ID, ErrInvalidEvent)
 		}
 		for i := range s.Outbox {
-			if s.Outbox[i].ID != ev.ID || s.Outbox[i].Seq != ev.From {
-				continue
-			}
-			s.Outbox[i].Seq = ev.To
-			if ev.Thread {
-				if s.Thread == nil {
-					s.Thread = &v1alpha1.ThreadStatus{}
-				}
-				s.Thread.Revision = max(s.Thread.Revision, ev.To)
+			if s.Outbox[i].ID == ev.ID && s.Outbox[i].Seq == ev.From {
+				s.Outbox[i].Seq = ev.To
 			}
 		}
 

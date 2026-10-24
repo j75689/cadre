@@ -60,8 +60,8 @@ func (e *env) entriesOf(t *testing.T, key storage.Key, itemID string) (mine int,
 }
 
 // Two dispatchers apply one item while a human comments in between: the
-// item's entry is written once, at its reserved position, and the human's
-// comment lands after it, not on it.
+// item's entry is written once, and the thread's keys stay dense and in
+// order, whichever of the two takes the reserved key.
 func TestTwoAppliersAndAHumanWriteOneEntry(t *testing.T) {
 	e := newEnv(t, 1)
 	key := e.addTask(t, "t", v1alpha1.AssigneeAgent)
@@ -84,10 +84,23 @@ func TestTwoAppliersAndAHumanWriteOneEntry(t *testing.T) {
 	if mine != 1 || len(all) != 2 {
 		t.Fatalf("%d entries of the item, thread %+v; want the item once and the human's comment", mine, all)
 	}
-	// The reservation moved the revision past it, so the human's comment
-	// did not land on the reserved key: the item keeps its place.
-	if all[0].ItemID != item.ID || all[1].Body != "from a human" {
-		t.Fatalf("thread %+v; want the item at its reserved first place, the human's comment after it", all)
+	// Keys stay dense and in order, so a reader paging forward one entry
+	// at a time sees every entry.
+	var paged []ThreadEntry
+	var after int64
+	for {
+		page, err := e.m.ReadThread(ctx, key, after, 1)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(page) == 0 {
+			break
+		}
+		paged = append(paged, page...)
+		after = page[0].Seq
+	}
+	if len(paged) != 2 || paged[0].Seq != 1 || paged[1].Seq != 2 {
+		t.Fatalf("paged %+v; want entries 1 and 2", paged)
 	}
 	if out := e.get(t, key).Status.Outbox; len(out) != 0 {
 		t.Fatalf("outbox %+v, want it applied", out)
@@ -180,6 +193,9 @@ func TestConcurrentDispatchersWriteEachItemOnce(t *testing.T) {
 	if len(versions) != len(files) {
 		t.Fatalf("%d versions for %d writes", len(versions), len(files))
 	}
+	if rows, err := e.store.Read(ctx, filesIndexStream(key), "", 0); err != nil || len(rows) != len(files) {
+		t.Fatalf("%d index rows for %d versions, %v; want one row per version, by its writer", len(rows), len(files), err)
+	}
 }
 
 // Listing reads the newest snapshot of the files index and what follows
@@ -245,5 +261,26 @@ func TestAReplyWaitsForTheQuestion(t *testing.T) {
 	}
 	if _, entry, err := e.m.Answer(ctx, key, alice, "staging"); err != nil || entry.Seq != 2 {
 		t.Fatalf("an answer after the question: %+v, %v", entry, err)
+	}
+}
+
+// An outbox item that keeps failing does not hide the result of a later
+// tool's item, which is applied all the same.
+func TestAFailingItemDoesNotHideOthers(t *testing.T) {
+	e := newEnv(t, 1)
+	key := e.addTask(t, "t", v1alpha1.AssigneeAgent)
+	c := e.claim(t)
+	broken := v1alpha1.OutboxItem{ID: e.m.newID(), Kind: v1alpha1.OutboxAppendThread,
+		Thread: &v1alpha1.ThreadAppend{Blob: "no-such-blob", Kind: "Comment", Author: "coder", RunID: c.RunID}}
+	if _, err := e.m.transition(ctx, key, task.Record{RunID: c.RunID, Outbox: []v1alpha1.OutboxItem{broken}}); err != nil {
+		t.Fatal(err)
+	}
+	entry, err := e.m.RunPost(ctx, key, c.RunID, "still posted")
+	if err != nil || entry.Seq == 0 {
+		t.Fatalf("post next to a failing item: %+v, %v; want its seq", entry, err)
+	}
+	info, err := e.m.RunWriteFile(ctx, key, c.RunID, "a.txt", "x")
+	if err != nil || info.Version != 1 {
+		t.Fatalf("write next to a failing item: %+v, %v; want version 1", info, err)
 	}
 }
