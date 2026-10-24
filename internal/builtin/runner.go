@@ -312,7 +312,9 @@ func (r *run) drive(ctx context.Context, s *session) ending {
 		case StopContextFull:
 			return finishWith(v1alpha1.RunOutcomeReview, "This run stopped because the model's context window is full. A new run starts again from the thread.")
 		}
-		if len(reply.Calls) == 0 {
+		// A reply with calls the provider answered itself (malformed
+		// ones, say) and none for the loop is still a tool turn.
+		if len(reply.Calls) == 0 && reply.Stop != StopToolUse {
 			summary := strings.TrimSpace(reply.Text)
 			if summary == "" {
 				summary = "The agent finished without a summary."
