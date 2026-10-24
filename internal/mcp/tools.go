@@ -87,7 +87,8 @@ func (s *Server) addTools(server *sdk.Server, t *v1alpha1.Task) {
 	runID := t.Status.Run.ID
 
 	sdk.AddTool(server, &sdk.Tool{Name: "thread_post", Description: "Post a message to the task's thread, for the humans following the task."},
-		func(ctx context.Context, _ *sdk.CallToolRequest, in postIn) (*sdk.CallToolResult, postOut, error) {
+		func(ctx context.Context, req *sdk.CallToolRequest, in postIn) (*sdk.CallToolResult, postOut, error) {
+			ctx = callContext(ctx, req)
 			e, err := s.m.RunPost(ctx, key, runID, in.Body)
 			if err != nil {
 				return s.fail(err), postOut{}, nil
@@ -96,7 +97,8 @@ func (s *Server) addTools(server *sdk.Server, t *v1alpha1.Task) {
 		})
 
 	sdk.AddTool(server, &sdk.Tool{Name: "thread_ask", Description: "Ask a human a question. The run ends as soon as the question is posted: stop working and do not call finish. A new run continues once a human answers."},
-		func(ctx context.Context, _ *sdk.CallToolRequest, in askIn) (*sdk.CallToolResult, askOut, error) {
+		func(ctx context.Context, req *sdk.CallToolRequest, in askIn) (*sdk.CallToolResult, askOut, error) {
+			ctx = callContext(ctx, req)
 			e, err := s.m.RunAsk(ctx, key, runID, in.Question)
 			if err != nil {
 				return s.fail(err), askOut{}, nil
@@ -105,7 +107,8 @@ func (s *Server) addTools(server *sdk.Server, t *v1alpha1.Task) {
 		})
 
 	sdk.AddTool(server, &sdk.Tool{Name: "thread_read", Description: "Read the task's thread, oldest first: comments, questions and answers, and tool calls with their approvals and results. Page with after, the last sequence number read."},
-		func(ctx context.Context, _ *sdk.CallToolRequest, in threadIn) (*sdk.CallToolResult, threadOut, error) {
+		func(ctx context.Context, req *sdk.CallToolRequest, in threadIn) (*sdk.CallToolResult, threadOut, error) {
+			ctx = callContext(ctx, req)
 			entries, err := s.m.RunReadThread(ctx, key, runID, in.After, in.Limit)
 			if err != nil {
 				return s.fail(err), threadOut{}, nil
@@ -117,7 +120,8 @@ func (s *Server) addTools(server *sdk.Server, t *v1alpha1.Task) {
 		})
 
 	sdk.AddTool(server, &sdk.Tool{Name: "task_create_subtask", Description: "Create a subtask of this task. It is unassigned unless an assignee is given."},
-		func(ctx context.Context, _ *sdk.CallToolRequest, in subtaskIn) (*sdk.CallToolResult, manager.SubtaskCreated, error) {
+		func(ctx context.Context, req *sdk.CallToolRequest, in subtaskIn) (*sdk.CallToolResult, manager.SubtaskCreated, error) {
+			ctx = callContext(ctx, req)
 			created, err := s.m.RunCreateSubtask(ctx, key, runID, v1alpha1.TaskSpec{
 				Title: in.Title, Description: in.Description, Priority: in.Priority, Labels: in.Labels, Assignee: in.Assignee,
 			})
@@ -128,7 +132,8 @@ func (s *Server) addTools(server *sdk.Server, t *v1alpha1.Task) {
 		})
 
 	sdk.AddTool(server, &sdk.Tool{Name: "task_files_read", Description: "Read the latest version of one of the task's files."},
-		func(ctx context.Context, _ *sdk.CallToolRequest, in readIn) (*sdk.CallToolResult, manager.File, error) {
+		func(ctx context.Context, req *sdk.CallToolRequest, in readIn) (*sdk.CallToolResult, manager.File, error) {
+			ctx = callContext(ctx, req)
 			f, err := s.m.RunReadFile(ctx, key, runID, in.Path)
 			if err != nil {
 				return s.fail(err), manager.File{}, nil
@@ -137,7 +142,8 @@ func (s *Server) addTools(server *sdk.Server, t *v1alpha1.Task) {
 		})
 
 	sdk.AddTool(server, &sdk.Tool{Name: "task_files_write", Description: "Write a new version of one of the task's files (UTF-8 text, at most 1 MiB)."},
-		func(ctx context.Context, _ *sdk.CallToolRequest, in writeIn) (*sdk.CallToolResult, manager.FileInfo, error) {
+		func(ctx context.Context, req *sdk.CallToolRequest, in writeIn) (*sdk.CallToolResult, manager.FileInfo, error) {
+			ctx = callContext(ctx, req)
 			info, err := s.m.RunWriteFile(ctx, key, runID, in.Path, in.Content)
 			if err != nil {
 				return s.fail(err), manager.FileInfo{}, nil
@@ -146,13 +152,31 @@ func (s *Server) addTools(server *sdk.Server, t *v1alpha1.Task) {
 		})
 
 	sdk.AddTool(server, &sdk.Tool{Name: "task_files_list", Description: "List the task's files with their latest version and size."},
-		func(ctx context.Context, _ *sdk.CallToolRequest, _ empty) (*sdk.CallToolResult, listOut, error) {
+		func(ctx context.Context, req *sdk.CallToolRequest, _ empty) (*sdk.CallToolResult, listOut, error) {
+			ctx = callContext(ctx, req)
 			files, err := s.m.RunListFiles(ctx, key, runID)
 			if err != nil {
 				return s.fail(err), listOut{}, nil
 			}
 			return nil, listOut{Files: files}, nil
 		})
+}
+
+// MetaCallID is the _meta key of a tool call's id from the model, which
+// a step-mode worker sends: a step re-executed after its worker died makes
+// the same calls, and what they record gets the same ids, so it lands once.
+const MetaCallID = "cadre.dev/callId"
+
+// callContext carries a tool call's id, if the worker sent one, to the
+// Task Manager.
+func callContext(ctx context.Context, req *sdk.CallToolRequest) context.Context {
+	if req == nil || req.Params == nil {
+		return ctx
+	}
+	if id, ok := req.Params.Meta[MetaCallID].(string); ok && id != "" {
+		return manager.WithCallCounter(manager.WithCallID(ctx, id))
+	}
+	return ctx
 }
 
 // fail turns an error into a tool error the model can read. It uses the

@@ -158,6 +158,11 @@ func (m *Manager) applyItem(ctx context.Context, parent *v1alpha1.Task, it v1alp
 		if err := m.releaseSlot(ctx, parent.Namespace, it.ID); err != nil {
 			return err
 		}
+		if msg := m.stepFailure(it.Run); msg != "" {
+			if err := m.postOnce(ctx, parent, it.ID, msg); err != nil {
+				return err
+			}
+		}
 		data, err := json.Marshal(it.Run)
 		if err != nil {
 			return err
@@ -182,6 +187,53 @@ func (m *Manager) applyItem(ctx context.Context, parent *v1alpha1.Task, it v1alp
 	}
 }
 
+// stepFailure is what a step-mode run failed by a reclaim says on the
+// thread, as no worker is left to; "" for any other run's end.
+func (m *Manager) stepFailure(rec *v1alpha1.RunRecord) string {
+	if rec.Mode != v1alpha1.RunModeStep || rec.Reason != v1alpha1.RunInterrupted || rec.Outcome != task.OutcomeFailed {
+		return ""
+	}
+	if rec.Attempt >= task.MaxAttempts {
+		return fmt.Sprintf("This run failed: step %d was taken %d times and never committed. A new run starts again from the thread.", rec.Step, rec.Attempt)
+	}
+	return fmt.Sprintf("This run failed: no worker took step %d within %s. A new run starts again from the thread.", rec.Step, shortDuration(m.cfg.StepIdle))
+}
+
+// shortDuration writes 1h for an hour and 10m for ten minutes.
+func shortDuration(d time.Duration) string {
+	switch {
+	case d >= time.Hour && d%time.Hour == 0:
+		return fmt.Sprintf("%dh", d/time.Hour)
+	case d >= time.Minute && d%time.Minute == 0:
+		return fmt.Sprintf("%dm", d/time.Minute)
+	}
+	return d.String()
+}
+
+// postOnce writes a System comment for the outbox item id, once: like an
+// AppendThread item, at the position the item reserves.
+func (m *Manager) postOnce(ctx context.Context, parent *v1alpha1.Task, id, body string) error {
+	key := storage.Key{Namespace: parent.Namespace, Name: parent.Name}
+	var from int64
+	if parent.Status.Thread != nil {
+		from = parent.Status.Thread.Revision
+	}
+	at := m.now().UTC().Truncate(time.Second)
+	_, seq, _, err := m.placeItem(ctx, key, id, ThreadStream(key), from,
+		func(seq int64) ([]byte, error) {
+			return json.Marshal(ThreadEntry{Seq: seq, Author: systemAuthor, Kind: EntryComment, Body: body, At: at, ItemID: id})
+		},
+		func(data []byte) bool {
+			var e ThreadEntry
+			return json.Unmarshal(data, &e) == nil && e.ItemID == id
+		})
+	if err != nil || seq == 0 {
+		return err
+	}
+	_, _ = m.transition(ctx, key, task.ThreadAdvanced{Seq: seq}) // a hint, as for any append
+	return nil
+}
+
 // ReclaimExpired takes back every run whose lease passed more than one
 // heartbeat interval ago.
 func (m *Manager) ReclaimExpired(ctx context.Context) error {
@@ -197,7 +249,8 @@ func (m *Manager) ReclaimExpired(ctx context.Context) error {
 			if t.Status.Run != nil && !now.After(t.Status.Run.LeaseUntil.Add(grace)) {
 				continue // still live as far as the index knows
 			}
-			_, err := m.transition(ctx, storage.Key{Namespace: ns, Name: t.Name}, task.Reclaim{Grace: grace})
+			key := storage.Key{Namespace: ns, Name: t.Name}
+			_, err := m.transition(ctx, key, task.Reclaim{Grace: grace, Idle: m.cfg.StepIdle})
 			if err != nil && !errors.Is(err, task.ErrLeaseNotExpired) && !isLostCandidate(err) {
 				errs = append(errs, fmt.Errorf("%s: %w", t.Name, err))
 			}

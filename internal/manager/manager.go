@@ -32,10 +32,13 @@ type Config struct {
 	Lease time.Duration
 	// Heartbeat is how often runners are told to renew the lease.
 	Heartbeat time.Duration
+	// StepIdle is how long a free step of a step-mode run waits for a
+	// worker before the run fails.
+	StepIdle time.Duration
 }
 
 // DefaultConfig is the configuration used when a field is zero.
-var DefaultConfig = Config{Lease: 30 * time.Second, Heartbeat: 10 * time.Second}
+var DefaultConfig = Config{Lease: 30 * time.Second, Heartbeat: 10 * time.Second, StepIdle: task.DefaultStepIdle}
 
 // Manager is a Task Manager instance.
 type Manager struct {
@@ -67,6 +70,9 @@ func New(store storage.Driver, cfg Config, opts ...Option) *Manager {
 	}
 	if cfg.Heartbeat <= 0 {
 		cfg.Heartbeat = DefaultConfig.Heartbeat
+	}
+	if cfg.StepIdle <= 0 {
+		cfg.StepIdle = DefaultConfig.StepIdle
 	}
 	if cfg.Agents == nil {
 		cfg.Agents = StaticAgents{}
@@ -224,14 +230,15 @@ func requireRunID(runID string) error {
 	return nil
 }
 
-// Heartbeat renews the lease of runID on the task. runner is the
+// Heartbeat renews the lease of the run req names; in step mode, of its
+// held step, fenced on req.Step and req.Attempt. req.Runner is the
 // authenticated identity sending it, empty on a server that does not
 // authenticate runners.
-func (m *Manager) Heartbeat(ctx context.Context, key storage.Key, runID, runner string) (time.Time, error) {
-	if err := requireRunID(runID); err != nil {
+func (m *Manager) Heartbeat(ctx context.Context, key storage.Key, req StepRequest) (time.Time, error) {
+	if err := requireRunID(req.RunID); err != nil {
 		return time.Time{}, err
 	}
-	t, err := m.transition(ctx, key, task.Heartbeat{RunID: runID, Runner: runner, Lease: m.cfg.Lease})
+	t, err := m.transition(ctx, key, task.Heartbeat{RunID: req.RunID, Runner: req.Runner, Step: req.Step, Attempt: req.Attempt, Lease: m.cfg.Lease})
 	if err != nil {
 		return time.Time{}, err
 	}

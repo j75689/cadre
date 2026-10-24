@@ -43,6 +43,7 @@ func run() error {
 		listen    = flag.String("listen", ":8080", "address to serve /api/v1, /runner/v1, /mcp/run and the health probes on")
 		publicURL = flag.String("public-url", "", "URL runners reach this server at, for their per-run MCP endpoint; required in a cluster (default outside one: http://localhost and the listen port)")
 		lease     = flag.Duration("lease", manager.DefaultConfig.Lease, "how long a claim or heartbeat keeps a run alive")
+		stepIdle  = flag.Duration("step-idle", manager.DefaultConfig.StepIdle, "how long a free step of a step-mode run waits for a worker before the run fails")
 		heartbeat = flag.Duration("heartbeat", manager.DefaultConfig.Heartbeat, "how often runners renew; also the reclaim grace")
 		reclaim   = flag.Duration("reclaim-interval", manager.DefaultLoopConfig.Reclaim, "how often expired leases are reclaimed")
 		dispatch  = flag.Duration("dispatch-interval", manager.DefaultLoopConfig.Dispatch, "how often the outbox is dispatched and new tasks numbered")
@@ -109,7 +110,7 @@ func run() error {
 	defer func() { _ = store.Close() }()
 
 	forwarder := mcp.NewForwarder(controller.ToolServerSources(ctrls), log)
-	m := manager.New(store, manager.Config{Lease: *lease, Heartbeat: *heartbeat, Agents: controller.Agents(ctrls), Tools: forwarder})
+	m := manager.New(store, manager.Config{Lease: *lease, Heartbeat: *heartbeat, StepIdle: *stepIdle, Agents: controller.Agents(ctrls), Tools: forwarder})
 	mux := http.NewServeMux()
 	if *publicURL, err = resolvePublicURL(*publicURL, *listen, os.Getenv("KUBERNETES_SERVICE_HOST") != ""); err != nil {
 		return err
