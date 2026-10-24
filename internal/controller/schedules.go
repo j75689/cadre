@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"hash/fnv"
+	"strings"
 	"time"
 
 	"github.com/robfig/cron/v3"
@@ -20,6 +21,7 @@ import (
 
 	v1alpha1 "github.com/j75689/cadre/api/v1alpha1"
 	"github.com/j75689/cadre/internal/storage"
+	"github.com/j75689/cadre/internal/task"
 )
 
 // A Schedule's tasks are created through the store, as every task is: they
@@ -117,8 +119,11 @@ func (r *scheduleReconciler) Reconcile(ctx context.Context, req reconcile.Reques
 
 	due, missed := latestDue(sched, after, now, fire)
 	if !due.IsZero() {
+		if err := task.ValidateSpec(&s.Spec.Task); err != nil {
+			return inactive(false, "InvalidSchedule", "its task is invalid: "+err.Error())
+		}
 		name := fmt.Sprintf("%s-%s", s.Name, due.UTC().Format("200601021504"))
-		task := &v1alpha1.Task{
+		created := &v1alpha1.Task{
 			ObjectMeta: metav1.ObjectMeta{
 				Namespace:   s.Namespace,
 				Name:        name,
@@ -127,14 +132,14 @@ func (r *scheduleReconciler) Reconcile(ctx context.Context, req reconcile.Reques
 			},
 			Spec: *s.Spec.Task.DeepCopy(),
 		}
-		switch err := r.store.CreateTask(ctx, task); {
+		switch err := r.store.CreateTask(ctx, created); {
 		case err == nil:
 			if missed != "" {
 				r.events.Eventf(&s, nil, corev1.EventTypeWarning, "MissedTicks", "Schedule",
 					"%s earlier ticks were missed and skipped; only the latest, %s, fired", missed, due.UTC().Format(time.RFC3339))
 			}
 		case errors.Is(err, storage.ErrInvalid):
-			return again, r.writeStatus(ctx, &s, &st.ConfigStatus, false, "InvalidSchedule", "its task is refused: "+err.Error(), changed)
+			return inactive(false, "InvalidSchedule", "its task is refused: "+err.Error())
 		case !errors.Is(err, storage.ErrAlreadyExists):
 			return reconcile.Result{}, err
 		}
@@ -157,18 +162,31 @@ func (r *scheduleReconciler) Reconcile(ctx context.Context, req reconcile.Reques
 // parser reads standard five-field cron expressions and descriptors.
 var parser = cron.NewParser(cron.Minute | cron.Hour | cron.Dom | cron.Month | cron.Dow | cron.Descriptor)
 
-// parseSchedule reads a Schedule's cron in its time zone.
+// parseSchedule reads a Schedule's cron in its time zone. The parser would
+// take a zone from a TZ= or CRON_TZ= prefix too, over timezone, and panics
+// on one without an expression; the zone is timezone's alone, and Local,
+// the serving pod's, is not one. Ticks under a minute apart are refused:
+// two would share a task name.
 func parseSchedule(spec v1alpha1.ScheduleSpec) (cron.Schedule, error) {
 	loc := time.UTC
-	if spec.Timezone != "" {
+	switch {
+	case spec.Timezone == "Local":
+		return nil, errors.New(`timezone "Local": name an IANA zone`)
+	case spec.Timezone != "":
 		var err error
 		if loc, err = time.LoadLocation(spec.Timezone); err != nil {
 			return nil, fmt.Errorf("timezone %q: %w", spec.Timezone, err)
 		}
 	}
+	if expr := strings.TrimSpace(spec.Cron); strings.HasPrefix(expr, "TZ=") || strings.HasPrefix(expr, "CRON_TZ=") {
+		return nil, fmt.Errorf("cron %q: set the zone with timezone, not a prefix", spec.Cron)
+	}
 	sched, err := parser.Parse(spec.Cron)
 	if err != nil {
 		return nil, fmt.Errorf("cron %q: %w", spec.Cron, err)
+	}
+	if every, ok := sched.(cron.ConstantDelaySchedule); ok && every.Delay < time.Minute {
+		return nil, fmt.Errorf("cron %q: ticks must be at least a minute apart", spec.Cron)
 	}
 	return inZone{sched, loc}, nil
 }
@@ -188,7 +206,9 @@ const maxScan = 100_000
 
 // latestDue returns the latest tick after after whose fire time has come by
 // now, and how many earlier ones also had and are skipped: a count, or
-// "more than" one when there were too many to count.
+// "more than" one when there were too many to count. Ticks fire in order: one
+// whose fire time has not come holds back the later ones, and one whose jitter
+// outlasts the next tick was late, not missed, and fires before it.
 func latestDue(sched cron.Schedule, after, now time.Time, fire func(time.Time) time.Time) (due time.Time, missed string) {
 	var n, seen int
 	var far bool
@@ -200,16 +220,19 @@ func latestDue(sched cron.Schedule, after, now time.Time, fire func(time.Time) t
 			}
 		}
 		if fire(t).After(now) {
-			continue
+			break
 		}
 		if !due.IsZero() {
+			if fire(due).After(t) {
+				break
+			}
 			n++
 		}
 		due = t
 	}
 	switch {
 	case far:
-		return due, fmt.Sprintf("more than %d", n+maxScan-1)
+		return due, fmt.Sprintf("more than %d", n)
 	case n > 0:
 		return due, fmt.Sprint(n)
 	}

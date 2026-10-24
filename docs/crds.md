@@ -254,19 +254,19 @@ status:
 
 | Field | |
 |---|---|
-| `cron` | required; a standard five-field cron expression, or a descriptor such as `@daily` |
-| `timezone` | the IANA zone `cron` is read in; default UTC |
+| `cron` | required; a standard five-field cron expression, or a descriptor such as `@daily`; no `TZ=` or `CRON_TZ=` prefix, and ticks at least a minute apart (`@every 1m` or longer) |
+| `timezone` | the IANA zone `cron` is read in; default UTC; `Local` is refused |
 | `jitter` | delays each tick's task by up to this long, by an amount fixed by the Schedule's UID and the tick; keep it shorter than the interval between ticks |
 | `suspend` | no task is created while it is true |
 | `task` | the spec of every task created; `parentRef` is refused, since a scheduled task has no parent |
 
 The name is at most 50 characters, so that its tasks' names fit 63.
 
-Ready is False with reason `InvalidSchedule` when the cron or the zone does not parse, or the store refuses the task (the message says which), and `NoTeam` when the namespace has no Team. Otherwise it is True with reason `Scheduled`, or `Suspended`.
+Ready is False with reason `InvalidSchedule` when the cron or the zone is refused, or the task is invalid or refused by the store (the message says which), and `NoTeam` when the namespace has no Team. Otherwise it is True with reason `Scheduled`, or `Suspended`.
 
 **Naming and idempotency.** A tick is a time `cron` fires in `timezone`. Its task is named `<schedule>-<tick in UTC as YYYYMMDDhhmm>`, labelled `cadre.dev/schedule: <schedule>` and annotated `cadre.dev/scheduled-at` with the tick in RFC 3339. It is created through the storage driver, so it works under any driver, and a second create of the same name fails as already existing: that is what makes a tick fire once across restarts and overlapping leaders. The reconciler keeps no other memory. A task has no owner reference: tasks are history, and deleting a Schedule leaves them.
 
-**Missed ticks.** A tick fires once its fire time (the tick plus its jitter) has come. When several have come since the last one fired (cadre-server was down, or no leader was elected), only the latest fires; the others are skipped, and an Event says how many. A daily Schedule three days behind creates one task, not three. Ticks before the Schedule's creation never fire.
+**Missed ticks.** A tick fires once its fire time (the tick plus its jitter) has come, and ticks fire in order: one whose fire time has not come holds back the later ones, and one whose jitter outlasts the next tick fires before it. When several have come since the last one fired (cadre-server was down, or no leader was elected), only the latest fires; the others are skipped, and an Event says how many. A daily Schedule three days behind creates one task, not three. Ticks before the Schedule's creation never fire.
 
 **Suspend.** A tick that passes while the Schedule is suspended never fires, even once resumed; the first to fire is the first after the resume is seen. The same holds while it cannot run (`InvalidSchedule`, `NoTeam`). `status.activeSince` records when it last became able to fire, and is cleared while it cannot.
 

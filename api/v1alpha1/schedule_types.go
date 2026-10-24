@@ -71,7 +71,7 @@ type ScheduleStatus struct {
 // +kubebuilder:printcolumn:name="Cron",type=string,JSONPath=`.spec.cron`
 // +kubebuilder:printcolumn:name="Timezone",type=string,JSONPath=`.spec.timezone`
 // +kubebuilder:printcolumn:name="Suspended",type=boolean,JSONPath=`.spec.suspend`
-// +kubebuilder:printcolumn:name="Next",type=date,JSONPath=`.status.nextScheduleTime`
+// +kubebuilder:printcolumn:name="Next",type=string,JSONPath=`.status.nextScheduleTime`
 // +kubebuilder:printcolumn:name="Last task",type=string,JSONPath=`.status.lastTask`
 // +kubebuilder:printcolumn:name="Ready",type=string,JSONPath=`.status.conditions[?(@.type=="Ready")].status`
 // +kubebuilder:printcolumn:name="Age",type=date,JSONPath=`.metadata.creationTimestamp`

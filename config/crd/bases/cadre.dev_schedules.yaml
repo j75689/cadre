@@ -26,7 +26,7 @@ spec:
       type: boolean
     - jsonPath: .status.nextScheduleTime
       name: Next
-      type: date
+      type: string
     - jsonPath: .status.lastTask
       name: Last task
       type: string

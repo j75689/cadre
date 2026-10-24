@@ -299,6 +299,18 @@ func TestSchedules(t *testing.T) {
 		if next := z.Status.NextScheduleTime.UTC(); next.Hour() != 1 || next.Minute() != 0 {
 			t.Errorf("nextScheduleTime %v, want 01:00 UTC", next)
 		}
+
+		// A task the Task Manager would refuse is not created, and nothing
+		// is due while it stands.
+		v := e.schedule(ns, "blank-title", v1alpha1.ScheduleSpec{Cron: "0 * * * *"})
+		e.ready(v, metav1.ConditionTrue, "Scheduled")
+		e.update(v, func(spec *v1alpha1.ScheduleSpec) { spec.Task.Title = " " })
+		e.clock.set(hourly(v.CreationTimestamp.Time, 1).Add(time.Second))
+		e.ready(v, metav1.ConditionFalse, "InvalidSchedule")
+		if v.Status.ActiveSince != nil || v.Status.NextScheduleTime != nil {
+			t.Errorf("activeSince %v, nextScheduleTime %v while invalid", v.Status.ActiveSince, v.Status.NextScheduleTime)
+		}
+		e.expectTasks(v)
 	})
 
 	t.Run("no team", func(t *testing.T) {
