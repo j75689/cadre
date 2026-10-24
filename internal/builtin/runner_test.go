@@ -18,6 +18,7 @@ import (
 	v1alpha1 "github.com/j75689/cadre/api/v1alpha1"
 	"github.com/j75689/cadre/internal/builtin"
 	"github.com/j75689/cadre/internal/client"
+	"github.com/j75689/cadre/internal/httpjson"
 	"github.com/j75689/cadre/internal/manager"
 	"github.com/j75689/cadre/internal/mcp"
 	"github.com/j75689/cadre/internal/runner"
@@ -104,8 +105,9 @@ func tc(id, name string, input any) builtin.ToolCall {
 }
 
 type env struct {
-	m *manager.Manager
-	c *client.Client
+	m   *manager.Manager
+	c   *client.Client
+	url string
 }
 
 func start(t *testing.T) *env {
@@ -136,7 +138,7 @@ func startWithLease(t *testing.T, lease time.Duration) *env {
 	if _, err := m.AppendThread(ctx, key, manager.Author{Kind: manager.AuthorUser, Name: "alice"}, manager.EntryComment, "Look at the clock mock."); err != nil {
 		t.Fatal(err)
 	}
-	return &env{m: m, c: client.New(srv.URL, nil)}
+	return &env{m: m, c: client.New(srv.URL, nil), url: srv.URL}
 }
 
 // run works one task with the scripted model.
@@ -559,5 +561,50 @@ func TestAToolTurnWithoutCallsGoesOn(t *testing.T) {
 	e.run(t, p, builtin.Options{})
 	if tk := e.task(t); tk.Status.Phase != v1alpha1.PhaseReview || last(e.thread(t)).Body != "Done after all." || p.turns != 2 {
 		t.Fatalf("phase %s, %d turns, last %q", tk.Status.Phase, p.turns, last(e.thread(t)).Body)
+	}
+}
+
+// A heartbeat the server refuses for this runner (403, 401) ends the run
+// at once, like a lost task.
+func TestARefusedHeartbeatStopsTheRun(t *testing.T) {
+	for _, status := range []int{http.StatusForbidden, http.StatusUnauthorized} {
+		e := startWithLease(t, 30*time.Second)
+		code := map[int]string{http.StatusForbidden: httpjson.CodeForbidden, http.StatusUnauthorized: httpjson.CodeUnauthenticated}[status]
+		refusing := &refuse{path: runner.PathHeartbeat, status: status, code: code}
+		hang := func(ctx context.Context, _ []builtin.ToolResult) (*builtin.Reply, error) {
+			<-ctx.Done()
+			return nil, ctx.Err()
+		}
+		begin := time.Now()
+		e.runVia(t, refusing, &scripted{steps: []step{hang}}, builtin.Options{})
+		if took := time.Since(begin); took > 5*time.Second {
+			t.Fatalf("%d: the run took %s to stop", status, took)
+		}
+	}
+}
+
+// refuse answers one path of the runner protocol with an error.
+type refuse struct {
+	path, code string
+	status     int
+}
+
+func (f *refuse) RoundTrip(r *http.Request) (*http.Response, error) {
+	if strings.HasSuffix(r.URL.Path, f.path) {
+		body := fmt.Sprintf(`{"error":{"code":%q,"message":"refused"}}`, f.code)
+		return &http.Response{StatusCode: f.status, Header: http.Header{"Content-Type": {"application/json"}}, Body: io.NopCloser(strings.NewReader(body)), Request: r}, nil
+	}
+	return http.DefaultTransport.RoundTrip(r)
+}
+
+// runVia is run with the runner protocol going through transport.
+func (e *env) runVia(t *testing.T, transport http.RoundTripper, p builtin.Provider, o builtin.Options) {
+	t.Helper()
+	o.Runner, o.Once, o.Poll = "r", true, 10*time.Millisecond
+	o.Providers = map[v1alpha1.ProviderType]builtin.Provider{v1alpha1.ProviderAnthropic: p}
+	runCtx, cancel := context.WithTimeout(ctx, 20*time.Second)
+	defer cancel()
+	if err := builtin.Run(runCtx, client.New(e.url, &http.Client{Transport: transport}), o); err != nil {
+		t.Fatal(err)
 	}
 }

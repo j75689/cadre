@@ -4,6 +4,7 @@ import (
 	"log/slog"
 	"net/http"
 	"strings"
+	"sync"
 
 	v1alpha1 "github.com/j75689/cadre/api/v1alpha1"
 	"github.com/j75689/cadre/internal/httpjson"
@@ -21,6 +22,7 @@ type Server struct {
 	// that may claim builtin agents' tasks.
 	auth    Authenticator
 	builtin string
+	dropped sync.Map // identities told their reserved labels were dropped
 }
 
 // NewServer returns the protocol server. publicURL is the address runners

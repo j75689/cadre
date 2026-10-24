@@ -10,15 +10,17 @@ import (
 	"github.com/spf13/cobra"
 
 	v1alpha1 "github.com/j75689/cadre/api/v1alpha1"
+	"github.com/j75689/cadre/internal/client"
 	"github.com/j75689/cadre/internal/fakerunner"
 )
 
 func newRunnerCmd(g *globals) *cobra.Command {
 	cmd := &cobra.Command{Use: "runner", Short: "Runners"}
 	var (
-		o       fakerunner.Options
-		outcome string
-		reason  string
+		o         fakerunner.Options
+		outcome   string
+		reason    string
+		tokenFile string
 	)
 	host, _ := os.Hostname()
 	fake := &cobra.Command{
@@ -42,7 +44,11 @@ its lease while it "works", stops a run at once if the run loses its task
 			o.Log = cmd.ErrOrStderr()
 			ctx, stop := signal.NotifyContext(cmd.Context(), os.Interrupt, syscall.SIGTERM)
 			defer stop()
-			results, err := fakerunner.Run(ctx, g.client(), o)
+			hc, authenticated := client.RunnerHTTP(tokenFile)
+			if !authenticated {
+				_, _ = fmt.Fprintln(cmd.ErrOrStderr(), "no runner token: requests are unauthenticated, which only a cadre-server with --runner-auth=none accepts")
+			}
+			results, err := fakerunner.Run(ctx, client.New(g.server, hc), o)
 			if err != nil {
 				return err
 			}
@@ -64,6 +70,7 @@ its lease while it "works", stops a run at once if the run loses its task
 		"claim labels, key=value; repeatable. The default claims builtin agents, as cadre-runner does")
 	f.BoolVar(&o.Once, "once", false, "stop after one run")
 	f.DurationVar(&o.Poll, "poll", time.Second, "wait between claims when there is no work")
+	f.StringVar(&tokenFile, "token-file", "", "the token to authenticate with, read before every request; by default the projected ServiceAccount token at "+client.DefaultTokenFile+" when it exists, else none")
 	cmd.AddCommand(fake)
 	return cmd
 }

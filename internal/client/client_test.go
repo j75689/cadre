@@ -39,3 +39,14 @@ func TestTokenFileIsReadEveryTime(t *testing.T) {
 		t.Fatal("a missing token file must fail the request, not send it bare")
 	}
 }
+
+func TestRunnerHTTP(t *testing.T) {
+	if hc, ok := RunnerHTTP(""); ok || hc != nil {
+		if _, err := os.Stat(DefaultTokenFile); err != nil {
+			t.Fatal("without a token file a runner sends no token")
+		}
+	}
+	if hc, ok := RunnerHTTP(filepath.Join(t.TempDir(), "token")); !ok || hc == nil {
+		t.Fatal("a token file named outright is used")
+	}
+}

@@ -117,4 +117,11 @@ func TestRunnersAuthenticateWithServiceAccountTokens(t *testing.T) {
 	if _, err := as(builtinToken).Finish(ctx, runner.FinishRequest{Task: ref, RunID: c.RunID, Outcome: v1alpha1.RunOutcomeDone}); err != nil {
 		t.Fatalf("the holder's finish: %v", err)
 	}
+	// A retried finish is answered alreadyFinished for the holder only.
+	if fin, err := as(builtinToken).Finish(ctx, runner.FinishRequest{Task: ref, RunID: c.RunID, Outcome: v1alpha1.RunOutcomeDone}); err != nil || !fin.AlreadyFinished {
+		t.Fatalf("the holder's retried finish: %+v, %v", fin, err)
+	}
+	if _, err := as(otherToken).Finish(ctx, runner.FinishRequest{Task: ref, RunID: c.RunID, Outcome: v1alpha1.RunOutcomeDone}); !cadreclient.IsCode(err, httpjson.CodeForbidden) {
+		t.Fatalf("another identity replaying the ended run's finish: %v, want forbidden", err)
+	}
 }

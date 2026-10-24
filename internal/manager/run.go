@@ -22,8 +22,8 @@ var ErrInvalid = errors.New("invalid request")
 // ClaimRequest asks for one task to work on.
 type ClaimRequest struct {
 	// Runner is the name the runner gives itself. Identity is who it
-	// authenticated as; the run is held by Identity, or by Runner on a
-	// server that does not authenticate runners.
+	// authenticated as, and holds the run; on a server that does not
+	// authenticate runners it is empty, and so is status.run.runner.
 	Runner     string
 	Identity   string
 	Namespaces []string          // empty means every Team namespace
@@ -100,10 +100,9 @@ func (m *Manager) namespaces(ctx context.Context, want []string, withRoom bool) 
 }
 
 func (m *Manager) claimIn(ctx context.Context, ns string, req ClaimRequest) (*Claimed, error) {
+	// The run is held by the identity; claimed without one, by nobody in
+	// particular, and runnerName alone says who.
 	labels, holder := req.Labels, req.Identity
-	if holder == "" {
-		holder = req.Runner
-	}
 	todo, err := m.store.ListTasks(ctx, storage.Query{Namespace: ns, Phases: []v1alpha1.Phase{v1alpha1.PhaseTodo}})
 	if err != nil {
 		return nil, err
@@ -236,6 +235,9 @@ func (m *Manager) Finish(ctx context.Context, key storage.Key, req FinishRequest
 		if lookupErr != nil {
 			return "", false, lookupErr
 		}
+		if rec != nil && !task.HeldBy(rec.Runner, rec.RunnerName, req.Runner) {
+			return "", false, task.ErrForbidden
+		}
 		if rec != nil && rec.Reason == v1alpha1.RunFinished && rec.Outcome == req.Outcome {
 			// The task may have moved on since (a reply, a new claim), so
 			// report the phase this finish produced, not the current one.
@@ -324,7 +326,7 @@ func (m *Manager) RecordEvent(ctx context.Context, key storage.Key, ev Event) er
 	if t.Status.Run == nil || t.Status.Run.ID != ev.RunID {
 		return task.ErrRunMismatch
 	}
-	if ev.Runner != "" && t.Status.Run.Runner != ev.Runner {
+	if !task.HeldBy(t.Status.Run.Runner, t.Status.Run.RunnerName, ev.Runner) {
 		return task.ErrForbidden
 	}
 	data, err := json.Marshal(ev)

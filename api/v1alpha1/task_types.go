@@ -137,8 +137,9 @@ type Run struct {
 
 	// Runner is who holds the run: the authenticated identity of the runner
 	// in runtime mode, or of the worker holding the current step in step
-	// mode. Only requests from it may renew or finish the run. A server
-	// that does not authenticate runners records the runner's own name.
+	// mode. Only requests from it may renew or finish the run. It is empty
+	// for a run claimed on a server that does not authenticate runners;
+	// such a run is not fenced on its sender.
 	// +optional
 	Runner string `json:"runner,omitempty"`
 

@@ -43,15 +43,32 @@ func TestCached(t *testing.T) {
 	if next.calls != 1 {
 		t.Fatalf("%d reviews for three requests, want 1", next.calls)
 	}
-	// Failures are never remembered.
+	// A refusal is remembered for five seconds; an error that is not a
+	// refusal never is.
 	for range 2 {
 		if _, err := c.Authenticate(ctx, "bad"); !errors.Is(err, ErrUnauthenticated) {
 			t.Fatal(err)
 		}
 	}
-	if next.calls != 3 {
-		t.Fatalf("%d reviews, want each failure asked again", next.calls)
+	if next.calls != 2 {
+		t.Fatalf("%d reviews, want a refusal asked once", next.calls)
 	}
+	now = now.Add(refusalTTL)
+	_, _ = c.Authenticate(ctx, "bad")
+	if next.calls != 3 {
+		t.Fatalf("%d reviews, want the refusal asked again after five seconds", next.calls)
+	}
+	next.err = errors.New("the API server is down")
+	for range 2 {
+		if _, err := c.Authenticate(ctx, "other"); err == nil || errors.Is(err, ErrUnauthenticated) {
+			t.Fatalf("an unavailable authenticator: %v", err)
+		}
+	}
+	next.err = nil
+	if next.calls != 5 {
+		t.Fatalf("%d reviews, want an error never remembered", next.calls)
+	}
+	next.calls = 3
 	// A minute at most, and no longer than the credential holds.
 	_, _ = c.Authenticate(ctx, "short")
 	now = now.Add(11 * time.Second)
@@ -80,3 +97,11 @@ func TestCached(t *testing.T) {
 }
 
 func sha(s string) [32]byte { return sha256.Sum256([]byte(s)) }
+
+func TestBearerToken(t *testing.T) {
+	for header, want := range map[string]string{"Bearer abc": "abc", "bearer abc": "abc", "BEARER   abc ": "abc", "Bearer": "", "Basic abc": "", "Bearer a b": "", "": ""} {
+		if got, ok := bearerToken(header); got != want || ok != (want != "") {
+			t.Errorf("%q: %q, %v; want %q", header, got, ok, want)
+		}
+	}
+}

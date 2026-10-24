@@ -228,12 +228,13 @@ type Result struct {
 // Apply runs one transition. It does not modify t.
 func Apply(t *v1alpha1.Task, ev Event, now time.Time) (Result, error) {
 	if f, ok := ev.(fenced); ok {
-		if err := checkRun(&t.Status, f.runID()); err != nil {
+		var sender string
+		if sv, ok := ev.(sent); ok {
+			sender = sv.sender()
+		}
+		if err := checkRun(&t.Status, f.runID(), sender); err != nil {
 			return Result{}, err
 		}
-	}
-	if sv, ok := ev.(sent); ok && sv.sender() != "" && t.Status.Run.Runner != sv.sender() {
-		return Result{}, ErrForbidden
 	}
 	cur := t.Status.Phase
 	if !slices.Contains(From[ev.kind()], cur) {
@@ -382,11 +383,26 @@ var waitingReasons = []v1alpha1.WaitingReason{
 	v1alpha1.WaitingQuestion, v1alpha1.WaitingToolApproval, v1alpha1.WaitingReview,
 }
 
-func checkRun(s *v1alpha1.TaskStatus, runID string) error {
+// checkRun fences an event on the task's run: the run id first, so a run
+// that lost its task learns so whoever sends, then the sender.
+func checkRun(s *v1alpha1.TaskStatus, runID, sender string) error {
 	if s.Run == nil || s.Run.ID != runID {
 		return ErrRunMismatch
 	}
+	if !HeldBy(s.Run.Runner, s.Run.RunnerName, sender) {
+		return ErrForbidden
+	}
 	return nil
+}
+
+// HeldBy reports whether sender, an authenticated identity, may act on a
+// run held by runner. An empty sender (a server that does not authenticate
+// runners) is not checked, nor is a run claimed without an identity
+// (runner or runnerName empty: claimed with authentication off, or before
+// it existed), so turning authentication on does not cut the runs in
+// flight.
+func HeldBy(runner, runnerName, sender string) bool {
+	return sender == "" || runner == "" || runnerName == "" || runner == sender
 }
 
 func checkStep(run *v1alpha1.Run, step int64) error {

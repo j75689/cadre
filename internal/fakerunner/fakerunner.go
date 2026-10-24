@@ -129,10 +129,12 @@ func unreachable(err error) bool {
 		errors.Is(err, context.DeadlineExceeded) || errors.Is(err, context.Canceled)
 }
 
-// lostTask reports whether err means the run no longer holds its task: the
-// protocol tells a runner to stop on run_mismatch and on not_found alike.
+// lostTask reports whether err means the run is over for this runner: the
+// protocol tells a runner to stop on run_mismatch and not_found, and on
+// forbidden and unauthenticated, which no retry of this run can change.
 func lostTask(err error) bool {
-	return client.IsCode(err, httpjson.CodeRunMismatch) || client.IsCode(err, httpjson.CodeNotFound)
+	return client.IsCode(err, httpjson.CodeRunMismatch) || client.IsCode(err, httpjson.CodeNotFound) ||
+		client.IsCode(err, httpjson.CodeForbidden) || client.IsCode(err, httpjson.CodeUnauthenticated)
 }
 
 // Run claims and works tasks until ctx is done, or after one run with Once.

@@ -142,7 +142,7 @@ func newTaskGet(g *globals) *cobra.Command {
 				w := tabwriter.NewWriter(out, 0, 4, 2, ' ', 0)
 				outln(w, "  RUN\tRUNNER\tENDED\tREASON\tOUTCOME")
 				for _, r := range runs.Items {
-					outf(w, "  %s\t%s\t%s\t%s\t%s\n", r.ID, orDash(r.Runner), r.EndedAt.Format("2006-01-02 15:04:05"), r.Reason, orDash(string(r.Outcome)))
+					outf(w, "  %s\t%s\t%s\t%s\t%s\n", r.ID, orDash(runnerOf(r.RunnerName, r.Runner)), r.EndedAt.Format("2006-01-02 15:04:05"), r.Reason, orDash(string(r.Outcome)))
 				}
 				if err := w.Flush(); err != nil {
 					return err
@@ -168,7 +168,7 @@ func printTask(out io.Writer, t *v1alpha1.Task) {
 		outf(out, "Parent:    %s\n", t.Spec.ParentRef.Name)
 	}
 	if r := t.Status.Run; r != nil {
-		outf(out, "Run:       %s on %s, lease until %s\n", r.ID, orDash(r.Runner), r.LeaseUntil.Format("15:04:05"))
+		outf(out, "Run:       %s on %s, lease until %s\n", r.ID, orDash(runnerOf(r.RunnerName, r.Runner)), r.LeaseUntil.Format("15:04:05"))
 	}
 	if len(t.Status.Outbox) > 0 {
 		outf(out, "Outbox:    %d pending\n", len(t.Status.Outbox))
@@ -233,6 +233,15 @@ func newTaskReply(g *globals) *cobra.Command {
 	cmd.Flags().StringVarP(&msg, "message", "m", "", "the answer")
 	_ = cmd.MarkFlagRequired("message")
 	return cmd
+}
+
+// runnerOf is how a run's runner is shown: the name it gave itself, else
+// its identity.
+func runnerOf(name, identity string) string {
+	if name != "" {
+		return name
+	}
+	return identity
 }
 
 // maxShownArguments is how much of a call's arguments "task get" shows.

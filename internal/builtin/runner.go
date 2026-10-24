@@ -437,8 +437,12 @@ func (r *run) heartbeat(ctx context.Context, cancel context.CancelCauseFunc, cla
 	}
 }
 
+// lostTask reports whether err means the run is over for this runner: its
+// task is gone or held by another run, or the server no longer accepts
+// this runner for it.
 func lostTask(err error) bool {
-	return client.IsCode(err, httpjson.CodeRunMismatch) || client.IsCode(err, httpjson.CodeNotFound)
+	return client.IsCode(err, httpjson.CodeRunMismatch) || client.IsCode(err, httpjson.CodeNotFound) ||
+		client.IsCode(err, httpjson.CodeForbidden) || client.IsCode(err, httpjson.CodeUnauthenticated)
 }
 
 // retryShort retries f a few times over a few seconds, for the writes that

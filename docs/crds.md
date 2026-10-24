@@ -108,7 +108,7 @@ status:
 | `status.waiting.threadSeq` | a thread sequence; sequences start at 1 |
 | `status.run.id`, `status.outbox[].id` | ULIDs |
 | `status.run.mode` | `runtime` or `step` |
-| `status.run.runner` | who holds the run: the runner's authenticated identity (`system:serviceaccount:<ns>:<name>` for an in-cluster runner); only requests from it may renew or finish the run. A server run with `--runner-auth=none` records the runner's own name instead |
+| `status.run.runner` | who holds the run: the runner's authenticated identity (`system:serviceaccount:<ns>:<name>` for an in-cluster runner); only requests from it may renew or finish the run. It is empty for a run claimed with `--runner-auth=none`, and such a run is not fenced on its sender |
 | `status.run.runnerName` | the name the runner gave itself, for display |
 | `status.outbox[].kind` | `CreateSubtask`, whose `spec` is the subtask's `TaskSpec`; `RunEnded`, whose `run` is the ended run (id, mode, runner, step, reason `Finished`, `Interrupted` or `Cancelled`, outcome, end time); `Notify` is added once its payload is defined |
 
