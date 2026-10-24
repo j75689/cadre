@@ -75,6 +75,20 @@ type Events struct {
 	Items []manager.Event `json:"items"`
 }
 
+// AgentList is a namespace's Agents, by name, for picking an assignee.
+type AgentList struct {
+	Items []AgentSummary `json:"items"`
+}
+
+// AgentSummary is an Agent and whether it can take work: Ready for its
+// current spec, and if not, why.
+type AgentSummary struct {
+	Name    string `json:"name"`
+	Ready   bool   `json:"ready"`
+	Reason  string `json:"reason,omitempty"`
+	Message string `json:"message,omitempty"`
+}
+
 // TeamRequest opts a namespace in.
 type TeamRequest struct {
 	DisplayName       string `json:"displayName,omitempty"`

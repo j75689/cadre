@@ -44,7 +44,7 @@ Not a SaaS. Not a workflow engine. Not an LLM gateway. Not a sandbox. Cadre inte
 
 ## Web UI
 
-cadre-server serves the board at `/`: the web UI is built into it (`make ui` before `make build`; the image carries it). Developing it: [web/README.md](web/README.md).
+cadre-server serves the board, task pages with their threads and actions, and a form for new tasks at `/`: the web UI is built into it (`make ui` before `make build`; the image carries it). Developing it: [web/README.md](web/README.md).
 
 ## Images
 

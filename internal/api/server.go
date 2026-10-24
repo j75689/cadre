@@ -9,6 +9,8 @@ import (
 	"strconv"
 	"strings"
 
+	"k8s.io/apimachinery/pkg/api/meta"
+
 	v1alpha1 "github.com/j75689/cadre/api/v1alpha1"
 	"github.com/j75689/cadre/internal/httpjson"
 	"github.com/j75689/cadre/internal/manager"
@@ -40,6 +42,7 @@ func (s *Server) Register(mux *http.ServeMux) {
 	mux.HandleFunc("GET "+one+"/runs/{run}/events", s.events)
 	mux.HandleFunc("PUT "+Base+"/namespaces/{ns}/team", s.initTeam)
 	mux.HandleFunc("GET "+Base+"/teams", s.listTeams)
+	mux.HandleFunc("GET "+Base+"/namespaces/{ns}/agents", s.listAgents)
 }
 
 func taskKey(r *http.Request) storage.Key {
@@ -220,6 +223,33 @@ func (s *Server) initTeam(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	httpjson.Write(w, http.StatusCreated, team)
+}
+
+func (s *Server) listAgents(w http.ResponseWriter, r *http.Request) {
+	agents, err := s.m.ListAgents(r.Context(), r.PathValue("ns"))
+	if err != nil {
+		httpjson.Fail(w, s.log, err)
+		return
+	}
+	items := make([]AgentSummary, 0, len(agents))
+	for _, a := range agents {
+		items = append(items, summarize(&a))
+	}
+	httpjson.Write(w, http.StatusOK, AgentList{Items: items})
+}
+
+// summarize says whether a can take work. A Ready condition decided for an
+// older spec says nothing about this one.
+func summarize(a *v1alpha1.Agent) AgentSummary {
+	out := AgentSummary{Name: a.Name, Ready: a.Status.ReadyFor(a.Generation)}
+	c := meta.FindStatusCondition(a.Status.Conditions, v1alpha1.ConditionReady)
+	switch {
+	case c == nil || c.ObservedGeneration != a.Generation || a.Status.ObservedGeneration != a.Generation:
+		out.Reason, out.Message = "Pending", "its current spec has not been checked yet"
+	case !out.Ready:
+		out.Reason, out.Message = c.Reason, c.Message
+	}
+	return out
 }
 
 func (s *Server) listTeams(w http.ResponseWriter, r *http.Request) {

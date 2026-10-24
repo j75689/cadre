@@ -2,10 +2,15 @@ package main
 
 import (
 	"context"
+	"io"
+	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"testing"
 	"time"
+
+	"github.com/j75689/cadre/internal/manager"
+	"github.com/j75689/cadre/internal/storage/memory"
 )
 
 func TestValidateTimings(t *testing.T) {
@@ -63,6 +68,33 @@ func TestResolvePublicURL(t *testing.T) {
 		got, err := resolvePublicURL(tc.flag, tc.listen, tc.inCluster)
 		if (err == nil) != tc.ok || got != tc.want {
 			t.Errorf("resolvePublicURL(%q, %q, %v) = %q, %v; want %q, ok=%v", tc.flag, tc.listen, tc.inCluster, got, err, tc.want, tc.ok)
+		}
+	}
+}
+
+// Every route cadre-server serves registers on one mux without a conflict
+// (ServeMux panics on overlapping patterns), and the mux keeps its 405s.
+func TestRoutesCoexist(t *testing.T) {
+	log := slog.New(slog.NewTextHandler(io.Discard, nil))
+	m := manager.New(memory.NewBackend().Open(), manager.Config{})
+	mux := newMux(m, log, "http://localhost", nil)
+	for _, c := range []struct {
+		method, path string
+		code         int
+	}{
+		{http.MethodGet, "/api/v1/namespaces/a/tasks/x/cancel", http.StatusMethodNotAllowed},
+		{http.MethodPost, "/api/v1/namespaces/a/agents", http.StatusMethodNotAllowed},
+		{http.MethodGet, "/runner/v1/claim", http.StatusMethodNotAllowed},
+		{http.MethodPost, "/healthz", http.StatusMethodNotAllowed},
+		{http.MethodGet, "/healthz", http.StatusOK},
+		{http.MethodGet, "/nope", http.StatusNotFound},
+		{http.MethodGet, "/", http.StatusOK},
+		{http.MethodGet, "/t/a/tasks/x", http.StatusOK},
+	} {
+		w := httptest.NewRecorder()
+		mux.ServeHTTP(w, httptest.NewRequest(c.method, c.path, nil))
+		if w.Code != c.code {
+			t.Errorf("%s %s: %d, want %d", c.method, c.path, w.Code, c.code)
 		}
 	}
 }

@@ -1,6 +1,7 @@
 import { Link, Outlet, Route, Routes, useParams } from "react-router";
 import { Board } from "./Board";
-import { IdentityBox } from "./Identity";
+import { IdentityBox, IdentityProvider } from "./Identity";
+import { NewTask } from "./NewTask";
 import { TaskPage } from "./TaskPage";
 import { Teams } from "./Teams";
 
@@ -11,7 +12,13 @@ function TeamBoard() {
   return <Board key={ns} />;
 }
 
-// Likewise a task page belongs to one task.
+// Likewise a create form belongs to one team,
+function TeamNewTask() {
+  const { ns = "" } = useParams();
+  return <NewTask key={ns} />;
+}
+
+// and a task page to one task.
 function OneTask() {
   const { ns = "", name = "" } = useParams();
   return <TaskPage key={`${ns}/${name}`} />;
@@ -34,13 +41,16 @@ function Layout() {
 // The team is in the URL, /t/<namespace>, so a board can be linked to.
 export function App() {
   return (
-    <Routes>
-      <Route element={<Layout />}>
-        <Route index element={<Teams />} />
-        <Route path="t/:ns" element={<TeamBoard />} />
-        <Route path="t/:ns/tasks/:name" element={<OneTask />} />
-        <Route path="*" element={<main><p>Not found. <Link to="/">Teams</Link></p></main>} />
-      </Route>
-    </Routes>
+    <IdentityProvider>
+      <Routes>
+        <Route element={<Layout />}>
+          <Route index element={<Teams />} />
+          <Route path="t/:ns" element={<TeamBoard />} />
+          <Route path="t/:ns/new" element={<TeamNewTask />} />
+          <Route path="t/:ns/tasks/:name" element={<OneTask />} />
+          <Route path="*" element={<main><p>Not found. <Link to="/">Teams</Link></p></main>} />
+        </Route>
+      </Routes>
+    </IdentityProvider>
   );
 }

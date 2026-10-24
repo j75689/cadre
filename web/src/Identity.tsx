@@ -1,17 +1,39 @@
-import { useState } from "react";
+import { createContext, useContext, useState, type ReactNode } from "react";
 import { loadIdentity, saveIdentity } from "./identityStore";
 
+// The name the UI acts as: the author of every action. Pre-OIDC
+// placeholder: replaced by the signed-in user in S4.
+const IdentityContext = createContext<{ name: string; setName: (name: string) => void }>({ name: "", setName: () => {} });
+
+export function IdentityProvider({ children }: { children: ReactNode }) {
+  const [name, setStored] = useState(loadIdentity);
+  const setName = (next: string) => {
+    saveIdentity(next);
+    setStored(next);
+  };
+  return <IdentityContext.Provider value={{ name, setName }}>{children}</IdentityContext.Provider>;
+}
+
+// useIdentity is the name to act as, "" until one is given.
+export const useIdentity = () => useContext(IdentityContext).name;
+
 // IdentityBox asks once for the name to act as and keeps it in this
-// browser. Pre-OIDC placeholder: replaced by the signed-in user in S4.
+// browser.
 export function IdentityBox() {
-  const [name, setName] = useState(loadIdentity);
+  const { name, setName } = useContext(IdentityContext);
   const [draft, setDraft] = useState("");
   const [editing, setEditing] = useState(name === "");
   if (!editing) {
     return (
       <div className="identity">
         acting as <strong>{name}</strong>{" "}
-        <button type="button" onClick={() => { setDraft(name); setEditing(true); }}>
+        <button
+          type="button"
+          onClick={() => {
+            setDraft(name);
+            setEditing(true);
+          }}
+        >
           change
         </button>
       </div>
@@ -24,7 +46,6 @@ export function IdentityBox() {
         e.preventDefault();
         const next = draft.trim();
         if (next === "") return;
-        saveIdentity(next);
         setName(next);
         setEditing(false);
       }}

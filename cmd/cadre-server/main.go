@@ -142,7 +142,6 @@ func run() error {
 
 	forwarder := mcp.NewForwarder(controller.ToolServerSources(ctrls), log)
 	m := manager.New(store, manager.Config{Lease: *lease, Heartbeat: *heartbeat, StepIdle: *stepIdle, Agents: controller.Agents(ctrls), Tools: forwarder})
-	mux := http.NewServeMux()
 	var runnerOpts []runner.Option
 	if *auth == "required" {
 		reviews := runner.Cached(controller.TokenReviews(ctrls.GetClient()))
@@ -151,21 +150,7 @@ func run() error {
 	} else {
 		log.Warn("runners are not authenticated (--runner-auth=none): any client may claim and finish runs")
 	}
-	runner.NewServer(m, log, *publicURL, runnerOpts...).Register(mux)
-	mcp.NewServer(m, log, mcp.WithForwarder(forwarder)).Register(mux)
-	api.NewServer(m, log).Register(mux)
-	mux.HandleFunc("GET /healthz", func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(http.StatusOK) })
-	mux.HandleFunc("GET /readyz", func(w http.ResponseWriter, r *http.Request) {
-		if err := m.Ready(r.Context()); err != nil {
-			log.Warn("not ready", "err", err)
-			w.WriteHeader(http.StatusServiceUnavailable)
-			return
-		}
-		w.WriteHeader(http.StatusOK)
-	})
-	// The board UI, at its own paths only: a wrong method on a route above
-	// stays the mux's 405.
-	web.Register(mux)
+	mux := newMux(m, log, *publicURL, runnerOpts, mcp.WithForwarder(forwarder))
 
 	srv := &http.Server{
 		Addr:              *listen,
@@ -205,6 +190,28 @@ func run() error {
 		err = nil
 	}
 	return err
+}
+
+// newMux routes everything cadre-server serves: the runner protocol, the
+// per-run MCP endpoint, the API, the health probes and the board UI.
+func newMux(m *manager.Manager, log *slog.Logger, publicURL string, runnerOpts []runner.Option, mcpOpts ...mcp.Option) *http.ServeMux {
+	mux := http.NewServeMux()
+	runner.NewServer(m, log, publicURL, runnerOpts...).Register(mux)
+	mcp.NewServer(m, log, mcpOpts...).Register(mux)
+	api.NewServer(m, log).Register(mux)
+	mux.HandleFunc("GET /healthz", func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(http.StatusOK) })
+	mux.HandleFunc("GET /readyz", func(w http.ResponseWriter, r *http.Request) {
+		if err := m.Ready(r.Context()); err != nil {
+			log.Warn("not ready", "err", err)
+			w.WriteHeader(http.StatusServiceUnavailable)
+			return
+		}
+		w.WriteHeader(http.StatusOK)
+	})
+	// The board UI, at its own paths only: a wrong method on a route above
+	// stays the mux's 405.
+	web.Register(mux)
+	return mux
 }
 
 // requestTimeout bounds one request's work, comfortably above the Task

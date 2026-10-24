@@ -50,6 +50,9 @@ export function Board() {
     <main className="board">
       <header className="board-header">
         <h1>{ns}</h1>
+        <Link className="new" to={`/t/${encodeURIComponent(ns)}/new`}>
+          New task
+        </Link>
         <label className="search">
           Search the loaded page{" "}
           <input type="search" value={search} onChange={(e) => setSearch(e.target.value)} placeholder="title, label, assignee, #number" />
@@ -103,15 +106,25 @@ export function Columns(props: { ns: string; columns: Column[]; search: string; 
   );
 }
 
+// Card is a task on the board. The title link covers the card; the parent
+// link sits above it, since links cannot nest.
 function Card({ ns, task }: { ns: string; task: Task }) {
   const s = task.spec;
+  const tasks = `/t/${encodeURIComponent(ns)}/tasks/`;
   return (
-    <Link className={`card priority-${s.priority ?? "medium"}`} to={`/t/${encodeURIComponent(ns)}/tasks/${encodeURIComponent(task.metadata.name)}`}>
+    <article className={`card priority-${s.priority ?? "medium"}`}>
       <div className="card-top">
         <span className="number">{task.status?.number !== undefined ? `#${task.status.number}` : "new"}</span>
         <span className="priority">{s.priority ?? "medium"}</span>
       </div>
-      <div className="title">{s.title}</div>
+      <Link className="title" to={tasks + encodeURIComponent(task.metadata.name)}>
+        {s.title}
+      </Link>
+      {s.parentRef && (
+        <div className="parent">
+          subtask of <Link to={tasks + encodeURIComponent(s.parentRef.name)}>{s.parentRef.name}</Link>
+        </div>
+      )}
       {s.assignee && (
         <div className="assignee">
           {s.assignee.kind === "Agent" ? "agent" : "user"} {s.assignee.name}
@@ -127,6 +140,6 @@ function Card({ ns, task }: { ns: string; task: Task }) {
           ))}
         </div>
       )}
-    </Link>
+    </article>
   );
 }
