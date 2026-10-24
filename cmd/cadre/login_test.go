@@ -144,3 +144,35 @@ func TestExpiredLogin(t *testing.T) {
 		t.Fatalf("expired login: %v", err)
 	}
 }
+
+// A server that dropped its logins: cadre login forgets the one kept for it,
+// expired or not, so commands work again.
+func TestLoginForgetsWithoutLogins(t *testing.T) {
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		if r.URL.Path == api.Base+"/auth" {
+			_, _ = io.WriteString(w, `{"mode":"none"}`)
+			return
+		}
+		_, _ = io.WriteString(w, `{"items":[],"offset":0,"limit":100}`)
+	}))
+	t.Cleanup(srv.Close)
+	if err := (credentials{serverKey(srv.URL): {IDToken: "old", Expires: time.Now().Add(-time.Minute)}, "http://other.example.test": {IDToken: "keep", Expires: time.Now().Add(time.Hour)}}).save(); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := run("--server", srv.URL, "-n", "team-a", "task", "list"); err == nil {
+		t.Fatal("an expired login was ignored")
+	}
+	out, err := run("--server", srv.URL, "login")
+	if err != nil || !strings.Contains(out, "forgot the login") {
+		t.Fatalf("login: %q %v", out, err)
+	}
+	if _, err := run("--server", srv.URL, "-n", "team-a", "task", "list"); err != nil {
+		t.Fatalf("after forgetting: %v", err)
+	}
+	creds, _ := loadCredentials()
+	if _, ok := creds["http://other.example.test"]; !ok || len(creds) != 1 {
+		t.Errorf("credentials %v", creds)
+	}
+}

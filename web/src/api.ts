@@ -129,8 +129,7 @@ export const auth = {
 };
 
 export const sessionDropped =
-  "You logged in, but this browser did not keep the session. Likely causes: the server's external URL is https and this page is not, " +
-  "or the browser blocks cookies for this site.";
+  "You logged in, but this browser did not keep the session: it blocks or cleared cookies for this site. Allow them and reload.";
 
 async function request<T>(method: string, path: string, body?: unknown, signal?: AbortSignal): Promise<T> {
   const init: RequestInit = { method, headers: { Accept: "application/json" }, signal };

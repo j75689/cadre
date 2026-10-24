@@ -325,6 +325,12 @@ func TestLogout(t *testing.T) {
 	if code := logout(s.URL); code != http.StatusNoContent {
 		t.Fatalf("logout: %d", code)
 	}
+	u, _ := url.Parse(s.URL)
+	for _, ck := range c.Jar.Cookies(u) {
+		if ck.Name == auth.JustLoggedIn || ck.Name == "cadre-session" {
+			t.Errorf("cookie %s left after logout", ck.Name)
+		}
+	}
 	if res, _ := get(t, c, s.URL+base+"/whoami", nil); res.StatusCode != http.StatusUnauthorized {
 		t.Errorf("after logout: %d, want 401", res.StatusCode)
 	}
@@ -358,8 +364,18 @@ func TestCookiesBehindHTTPS(t *testing.T) {
 	}
 	mux := http.NewServeMux()
 	authn.Register(mux, base)
+	// Reached over plain http, the login would lose its Secure cookies:
+	// refused with a pointer to the https URL.
 	w := httptest.NewRecorder()
 	mux.ServeHTTP(w, httptest.NewRequest(http.MethodGet, "/auth/login?next=/t/a", nil))
+	if w.Code != http.StatusBadRequest || !strings.Contains(w.Body.String(), "https://cadre.example.test") {
+		t.Errorf("over http: %d %s", w.Code, w.Body.String())
+	}
+	// Behind a proxy that ends TLS.
+	w = httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/auth/login?next=/t/a", nil)
+	req.Header.Set("X-Forwarded-Proto", "https")
+	mux.ServeHTTP(w, req)
 	set := w.Header().Get("Set-Cookie")
 	if !strings.HasPrefix(set, "__Host-cadre-login=") || !strings.Contains(set, "Secure") || !strings.Contains(set, "HttpOnly") {
 		t.Errorf("login cookie %q", set)
@@ -372,17 +388,18 @@ func TestCookiesBehindHTTPS(t *testing.T) {
 
 func TestSafeNextAfterCleaning(t *testing.T) {
 	for next, want := range map[string]string{
-		"/./\\evil.example.test":    "/",
-		"/x/../\\evil.example.test": "/",
-		"/.//evil.example.test":     "/evil.example.test",
-		"/auth/login":               "/",
-		"/auth/../auth/callback":    "/",
-		"/auth":                     "/",
-		"/authors":                  "/authors",
-		"/a/./b/../c":               "/a/c",
-		"/t/a/":                     "/t/a/",
-		"/t/a?x=1&y=%2F":            "/t/a?x=1&y=%2F",
-		"/t/a\r\nSet-Cookie: x":     "/",
+		"/./\\evil.example.test":          "/",
+		"/x/../\\evil.example.test":       "/",
+		"/.//evil.example.test":           "/evil.example.test",
+		"/auth/login":                     "/",
+		"/auth/../auth/callback":          "/",
+		"/auth":                           "/",
+		"/authors":                        "/authors",
+		"/a/./b/../c":                     "/a/c",
+		"/t/a/":                           "/t/a/",
+		"/t/a?x=1&y=%2F":                  "/t/a?x=1&y=%2F",
+		"/t/a\r\nSet-Cookie: x":           "/",
+		"/t/" + strings.Repeat("a", 2001): "/",
 	} {
 		if got := auth.SafeNext(next); got != want {
 			t.Errorf("SafeNext(%q) = %q, want %q", next, got, want)
@@ -406,6 +423,29 @@ func TestOriginOf(t *testing.T) {
 		if got, ok := auth.OriginOf(bad); ok {
 			t.Errorf("OriginOf(%q) = %q", bad, got)
 		}
+	}
+}
+
+// An unverified email counts only when the email is the username.
+func TestEmailVerifiedForAnotherUsernameClaim(t *testing.T) {
+	idp := oidctest.New(t)
+	idp.SetClaim("preferred_username", "dana")
+	idp.SetClaim("email_verified", false)
+	authn, err := auth.NewOIDC(context.Background(), auth.Config{
+		Issuer: idp.URL, ClientID: oidctest.ClientID, UsernameClaim: "preferred_username", PublicURL: "http://localhost:8080",
+		SessionKey: []byte(strings.Repeat("k", 32)),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	mux := http.NewServeMux()
+	authn.Register(mux, base)
+	w := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, base+"/me", nil)
+	req.Header.Set("Authorization", "Bearer "+idp.IDToken(oidctest.ClientID, "", 0))
+	authn.Wrap(mux, base).ServeHTTP(w, req)
+	if w.Code != http.StatusOK || !strings.Contains(w.Body.String(), `"username":"dana"`) {
+		t.Errorf("preferred_username with an unverified email: %d %s", w.Code, w.Body.String())
 	}
 }
 
@@ -491,5 +531,41 @@ func TestDiscoveryRetries(t *testing.T) {
 	}
 	if code := serve(base+"/me", bearer); code != http.StatusOK {
 		t.Errorf("bearer once back: %d", code)
+	}
+}
+
+// A wrong issuer stays wrong: refused at start, not retried for ever.
+func TestDiscoveryFailsFastWhenMisconfigured(t *testing.T) {
+	idp := oidctest.New(t)
+	cfg := func(issuer string) auth.Config {
+		return auth.Config{Issuer: issuer, ClientID: oidctest.ClientID, UsernameClaim: "email", PublicURL: "http://localhost:8080",
+			SessionKey: []byte(strings.Repeat("k", 32)), Log: slog.New(slog.NewTextHandler(io.Discard, nil))}
+	}
+	if _, err := auth.NewOIDC(context.Background(), cfg(idp.URL+"/nope")); err == nil || !strings.Contains(err.Error(), "404") {
+		t.Errorf("an issuer that is not one: %v", err)
+	}
+	idp.SetIssuer("https://someone-else.example.test")
+	if _, err := auth.NewOIDC(context.Background(), cfg(idp.URL)); err == nil || !strings.Contains(err.Error(), "issuer") {
+		t.Errorf("an issuer mismatch: %v", err)
+	}
+	// The network failing is worth waiting out.
+	ctx, cancel := context.WithCancel(context.Background())
+	t.Cleanup(cancel)
+	if a, err := auth.NewOIDC(ctx, cfg("http://127.0.0.1:1")); err != nil || a.Ready() {
+		t.Errorf("an unreachable provider: %v", err)
+	}
+}
+
+func TestExternalURLIsAnOrigin(t *testing.T) {
+	idp := oidctest.New(t)
+	for _, u := range []string{"https://cadre.example.test/cadre", "https://cadre.example.test/?x=1", "cadre.example.test"} {
+		if _, err := auth.NewOIDC(context.Background(), auth.Config{Issuer: idp.URL, ClientID: oidctest.ClientID, UsernameClaim: "email",
+			PublicURL: u, SessionKey: []byte(strings.Repeat("k", 32))}); err == nil {
+			t.Errorf("external URL %q accepted", u)
+		}
+	}
+	if _, err := auth.NewOIDC(context.Background(), auth.Config{Issuer: idp.URL, ClientID: oidctest.ClientID, UsernameClaim: "email",
+		PublicURL: "https://cadre.example.test/", SessionKey: []byte(strings.Repeat("k", 32))}); err != nil {
+		t.Errorf("an origin with a slash: %v", err)
 	}
 }

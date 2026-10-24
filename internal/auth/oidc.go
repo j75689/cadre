@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"net"
 	"net/http"
 	"net/url"
 	"path"
@@ -106,8 +107,12 @@ func NewOIDC(ctx context.Context, cfg Config) (*OIDC, error) {
 		cfg.Log = slog.Default()
 	}
 	pub, err := url.Parse(cfg.PublicURL)
-	if err != nil || (pub.Scheme != "http" && pub.Scheme != "https") || pub.Host == "" {
+	switch {
+	case err != nil || (pub.Scheme != "http" && pub.Scheme != "https") || pub.Host == "":
 		return nil, fmt.Errorf("external URL %q: not an http or https URL", cfg.PublicURL)
+	case (pub.Path != "" && pub.Path != "/") || pub.RawQuery != "" || pub.Fragment != "":
+		// /auth/* and the UI's paths are at the root.
+		return nil, fmt.Errorf("external URL %q: must be an origin (scheme, host and port), with no path", cfg.PublicURL)
 	}
 	seal, err := newSealer(cfg.SessionKey)
 	if err != nil {
@@ -120,10 +125,29 @@ func NewOIDC(ctx context.Context, cfg Config) (*OIDC, error) {
 		o.session, o.login = "__Host-"+o.session, "__Host-"+o.login
 	}
 	if err := o.discover(ctx); err != nil {
+		// A wrong issuer stays wrong: say so now. A provider that is
+		// down or slow may come back.
+		if !transient(err) {
+			return nil, fmt.Errorf("OIDC discovery for %s: %w", cfg.Issuer, err)
+		}
 		cfg.Log.Warn("OIDC discovery failed; logins wait for it, retrying", "issuer", cfg.Issuer, "err", err)
 		go o.rediscover(ctx)
 	}
 	return o, nil
+}
+
+// transient reports whether a discovery error may go away by itself: the
+// network, a timeout, or the provider answering 5xx. An issuer mismatch, a
+// 4xx or a malformed document will not.
+func transient(err error) bool {
+	var netErr net.Error
+	var urlErr *url.Error
+	if errors.As(err, &netErr) || errors.As(err, &urlErr) || errors.Is(err, context.DeadlineExceeded) {
+		return true
+	}
+	// go-oidc reports a status it did not want as "<code> <text>: <body>".
+	msg := err.Error()
+	return len(msg) >= 3 && msg[0] == '5' && msg[1] >= '0' && msg[1] <= '9' && msg[2] >= '0' && msg[2] <= '9'
 }
 
 // discover reads the discovery document, within a bound.
@@ -158,8 +182,12 @@ func (o *OIDC) rediscover(ctx context.Context) {
 		case <-time.After(wait):
 		}
 		err := o.discover(ctx)
-		if err == nil {
+		switch {
+		case err == nil:
 			o.cfg.Log.Info("OIDC discovery succeeded; logins are open", "issuer", o.cfg.Issuer)
+			return
+		case !transient(err):
+			o.cfg.Log.Error("OIDC discovery failed for good: logins stay closed until cadre-server restarts with a working --oidc-issuer", "issuer", o.cfg.Issuer, "err", err)
 			return
 		}
 		o.cfg.Log.Warn("OIDC discovery failed again", "issuer", o.cfg.Issuer, "err", err)
@@ -207,26 +235,31 @@ func (o *OIDC) Register(mux *http.ServeMux, base string) {
 // "/\evil.example", which browsers read as another host. A backslash is
 // refused outright.
 func SafeNext(next string) string {
-	if !strings.HasPrefix(next, "/") || strings.ContainsAny(next, "\\\x00\r\n\t") {
+	if len(next) > maxNext || !strings.HasPrefix(next, "/") || strings.ContainsAny(next, "\\\x00\r\n\t") {
 		return "/"
 	}
 	u, err := url.Parse(next)
-	if err != nil || u.Scheme != "" || u.Host != "" || u.User != nil {
+	if err != nil || u.Scheme != "" || u.Host != "" {
 		return "/"
 	}
-	clean := path.Clean(u.Path)
-	if strings.HasSuffix(u.Path, "/") && clean != "/" {
+	// The escaped path, so an encoded "/" in a segment stays one.
+	escaped := u.EscapedPath()
+	clean := path.Clean(escaped)
+	if strings.HasSuffix(escaped, "/") && clean != "/" {
 		clean += "/"
 	}
-	if !strings.HasPrefix(clean, "/") || strings.HasPrefix(clean, "//") || clean == "/auth" || strings.HasPrefix(clean, "/auth/") {
+	if clean == "/auth" || strings.HasPrefix(clean, "/auth/") {
 		return "/"
 	}
-	out := (&url.URL{Path: clean}).EscapedPath()
 	if u.RawQuery != "" {
-		out += "?" + u.RawQuery
+		clean += "?" + u.RawQuery
 	}
-	return out
+	return clean
 }
+
+// maxNext bounds next, which the login cookie carries: a cookie too large
+// for the browser would be dropped and the login fail.
+const maxNext = 2000
 
 func random() string {
 	b := make([]byte, 24)
@@ -248,6 +281,12 @@ func (o *OIDC) startLogin(w http.ResponseWriter, r *http.Request) {
 	d := o.ready.Load()
 	if d == nil {
 		http.Error(w, notReady, http.StatusServiceUnavailable)
+		return
+	}
+	// Behind https the cookies are Secure: reached over plain http, the
+	// browser would drop them and the login could never finish.
+	if o.secure && r.TLS == nil && !strings.EqualFold(r.Header.Get("X-Forwarded-Proto"), "https") {
+		http.Error(w, "This server expects to be reached over https, at "+o.cfg.PublicURL+": log in from there.", http.StatusBadRequest)
 		return
 	}
 	p := pending{State: random(), Nonce: random(), Verifier: oauth2.GenerateVerifier(), Next: SafeNext(r.URL.Query().Get("next")), Expires: o.cfg.Now().Add(loginTTL)}
@@ -344,6 +383,11 @@ func (o *OIDC) logout(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	http.SetCookie(w, o.clear(o.session))
+	// The marker too, or a 401 within its minute would read as a dropped
+	// session rather than a logout.
+	marker := o.clear(JustLoggedIn)
+	marker.HttpOnly, marker.Secure = false, false
+	http.SetCookie(w, marker)
 	w.WriteHeader(http.StatusNoContent)
 }
 
@@ -369,9 +413,10 @@ func (o *OIDC) verify(ctx context.Context, d *discovered, raw string) (*Identity
 	if username == "" {
 		return nil, time.Time{}, "", fmt.Errorf("the token has no %q claim", o.cfg.UsernameClaim)
 	}
-	// An address the provider has not verified names nobody: anyone could
-	// have registered it. Without the claim the provider vouches for it.
-	if v, ok := claims["email_verified"]; ok && (v == false || v == "false") {
+	// An address the provider has not verified names nobody, when the
+	// address is the username: anyone could have registered it. Without
+	// the claim the provider vouches for it.
+	if v, ok := claims["email_verified"]; o.cfg.UsernameClaim == "email" && ok && (v == false || v == "false") {
 		return nil, time.Time{}, "", errors.New("the token's email is not verified")
 	}
 	name, _ := claims["name"].(string)

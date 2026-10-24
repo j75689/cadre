@@ -39,9 +39,10 @@ type Provider struct {
 	TTL time.Duration
 	// Nonce, when set, replaces the nonce asked for, as a broken or
 	// hostile provider would.
-	Nonce string
-	down  bool
-	codes map[string]grant
+	Nonce  string
+	down   bool
+	issuer string // what discovery claims, if not URL
+	codes  map[string]grant
 }
 
 type grant struct {
@@ -74,14 +75,17 @@ func New(t *testing.T) *Provider {
 
 func (p *Provider) discovery(w http.ResponseWriter, _ *http.Request) {
 	p.mu.Lock()
-	down := p.down
+	down, issuer := p.down, p.issuer
 	p.mu.Unlock()
 	if down {
 		http.Error(w, "down", http.StatusServiceUnavailable)
 		return
 	}
+	if issuer == "" {
+		issuer = p.URL
+	}
 	writeJSON(w, map[string]any{
-		"issuer": p.URL, "authorization_endpoint": p.URL + "/authorize", "token_endpoint": p.URL + "/token",
+		"issuer": issuer, "authorization_endpoint": p.URL + "/authorize", "token_endpoint": p.URL + "/token",
 		"jwks_uri": p.URL + "/keys", "response_types_supported": []string{"code"},
 		"subject_types_supported": []string{"public"}, "id_token_signing_alg_values_supported": []string{"RS256"},
 	})
@@ -190,6 +194,14 @@ func (p *Provider) SetDown(down bool) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	p.down = down
+}
+
+// SetIssuer makes discovery claim another issuer, as a misconfigured
+// provider or a wrong --oidc-issuer would.
+func (p *Provider) SetIssuer(issuer string) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	p.issuer = issuer
 }
 
 // SetNonce makes the next ID tokens carry nonce, whatever was asked.

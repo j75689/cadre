@@ -126,6 +126,20 @@ func newLoginCmd(g *globals) *cobra.Command {
 				return fmt.Errorf("ask %s how to log in: %w", g.server, err)
 			}
 			if info.Mode != auth.ModeOIDC {
+				// A login kept from when it had them would only get in
+				// the way.
+				creds, err := loadCredentials()
+				if err != nil {
+					return err
+				}
+				if _, ok := creds[serverKey(g.server)]; ok {
+					delete(creds, serverKey(g.server))
+					if err := creds.save(); err != nil {
+						return err
+					}
+					outln(cmd.OutOrStdout(), "This server does not use logins (--auth="+info.Mode+"): forgot the login kept for it.")
+					return nil
+				}
 				outln(cmd.OutOrStdout(), "This server does not use logins (--auth="+info.Mode+"): nothing to do.")
 				return nil
 			}
