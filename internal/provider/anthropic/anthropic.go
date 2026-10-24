@@ -4,6 +4,7 @@
 package anthropic
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -48,6 +49,77 @@ type Provider struct {
 // auth token, profiles, base URL from the environment) are turned off, so
 // nothing in the runner's environment can stand in for it.
 func (p *Provider) Start(ctx context.Context, s builtin.Setup) (builtin.Conversation, error) {
+	c, err := p.open(s)
+	if err != nil {
+		return nil, err
+	}
+	if err := c.describe(ctx); err != nil {
+		return nil, err
+	}
+	c.params.Messages = []sdk.BetaMessageParam{sdk.NewBetaUserMessage(sdk.NewBetaTextBlock(s.Prompt(c.limit)))}
+	return c, nil
+}
+
+// sdkModule is the SDK whose request building a recorded conversation
+// depends on.
+const sdkModule = "github.com/anthropics/anthropic-sdk-go"
+
+// Begin describes the model and renders the first message, as Start does,
+// and returns them as the conversation's opening.
+func (p *Provider) Begin(ctx context.Context, s builtin.Setup) (*builtin.Opening, error) {
+	c, err := p.open(s)
+	if err != nil {
+		return nil, err
+	}
+	if err := c.describe(ctx); err != nil {
+		return nil, err
+	}
+	return &builtin.Opening{
+		Provider: v1alpha1.ProviderAnthropic, SDK: provider.ModuleVersion(sdkModule), Model: s.Model.Model,
+		System: s.System, Prompt: s.Prompt(c.limit), Tools: s.Tools, Settings: c.settings(),
+	}, nil
+}
+
+// Resume rebuilds a conversation from its opening and its recorded steps:
+// the same parameters, settings and history it had live. A recorded turn
+// goes back as it was recorded, byte for byte, never decoded into the
+// SDK's types and encoded again: a tool call's input keeps its keys' order
+// and its numbers, and a block this SDK does not know stays as it came.
+func (p *Provider) Resume(_ context.Context, s builtin.Setup, o *builtin.Opening, steps []builtin.Recorded) (builtin.StepConversation, error) {
+	s.Model.Model, s.System, s.Tools = o.Model, o.System, o.Tools
+	c, err := p.open(s)
+	if err != nil {
+		return nil, err
+	}
+	if err := provider.CheckOpening(o, v1alpha1.ProviderAnthropic, sdkModule, c.log); err != nil {
+		return nil, err
+	}
+	c.apply(o.Settings)
+	c.params.Messages = []sdk.BetaMessageParam{sdk.NewBetaUserMessage(sdk.NewBetaTextBlock(o.Prompt))}
+	for i, st := range steps {
+		switch st.Kind {
+		case builtin.RecordedTurn:
+			for _, raw := range st.Messages {
+				if !json.Valid(raw) {
+					return nil, builtin.Permanent(fmt.Errorf("recorded step %d: a message that is not JSON", i))
+				}
+				c.params.Messages = append(c.params.Messages, param.Override[sdk.BetaMessageParam](raw))
+			}
+			if st.Settings != nil {
+				c.apply(*st.Settings)
+			}
+		case builtin.RecordedResults:
+			c.AddResults(st.Results)
+		default:
+			return nil, builtin.Permanent(fmt.Errorf("recorded step %d is of kind %q", i, st.Kind))
+		}
+	}
+	return c, nil
+}
+
+// open builds a conversation from s, with its client and the parameters
+// every request carries, and no messages.
+func (p *Provider) open(s builtin.Setup) (*conversation, error) {
 	if s.Credential == "" {
 		return nil, builtin.Permanent(errors.New("an anthropic ModelProvider needs auth.secretRef"))
 	}
@@ -84,7 +156,7 @@ func (p *Provider) Start(ctx context.Context, s builtin.Setup) (builtin.Conversa
 	if effort == "" {
 		effort = v1alpha1.EffortHigh
 	}
-	c := &conversation{
+	return &conversation{
 		client: client, log: log, model: s.Model.Model,
 		params: sdk.BetaMessageNewParams{
 			Model:     s.Model.Model,
@@ -102,12 +174,27 @@ func (p *Provider) Start(ctx context.Context, s builtin.Setup) (builtin.Conversa
 		// model; they exist on Anthropic's own API only, so not through a
 		// gateway.
 		fallbacks: s.Model.Type == v1alpha1.ProviderAnthropic && s.Model.BaseURL == "",
+	}, nil
+}
+
+// settings are the conversation's settings, to record.
+func (c *conversation) settings() builtin.Settings {
+	return builtin.Settings{
+		ContextLimit: c.limit, MaxTokens: c.params.MaxTokens, Effort: string(c.effort),
+		Thinking: c.thinking, Fallbacks: c.fallbacks, Probe: c.probe, Started: c.started,
 	}
-	if err := c.describe(ctx); err != nil {
-		return nil, err
-	}
-	c.params.Messages = []sdk.BetaMessageParam{sdk.NewBetaUserMessage(sdk.NewBetaTextBlock(s.Prompt(c.limit)))}
-	return c, nil
+}
+
+// apply takes recorded settings back.
+func (c *conversation) apply(s builtin.Settings) {
+	c.limit, c.params.MaxTokens, c.effort = s.ContextLimit, s.MaxTokens, sdk.BetaOutputConfigEffort(s.Effort)
+	c.thinking, c.fallbacks, c.probe, c.started = s.Thinking, s.Fallbacks, s.Probe, s.Started
+}
+
+// LastTurn is what the last Turn appended, as it is sent back, and the
+// settings when the turn changed them (its first request settled them).
+func (c *conversation) LastTurn() builtin.Recorded {
+	return c.last
 }
 
 // describe reads what the model is from the Models API, once per run: its
@@ -160,27 +247,26 @@ func effortSupported(e sdk.EffortCapability, level sdk.BetaOutputConfigEffort) b
 }
 
 // inputSchema turns a tool's JSON object schema into the SDK's parameter,
-// keeping every keyword.
+// keeping every keyword. It is sent as JSON encoded from a map, whose keys
+// encoding/json sorts: the same schema is the same bytes on every request,
+// as the prompt cache needs.
 func inputSchema(raw json.RawMessage) (sdk.BetaToolInputSchemaParam, error) {
+	// Numbers are kept as written, not turned into float64.
+	dec := json.NewDecoder(bytes.NewReader(raw))
+	dec.UseNumber()
 	var m map[string]any
-	if err := json.Unmarshal(raw, &m); err != nil {
+	if err := dec.Decode(&m); err != nil {
 		return sdk.BetaToolInputSchemaParam{}, fmt.Errorf("input schema: %w", err)
 	}
-	schema := sdk.BetaToolInputSchemaParam{Properties: m["properties"]}
-	if req, ok := m["required"].([]any); ok {
-		for _, r := range req {
-			if name, ok := r.(string); ok {
-				schema.Required = append(schema.Required, name)
-			}
-		}
+	if m == nil {
+		return sdk.BetaToolInputSchemaParam{}, errors.New("input schema: not a JSON object")
 	}
-	delete(m, "type")
-	delete(m, "properties")
-	delete(m, "required")
-	if len(m) > 0 {
-		schema.ExtraFields = m
+	m["type"] = "object"
+	data, err := json.Marshal(m)
+	if err != nil {
+		return sdk.BetaToolInputSchemaParam{}, fmt.Errorf("input schema: %w", err)
 	}
-	return schema, nil
+	return param.Override[sdk.BetaToolInputSchemaParam](json.RawMessage(data)), nil
 }
 
 type conversation struct {
@@ -198,6 +284,7 @@ type conversation struct {
 	thinking, fallbacks bool
 	probe               bool // the Models API could not describe the model
 	started             bool // a request has been answered
+	last                builtin.Recorded
 }
 
 // ContextLimit is the model's window, 0 when the Models API could not be
@@ -209,12 +296,28 @@ func (c *conversation) ContextLimit() int64 { return c.limit }
 const maxPauses = 5
 
 func (c *conversation) Turn(ctx context.Context) (*builtin.Reply, error) {
+	c.last = builtin.Recorded{}
+	before, from := c.settings(), len(c.params.Messages)
+	r, err := c.turn(ctx)
+	if err != nil {
+		return nil, err
+	}
+	rec, err := provider.RecordTurn(c.params.Messages[from:], before, c.settings())
+	if err != nil {
+		c.params.Messages = c.params.Messages[:from]
+		return nil, builtin.Permanent(err)
+	}
+	c.last = rec
+	return r, nil
+}
+
+func (c *conversation) turn(ctx context.Context) (*builtin.Reply, error) {
 	for pauses := 0; ; {
 		msg, err := c.send(ctx)
 		if err != nil {
 			return nil, err
 		}
-		c.params.Messages = append(c.params.Messages, msg.ToParam())
+		c.params.Messages = append(c.params.Messages, toParam(msg))
 		if msg.StopReason != sdk.BetaStopReasonPauseTurn {
 			return reply(msg), nil
 		}
@@ -335,6 +438,35 @@ func (c *conversation) AddResults(results []builtin.ToolResult) {
 	c.params.Messages = append(c.params.Messages, sdk.NewBetaUserMessage(blocks...))
 }
 
+// toParam is msg as it goes back to the API. A tool call's input goes back
+// as the model wrote it, not decoded and encoded again, which would sort
+// its keys and round its large numbers: the call is made with those bytes
+// too.
+func toParam(msg *sdk.BetaMessage) sdk.BetaMessageParam {
+	p := msg.ToParam()
+	inputs := toolInputs(msg)
+	for _, block := range p.Content {
+		if tu := block.OfToolUse; tu != nil {
+			if raw, ok := inputs[tu.ID]; ok {
+				tu.Input = raw
+			}
+		}
+	}
+	return p
+}
+
+// toolInputs are the inputs of msg's tool calls as the model wrote them,
+// by call id.
+func toolInputs(msg *sdk.BetaMessage) map[string]json.RawMessage {
+	inputs := map[string]json.RawMessage{}
+	for _, block := range msg.Content {
+		if block.Type == "tool_use" && json.Valid(block.Input) {
+			inputs[block.ID] = block.Input
+		}
+	}
+	return inputs
+}
+
 // reply is what the loop needs from a message.
 func reply(msg *sdk.BetaMessage) *builtin.Reply {
 	u := msg.Usage
@@ -346,13 +478,14 @@ func reply(msg *sdk.BetaMessage) *builtin.Reply {
 		ContextTokens: u.InputTokens + u.CacheReadInputTokens + u.CacheCreationInputTokens + u.OutputTokens,
 	}
 	var text []string
+	inputs := toolInputs(msg)
 	for _, block := range msg.Content {
 		switch b := block.AsAny().(type) {
 		case sdk.BetaTextBlock:
 			text = append(text, b.Text)
 		case sdk.BetaToolUseBlock:
-			input, err := json.Marshal(b.Input)
-			if err != nil || b.Input == nil {
+			input, ok := inputs[b.ID]
+			if !ok || len(input) == 0 {
 				input = []byte("{}")
 			}
 			out.Calls = append(out.Calls, builtin.ToolCall{ID: b.ID, Name: b.Name, Input: input})

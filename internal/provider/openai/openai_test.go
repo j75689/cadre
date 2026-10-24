@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -26,6 +27,7 @@ type api struct {
 	*httptest.Server
 	mu       sync.Mutex
 	requests []map[string]any
+	bodies   [][]byte // the requests as sent
 	headers  []http.Header
 	paths    []string
 	replies  []func(http.ResponseWriter)
@@ -35,10 +37,12 @@ func newAPI(t *testing.T, replies ...func(http.ResponseWriter)) *api {
 	t.Helper()
 	a := &api{replies: replies}
 	a.Server = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		raw, _ := io.ReadAll(r.Body)
 		var body map[string]any
-		_ = json.NewDecoder(r.Body).Decode(&body)
+		_ = json.Unmarshal(raw, &body)
 		a.mu.Lock()
 		a.requests = append(a.requests, body)
+		a.bodies = append(a.bodies, raw)
 		a.headers = append(a.headers, r.Header.Clone())
 		a.paths = append(a.paths, r.URL.Path)
 		n := len(a.requests)
