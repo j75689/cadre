@@ -172,3 +172,34 @@ func TestConfigCRDs(t *testing.T) {
 		t.Errorf("toolserver auth defaults: %+v, %v", authed.Spec.Auth, err)
 	}
 }
+
+func TestTeamRolesCRD(t *testing.T) {
+	c := startAPIServer(t)
+	ctx := context.Background()
+	nsObj := &unstructured.Unstructured{Object: map[string]any{"apiVersion": "v1", "kind": "Namespace", "metadata": map[string]any{"name": "roles-valid"}}}
+	if err := c.Create(ctx, nsObj); err != nil {
+		t.Fatal(err)
+	}
+	subject := func(kind v1alpha1.SubjectKind, name string) []v1alpha1.RoleSubject {
+		return []v1alpha1.RoleSubject{{Kind: kind, Name: name}}
+	}
+	valid := &v1alpha1.Team{ObjectMeta: metav1.ObjectMeta{Namespace: "roles-valid", Name: v1alpha1.TeamName}, Spec: v1alpha1.TeamSpec{Roles: []v1alpha1.TeamRole{
+		{Role: v1alpha1.RoleAdmin, Subjects: subject(v1alpha1.SubjectUser, "lead@example.test")},
+		{Role: v1alpha1.RoleMember, Subjects: subject(v1alpha1.SubjectGroup, "backend")},
+		{Role: v1alpha1.RoleViewer, Subjects: subject(v1alpha1.SubjectGroup, "everyone")},
+	}}}
+	if err := c.Create(ctx, valid); err != nil {
+		t.Errorf("valid roles: %v", err)
+	}
+	for name, roles := range map[string][]v1alpha1.TeamRole{
+		"an unknown role":   {{Role: "owner", Subjects: subject(v1alpha1.SubjectUser, "x")}},
+		"an unknown kind":   {{Role: v1alpha1.RoleMember, Subjects: subject("team", "x")}},
+		"a subject unnamed": {{Role: v1alpha1.RoleMember, Subjects: subject(v1alpha1.SubjectGroup, "")}},
+		"no subjects":       {{Role: v1alpha1.RoleMember}},
+	} {
+		team := &v1alpha1.Team{ObjectMeta: metav1.ObjectMeta{Namespace: ns, Name: v1alpha1.TeamName}, Spec: v1alpha1.TeamSpec{Roles: roles}}
+		if err := c.Create(ctx, team, client.DryRunAll); !apierrors.IsInvalid(err) {
+			t.Errorf("%s: got %v, want Invalid", name, err)
+		}
+	}
+}

@@ -26,6 +26,58 @@ type TeamSpec struct {
 	// +kubebuilder:validation:XValidation:rule="duration(self) > duration('0s')",message="archiveAfter must be a positive duration such as 720h"
 	// +optional
 	ArchiveAfter *metav1.Duration `json:"archiveAfter,omitempty"`
+
+	// Roles give people a role on the team's board, by user or by group.
+	// Someone matching several entries has the strongest of their roles.
+	// +listType=atomic
+	// +optional
+	Roles []TeamRole `json:"roles,omitempty"`
+}
+
+// RoleName is what a role lets its holder do on a team's board: a viewer
+// reads, a member also works on tasks, an admin also manages the team.
+// +kubebuilder:validation:Enum=admin;member;viewer
+type RoleName string
+
+// Roles.
+const (
+	RoleAdmin  RoleName = "admin"
+	RoleMember RoleName = "member"
+	RoleViewer RoleName = "viewer"
+)
+
+// TeamRole gives a role to its subjects.
+type TeamRole struct {
+	// Role is admin, member or viewer.
+	Role RoleName `json:"role"`
+
+	// Subjects hold the role.
+	// +kubebuilder:validation:MinItems=1
+	// +listType=atomic
+	Subjects []RoleSubject `json:"subjects"`
+}
+
+// SubjectKind says what a subject names.
+// +kubebuilder:validation:Enum=group;user
+type SubjectKind string
+
+// Subject kinds.
+const (
+	// SubjectGroup matches anyone in the group, as the login's groups
+	// claim lists them.
+	SubjectGroup SubjectKind = "group"
+	// SubjectUser matches the login's username.
+	SubjectUser SubjectKind = "user"
+)
+
+// RoleSubject is a user or a group.
+type RoleSubject struct {
+	// Kind is group or user.
+	Kind SubjectKind `json:"kind"`
+
+	// Name is the group's or the user's name.
+	// +kubebuilder:validation:MinLength=1
+	Name string `json:"name"`
 }
 
 // TeamStatus is the control state of a team, written only by the Task Manager.

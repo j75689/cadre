@@ -1,6 +1,8 @@
 import { useEffect, useState, type FormEvent } from "react";
 import { Link, useNavigate, useParams } from "react-router";
 import { createTask, listAgents, type AgentSummary, type TaskSpec } from "./api";
+import { RoleLine, useRole } from "./Identity";
+import { can } from "./roles";
 
 const priorities = ["low", "medium", "high", "urgent"];
 
@@ -33,6 +35,7 @@ export function toSpec(d: Draft): TaskSpec {
 // NewTask creates a task in the team; the server names it.
 export function NewTask() {
   const { ns = "" } = useParams();
+  const role = useRole(ns);
   const navigate = useNavigate();
   const [draft, setDraft] = useState<Draft>({ title: "", description: "", kind: "", assignee: "", priority: "medium", labels: "" });
   const [agents, setAgents] = useState<AgentSummary[] | null>(null);
@@ -71,6 +74,17 @@ export function NewTask() {
     }
   };
   const chosen = agents?.find((a) => a.name === draft.assignee);
+  if (!can(role, "work")) {
+    return (
+      <main className="new-task">
+        <p>
+          <Link to={`/t/${encodeURIComponent(ns)}`}>← {ns}</Link>
+        </p>
+        <RoleLine ns={ns} />
+        {role !== undefined && <p>Creating tasks needs the member role.</p>}
+      </main>
+    );
+  }
   return (
     <main className="new-task">
       <p>

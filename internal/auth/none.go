@@ -19,5 +19,4 @@ func (None) Wrap(next http.Handler, _ string) http.Handler { return next }
 // Register implements Authenticator.
 func (n None) Register(mux *http.ServeMux, base string) {
 	mux.HandleFunc("GET "+base+"/auth", func(w http.ResponseWriter, _ *http.Request) { httpjson.Write(w, http.StatusOK, n.Info()) })
-	mux.HandleFunc("GET "+base+"/me", func(w http.ResponseWriter, _ *http.Request) { httpjson.Write(w, http.StatusOK, Me{Mode: ModeNone}) })
 }

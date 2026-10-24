@@ -120,7 +120,20 @@ People log in with any OIDC provider; there is no provider-specific code. This c
   - Against a server without logins, `cadre login` forgets any login kept for it.
   - `--as` is refused by a server with logins ("identity comes from login") and still names the author with `--auth=none`.
 - **Identity in the API.** The author of a comment, reply or approval is the caller's username. The `author` fields of those requests count only with `--auth=none`. `GET /api/v1/me` returns the mode and the identity.
-- **Not yet.** Roles per team and their enforcement come next. The MCP endpoint for outside agents is not behind the login yet.
+- **Not yet.** The MCP endpoint for outside agents has no login yet (#68).
+
+### Authorization
+
+With logins, what a person may do on a team's board is decided by their role on the team. The matrix is fixed: there is no policy file. It is enforced in the API, so the UI and the CLI cannot get around it.
+
+- **Roles** come from `Team.spec.roles` (see [crds.md](crds.md#team)): `viewer` reads, `member` also creates tasks, comments, replies, approves or denies tool calls and cancels, and `admin` will also edit the Team through the API (#71); until then the Team, roles included, is edited with kubectl or GitOps. Users are matched by username (without case when it is an email address) and groups by the groups claim. The strongest matching role counts.
+- **Freshness.** Every request is first decided on the Team in the board index, seconds behind the store at worst while its watch is healthy. A refusal there is final: a lagging index can grant too much, never too little. A write the index allows is then confirmed on the Team read from the store, so taking a role away refuses that person's next write at once, and only people the index lets write cost a store read.
+- **Bootstrap admins**, `--admin-users` and `--admin-groups` (comma-separated; a group's name may hold spaces), are admin on every team, see every team, and may create teams: creating one (`PUT /api/v1/namespaces/<namespace>/team` where there is none yet) needs them, since nobody has a role on a team that does not exist. With neither flag set, only people named in a Team's roles can do anything, and nobody can create a team through the API; cadre-server says so in its log at start. The flags need `--auth=oidc`: cadre-server refuses to start with them and `--auth=none`.
+- **403 and 404.** A request on a team the caller has no role on, or in a namespace without a Team, is refused with 403. The message names the role it needs and the caller's, so a stranger learns nothing about what exists. A refusal for the role has the error code `no_role`. A 404 means a missing object on a team the caller may see. `GET /api/v1/teams` lists only the teams the caller has a role on (every team for a bootstrap admin). It shows a team's `roles`, status, annotations and managed fields only to its admins, since `kubectl apply` keeps the roles in an annotation. `GET /api/v1/me` adds `roles`, the caller's role by namespace, and `admin` for a bootstrap admin.
+- **The UI** leaves out what the role does not allow, says the role ("You are a viewer of team-a"), and shows each team's role in the picker. A `no_role` refusal of an action means the role changed since the page read it: the UI shows the server's message and reads `/me` again.
+- **Without logins** (`--auth=none`) nothing is enforced: everyone is an admin of every team, and `/me` says `admin: true`.
+
+To try roles by group with Dex, `hack/dex/groups.yaml` switches Dex to its mock connector. It logs in at once as `kilgore@kilgore.trout`, in the group `authors`.
 
 **Developing with Dex.** `hack/dex/dex.yaml` runs Dex in a local cluster with one user (`dev@example.test`, password `password`), the web client `cadre` and the public client `cadre-cli`. To use it:
 

@@ -20,6 +20,7 @@ function server(thread: ReturnType<typeof entry>[], onPost?: (url: string) => Pr
   const calls: string[] = [];
   vi.stubGlobal("fetch", (url: string, init?: RequestInit) => {
     calls.push(`${init?.method ?? "GET"} ${url}`);
+    if (url.endsWith("/me")) return json({ mode: "none", admin: true });
     if (init?.method === "POST") return onPost ? onPost(url) : json({});
     const u = new URL(url, "http://cadre.test");
     if (u.pathname.endsWith("/thread")) {
@@ -90,6 +91,7 @@ describe("TaskPage", () => {
     const calls: string[] = [];
     vi.stubGlobal("fetch", (url: string) => {
       calls.push(url);
+      if (url.endsWith("/me")) return json({ mode: "none", admin: true });
       if (url.includes("/thread")) return json({ items: [] });
       if (url.endsWith("/runs")) return json({ items: [] });
       return json({ metadata: { name: "x", namespace: "a" }, spec: { title: "Task x" }, status });
@@ -109,6 +111,7 @@ describe("TaskPage", () => {
     const calls: string[] = [];
     vi.stubGlobal("fetch", (url: string) => {
       calls.push(url);
+      if (url.endsWith("/me")) return json({ mode: "none", admin: true });
       if (url.includes("/thread")) return json({ items: [] });
       if (url.endsWith("/runs")) return json({ items: [] });
       return json({ metadata: { name: "x", namespace: "a" }, spec: { title: "Task x" }, status });

@@ -36,6 +36,7 @@ describe("NewTask", () => {
   it("shows why an agent is not ready, and creates the task", async () => {
     const posts: unknown[] = [];
     vi.stubGlobal("fetch", (url: string, init?: RequestInit) => {
+      if (url.endsWith("/me")) return json({ mode: "none", admin: true });
       if (init?.method === "POST") {
         posts.push(JSON.parse(String(init.body)));
         return json({ metadata: { name: "01jnew", namespace: "a" }, spec: { title: "Write it" }, status: {} }, 201);
@@ -51,7 +52,7 @@ describe("NewTask", () => {
         <App />
       </MemoryRouter>,
     );
-    fireEvent.click(screen.getByRole("button", { name: "Create task" }));
+    fireEvent.click(await screen.findByRole("button", { name: "Create task" }));
     expect(screen.getByRole("alert").textContent).toMatch(/title/i);
     expect(posts).toHaveLength(0);
 
@@ -68,6 +69,7 @@ describe("NewTask", () => {
   it("says when the agents cannot be read, and reads them once", async () => {
     let reads = 0;
     vi.stubGlobal("fetch", (url: string) => {
+      if (url.endsWith("/me")) return json({ mode: "none", admin: true });
       if (url.endsWith("/agents")) {
         reads++;
         return reads === 1 ? json({ error: { code: "Unavailable", message: "the cache is not synced" } }, 503) : json({ items: [{ name: "writer", ready: true }] });
@@ -79,7 +81,7 @@ describe("NewTask", () => {
         <App />
       </MemoryRouter>,
     );
-    fireEvent.change(screen.getByLabelText("Kind"), { target: { value: "Agent" } });
+    fireEvent.change(await screen.findByLabelText("Kind"), { target: { value: "Agent" } });
     expect(await screen.findByText(/Could not load the agents: the cache is not synced/)).toBeTruthy();
     expect(screen.queryByText(/no agents/)).toBeNull();
     fireEvent.click(screen.getByRole("button", { name: "Retry" }));
@@ -88,7 +90,7 @@ describe("NewTask", () => {
   });
 
   it("starts fresh for another team", async () => {
-    vi.stubGlobal("fetch", () => json({ items: [] }));
+    vi.stubGlobal("fetch", (url: string) => (url.endsWith("/me") ? json({ mode: "none", admin: true }) : json({ items: [] })));
     const nav: { go: (to: string) => void } = { go: () => {} };
     function Navigator() {
       const navigate = useNavigate();
@@ -103,8 +105,8 @@ describe("NewTask", () => {
         <App />
       </MemoryRouter>,
     );
-    fireEvent.change(screen.getByLabelText("Title"), { target: { value: "For team a" } });
+    fireEvent.change(await screen.findByLabelText("Title"), { target: { value: "For team a" } });
     act(() => nav.go("/t/b/new"));
-    expect((screen.getByLabelText("Title") as HTMLInputElement).value).toBe("");
+    expect(((await screen.findByLabelText("Title")) as HTMLInputElement).value).toBe("");
   });
 });

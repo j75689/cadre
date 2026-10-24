@@ -172,6 +172,12 @@ type Index interface {
 	ListTeams(ctx context.Context) ([]v1alpha1.Team, error)
 }
 
+// TeamIndex is what a Driver may also offer: one Team from the index, by
+// namespace, as fresh as ListTeams and without listing them all.
+type TeamIndex interface {
+	IndexedTeam(ctx context.Context, namespace string) (*v1alpha1.Team, error)
+}
+
 // Notifier is what a Driver may also offer: it hands every Task it sees
 // change, as its index does, to fn. A notification is a hint, like the
 // index: one may be late, duplicated or dropped, so nothing may depend on

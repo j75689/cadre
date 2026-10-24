@@ -1,9 +1,11 @@
 import { useState } from "react";
 import { Link } from "react-router";
 import { listTeams, type Team } from "./api";
+import { useIdentityDetails } from "./Identity";
 import { usePolling } from "./usePolling";
 
 export function Teams() {
+  const { mode, me } = useIdentityDetails();
   const [teams, setTeams] = useState<Team[] | null>(null);
   const [error, setError] = useState("");
   usePolling(
@@ -30,6 +32,7 @@ export function Teams() {
           <li key={t.metadata.namespace}>
             <Link to={`/t/${encodeURIComponent(t.metadata.namespace)}`}>{t.spec?.displayName || t.metadata.namespace}</Link>
             {t.spec?.displayName && <span className="ns"> {t.metadata.namespace}</span>}
+            {mode === "oidc" && <span className="team-role"> {me?.roles?.[t.metadata.namespace] ?? (me?.admin ? "admin" : "")}</span>}
           </li>
         ))}
       </ul>

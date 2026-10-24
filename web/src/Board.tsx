@@ -1,6 +1,8 @@
 import { useState } from "react";
 import { Link, useParams } from "react-router";
 import { listTasks, phases, type Phase, type Task } from "./api";
+import { RoleLine, useRole } from "./Identity";
+import { can } from "./roles";
 import { usePolling } from "./usePolling";
 
 // pageSize is one "load more" of a column.
@@ -29,6 +31,7 @@ async function loadColumn(ns: string, phase: Phase, pages: number, signal: Abort
 
 export function Board() {
   const { ns = "" } = useParams();
+  const role = useRole(ns);
   const [columns, setColumns] = useState<Column[] | null>(null);
   const [pages, setPages] = useState<Record<string, number>>({});
   const [error, setError] = useState("");
@@ -50,14 +53,17 @@ export function Board() {
     <main className="board">
       <header className="board-header">
         <h1>{ns}</h1>
-        <Link className="new" to={`/t/${encodeURIComponent(ns)}/new`}>
-          New task
-        </Link>
+        {can(role, "work") && (
+          <Link className="new" to={`/t/${encodeURIComponent(ns)}/new`}>
+            New task
+          </Link>
+        )}
         <label className="search">
           Search the loaded page{" "}
           <input type="search" value={search} onChange={(e) => setSearch(e.target.value)} placeholder="title, label, assignee, #number" />
         </label>
       </header>
+      <RoleLine ns={ns} />
       {error && <p className="error">Could not load the board: {error}</p>}
       {columns === null && !error && <p>Loading…</p>}
       {columns && (

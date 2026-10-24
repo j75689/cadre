@@ -159,6 +159,9 @@ func newLoginCmd(g *globals) *cobra.Command {
 			if err != nil {
 				return fmt.Errorf("logged in, but the server refuses the token: %w", err)
 			}
+			if me.Identity == nil {
+				return fmt.Errorf("logged in, but %s does not say who you are", g.server)
+			}
 			outf(cmd.OutOrStdout(), "Logged in to %s as %s.\n", g.server, me.Username)
 			return nil
 		},

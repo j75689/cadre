@@ -30,6 +30,7 @@ const (
 	CodeEntryPending      = "entry_pending"      // 409: the entry waited on is not in the thread yet
 	CodeUnauthenticated   = "unauthenticated"    // 401: a valid credential is required
 	CodeForbidden         = "forbidden"          // 403: not this caller's to do
+	CodeNoRole            = "no_role"            // 403: the caller's role on the team does not allow it
 	CodeUnavailable       = "unavailable"        // 503: retry later
 )
 

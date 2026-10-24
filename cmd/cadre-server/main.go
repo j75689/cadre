@@ -20,6 +20,7 @@ import (
 	"syscall"
 	"time"
 	_ "time/tzdata" // Schedules' time zones, in an image without zoneinfo
+	"unicode"
 
 	"github.com/go-logr/logr"
 	ctrl "sigs.k8s.io/controller-runtime/pkg/client/config"
@@ -27,6 +28,7 @@ import (
 
 	"github.com/j75689/cadre/internal/api"
 	"github.com/j75689/cadre/internal/auth"
+	"github.com/j75689/cadre/internal/authz"
 	"github.com/j75689/cadre/internal/controller"
 	"github.com/j75689/cadre/internal/httpjson"
 	"github.com/j75689/cadre/internal/manager"
@@ -63,6 +65,8 @@ func run() error {
 		external  = flag.String("external-url", "", "the URL people's browsers reach this server at (an ingress, say): logins come back to <URL>/auth/callback, cookies are Secure when it is https, and changes made with a session must come from it; default --public-url")
 		authMode  = flag.String("auth", "", "how people log in to the API and the UI: oidc, or none (anyone may act as anyone, for local development only); default oidc in a cluster, none outside one")
 		oidcCfg   oidcFlags
+		admins    = flag.String("admin-users", "", "comma-separated usernames who are admin on every team and may create teams, with --auth=oidc")
+		adminGrps = flag.String("admin-groups", "", "comma-separated groups whose members are admin on every team and may create teams, with --auth=oidc")
 		s3cfg     kubernetes.S3Config
 	)
 	flag.StringVar(&oidcCfg.issuer, "oidc-issuer", "", "the OIDC provider's issuer URL")
@@ -128,6 +132,10 @@ func run() error {
 	if err != nil {
 		return err
 	}
+	policy, err := newPolicy(authn, *admins, *adminGrps, oidcCfg.usernameClaim, log)
+	if err != nil {
+		return err
+	}
 	// Runner agents' Jobs reach cadre-server where every runner does.
 	if err := controller.Setup(ctrls, controller.Options{ServerURL: *publicURL, Lease: *lease}); err != nil {
 		return fmt.Errorf("controllers: %w", err)
@@ -170,7 +178,7 @@ func run() error {
 	} else {
 		log.Warn("runners are not authenticated (--runner-auth=none): any client may claim and finish runs")
 	}
-	mux := newMux(m, log, *publicURL, authn, runnerOpts, mcp.WithForwarder(forwarder))
+	mux := newMux(m, log, *publicURL, authn, policy, runnerOpts, mcp.WithForwarder(forwarder))
 
 	srv := &http.Server{
 		Addr:              *listen,
@@ -214,12 +222,12 @@ func run() error {
 
 // newMux routes everything cadre-server serves: the runner protocol, the
 // per-run MCP endpoint, the API, the health probes and the board UI.
-func newMux(m *manager.Manager, log *slog.Logger, publicURL string, authn auth.Authenticator, runnerOpts []runner.Option, mcpOpts ...mcp.Option) http.Handler {
+func newMux(m *manager.Manager, log *slog.Logger, publicURL string, authn auth.Authenticator, policy *authz.Policy, runnerOpts []runner.Option, mcpOpts ...mcp.Option) http.Handler {
 	mux := http.NewServeMux()
 	authn.Register(mux, api.Base)
 	runner.NewServer(m, log, publicURL, runnerOpts...).Register(mux)
 	mcp.NewServer(m, log, mcpOpts...).Register(mux)
-	api.NewServer(m, log).Register(mux)
+	api.NewServer(m, log, api.WithAccess(authn.Info().Mode, policy)).Register(mux)
 	mux.HandleFunc("GET /healthz", func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(http.StatusOK) })
 	mux.HandleFunc("GET /readyz", func(w http.ResponseWriter, r *http.Request) {
 		if err := m.Ready(r.Context()); err != nil {
@@ -235,6 +243,37 @@ func newMux(m *manager.Manager, log *slog.Logger, publicURL string, authn auth.A
 	// People are authenticated on the API only: runners and the per-run
 	// MCP endpoint check their own tokens.
 	return authn.Wrap(mux, api.Base)
+}
+
+// newPolicy is the roles policy with logins, nil without them (everyone
+// may do anything).
+func newPolicy(authn auth.Authenticator, users, groups, usernameClaim string, log *slog.Logger) (*authz.Policy, error) {
+	// Comma-separated: a group's name may hold spaces.
+	split := func(s string) []string {
+		var out []string
+		for _, f := range strings.Split(s, ",") {
+			if f = strings.TrimSpace(f); f != "" {
+				out = append(out, f)
+			}
+		}
+		return out
+	}
+	p := &authz.Policy{AdminUsers: split(users), AdminGroups: split(groups), FoldUsernames: usernameClaim == "email"}
+	for _, u := range p.AdminUsers {
+		if strings.ContainsFunc(u, unicode.IsSpace) {
+			return nil, fmt.Errorf("--admin-users %q: a username has no spaces; separate names with commas", u)
+		}
+	}
+	if authn.Info().Mode != auth.ModeOIDC {
+		if len(p.AdminUsers) > 0 || len(p.AdminGroups) > 0 {
+			return nil, errors.New("--admin-users and --admin-groups need --auth=oidc: without logins everyone is an admin")
+		}
+		return nil, nil
+	}
+	if len(p.AdminUsers) == 0 && len(p.AdminGroups) == 0 {
+		log.Warn("no bootstrap admins (--admin-users, --admin-groups): only people named in a Team's roles can do anything, and nobody can create a team through the API")
+	}
+	return p, nil
 }
 
 // oidcFlags are the --oidc-* flags.

@@ -108,6 +108,8 @@ export class APIError extends Error {
   constructor(
     readonly status: number,
     message: string,
+    // code is the server's error code, such as "no_role".
+    readonly code = "",
   ) {
     super(message);
   }
@@ -144,13 +146,15 @@ async function request<T>(method: string, path: string, body?: unknown, signal?:
   }
   if (!res.ok) {
     let message = res.statusText;
+    let code = "";
     try {
       const body = await res.json();
       message = body?.error?.message ?? message;
+      code = body?.error?.code ?? "";
     } catch {
       // not JSON: keep the status text
     }
-    throw new APIError(res.status, message);
+    throw new APIError(res.status, message, code);
   }
   return res.json() as Promise<T>;
 }
@@ -165,6 +169,10 @@ export interface Me {
   username?: string;
   name?: string;
   groups?: string[];
+  // roles is the caller's role on each team they may see, by namespace;
+  // admin says they are a bootstrap admin.
+  roles?: Record<string, string>;
+  admin?: boolean;
 }
 
 export const getMe = (signal?: AbortSignal) => get<Me>("/me", signal);
