@@ -97,6 +97,13 @@ func (m *Manager) readBlob(ctx context.Context, key storage.Key, name string) ([
 // threadItem writes body as a blob and returns the item committing it as
 // a thread entry of kind by the run's agent.
 func (m *Manager) threadItem(ctx context.Context, key storage.Key, t *v1alpha1.Task, runID string, kind EntryKind, body string) (v1alpha1.OutboxItem, error) {
+	return m.callItem(ctx, key, t, runID, kind, body, nil)
+}
+
+// callItem is threadItem for an entry that may carry a call: a ToolCall
+// entry's call takes the item's id as its own, so every entry about the
+// call names it.
+func (m *Manager) callItem(ctx context.Context, key storage.Key, t *v1alpha1.Task, runID string, kind EntryKind, body string, call *ToolCall) (v1alpha1.OutboxItem, error) {
 	if err := validEntry(agentAuthor(t), kind, body); err != nil {
 		return v1alpha1.OutboxItem{}, err
 	}
@@ -106,7 +113,10 @@ func (m *Manager) threadItem(ctx context.Context, key storage.Key, t *v1alpha1.T
 	}
 	item := v1alpha1.OutboxItem{ID: id, Kind: v1alpha1.OutboxAppendThread}
 	blob := blobName(runID, item.ID)
-	content, err := json.Marshal(threadBlob{Body: body})
+	if call != nil {
+		call.ID = item.ID
+	}
+	content, err := json.Marshal(threadBlob{Body: body, Call: call})
 	if err != nil {
 		return v1alpha1.OutboxItem{}, err
 	}

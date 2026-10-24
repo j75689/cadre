@@ -381,3 +381,23 @@ func TestAskingAtALaterStep(t *testing.T) {
 		t.Fatalf("phase %s, want Waiting", tk.Status.Phase)
 	}
 }
+
+// A call that asks first ends a step-mode run at its held step too, with
+// the ToolCall's id derived from the model's call id.
+func TestAToolCallAtALaterStep(t *testing.T) {
+	e, m := stepEnv(t)
+	key := e.stepTask(t, m, "steps", "stepper")
+	commit(t, m, key, takeStep(t, m, "w"), TranscriptEntry{Kind: StepStart})
+	commit(t, m, key, takeStep(t, m, "w"), TranscriptEntry{Kind: StepLLMTurn, Calls: []StepCall{{ID: "tu_1", Name: prCall.Name}}})
+	c := takeStep(t, m, "w")
+	if _, err := m.RunToolCall(ctx, key, c.RunID, prCall); !errors.Is(err, ErrInvalid) {
+		t.Fatalf("a call without its call id: %v, want ErrInvalid", err)
+	}
+	entry, err := m.RunToolCall(WithCallCounter(WithCallID(ctx, "tu_1")), key, c.RunID, prCall)
+	if err != nil || entry.Seq != 1 || entry.Call.ID != entry.ItemID {
+		t.Fatalf("call: %+v, %v", entry, err)
+	}
+	if w := e.get(t, key).Status.Waiting; w == nil || w.Reason != v1alpha1.WaitingToolApproval || w.ThreadSeq != 1 {
+		t.Fatalf("waiting %+v", w)
+	}
+}

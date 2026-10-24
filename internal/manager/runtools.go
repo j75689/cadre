@@ -115,24 +115,6 @@ func (m *Manager) RunReadThread(ctx context.Context, key storage.Key, runID stri
 	return readStream[ThreadEntry](ctx, m.store, ThreadStream(key), from, limit)
 }
 
-// lastEntry returns the thread's latest entry, or nil for an empty thread.
-func (m *Manager) lastEntry(ctx context.Context, key storage.Key) (*ThreadEntry, error) {
-	stream := ThreadStream(key)
-	latest, err := m.latestSeq(ctx, stream, 0)
-	if err != nil || latest == 0 {
-		return nil, err
-	}
-	var after string
-	if latest > 1 {
-		after = storage.SeqKey(latest - 1)
-	}
-	entries, err := readStream[ThreadEntry](ctx, m.store, stream, after, 1)
-	if err != nil || len(entries) == 0 {
-		return nil, err
-	}
-	return &entries[0], nil
-}
-
 // SubtaskCreated is a subtask a run asked for.
 type SubtaskCreated struct {
 	Name   string `json:"name"`
