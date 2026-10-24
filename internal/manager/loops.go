@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"sync"
 	"time"
 
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -284,6 +285,76 @@ func (m *Manager) readdSlot(ctx context.Context, key storage.Key, runID string) 
 	return err
 }
 
+// hintQueue bounds the tasks waiting to be handled after a notification.
+// A hint that does not fit is dropped: the next full scan handles its task.
+const hintQueue = 1024
+
+// followHints numbers a new task, or applies a task's outbox, as soon as
+// the store says the task changed, instead of at the next full scan. A
+// notification is only a hint: the task is read fresh before anything is
+// done, every write is conditional as always, and the full scan on the
+// ticker stays, for the hints that are dropped.
+func (m *Manager) followHints(ctx context.Context, log *slog.Logger) {
+	n, ok := m.store.(storage.Notifier)
+	if !ok {
+		return
+	}
+	hints := make(chan storage.Key, hintQueue)
+	var pending sync.Map // keys queued and not yet taken, so a burst of
+	// changes to one task queues it once
+	n.NotifyTasks(func(t *v1alpha1.Task) {
+		if ctx.Err() != nil || (t.Status.Phase != "" && len(t.Status.Outbox) == 0) {
+			return
+		}
+		key := storage.Key{Namespace: t.Namespace, Name: t.Name}
+		if _, queued := pending.LoadOrStore(key, struct{}{}); queued {
+			return
+		}
+		select {
+		case hints <- key:
+		default:
+			pending.Delete(key)
+		}
+	})
+	go func() {
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case key := <-hints:
+				pending.Delete(key)
+				if err := m.handleHint(ctx, key); err != nil && ctx.Err() == nil && !isLostCandidate(err) {
+					log.Warn("handle a changed task", "task", key.String(), "err", err)
+				}
+			}
+		}
+	}()
+}
+
+// handleHint numbers the task if it is new and applies its outbox if it has
+// one, on a fresh read.
+func (m *Manager) handleHint(ctx context.Context, key storage.Key) error {
+	t, err := m.store.GetTask(ctx, key)
+	if errors.Is(err, storage.ErrNotFound) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	if t.Status.Phase == "" {
+		// A task unborn on this read may still be numbered by the scan in
+		// the meantime; the number claimed here is then skipped, as
+		// numbers are unique, not dense.
+		if t, err = m.numberTask(ctx, key); err != nil {
+			return err
+		}
+	}
+	if len(t.Status.Outbox) > 0 {
+		return m.dispatchTask(ctx, key)
+	}
+	return nil
+}
+
 // LoopConfig sets how often the background loops run.
 type LoopConfig struct {
 	Reclaim  time.Duration // how often expired leases are reclaimed
@@ -305,6 +376,7 @@ func (m *Manager) Run(ctx context.Context, cfg LoopConfig, log *slog.Logger) {
 	if cfg.Dispatch <= 0 {
 		cfg.Dispatch = DefaultLoopConfig.Dispatch
 	}
+	m.followHints(ctx, log)
 	reclaim := time.NewTicker(cfg.Reclaim)
 	dispatch := time.NewTicker(cfg.Dispatch)
 	defer reclaim.Stop()

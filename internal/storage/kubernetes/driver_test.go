@@ -6,10 +6,13 @@ import (
 	"fmt"
 	"sync/atomic"
 	"testing"
+	"time"
 
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/client-go/rest"
+	"sigs.k8s.io/controller-runtime/pkg/cache"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	"github.com/oklog/ulid/v2"
@@ -84,5 +87,60 @@ func TestInvalidObjectsMapToErrInvalid(t *testing.T) {
 		if err := d.CreateTask(context.Background(), tk); !errors.Is(err, storage.ErrInvalid) {
 			t.Errorf("%s: %v, want storage.ErrInvalid", name, err)
 		}
+	}
+}
+
+// A driver on a shared informer cache (the controller manager's) adds its
+// informers to it, serves the index from it, notifies Task changes, and
+// leaves the cache running when it closes.
+func TestASharedCache(t *testing.T) {
+	cfg := testenv.APIServer(t)
+	scheme := runtime.NewScheme()
+	if err := v1alpha1.AddToScheme(scheme); err != nil {
+		t.Fatal(err)
+	}
+	shared, err := cache.New(cfg, cache.Options{Scheme: scheme})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	started := make(chan error, 1)
+	go func() { started <- shared.Start(ctx) }()
+
+	d, err := kubernetes.Open(ctx, kubernetes.Config{REST: cfg, S3: testenv.S3(t), Cache: shared})
+	if err != nil {
+		t.Fatal(err)
+	}
+	seen := make(chan string, 16)
+	d.NotifyTasks(func(tk *v1alpha1.Task) { seen <- tk.Name })
+
+	tk := &v1alpha1.Task{ObjectMeta: metav1.ObjectMeta{Name: "shared", Namespace: "default"}, Spec: v1alpha1.TaskSpec{Title: "t"}}
+	if err := d.CreateTask(ctx, tk); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case name := <-seen:
+		if name != "shared" {
+			t.Fatalf("notified of %q", name)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("no notification for the new task")
+	}
+	// The index and the shared cache's own readers see the same Task.
+	var got v1alpha1.Task
+	if err := shared.Get(ctx, client.ObjectKey{Namespace: "default", Name: "shared"}, &got); err != nil {
+		t.Fatalf("the shared cache: %v", err)
+	}
+	if err := d.Close(); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case err := <-started:
+		t.Fatalf("closing the driver stopped the shared cache: %v", err)
+	default:
+	}
+	if err := shared.Get(ctx, client.ObjectKey{Namespace: "default", Name: "shared"}, &got); err != nil {
+		t.Fatalf("the shared cache after the driver closed: %v", err)
 	}
 }

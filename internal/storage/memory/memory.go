@@ -73,6 +73,16 @@ type Driver struct {
 
 	mu    sync.RWMutex
 	index map[storage.Key]*v1alpha1.Task
+	subs  []func(*v1alpha1.Task)
+}
+
+var _ storage.Notifier = (*Driver)(nil)
+
+// NotifyTasks implements storage.Notifier from the driver's watch.
+func (d *Driver) NotifyTasks(fn func(*v1alpha1.Task)) {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	d.subs = append(d.subs, fn)
 }
 
 var _ storage.Driver = (*Driver)(nil)
@@ -97,7 +107,11 @@ func (b *Backend) notify(t *v1alpha1.Task) {
 	for d := range b.drivers {
 		d.mu.Lock()
 		d.index[storage.Key{Namespace: t.Namespace, Name: t.Name}] = t.DeepCopy()
+		subs := d.subs
 		d.mu.Unlock()
+		for _, fn := range subs {
+			fn(t.DeepCopy())
+		}
 	}
 }
 
