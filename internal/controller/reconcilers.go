@@ -115,7 +115,10 @@ func (r *toolServerReconciler) Reconcile(ctx context.Context, req reconcile.Requ
 	var changed bool
 	var err error
 	if ts.Status.URL != "" {
-		if changed, err = r.unmanage(ctx, &ts); err != nil {
+		switch changed, err = r.unmanage(ctx, &ts); {
+		case apierrors.IsForbidden(err):
+			return reconcile.Result{RequeueAfter: r.resync}, r.writeStatus(ctx, &ts, &ts.Status.ConfigStatus, false, "Forbidden", forbiddenUnmanage, false)
+		case err != nil:
 			return reconcile.Result{}, err
 		}
 	}

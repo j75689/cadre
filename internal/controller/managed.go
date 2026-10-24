@@ -74,6 +74,10 @@ func (r *toolServerReconciler) reconcileManaged(ctx context.Context, ts *v1alpha
 	return again, r.writeStatus(ctx, ts, &ts.Status.ConfigStatus, ready, reason, msg, changed)
 }
 
+// forbiddenUnmanage says what a namespace where cadre-server may not delete
+// a formerly managed ToolServer's Deployment or Service lacks.
+const forbiddenUnmanage = "cadre-server may not delete the Deployment or Service this ToolServer ran as when managed: bind the ClusterRole in config/rbac/workloads.yaml here"
+
 // forbiddenWorkloads says what a namespace where cadre-server may not run
 // a managed ToolServer lacks.
 const forbiddenWorkloads = "cadre-server may not run managed ToolServers in this namespace: bind the ClusterRole in config/rbac/workloads.yaml here"
@@ -89,6 +93,11 @@ func (e *nameTaken) Error() string {
 // rollout says whether dep runs its current spec on every replica, and if
 // not why: still rolling out, or failed to.
 func rollout(dep *appsv1.Deployment) (ready bool, reason, message string) {
+	// Conditions are of the spec last seen: a failure of an earlier one is
+	// not the current spec's.
+	if dep.Status.ObservedGeneration < dep.Generation {
+		return false, "Deploying", deploying
+	}
 	var available bool
 	for _, c := range dep.Status.Conditions {
 		switch {
@@ -103,11 +112,13 @@ func rollout(dep *appsv1.Deployment) (ready bool, reason, message string) {
 		replicas = *dep.Spec.Replicas
 	}
 	s := dep.Status
-	if s.ObservedGeneration < dep.Generation || s.UpdatedReplicas != replicas || s.AvailableReplicas != replicas || !available {
-		return false, "Deploying", "its Deployment has not finished rolling out its current spec"
+	if s.UpdatedReplicas != replicas || s.AvailableReplicas != replicas || !available {
+		return false, "Deploying", deploying
 	}
 	return true, "Available", ""
 }
+
+const deploying = "its Deployment has not finished rolling out its current spec"
 
 // ensureDeployment creates ts's Deployment, or brings its own to ts's spec.
 func (r *toolServerReconciler) ensureDeployment(ctx context.Context, ts *v1alpha1.ToolServer) (*appsv1.Deployment, error) {
@@ -139,10 +150,14 @@ func (r *toolServerReconciler) ensureDeployment(ctx context.Context, ts *v1alpha
 			return &dep, err
 		}
 		// Ours, created a moment ago and not in the cache yet, or
-		// someone else's.
-		if err := r.secrets.Get(ctx, client.ObjectKeyFromObject(&dep), &dep); err != nil {
+		// someone else's. Read into a fresh object: decoding into dep
+		// would keep the owner and labels it was given here wherever
+		// the one there has none.
+		var there appsv1.Deployment
+		if err := r.secrets.Get(ctx, client.ObjectKeyFromObject(&dep), &there); err != nil {
 			return nil, err
 		}
+		dep = there
 	case err != nil:
 		return nil, err
 	}
@@ -192,7 +207,8 @@ func (r *toolServerReconciler) ensureService(ctx context.Context, ts *v1alpha1.T
 
 // unmanage deletes the Deployment and Service a ToolServer no longer
 // managed ran as, its own only, and forgets their URL. It reports whether
-// the status changed.
+// the status changed. A Service it may not read it cannot have made; one
+// it may not delete is a Forbidden, and the URL stays.
 func (r *toolServerReconciler) unmanage(ctx context.Context, ts *v1alpha1.ToolServer) (bool, error) {
 	key := client.ObjectKey{Namespace: ts.Namespace, Name: ts.Name}
 	var dep appsv1.Deployment
