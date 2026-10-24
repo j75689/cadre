@@ -201,3 +201,19 @@ func TestStalledRunReportsANonsenseAnswer(t *testing.T) {
 		t.Fatal("a late heartbeat answered with nonsense must fail the run")
 	}
 }
+
+// A heartbeat refused for this runner (forbidden, unauthenticated) ends the
+// run like a lost task.
+func TestARefusedHeartbeatLosesTheTask(t *testing.T) {
+	for _, tc := range []struct {
+		status int
+		code   string
+	}{{http.StatusForbidden, httpjson.CodeForbidden}, {http.StatusUnauthorized, httpjson.CodeUnauthenticated}} {
+		s := &stub{heartbeat: func(w http.ResponseWriter, _ *http.Request) { httpjson.WriteError(w, tc.status, tc.code, "refused") }}
+		rec := &recorder{}
+		results, err := Run(context.Background(), s.start(t), Options{Runner: "r", Once: true, Observe: rec.observe, Plan: Plan{Work: 1500 * time.Millisecond}})
+		if err != nil || len(results) != 1 || !results[0].Lost || rec.last().Kind != Rejected {
+			t.Errorf("%s: results %+v, last %+v, err %v; want the run rejected", tc.code, results, rec.last(), err)
+		}
+	}
+}

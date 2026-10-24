@@ -178,6 +178,8 @@ const (
 	CodeStepMismatch      = httpjson.CodeStepMismatch
 	CodeInvalidTransition = httpjson.CodeInvalidTransition
 	CodeUnavailable       = httpjson.CodeUnavailable
+	CodeUnauthenticated   = httpjson.CodeUnauthenticated
+	CodeForbidden         = httpjson.CodeForbidden
 )
 
 // ErrorResponse is the body of every error.

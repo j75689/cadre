@@ -238,8 +238,13 @@ spec:
                           - Cancelled
                           type: string
                         runner:
-                          description: Runner is the runner, or the worker of the
-                            last step, that held the run.
+                          description: |-
+                            Runner is the runner, or the worker of the last step, that held the
+                            run: its authenticated identity, as on Run.
+                          type: string
+                        runnerName:
+                          description: RunnerName is the name the runner gave itself,
+                            for display.
                           type: string
                         step:
                           description: Step is the step the run had reached.
@@ -364,8 +369,15 @@ spec:
                     type: string
                   runner:
                     description: |-
-                      Runner is the one runner holding the run in runtime mode, or the worker
-                      holding the current step in step mode.
+                      Runner is who holds the run: the authenticated identity of the runner
+                      in runtime mode, or of the worker holding the current step in step
+                      mode. Only requests from it may renew or finish the run. It is empty
+                      for a run claimed on a server that does not authenticate runners;
+                      such a run is not fenced on its sender.
+                    type: string
+                  runnerName:
+                    description: RunnerName is the name the runner gave itself, for
+                      display.
                     type: string
                   step:
                     description: Step advances in step mode only.

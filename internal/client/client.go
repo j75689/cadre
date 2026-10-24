@@ -10,6 +10,7 @@ import (
 	"io"
 	"net/http"
 	"net/url"
+	"os"
 	"strconv"
 	"strings"
 
@@ -218,4 +219,46 @@ func (c *Client) Finish(ctx context.Context, req runner.FinishRequest) (*runner.
 	var out runner.FinishResponse
 	_, err := c.do(ctx, http.MethodPost, runner.PathFinish, req, &out)
 	return &out, err
+}
+
+// DefaultTokenFile is where a runner in a pod finds its projected token.
+const DefaultTokenFile = "/var/run/secrets/cadre/token"
+
+// RunnerHTTP is the HTTP client a runner talks to cadre-server with: with
+// its token from path when path is set, or from DefaultTokenFile when that
+// exists; otherwise with no token, which only a server run with
+// --runner-auth=none accepts, and authenticated reports false.
+func RunnerHTTP(path string) (hc *http.Client, authenticated bool) {
+	if path == "" {
+		if _, err := os.Stat(DefaultTokenFile); err != nil {
+			return nil, false
+		}
+		path = DefaultTokenFile
+	}
+	return &http.Client{Transport: TokenFile(path, nil)}, true
+}
+
+// TokenFile sends "Authorization: Bearer <token>" on every request, the
+// token read from path each time: a projected ServiceAccount token is
+// rotated in place, so the file is the truth, never a copy of it.
+func TokenFile(path string, next http.RoundTripper) http.RoundTripper {
+	if next == nil {
+		next = http.DefaultTransport
+	}
+	return tokenFile{path: path, next: next}
+}
+
+type tokenFile struct {
+	path string
+	next http.RoundTripper
+}
+
+func (t tokenFile) RoundTrip(r *http.Request) (*http.Response, error) {
+	data, err := os.ReadFile(t.path)
+	if err != nil {
+		return nil, fmt.Errorf("read the runner token: %w", err)
+	}
+	r = r.Clone(r.Context())
+	r.Header.Set("Authorization", "Bearer "+strings.TrimSpace(string(data)))
+	return t.next.RoundTrip(r)
 }

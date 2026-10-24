@@ -135,10 +135,17 @@ type Run struct {
 	// Mode is runtime or step.
 	Mode RunMode `json:"mode"`
 
-	// Runner is the one runner holding the run in runtime mode, or the worker
-	// holding the current step in step mode.
+	// Runner is who holds the run: the authenticated identity of the runner
+	// in runtime mode, or of the worker holding the current step in step
+	// mode. Only requests from it may renew or finish the run. It is empty
+	// for a run claimed on a server that does not authenticate runners;
+	// such a run is not fenced on its sender.
 	// +optional
 	Runner string `json:"runner,omitempty"`
+
+	// RunnerName is the name the runner gave itself, for display.
+	// +optional
+	RunnerName string `json:"runnerName,omitempty"`
 
 	// Step advances in step mode only.
 	// +kubebuilder:validation:Minimum=0
@@ -200,9 +207,14 @@ type RunRecord struct {
 	// Mode is runtime or step.
 	Mode RunMode `json:"mode"`
 
-	// Runner is the runner, or the worker of the last step, that held the run.
+	// Runner is the runner, or the worker of the last step, that held the
+	// run: its authenticated identity, as on Run.
 	// +optional
 	Runner string `json:"runner,omitempty"`
+
+	// RunnerName is the name the runner gave itself, for display.
+	// +optional
+	RunnerName string `json:"runnerName,omitempty"`
 
 	// Step is the step the run had reached.
 	// +kubebuilder:validation:Minimum=0

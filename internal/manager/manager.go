@@ -218,12 +218,14 @@ func requireRunID(runID string) error {
 	return nil
 }
 
-// Heartbeat renews the lease of runID on the task.
-func (m *Manager) Heartbeat(ctx context.Context, key storage.Key, runID string) (time.Time, error) {
+// Heartbeat renews the lease of runID on the task. runner is the
+// authenticated identity sending it, empty on a server that does not
+// authenticate runners.
+func (m *Manager) Heartbeat(ctx context.Context, key storage.Key, runID, runner string) (time.Time, error) {
 	if err := requireRunID(runID); err != nil {
 		return time.Time{}, err
 	}
-	t, err := m.transition(ctx, key, task.Heartbeat{RunID: runID, Lease: m.cfg.Lease})
+	t, err := m.transition(ctx, key, task.Heartbeat{RunID: runID, Runner: runner, Lease: m.cfg.Lease})
 	if err != nil {
 		return time.Time{}, err
 	}

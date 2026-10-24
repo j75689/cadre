@@ -438,3 +438,30 @@ func TestTeam(t *testing.T) {
 		t.Fatalf("second slot with the default of 1: got %v", err)
 	}
 }
+
+// Only the runner holding a run may renew or finish it; a server that does
+// not authenticate runners (an empty sender) is not checked.
+func TestOnlyTheHolderMayActOnTheRun(t *testing.T) {
+	running := taskIn(v1alpha1.PhaseRunning, runtime)
+	running.Status.Run.Runner, running.Status.Run.RunnerName = "sa:holder", "pod-1"
+	wantErr(t, running, Heartbeat{RunID: runA, Runner: "sa:other", Lease: time.Minute}, ErrForbidden)
+	wantErr(t, running, Finish{RunID: runA, Runner: "sa:other", Outcome: OutcomeDone}, ErrForbidden)
+	wantErr(t, running, Heartbeat{RunID: "01JB0000000000000000000009", Runner: "sa:other", Lease: time.Minute}, ErrRunMismatch)
+	apply(t, running, Heartbeat{RunID: runA, Runner: "sa:holder", Lease: time.Minute})
+	apply(t, running, Heartbeat{RunID: runA, Lease: time.Minute})
+
+	// A run claimed without an identity (authentication off, or before it
+	// existed) is not fenced on its sender, so turning authentication on
+	// does not cut it.
+	for _, run := range [][2]string{{"", "pod-1"}, {"pod-1", ""}} {
+		old := taskIn(v1alpha1.PhaseRunning, runtime)
+		old.Status.Run.Runner, old.Status.Run.RunnerName = run[0], run[1]
+		apply(t, old, Heartbeat{RunID: runA, Runner: "sa:anyone", Lease: time.Minute})
+	}
+
+	todo := taskIn(v1alpha1.PhaseTodo, runtime)
+	run := apply(t, todo, Claim{RunID: runA, Mode: runtime, Runner: "sa:holder", RunnerName: "pod-1", Lease: time.Minute}).Status.Run
+	if run.Runner != "sa:holder" || run.RunnerName != "pod-1" {
+		t.Fatalf("claimed run: %+v", run)
+	}
+}

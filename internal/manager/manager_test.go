@@ -135,7 +135,7 @@ func TestTaskLife(t *testing.T) {
 		t.Fatalf("claim: %+v, running %d", c, e.running(t))
 	}
 	e.clock.add(20 * time.Second)
-	lease, err := e.m.Heartbeat(ctx, key, c.RunID)
+	lease, err := e.m.Heartbeat(ctx, key, c.RunID, "")
 	if err != nil || !lease.Equal(e.clock.now().Add(30*time.Second)) {
 		t.Fatalf("heartbeat: %v, lease %v", err, lease)
 	}
@@ -189,7 +189,7 @@ func TestTaskLife(t *testing.T) {
 		if _, err := e.m.Cancel(ctx, storage.Key{Namespace: ns, Name: c.Task.Name}); err != nil {
 			t.Fatal(err)
 		}
-		if _, err := e.m.Heartbeat(ctx, storage.Key{Namespace: ns, Name: c.Task.Name}, c.RunID); !errors.Is(err, task.ErrRunMismatch) {
+		if _, err := e.m.Heartbeat(ctx, storage.Key{Namespace: ns, Name: c.Task.Name}, c.RunID, ""); !errors.Is(err, task.ErrRunMismatch) {
 			t.Fatalf("heartbeat after cancel: %v, want run mismatch", err)
 		}
 	}
@@ -291,7 +291,7 @@ func TestReclaimWaitsForTheGrace(t *testing.T) {
 	if len(tk.Status.Outbox) != 1 || tk.Status.Outbox[0].Run.Reason != v1alpha1.RunInterrupted {
 		t.Fatalf("reclaim record: %+v", tk.Status.Outbox)
 	}
-	if _, err := e.m.Heartbeat(ctx, key, c.RunID); !errors.Is(err, task.ErrRunMismatch) {
+	if _, err := e.m.Heartbeat(ctx, key, c.RunID, ""); !errors.Is(err, task.ErrRunMismatch) {
 		t.Fatalf("heartbeat after reclaim: %v", err)
 	}
 }
@@ -300,7 +300,7 @@ func TestEmptyRunIDIsInvalid(t *testing.T) {
 	e := newEnv(t, 1)
 	key := e.addTask(t, "t", v1alpha1.AssigneeAgent)
 	e.claim(t)
-	if _, err := e.m.Heartbeat(ctx, key, ""); !errors.Is(err, ErrInvalid) {
+	if _, err := e.m.Heartbeat(ctx, key, "", ""); !errors.Is(err, ErrInvalid) {
 		t.Errorf("heartbeat: %v", err)
 	}
 	if _, _, err := e.m.Finish(ctx, key, FinishRequest{Outcome: task.OutcomeDone}); !errors.Is(err, ErrInvalid) {
@@ -372,7 +372,7 @@ func TestReconcileTeams(t *testing.T) {
 
 	// Once the young orphan is old too, it goes; the live run stays.
 	e.clock.add(61 * time.Second)
-	if _, err := e.m.Heartbeat(ctx, key, c.RunID); err != nil {
+	if _, err := e.m.Heartbeat(ctx, key, c.RunID, ""); err != nil {
 		t.Fatal(err)
 	}
 	if err := e.m.ReconcileTeams(ctx); err != nil {

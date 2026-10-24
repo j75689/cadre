@@ -4,6 +4,7 @@ import (
 	"log/slog"
 	"net/http"
 	"strings"
+	"sync"
 
 	v1alpha1 "github.com/j75689/cadre/api/v1alpha1"
 	"github.com/j75689/cadre/internal/httpjson"
@@ -11,26 +12,36 @@ import (
 	"github.com/j75689/cadre/internal/storage"
 )
 
-// Server serves /runner/v1 on a Task Manager. In M0 it is unauthenticated.
+// Server serves /runner/v1 on a Task Manager.
 type Server struct {
 	m   *manager.Manager
 	log *slog.Logger
 	// mcpURL is the URL runners reach the per-run MCP endpoint at.
 	mcpURL string
+	// auth, when set, authenticates every request; builtin is the identity
+	// that may claim builtin agents' tasks.
+	auth    Authenticator
+	builtin string
+	dropped sync.Map // identities told their reserved labels were dropped
 }
 
 // NewServer returns the protocol server. publicURL is the address runners
 // reach cadre-server at; the claim response's MCP URL is built on it.
-func NewServer(m *manager.Manager, log *slog.Logger, publicURL string) *Server {
-	return &Server{m: m, log: log, mcpURL: strings.TrimRight(publicURL, "/") + "/mcp/run"}
+// Without WithAuth it does not authenticate runners.
+func NewServer(m *manager.Manager, log *slog.Logger, publicURL string, opts ...Option) *Server {
+	s := &Server{m: m, log: log, mcpURL: strings.TrimRight(publicURL, "/") + "/mcp/run"}
+	for _, o := range opts {
+		o(s)
+	}
+	return s
 }
 
 // Register adds the protocol's routes to mux.
 func (s *Server) Register(mux *http.ServeMux) {
-	mux.HandleFunc("POST "+PathClaim, s.claim)
-	mux.HandleFunc("POST "+PathHeartbeat, s.heartbeat)
-	mux.HandleFunc("POST "+PathEvents, s.events)
-	mux.HandleFunc("POST "+PathFinish, s.finish)
+	mux.HandleFunc("POST "+PathClaim, s.authenticated(s.claim))
+	mux.HandleFunc("POST "+PathHeartbeat, s.authenticated(s.heartbeat))
+	mux.HandleFunc("POST "+PathEvents, s.authenticated(s.events))
+	mux.HandleFunc("POST "+PathFinish, s.authenticated(s.finish))
 }
 
 func (s *Server) claim(w http.ResponseWriter, r *http.Request) {
@@ -38,7 +49,9 @@ func (s *Server) claim(w http.ResponseWriter, r *http.Request) {
 	if !httpjson.Decode(w, r, &req) {
 		return
 	}
-	c, err := s.m.Claim(r.Context(), manager.ClaimRequest{Runner: req.Runner, Namespaces: req.Namespaces, Labels: req.Labels})
+	c, err := s.m.Claim(r.Context(), manager.ClaimRequest{
+		Runner: req.Runner, Identity: identityOf(r), Namespaces: req.Namespaces, Labels: s.claimLabels(r, req.Labels),
+	})
 	if err != nil {
 		httpjson.Fail(w, s.log, err)
 		return
@@ -70,7 +83,7 @@ func (s *Server) heartbeat(w http.ResponseWriter, r *http.Request) {
 	if !httpjson.Decode(w, r, &req) || !validRef(w, req.Task, req.RunID) {
 		return
 	}
-	until, err := s.m.Heartbeat(r.Context(), key(req.Task), req.RunID)
+	until, err := s.m.Heartbeat(r.Context(), key(req.Task), req.RunID, identityOf(r))
 	if err != nil {
 		httpjson.Fail(w, s.log, err)
 		return
@@ -87,7 +100,7 @@ func (s *Server) events(w http.ResponseWriter, r *http.Request) {
 		RunID: req.RunID, Seq: req.Seq,
 		InputTokens: req.Usage.InputTokens, OutputTokens: req.Usage.OutputTokens,
 		CacheReadInputTokens: req.Usage.CacheReadInputTokens, CacheCreationInputTokens: req.Usage.CacheCreationInputTokens,
-		ContextTokens: req.ContextTokens, Progress: req.Progress,
+		ContextTokens: req.ContextTokens, Progress: req.Progress, Runner: identityOf(r),
 	})
 	if err != nil {
 		httpjson.Fail(w, s.log, err)
@@ -105,7 +118,7 @@ func (s *Server) finish(w http.ResponseWriter, r *http.Request) {
 		httpjson.WriteError(w, http.StatusBadRequest, CodeInvalid, "waiting is required exactly when the outcome is Waiting")
 		return
 	}
-	mreq := manager.FinishRequest{RunID: req.RunID, Step: req.Step, Outcome: req.Outcome}
+	mreq := manager.FinishRequest{RunID: req.RunID, Runner: identityOf(r), Step: req.Step, Outcome: req.Outcome}
 	if req.Waiting != nil {
 		mreq.Reason, mreq.ThreadSeq = req.Waiting.Reason, req.Waiting.ThreadSeq
 	}

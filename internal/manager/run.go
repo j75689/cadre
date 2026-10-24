@@ -21,7 +21,11 @@ var ErrInvalid = errors.New("invalid request")
 
 // ClaimRequest asks for one task to work on.
 type ClaimRequest struct {
+	// Runner is the name the runner gives itself. Identity is who it
+	// authenticated as, and holds the run; on a server that does not
+	// authenticate runners it is empty, and so is status.run.runner.
 	Runner     string
+	Identity   string
 	Namespaces []string          // empty means every Team namespace
 	Labels     map[string]string // decide which agents' tasks the runner may take (see claimableBy)
 }
@@ -66,7 +70,7 @@ func (m *Manager) Claim(ctx context.Context, req ClaimRequest) (*Claimed, error)
 	start := int(rotation.Add(1) % uint64(len(namespaces)))
 	for i := range namespaces {
 		ns := namespaces[(start+i)%len(namespaces)]
-		claimed, err := m.claimIn(ctx, ns, req.Runner, req.Labels)
+		claimed, err := m.claimIn(ctx, ns, req)
 		if claimed != nil || err != nil {
 			return claimed, err
 		}
@@ -95,7 +99,10 @@ func (m *Manager) namespaces(ctx context.Context, want []string, withRoom bool) 
 	return out, nil
 }
 
-func (m *Manager) claimIn(ctx context.Context, ns, runner string, labels map[string]string) (*Claimed, error) {
+func (m *Manager) claimIn(ctx context.Context, ns string, req ClaimRequest) (*Claimed, error) {
+	// The run is held by the identity; claimed without one, by nobody in
+	// particular, and runnerName alone says who.
+	labels, holder := req.Labels, req.Identity
 	todo, err := m.store.ListTasks(ctx, storage.Query{Namespace: ns, Phases: []v1alpha1.Phase{v1alpha1.PhaseTodo}})
 	if err != nil {
 		return nil, err
@@ -147,7 +154,7 @@ func (m *Manager) claimIn(ctx context.Context, ns, runner string, labels map[str
 			return nil, err
 		}
 		t, err := m.transition(ctx, key, task.Claim{
-			RunID: runID, Mode: v1alpha1.RunModeRuntime, Runner: runner, Lease: m.cfg.Lease,
+			RunID: runID, Mode: v1alpha1.RunModeRuntime, Runner: holder, RunnerName: req.Runner, Lease: m.cfg.Lease,
 			Agent: agent.Name, MCPTokenHash: tokenHash,
 		})
 		if err == nil && t.Status.Run != nil && t.Status.Run.ID == runID {
@@ -192,7 +199,10 @@ type Subtask struct {
 
 // FinishRequest ends a run.
 type FinishRequest struct {
-	RunID     string
+	RunID string
+	// Runner is the authenticated identity sending the finish; empty on a
+	// server that does not authenticate runners.
+	Runner    string
 	Step      int64 // step mode only
 	Outcome   task.Outcome
 	Reason    v1alpha1.WaitingReason
@@ -217,13 +227,16 @@ func (m *Manager) Finish(ctx context.Context, key storage.Key, req FinishRequest
 		items = append(items, v1alpha1.OutboxItem{ID: id, Kind: v1alpha1.OutboxCreateSubtask, Spec: st.Spec.DeepCopy()})
 	}
 	t, err := m.transition(ctx, key, task.Finish{
-		RunID: req.RunID, Step: req.Step, Outcome: req.Outcome,
+		RunID: req.RunID, Runner: req.Runner, Step: req.Step, Outcome: req.Outcome,
 		Reason: req.Reason, ThreadSeq: req.ThreadSeq, Outbox: items,
 	})
 	if errors.Is(err, task.ErrRunMismatch) && t != nil {
 		rec, lookupErr := m.endedRun(ctx, t, req.RunID)
 		if lookupErr != nil {
 			return "", false, lookupErr
+		}
+		if rec != nil && !task.HeldBy(rec.Runner, rec.RunnerName, req.Runner) {
+			return "", false, task.ErrForbidden
 		}
 		if rec != nil && rec.Reason == v1alpha1.RunFinished && rec.Outcome == req.Outcome {
 			// The task may have moved on since (a reply, a new claim), so
@@ -287,10 +300,13 @@ type Event struct {
 	InputTokens  int64  `json:"inputTokens,omitempty"`
 	OutputTokens int64  `json:"outputTokens,omitempty"`
 	// Prompt-cache tokens, apart from InputTokens.
-	CacheReadInputTokens     int64  `json:"cacheReadInputTokens,omitempty"`
-	CacheCreationInputTokens int64  `json:"cacheCreationInputTokens,omitempty"`
-	ContextTokens            int64  `json:"contextTokens,omitempty"`
-	Progress                 string `json:"progress,omitempty"`
+	CacheReadInputTokens     int64 `json:"cacheReadInputTokens,omitempty"`
+	CacheCreationInputTokens int64 `json:"cacheCreationInputTokens,omitempty"`
+	ContextTokens            int64 `json:"contextTokens,omitempty"`
+	// Runner is the authenticated identity sending the event; it is
+	// checked, not stored.
+	Runner   string `json:"-"`
+	Progress string `json:"progress,omitempty"`
 }
 
 // RecordEvent appends a progress event to the run's event log. A duplicate
@@ -309,6 +325,9 @@ func (m *Manager) RecordEvent(ctx context.Context, key storage.Key, ev Event) er
 	}
 	if t.Status.Run == nil || t.Status.Run.ID != ev.RunID {
 		return task.ErrRunMismatch
+	}
+	if !task.HeldBy(t.Status.Run.Runner, t.Status.Run.RunnerName, ev.Runner) {
+		return task.ErrForbidden
 	}
 	data, err := json.Marshal(ev)
 	if err != nil {

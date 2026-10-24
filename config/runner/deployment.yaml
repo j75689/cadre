@@ -30,9 +30,24 @@ spec:
           valueFrom:
             fieldRef:
               fieldPath: metadata.name
+        # cadre-runner authenticates to cadre-server with this token,
+        # issued for the audience cadre only, and reads it before every
+        # request, as the kubelet rotates it.
+        volumeMounts:
+        - name: cadre-token
+          mountPath: /var/run/secrets/cadre
+          readOnly: true
         securityContext:
           allowPrivilegeEscalation: false
           readOnlyRootFilesystem: true
           runAsNonRoot: true
           capabilities:
             drop: ["ALL"]
+      volumes:
+      - name: cadre-token
+        projected:
+          sources:
+          - serviceAccountToken:
+              audience: cadre
+              expirationSeconds: 600
+              path: token
