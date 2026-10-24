@@ -1,4 +1,6 @@
-# One image per command: docker build --build-arg CMD=cadre-server .
+# One image per command: make image CMD=cadre-server, or
+# DOCKER_BUILDKIT=1 docker build --build-arg CMD=cadre-server . (RUN --mount
+# needs BuildKit).
 # CMD is cadre-server, cadre-runner or cadre. The build stage runs on the
 # builder's platform and cross-compiles, so a multi-arch build needs no
 # emulation.

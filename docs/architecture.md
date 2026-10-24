@@ -88,7 +88,7 @@ Two layers, as in Argo CD:
 ## Installation
 
 - A Helm chart and a plain `install.yaml`, cluster level.
-- Images: `ghcr.io/j75689/cadre-server`, `ghcr.io/j75689/cadre-runner` and `ghcr.io/j75689/cadre` (the CLI), for linux/amd64 and linux/arm64, built from the one `Dockerfile` (`make image CMD=...` locally) on distroless/static as a non-root user. A `v*` tag publishes `vX.Y.Z`, `vX.Y` and `latest`; every push to main publishes `main` and `main-<short sha>`. Each binary prints its version with `--version`: the tag it was published as (`main-<short sha>` for a `main` image). The packages pushed by this repository's workflow have been public from their first push; if a pull is refused, set the package to public in its settings.
+- Images: `ghcr.io/j75689/cadre-server`, `ghcr.io/j75689/cadre-runner` and `ghcr.io/j75689/cadre` (the CLI), for linux/amd64 and linux/arm64, built from the one `Dockerfile` (`make image CMD=...` locally) on distroless/static as a non-root user. A `v*` tag publishes `vX.Y.Z`, `vX.Y` and `latest`; every push to main publishes `main` and `main-<short sha>`. Each binary prints its version with `--version`: `vX.Y.Z` for a release, `main-<short sha>` for a `main` image. The packages pushed by this repository's workflow have been public from their first push; if a pull is refused, set the package to public in its settings.
 - Local development uses the Kubernetes built into Docker Desktop or OrbStack, with SeaweedFS as the object store. There is no single-machine mode outside Kubernetes.
 - An operator and a top-level `Cadre` resource arrive together with the postgres driver, which needs managed databases and migrations.
 

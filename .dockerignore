@@ -9,3 +9,9 @@
 !internal/
 **/*_test.go
 **/testdata/
+# What .gitignore keeps out, at any depth inside the trees let in above.
+**/.env
+**/*.test
+**/*.out
+**/coverage.*
+**/.DS_Store
