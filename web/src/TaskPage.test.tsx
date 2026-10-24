@@ -67,4 +67,40 @@ describe("TaskPage", () => {
     expect(await screen.findByRole("alert")).toHaveProperty("textContent", "the task moved on");
     await vi.waitFor(() => expect(gets()).toBe(before + 1));
   });
+
+  it("fills the gap when an action's entry is not the next one", async () => {
+    const thread = [entry(1, "Comment"), entry(2, "Comment")];
+    const calls = server(thread, () => {
+      // Someone else wrote 3 since the last read; this comment is 4.
+      thread.push(entry(3, "Comment", { author: { kind: "Agent", name: "writer" } }), entry(4, "Comment"));
+      return json(entry(4, "Comment"), 201);
+    });
+    renderTask();
+    expect(await screen.findByText("Comment 2")).toBeTruthy();
+    fireEvent.change(screen.getByLabelText("Comment"), { target: { value: "hello" } });
+    fireEvent.click(screen.getByRole("button", { name: "Comment" }));
+    // Read again from 2, at once, not from 4 at the next tick.
+    expect(await screen.findByText("Comment 3")).toBeTruthy();
+    expect(screen.getByText("Comment 4")).toBeTruthy();
+    expect(threadReads(calls)).toEqual(["0", "2"]);
+  });
+
+  it("reads the runs again when the run in progress ends", async () => {
+    let status: Record<string, unknown> = { phase: "Running", run: { id: "01JRUN0000000000000000000A", mode: "runtime" }, runs: { count: 1 } };
+    const calls: string[] = [];
+    vi.stubGlobal("fetch", (url: string) => {
+      calls.push(url);
+      if (url.includes("/thread")) return json({ items: [] });
+      if (url.endsWith("/runs")) return json({ items: [] });
+      return json({ metadata: { name: "x", namespace: "a" }, spec: { title: "Task x" }, status });
+    });
+    renderTask();
+    await screen.findByText("Task x");
+    const runReads = () => calls.filter((c) => c.endsWith("/runs")).length;
+    await vi.waitFor(() => expect(runReads()).toBe(1));
+    // The run ends; the count, set at claim, does not move.
+    status = { phase: "Done", runs: { count: 1 } };
+    await act(() => vi.advanceTimersByTimeAsync(5000));
+    await vi.waitFor(() => expect(runReads()).toBe(2));
+  });
 });

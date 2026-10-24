@@ -1,9 +1,10 @@
 import { useEffect, useState } from "react";
 import { listRuns, runEvents, ulidTime, type RunEvent, type RunRecord } from "./api";
 
-// Runs lists a task's ended runs, read again when their count changes.
-// Expanding one reads its events once.
-export function Runs({ ns, name, count }: { ns: string; name: string; count: number }) {
+// Runs lists a task's ended runs, read again when current (the run in
+// progress and the phase) changes: a run is in the list once it is not the
+// current one any more. Expanding one reads its events once.
+export function Runs({ ns, name, current }: { ns: string; name: string; current: string }) {
   const [runs, setRuns] = useState<RunRecord[] | null>(null);
   const [error, setError] = useState("");
   useEffect(() => {
@@ -18,7 +19,7 @@ export function Runs({ ns, name, count }: { ns: string; name: string; count: num
       },
     );
     return () => controller.abort();
-  }, [ns, name, count]);
+  }, [ns, name, current]);
   return (
     <section className="runs" aria-label="Runs">
       <h2>Runs</h2>
@@ -43,6 +44,7 @@ function Run({ ns, name, run }: { ns: string; name: string; run: RunRecord }) {
     if (events !== null || open) return;
     try {
       setEvents((await runEvents(ns, name, run.id)).items);
+      setError("");
     } catch (e) {
       setError((e as Error).message);
     }
@@ -65,7 +67,7 @@ function Run({ ns, name, run }: { ns: string; name: string; run: RunRecord }) {
               {events.map((e) => (
                 <li key={e.seq}>
                   #{e.seq} {e.progress ? <>progress: {e.progress}</> : "usage"}
-                  {(e.inputTokens || e.outputTokens) && (
+                  {Boolean(e.inputTokens || e.outputTokens) && (
                     <span className="hint">
                       {" "}
                       {e.inputTokens ?? 0} in, {e.outputTokens ?? 0} out

@@ -63,4 +63,26 @@ describe("NewTask", () => {
     expect(await screen.findByText("Write it")).toBeTruthy();
     expect(posts).toEqual([{ spec: { title: "Write it", priority: "medium", assignee: { kind: "Agent", name: "coder" } } }]);
   });
+
+  it("says when the agents cannot be read, and reads them once", async () => {
+    let reads = 0;
+    vi.stubGlobal("fetch", (url: string) => {
+      if (url.endsWith("/agents")) {
+        reads++;
+        return reads === 1 ? json({ error: { code: "Unavailable", message: "the cache is not synced" } }, 503) : json({ items: [{ name: "writer", ready: true }] });
+      }
+      return json({ items: [] });
+    });
+    render(
+      <MemoryRouter initialEntries={["/t/a/new"]}>
+        <App />
+      </MemoryRouter>,
+    );
+    fireEvent.change(screen.getByLabelText("Kind"), { target: { value: "Agent" } });
+    expect(await screen.findByText(/Could not load the agents: the cache is not synced/)).toBeTruthy();
+    expect(screen.queryByText(/no agents/)).toBeNull();
+    fireEvent.click(screen.getByRole("button", { name: "Retry" }));
+    expect(await screen.findByRole("option", { name: "writer" })).toBeTruthy();
+    expect(reads).toBe(2);
+  });
 });

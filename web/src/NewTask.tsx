@@ -1,7 +1,6 @@
-import { useState, type FormEvent } from "react";
+import { useEffect, useState, type FormEvent } from "react";
 import { Link, useNavigate, useParams } from "react-router";
 import { createTask, listAgents, type AgentSummary, type TaskSpec } from "./api";
-import { usePolling } from "./usePolling";
 
 const priorities = ["low", "medium", "high", "urgent"];
 
@@ -37,19 +36,25 @@ export function NewTask() {
   const navigate = useNavigate();
   const [draft, setDraft] = useState<Draft>({ title: "", description: "", kind: "", assignee: "", priority: "medium", labels: "" });
   const [agents, setAgents] = useState<AgentSummary[] | null>(null);
+  const [agentsError, setAgentsError] = useState("");
+  // retry reads the agents again after a failed read.
+  const [retry, setRetry] = useState(0);
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
-  usePolling(
-    async (signal) => {
-      try {
-        setAgents((await listAgents(ns, signal)).items);
-      } catch {
-        if (!signal.aborted) setAgents([]);
-      }
-    },
-    15000,
-    [ns],
-  );
+  // The agents are read once: picking one is not live data.
+  useEffect(() => {
+    const controller = new AbortController();
+    listAgents(ns, controller.signal).then(
+      (r) => {
+        setAgents(r.items);
+        setAgentsError("");
+      },
+      (e) => {
+        if (!controller.signal.aborted) setAgentsError((e as Error).message);
+      },
+    );
+    return () => controller.abort();
+  }, [ns, retry]);
   const set = (patch: Partial<Draft>) => setDraft((d) => ({ ...d, ...patch }));
   const submit = async (e: FormEvent) => {
     e.preventDefault();
@@ -108,7 +113,15 @@ export function NewTask() {
               {chosen.name} is not ready{chosen.message ? `: ${chosen.message}` : ""}. Its tasks wait until it is.
             </p>
           )}
-          {draft.kind === "Agent" && agents?.length === 0 && <p className="hint">This team has no agents.</p>}
+          {draft.kind === "Agent" && agentsError && (
+            <p className="error">
+              Could not load the agents: {agentsError}{" "}
+              <button type="button" onClick={() => setRetry((n) => n + 1)}>
+                Retry
+              </button>
+            </p>
+          )}
+          {draft.kind === "Agent" && !agentsError && agents?.length === 0 && <p className="hint">This team has no agents.</p>}
           {draft.kind === "User" && (
             <label>
               User <input value={draft.assignee} onChange={(e) => set({ assignee: e.target.value })} />
