@@ -26,6 +26,22 @@ Build it with "make ui" (needs Node.js, see web/.nvmrc), then "make build",
 or use the published cadre-server image, which carries it.
 `
 
+// Paths are the UI's own, the ones Register mounts: the app at / and under
+// /t/, and the build's assets. Any other path stays the mux's, so a wrong
+// method on one of cadre-server's routes is still its 405, and an unknown
+// path its 404.
+var Paths = []string{"/{$}", "/t/", "/assets/"}
+
+// Register mounts the UI on mux, for GET (and so HEAD) at Paths.
+func Register(mux *http.ServeMux) { RegisterFS(mux, Handler()) }
+
+// RegisterFS mounts h, a UI handler, as Register does.
+func RegisterFS(mux *http.ServeMux, h http.Handler) {
+	for _, p := range Paths {
+		mux.Handle("GET "+p, h)
+	}
+}
+
 // Handler serves the UI from the embedded dist.
 func Handler() http.Handler {
 	root, err := fs.Sub(dist, "dist")
@@ -48,6 +64,7 @@ func FS(root fs.FS) http.Handler {
 			}
 		}
 		if r.Method != http.MethodGet && r.Method != http.MethodHead {
+			// Mounted by Register, it sees none.
 			w.Header().Set("Allow", "GET, HEAD")
 			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 			return

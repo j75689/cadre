@@ -4,7 +4,9 @@
 # CMD is cadre-server, cadre-runner or cadre. The build stages run on the
 # builder's platform and cross-compile, so a multi-arch build needs no
 # emulation. Only cadre-server carries the web UI: the ui stage is chosen by
-# CMD, and BuildKit builds the Node stage only for it.
+# CMD, and BuildKit builds the Node stage only for it. A CMD that is
+# missing or names no command fails there: "ui-<CMD>: failed to resolve
+# source metadata" (an image of that name is looked for and not found).
 ARG CMD
 
 FROM --platform=$BUILDPLATFORM node:24 AS ui-build
@@ -31,7 +33,6 @@ RUN --mount=type=cache,target=/go/pkg/mod go mod download
 COPY . .
 COPY --from=ui / /src/internal/web/
 RUN --mount=type=cache,target=/go/pkg/mod --mount=type=cache,target=/root/.cache/go-build \
-    { test -n "$CMD" && test -d "cmd/$CMD" || { echo "CMD must be one of: $(ls cmd | tr "\n" " ")" >&2; exit 1; }; } && \
     CGO_ENABLED=0 GOOS=$TARGETOS GOARCH=$TARGETARCH \
     go build -trimpath -ldflags "-s -w -X main.version=$VERSION" -o /out/app "./cmd/$CMD"
 

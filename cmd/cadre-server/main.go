@@ -163,8 +163,9 @@ func run() error {
 		}
 		w.WriteHeader(http.StatusOK)
 	})
-	// The board UI takes every path the routes above do not.
-	mux.Handle("/", web.Handler())
+	// The board UI, at its own paths only: a wrong method on a route above
+	// stays the mux's 405.
+	web.Register(mux)
 
 	srv := &http.Server{
 		Addr:              *listen,

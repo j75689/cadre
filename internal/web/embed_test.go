@@ -61,6 +61,34 @@ func TestWebHandlerNotBuilt(t *testing.T) {
 	}
 }
 
+// Mounted beside other routes, as in cadre-server, the UI leaves their
+// paths to the mux: a wrong method is its 405, an unknown path its 404.
+func TestMountedBesideRoutes(t *testing.T) {
+	mux := http.NewServeMux()
+	mux.HandleFunc("POST /api/v1/tasks/{name}/cancel", func(http.ResponseWriter, *http.Request) {})
+	mux.HandleFunc("GET /healthz", func(http.ResponseWriter, *http.Request) {})
+	mux.Handle("/mcp/run", http.NotFoundHandler())
+	web.RegisterFS(mux, web.FS(fstest.MapFS{"index.html": {Data: []byte("<title>Cadre</title>")}, "assets/a-1.js": {}}))
+	for _, c := range []struct {
+		method, path string
+		code         int
+	}{
+		{http.MethodGet, "/api/v1/tasks/x/cancel", http.StatusMethodNotAllowed},
+		{http.MethodPost, "/healthz", http.StatusMethodNotAllowed},
+		{http.MethodGet, "/api/v1/nope", http.StatusNotFound},
+		{http.MethodGet, "/nope", http.StatusNotFound},
+		{http.MethodPost, "/t/x", http.StatusMethodNotAllowed},
+		{http.MethodGet, "/", http.StatusOK},
+		{http.MethodGet, "/t/x", http.StatusOK},
+		{http.MethodHead, "/t/x/tasks/y", http.StatusOK},
+		{http.MethodGet, "/assets/a-1.js", http.StatusOK},
+	} {
+		if w := get(t, mux, c.method, c.path); w.Code != c.code {
+			t.Errorf("%s %s: %d, want %d", c.method, c.path, w.Code, c.code)
+		}
+	}
+}
+
 // The embedded dist serves either the built UI or the not-built page.
 func TestEmbedded(t *testing.T) {
 	w := get(t, web.Handler(), http.MethodGet, "/")

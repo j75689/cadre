@@ -16,11 +16,16 @@ export function usePolling(load: (signal: AbortSignal) => Promise<void>, interva
       clearTimeout(timer);
       controller?.abort();
       if (document.visibilityState === "hidden") return;
-      controller = new AbortController();
+      const mine = new AbortController();
+      controller = mine;
       try {
-        await latest.current(controller.signal);
+        await latest.current(mine.signal);
+      } catch {
+        // load reports its own errors
       } finally {
-        if (!stopped) timer = setTimeout(tick, intervalMs);
+        // Only the current tick schedules the next: an overtaken one would
+        // start a second chain.
+        if (!stopped && controller === mine) timer = setTimeout(tick, intervalMs);
       }
     };
     const onVisible = () => {

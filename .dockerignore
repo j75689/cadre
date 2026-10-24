@@ -6,6 +6,8 @@
 !go.sum
 !**/*.go
 **/*_test.go
+# Some npm packages ship Go sources.
+web/node_modules/**
 # go:embed needs dist to exist, built or not.
 !internal/web/dist/.gitkeep
 # The web UI: what npm ci and npm run build read, never node_modules or a

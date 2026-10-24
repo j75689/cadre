@@ -1,8 +1,15 @@
-import { Link, Outlet, Route, Routes } from "react-router";
+import { Link, Outlet, Route, Routes, useParams } from "react-router";
 import { Board } from "./Board";
 import { IdentityBox } from "./Identity";
 import { TaskPage } from "./TaskPage";
 import { Teams } from "./Teams";
+
+// A board belongs to one team: another team's is a fresh one, not this one
+// with old columns until the first poll.
+function TeamBoard() {
+  const { ns = "" } = useParams();
+  return <Board key={ns} />;
+}
 
 function Layout() {
   return (
@@ -24,7 +31,7 @@ export function App() {
     <Routes>
       <Route element={<Layout />}>
         <Route index element={<Teams />} />
-        <Route path="t/:ns" element={<Board />} />
+        <Route path="t/:ns" element={<TeamBoard />} />
         <Route path="t/:ns/tasks/:name" element={<TaskPage />} />
         <Route path="*" element={<main><p>Not found. <Link to="/">Teams</Link></p></main>} />
       </Route>

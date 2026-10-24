@@ -1,6 +1,6 @@
 import { useState } from "react";
 import { Link, useParams } from "react-router";
-import { getTask, type Task } from "./api";
+import { APIError, getTask, type Task } from "./api";
 import { usePolling } from "./usePolling";
 
 // TaskPage shows one task's spec and status, read-only for now.
@@ -14,7 +14,10 @@ export function TaskPage() {
         setTask(await getTask(ns, name, signal));
         setError("");
       } catch (e) {
-        if (!signal.aborted) setError(String((e as Error).message));
+        if (signal.aborted) return;
+        // A task that is gone shows no stale copy.
+        if (e instanceof APIError && e.status === 404) setTask(null);
+        setError(String((e as Error).message));
       }
     },
     5000,
