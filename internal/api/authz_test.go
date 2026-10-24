@@ -18,6 +18,7 @@ import (
 	"github.com/j75689/cadre/internal/auth/oidctest"
 	"github.com/j75689/cadre/internal/authz"
 	"github.com/j75689/cadre/internal/manager"
+	"github.com/j75689/cadre/internal/storage"
 	"github.com/j75689/cadre/internal/storage/memory"
 )
 
@@ -29,9 +30,27 @@ type rolesEnv struct {
 	idp *oidctest.Provider
 }
 
+// stale serves Teams from an index that lags the store: what the cache says
+// is not what the store does.
+type stale struct {
+	storage.Driver
+	teams map[string]*v1alpha1.Team
+}
+
+func (s stale) IndexedTeam(_ context.Context, ns string) (*v1alpha1.Team, error) {
+	if t, ok := s.teams[ns]; ok {
+		return t.DeepCopy(), nil
+	}
+	return nil, storage.ErrNotFound
+}
+
 func startRoles(t *testing.T) *rolesEnv {
 	t.Helper()
-	store := memory.NewBackend().Open()
+	return startRolesOn(t, memory.NewBackend().Open(), nil)
+}
+
+func startRolesOn(t *testing.T, store storage.Driver, wrap func(storage.Driver) storage.Driver) *rolesEnv {
+	t.Helper()
 	m := manager.New(store, manager.Config{})
 	ctx := context.Background()
 	roles := []v1alpha1.TeamRole{
@@ -49,6 +68,9 @@ func startRoles(t *testing.T) *rolesEnv {
 			t.Fatal(err)
 		}
 	}
+	if wrap != nil {
+		m = manager.New(wrap(store), manager.Config{})
+	}
 	idp := oidctest.New(t)
 	srv := httptest.NewServer(nil)
 	t.Cleanup(srv.Close)
@@ -60,7 +82,7 @@ func startRoles(t *testing.T) *rolesEnv {
 	}
 	mux := http.NewServeMux()
 	authn.Register(mux, api.Base)
-	api.NewServer(m, log, api.WithPolicy(&authz.Policy{AdminUsers: []string{"root@example.test"}})).Register(mux)
+	api.NewServer(m, log, api.WithAccess(auth.ModeOIDC, &authz.Policy{AdminUsers: []string{"Root@Example.test"}, FoldUsernames: true})).Register(mux)
 	srv.Config.Handler = authn.Wrap(mux, api.Base)
 	return &rolesEnv{t: t, url: srv.URL, idp: idp}
 }
@@ -168,5 +190,62 @@ func TestTeamsAndMeFollowRoles(t *testing.T) {
 	}
 	if m := me(e.as("root@example.test")); !m.Admin || m.Roles["team-a"] != "admin" || m.Roles["team-b"] != "admin" {
 		t.Errorf("/me of a bootstrap admin: %+v", m)
+	}
+}
+
+// A role taken away fences the next write at once, though the index still
+// has it; reads follow the index.
+func TestWritesReadTheTeamLive(t *testing.T) {
+	cached := map[string]*v1alpha1.Team{"team-b": {
+		ObjectMeta: metav1.ObjectMeta{Namespace: "team-b", Name: v1alpha1.TeamName},
+		Spec:       v1alpha1.TeamSpec{Roles: []v1alpha1.TeamRole{{Role: v1alpha1.RoleMember, Subjects: []v1alpha1.RoleSubject{{Kind: v1alpha1.SubjectUser, Name: "dana@example.test"}}}}},
+	}}
+	e := startRolesOn(t, memory.NewBackend().Open(), func(d storage.Driver) storage.Driver { return stale{Driver: d, teams: cached} })
+	dana := e.as("dana@example.test")
+	if code, out := e.do(dana, "GET", "/namespaces/team-b/tasks/x", ""); code != 200 {
+		t.Errorf("a read on the index's word: %d %s", code, out)
+	}
+	if code, out := e.do(dana, "POST", "/namespaces/team-b/tasks/x/comments", `{"body":"hi"}`); code != 403 || !strings.Contains(out, `"no_role"`) {
+		t.Errorf("a write the store no longer allows: %d %s", code, out)
+	}
+}
+
+func TestTeamsHideWhoHoldsRoles(t *testing.T) {
+	e := startRoles(t)
+	roles := func(token string) (bool, bool) {
+		_, out := e.do(token, "GET", "/teams", "")
+		var list api.TeamList
+		if err := json.Unmarshal([]byte(out), &list); err != nil || len(list.Items) == 0 {
+			t.Fatalf("%s: %v", out, err)
+		}
+		return list.Items[0].Spec.Roles != nil, list.Items[0].Status.NextNumber != 0
+	}
+	if r, s := roles(e.as("dana@example.test", "backend")); r || s {
+		t.Errorf("a member sees roles %v, status %v", r, s)
+	}
+	if r, s := roles(e.as("lead@example.test")); !r || !s {
+		t.Errorf("the team's admin sees roles %v, status %v", r, s)
+	}
+}
+
+// Addresses match without case, in roles and in --admin-users.
+func TestUsernamesFoldCase(t *testing.T) {
+	e := startRoles(t)
+	if code, out := e.do(e.as("LEAD@example.test"), "GET", "/me", ""); code != 200 || !strings.Contains(out, `"team-a":"admin"`) || !strings.Contains(out, `"username":"lead@example.test"`) {
+		t.Errorf("an address in capitals: %d %s", code, out)
+	}
+	if code, out := e.do(e.as("root@EXAMPLE.test"), "GET", "/me", ""); !strings.Contains(out, `"admin":true`) {
+		t.Errorf("a bootstrap admin in capitals: %d %s", code, out)
+	}
+}
+
+func TestMeWithoutLogins(t *testing.T) {
+	m := manager.New(memory.NewBackend().Open(), manager.Config{})
+	mux := http.NewServeMux()
+	api.NewServer(m, slog.New(slog.NewTextHandler(io.Discard, nil)), api.WithAccess(auth.ModeNone, nil)).Register(mux)
+	w := httptest.NewRecorder()
+	mux.ServeHTTP(w, httptest.NewRequest(http.MethodGet, api.Base+"/me", nil))
+	if !strings.Contains(w.Body.String(), `"mode":"none"`) || !strings.Contains(w.Body.String(), `"admin":true`) {
+		t.Errorf("/me without logins: %s", w.Body.String())
 	}
 }

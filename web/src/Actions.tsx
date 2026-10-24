@@ -51,8 +51,8 @@ export function Actions({ task, onTask, onRefresh }: Props) {
       return "";
     } catch (e) {
       if (e instanceof APIError && e.status === 409) onRefresh();
-      // Refused: the role changed since the page read it.
-      if (e instanceof APIError && e.status === 403) {
+      // Refused for the role: it changed since the page read it.
+      if (e instanceof APIError && e.code === "no_role") {
         setRefused((e as Error).message);
         refresh();
       }

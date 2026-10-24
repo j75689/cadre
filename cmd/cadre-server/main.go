@@ -131,7 +131,10 @@ func run() error {
 	if err != nil {
 		return err
 	}
-	policy := newPolicy(authn, *admins, *adminGrps, log)
+	policy, err := newPolicy(authn, *admins, *adminGrps, oidcCfg.usernameClaim, log)
+	if err != nil {
+		return err
+	}
 	// Runner agents' Jobs reach cadre-server where every runner does.
 	if err := controller.Setup(ctrls, controller.Options{ServerURL: *publicURL, Lease: *lease}); err != nil {
 		return fmt.Errorf("controllers: %w", err)
@@ -223,11 +226,7 @@ func newMux(m *manager.Manager, log *slog.Logger, publicURL string, authn auth.A
 	authn.Register(mux, api.Base)
 	runner.NewServer(m, log, publicURL, runnerOpts...).Register(mux)
 	mcp.NewServer(m, log, mcpOpts...).Register(mux)
-	var apiOpts []api.Option
-	if policy != nil {
-		apiOpts = append(apiOpts, api.WithPolicy(policy))
-	}
-	api.NewServer(m, log, apiOpts...).Register(mux)
+	api.NewServer(m, log, api.WithAccess(authn.Info().Mode, policy)).Register(mux)
 	mux.HandleFunc("GET /healthz", func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(http.StatusOK) })
 	mux.HandleFunc("GET /readyz", func(w http.ResponseWriter, r *http.Request) {
 		if err := m.Ready(r.Context()); err != nil {
@@ -247,18 +246,28 @@ func newMux(m *manager.Manager, log *slog.Logger, publicURL string, authn auth.A
 
 // newPolicy is the roles policy with logins, nil without them (everyone
 // may do anything).
-func newPolicy(authn auth.Authenticator, users, groups string, log *slog.Logger) *authz.Policy {
-	if authn.Info().Mode != auth.ModeOIDC {
-		return nil
-	}
+func newPolicy(authn auth.Authenticator, users, groups, usernameClaim string, log *slog.Logger) (*authz.Policy, error) {
+	// Comma-separated: a group's name may hold spaces.
 	split := func(s string) []string {
-		return strings.FieldsFunc(s, func(r rune) bool { return r == ',' || r == ' ' })
+		var out []string
+		for _, f := range strings.Split(s, ",") {
+			if f = strings.TrimSpace(f); f != "" {
+				out = append(out, f)
+			}
+		}
+		return out
 	}
-	p := &authz.Policy{AdminUsers: split(users), AdminGroups: split(groups)}
+	p := &authz.Policy{AdminUsers: split(users), AdminGroups: split(groups), FoldUsernames: usernameClaim == "email"}
+	if authn.Info().Mode != auth.ModeOIDC {
+		if len(p.AdminUsers) > 0 || len(p.AdminGroups) > 0 {
+			return nil, errors.New("--admin-users and --admin-groups need --auth=oidc: without logins everyone is an admin")
+		}
+		return nil, nil
+	}
 	if len(p.AdminUsers) == 0 && len(p.AdminGroups) == 0 {
 		log.Warn("no bootstrap admins (--admin-users, --admin-groups): only people named in a Team's roles can do anything, and nobody can create a team through the API")
 	}
-	return p
+	return p, nil
 }
 
 // oidcFlags are the --oidc-* flags.

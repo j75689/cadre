@@ -25,7 +25,7 @@ function renderBox() {
 }
 
 describe("IdentityBox without logins", () => {
-  beforeEach(() => me({ mode: "none" }));
+  beforeEach(() => me({ mode: "none", admin: true }));
 
   it("asks once, then keeps the name across reloads", async () => {
     renderBox();

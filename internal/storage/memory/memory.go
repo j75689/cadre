@@ -306,6 +306,12 @@ func (d *Driver) ListTeams(context.Context) ([]v1alpha1.Team, error) {
 	return out, nil
 }
 
+// IndexedTeam implements storage.TeamIndex: the memory driver's index is
+// its store.
+func (d *Driver) IndexedTeam(ctx context.Context, namespace string) (*v1alpha1.Team, error) {
+	return d.GetTeam(ctx, namespace)
+}
+
 // ListTasks implements storage.Index.
 func (d *Driver) ListTasks(_ context.Context, q storage.Query) ([]v1alpha1.Task, error) {
 	if err := q.Validate(); err != nil {

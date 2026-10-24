@@ -24,19 +24,23 @@ import (
 type Server struct {
 	m      *manager.Manager
 	log    *slog.Logger
-	policy *authz.Policy // nil without logins: everyone may do anything
+	mode   string        // auth.ModeOIDC or auth.ModeNone
+	policy *authz.Policy // nil: everyone may do anything
 }
 
 // Option adjusts NewServer.
 type Option func(*Server)
 
-// WithPolicy enforces p's roles on every route. Requests must carry an
-// identity (auth.Authenticator.Wrap gives one).
-func WithPolicy(p *authz.Policy) Option { return func(s *Server) { s.policy = p } }
+// WithAccess says how people log in (auth.ModeOIDC or auth.ModeNone), for
+// /me, and enforces p's roles on every route when p is set; requests must
+// then carry an identity (auth.Authenticator.Wrap gives one).
+func WithAccess(mode string, p *authz.Policy) Option {
+	return func(s *Server) { s.mode, s.policy = mode, p }
+}
 
 // NewServer returns the API server.
 func NewServer(m *manager.Manager, log *slog.Logger, opts ...Option) *Server {
-	s := &Server{m: m, log: log}
+	s := &Server{m: m, log: log, mode: auth.ModeNone}
 	for _, o := range opts {
 		o(s)
 	}
@@ -78,7 +82,9 @@ func (s *Server) Register(mux *http.ServeMux) {
 // guard lets a request through when the caller's role on the team of its
 // namespace allows action. A team the caller has no role on, or that does
 // not exist, is refused with 403, so its existence is not told; a bootstrap
-// admin passes, and the handler answers 404 for what is not there.
+// admin passes, and the handler answers 404 for what is not there. A read
+// decides on the board index, seconds behind at worst; anything else on the
+// Team read from the store, so a role taken away fences the next write.
 func (s *Server) guard(action authz.Action, h http.HandlerFunc) http.HandlerFunc {
 	if s.policy == nil {
 		return h
@@ -90,7 +96,11 @@ func (s *Server) guard(action authz.Action, h http.HandlerFunc) http.HandlerFunc
 			return
 		}
 		ns := r.PathValue("ns")
-		team, err := s.m.Team(r.Context(), ns)
+		read := s.m.LiveTeam
+		if action == authz.Read {
+			read = s.m.Team
+		}
+		team, err := read(r.Context(), ns)
 		switch {
 		case errors.Is(err, storage.ErrNotFound):
 			team = nil
@@ -100,19 +110,19 @@ func (s *Server) guard(action authz.Action, h http.HandlerFunc) http.HandlerFunc
 		}
 		role, _ := s.policy.Role(id, team)
 		if !authz.Allowed(role, action) {
-			httpjson.WriteError(w, http.StatusForbidden, httpjson.CodeForbidden, authz.Refusal(ns, role, action))
+			httpjson.WriteError(w, http.StatusForbidden, httpjson.CodeNoRole, authz.Refusal(ns, role, action))
 			return
 		}
 		h(w, r)
 	}
 }
 
-// me says who the caller is and, with logins, their role on each team they
-// may see.
+// me says who the caller is and their role on each team they may see.
+// Without logins nobody is known and everyone is an admin.
 func (s *Server) me(w http.ResponseWriter, r *http.Request) {
 	id, ok := auth.FromContext(r.Context())
-	if s.policy == nil || !ok {
-		httpjson.Write(w, http.StatusOK, auth.Me{Mode: auth.ModeNone})
+	if s.mode != auth.ModeOIDC || s.policy == nil || !ok {
+		httpjson.Write(w, http.StatusOK, auth.Me{Mode: s.mode, Admin: true})
 		return
 	}
 	teams, err := s.m.ListTeams(r.Context())
@@ -337,7 +347,8 @@ func summarize(a *v1alpha1.Agent) AgentSummary {
 }
 
 // listTeams lists the Teams the caller has a role on: every one, without
-// logins or for a bootstrap admin.
+// logins or for a bootstrap admin. Who holds which role, and the Team's
+// control state, are an admin's to see only.
 func (s *Server) listTeams(w http.ResponseWriter, r *http.Request) {
 	items, err := s.m.ListTeams(r.Context())
 	if err != nil {
@@ -350,6 +361,11 @@ func (s *Server) listTeams(w http.ResponseWriter, r *http.Request) {
 			_, ok := s.policy.Role(id, &t)
 			return !ok
 		})
+		for i := range items {
+			if role, _ := s.policy.Role(id, &items[i]); role < authz.Admin {
+				items[i].Spec.Roles, items[i].Status = nil, v1alpha1.TeamStatus{}
+			}
+		}
 	}
 	if items == nil {
 		items = []v1alpha1.Team{}

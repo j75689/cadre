@@ -6,6 +6,7 @@ package authz
 import (
 	"fmt"
 	"slices"
+	"strings"
 
 	v1alpha1 "github.com/j75689/cadre/api/v1alpha1"
 	"github.com/j75689/cadre/internal/auth"
@@ -93,6 +94,17 @@ type Policy struct {
 	// AdminUsers and AdminGroups are bootstrap admins: admin on every
 	// team, and allowed to create teams.
 	AdminUsers, AdminGroups []string
+	// FoldUsernames compares usernames without case, as email addresses
+	// are: identities then carry them lower-cased.
+	FoldUsernames bool
+}
+
+// sameUser compares a username from a role or a flag with an identity's.
+func (p *Policy) sameUser(name, username string) bool {
+	if p.FoldUsernames {
+		return strings.EqualFold(name, username)
+	}
+	return name == username
 }
 
 // Bootstrap reports whether id is a bootstrap admin.
@@ -100,7 +112,7 @@ func (p *Policy) Bootstrap(id *auth.Identity) bool {
 	if id == nil {
 		return false
 	}
-	if slices.Contains(p.AdminUsers, id.Username) {
+	if slices.ContainsFunc(p.AdminUsers, func(u string) bool { return p.sameUser(u, id.Username) }) {
 		return true
 	}
 	for _, g := range id.Groups {
@@ -122,18 +134,18 @@ func (p *Policy) Role(id *auth.Identity, team *v1alpha1.Team) (Role, bool) {
 	}
 	best := NoRole
 	for _, r := range team.Spec.Roles {
-		if role := parse(r.Role); role > best && matches(id, r.Subjects) {
+		if role := parse(r.Role); role > best && p.matches(id, r.Subjects) {
 			best = role
 		}
 	}
 	return best, best > NoRole
 }
 
-func matches(id *auth.Identity, subjects []v1alpha1.RoleSubject) bool {
+func (p *Policy) matches(id *auth.Identity, subjects []v1alpha1.RoleSubject) bool {
 	for _, s := range subjects {
 		switch s.Kind {
 		case v1alpha1.SubjectUser:
-			if s.Name != "" && s.Name == id.Username {
+			if s.Name != "" && p.sameUser(s.Name, id.Username) {
 				return true
 			}
 		case v1alpha1.SubjectGroup:

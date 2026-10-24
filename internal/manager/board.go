@@ -391,9 +391,13 @@ func (m *Manager) ListAgents(ctx context.Context, namespace string) ([]v1alpha1.
 }
 
 // Team reads a namespace's Team from the board index, as fresh as the
-// index is: for deciding access on every request without a read of the
-// store each time.
+// index is (seconds behind the store at worst while its watch is healthy):
+// for deciding who may read, on every request, without a read of the store
+// each time. LiveTeam is for decisions that must not lag.
 func (m *Manager) Team(ctx context.Context, namespace string) (*v1alpha1.Team, error) {
+	if idx, ok := m.store.(storage.TeamIndex); ok {
+		return idx.IndexedTeam(ctx, namespace)
+	}
 	teams, err := m.store.ListTeams(ctx)
 	if err != nil {
 		return nil, err
@@ -404,6 +408,11 @@ func (m *Manager) Team(ctx context.Context, namespace string) (*v1alpha1.Team, e
 		}
 	}
 	return nil, fmt.Errorf("team %s: %w", namespace, storage.ErrNotFound)
+}
+
+// LiveTeam reads a namespace's Team from the store itself.
+func (m *Manager) LiveTeam(ctx context.Context, namespace string) (*v1alpha1.Team, error) {
+	return m.store.GetTeam(ctx, namespace)
 }
 
 // ListTeams lists every Team.

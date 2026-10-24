@@ -409,6 +409,11 @@ func (o *OIDC) verify(ctx context.Context, d *discovered, raw string) (*Identity
 	if username == "" {
 		return nil, time.Time{}, "", fmt.Errorf("the token has no %q claim", o.cfg.UsernameClaim)
 	}
+	// An address is matched without case: Dana@Example.test is
+	// dana@example.test.
+	if o.cfg.UsernameClaim == "email" {
+		username = strings.ToLower(username)
+	}
 	// An address the provider has not verified names nobody, when the
 	// address is the username: anyone could have registered it. Without
 	// the claim the provider vouches for it.

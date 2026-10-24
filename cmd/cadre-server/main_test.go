@@ -14,6 +14,7 @@ import (
 
 	"github.com/j75689/cadre/internal/auth"
 	"github.com/j75689/cadre/internal/auth/oidctest"
+	"github.com/j75689/cadre/internal/authz"
 	"github.com/j75689/cadre/internal/manager"
 	"github.com/j75689/cadre/internal/storage/memory"
 )
@@ -129,7 +130,7 @@ func TestNewAuthenticator(t *testing.T) {
 	}
 	// Every route still registers beside the login's, and the API wants
 	// an identity while the UI and the probes do not.
-	mux := newMux(manager.New(memory.NewBackend().Open(), manager.Config{}), log, "http://localhost:8080", a, newPolicy(a, "", "", log), nil)
+	mux := newMux(manager.New(memory.NewBackend().Open(), manager.Config{}), log, "http://localhost:8080", a, mustPolicy(t, a), nil)
 	for _, c := range []struct {
 		path string
 		code int
@@ -139,5 +140,36 @@ func TestNewAuthenticator(t *testing.T) {
 		if w.Code != c.code {
 			t.Errorf("GET %s: %d, want %d", c.path, w.Code, c.code)
 		}
+	}
+}
+
+func mustPolicy(t *testing.T, a auth.Authenticator) *authz.Policy {
+	t.Helper()
+	p, err := newPolicy(a, "", "", "email", slog.New(slog.NewTextHandler(io.Discard, nil)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	return p
+}
+
+func TestNewPolicy(t *testing.T) {
+	log := slog.New(slog.NewTextHandler(io.Discard, nil))
+	idp := oidctest.New(t)
+	key := filepath.Join(t.TempDir(), "key")
+	_ = os.WriteFile(key, []byte(strings.Repeat("ab", 32)), 0o600)
+	oidcAuth, err := newAuthenticator(context.Background(), "oidc", false, oidcFlags{issuer: idp.URL, clientID: oidctest.ClientID, usernameClaim: "email", sessionKeyFile: key}, "http://localhost:8080", log)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Comma-separated only: a group's name may hold spaces.
+	p, err := newPolicy(oidcAuth, " root@example.test , ", "Platform Team,ops", "email", log)
+	if err != nil || strings.Join(p.AdminUsers, "|") != "root@example.test" || strings.Join(p.AdminGroups, "|") != "Platform Team|ops" || !p.FoldUsernames {
+		t.Errorf("policy %+v, %v", p, err)
+	}
+	if p, err := newPolicy(auth.None{}, "", "", "email", log); p != nil || err != nil {
+		t.Errorf("without logins: %+v, %v", p, err)
+	}
+	if _, err := newPolicy(auth.None{}, "root@example.test", "", "email", log); err == nil || !strings.Contains(err.Error(), "--auth=oidc") {
+		t.Errorf("admins without logins: %v", err)
 	}
 }

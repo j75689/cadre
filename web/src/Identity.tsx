@@ -59,7 +59,7 @@ export function IdentityProvider({ children }: { children: ReactNode }) {
     mode === "oidc"
       ? { mode, name: user, author: "", setName, me, refresh }
       : mode === "none"
-        ? { mode, name: typed, author: typed, setName, refresh }
+        ? { mode, name: typed, author: typed, setName, me, refresh }
         : { mode, name: "", author: "", setName, problem, refresh };
   return <IdentityContext.Provider value={value}>{children}</IdentityContext.Provider>;
 }
@@ -77,12 +77,12 @@ export function useIdentityDetails() {
   return { mode, me };
 }
 
-// useRole is the caller's role on the team in namespace ns. Without logins
-// everyone is an admin; while it is not known yet, undefined.
+// useRole is the caller's role on the team in namespace ns, as /me says:
+// an admin everywhere for a bootstrap admin, and without logins for
+// everyone. While it is not known yet, undefined.
 export function useRole(ns: string): Role | undefined {
-  const { mode, me } = useContext(IdentityContext);
-  if (mode === "none") return "admin";
-  if (mode !== "oidc" || !me) return undefined;
+  const { me } = useContext(IdentityContext);
+  if (!me) return undefined;
   const r = me.roles?.[ns];
   if (isRole(r)) return r;
   return me.admin ? "admin" : undefined;

@@ -76,7 +76,7 @@ describe("roles", () => {
       () => oidc({ a: role }),
       () => {
         role = "viewer";
-        return json({ error: { code: "forbidden", message: "to comment on a needs the member role; you are a viewer" } }, 403);
+        return json({ error: { code: "no_role", message: "to comment on a needs the member role; you are a viewer" } }, 403);
       },
     );
     at("/t/a/tasks/x");
@@ -91,10 +91,23 @@ describe("roles", () => {
   });
 
   it("are all an admin's without logins", async () => {
-    server(() => ({ mode: "none" }));
+    server(() => ({ mode: "none", admin: true }));
     localStorage.setItem("cadre.identity", "dana");
     at("/t/a/tasks/x");
     expect(await screen.findByRole("button", { name: "Approve" })).toBeTruthy();
     expect(screen.queryByText(/You are a/)).toBeNull();
+  });
+
+  it("are not read again for a 403 that is not about the role", async () => {
+    const reads = server(
+      () => oidc({ a: "member" }),
+      () => json({ error: { code: "forbidden", message: "a change made with a session cookie must come from this site" } }, 403),
+    );
+    at("/t/a/tasks/x");
+    fireEvent.change(await screen.findByLabelText("Comment"), { target: { value: "hi" } });
+    fireEvent.click(screen.getByRole("button", { name: "Comment" }));
+    expect(await screen.findByText(/must come from this site/)).toBeTruthy();
+    expect(reads.filter((u) => u.endsWith("/me")).length).toBe(1);
+    expect(screen.getByRole("button", { name: "Comment" })).toBeTruthy();
   });
 });

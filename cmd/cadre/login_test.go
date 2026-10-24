@@ -53,7 +53,7 @@ func TestLoginFromTheCLI(t *testing.T) {
 	}
 	mux := http.NewServeMux()
 	authn.Register(mux, api.Base)
-	api.NewServer(m, log, api.WithPolicy(&authz.Policy{AdminUsers: []string{"dana@example.test"}})).Register(mux)
+	api.NewServer(m, log, api.WithAccess(auth.ModeOIDC, &authz.Policy{AdminUsers: []string{"dana@example.test"}})).Register(mux)
 	srv.Config.Handler = authn.Wrap(mux, api.Base)
 	// The browser approves at once and follows the redirect home.
 	opened := ""

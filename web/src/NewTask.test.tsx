@@ -36,6 +36,7 @@ describe("NewTask", () => {
   it("shows why an agent is not ready, and creates the task", async () => {
     const posts: unknown[] = [];
     vi.stubGlobal("fetch", (url: string, init?: RequestInit) => {
+      if (url.endsWith("/me")) return json({ mode: "none", admin: true });
       if (init?.method === "POST") {
         posts.push(JSON.parse(String(init.body)));
         return json({ metadata: { name: "01jnew", namespace: "a" }, spec: { title: "Write it" }, status: {} }, 201);
@@ -68,6 +69,7 @@ describe("NewTask", () => {
   it("says when the agents cannot be read, and reads them once", async () => {
     let reads = 0;
     vi.stubGlobal("fetch", (url: string) => {
+      if (url.endsWith("/me")) return json({ mode: "none", admin: true });
       if (url.endsWith("/agents")) {
         reads++;
         return reads === 1 ? json({ error: { code: "Unavailable", message: "the cache is not synced" } }, 503) : json({ items: [{ name: "writer", ready: true }] });
@@ -88,7 +90,7 @@ describe("NewTask", () => {
   });
 
   it("starts fresh for another team", async () => {
-    vi.stubGlobal("fetch", () => json({ items: [] }));
+    vi.stubGlobal("fetch", (url: string) => (url.endsWith("/me") ? json({ mode: "none", admin: true }) : json({ items: [] })));
     const nav: { go: (to: string) => void } = { go: () => {} };
     function Navigator() {
       const navigate = useNavigate();

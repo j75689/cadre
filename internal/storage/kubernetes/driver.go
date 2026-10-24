@@ -234,6 +234,15 @@ func (d *Driver) ListTeams(ctx context.Context) ([]v1alpha1.Team, error) {
 	return list.Items, nil
 }
 
+// IndexedTeam implements storage.TeamIndex from the informer cache.
+func (d *Driver) IndexedTeam(ctx context.Context, namespace string) (*v1alpha1.Team, error) {
+	team := &v1alpha1.Team{}
+	if err := d.index.Get(ctx, client.ObjectKey{Namespace: namespace, Name: v1alpha1.TeamName}, team); err != nil {
+		return nil, mapError(err, "indexed team "+namespace)
+	}
+	return team, nil
+}
+
 // ListTasks implements storage.Index from the informer cache.
 func (d *Driver) ListTasks(ctx context.Context, q storage.Query) ([]v1alpha1.Task, error) {
 	if err := q.Validate(); err != nil {

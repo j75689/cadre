@@ -6,7 +6,7 @@ import { json, task } from "./testing";
 
 beforeEach(() => {
   localStorage.clear();
-  vi.stubGlobal("fetch", () => json({ mode: "none" }));
+  vi.stubGlobal("fetch", () => json({ mode: "none", admin: true }));
 });
 afterEach(() => {
   cleanup();
