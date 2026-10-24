@@ -266,6 +266,9 @@ func TestTakeAndReleaseSteps(t *testing.T) {
 	}
 	tk.Status = apply(t, tk, ReleaseStep{RunID: runA, Step: 4, Attempt: MaxAttempts, Runner: "sa:w"}).Status
 	wantErr(t, tk, take, ErrStepExhausted)
+	if r := tk.Status.Run; !r.LeaseUntil.Time.Equal(now) {
+		t.Fatalf("a step with no attempt left waits until %v, want now", r.LeaseUntil)
+	}
 }
 
 // Without authentication a run has no Runner; its step is still held,

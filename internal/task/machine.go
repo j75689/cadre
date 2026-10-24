@@ -608,9 +608,13 @@ func stepHeld(run *v1alpha1.Run, now time.Time, grace time.Duration) bool {
 }
 
 // releaseStep frees the run's step: no worker and no MCP token, the last
-// worker kept for the record, and the lease set to the idle deadline.
+// worker kept for the record, and the lease set to the idle deadline. A
+// step with no attempt left has none: the next reclaim fails the run.
 func releaseStep(run *v1alpha1.Run, now time.Time, idle time.Duration) {
-	if idle <= 0 {
+	switch {
+	case run.Attempt >= MaxAttempts:
+		idle = 0
+	case idle <= 0:
 		idle = DefaultStepIdle
 	}
 	run.LastRunner, run.LastRunnerName = run.Runner, run.RunnerName
