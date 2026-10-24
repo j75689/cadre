@@ -263,10 +263,18 @@ func TestSmokeStepMode(t *testing.T) {
 			break
 		}
 		if r := tk.Status.Run; r != nil && !r.StepFree && d.gone() {
-			// The dead worker's step: wait out its lease and grace.
-			time.Sleep(4500 * time.Millisecond)
-			if err := m.ReclaimExpired(ctx); err != nil {
-				t.Fatal(err)
+			// The dead worker's step: wait out its lease and grace, until
+			// the reclaim frees it.
+			for deadline := time.Now().Add(15 * time.Second); ; time.Sleep(500 * time.Millisecond) {
+				if err := m.ReclaimExpired(ctx); err != nil {
+					t.Fatal(err)
+				}
+				if tk, err := m.GetTask(ctx, key); err == nil && (tk.Status.Run == nil || tk.Status.Run.StepFree) {
+					break
+				}
+				if time.Now().After(deadline) {
+					t.Fatal("the dead worker's step was never freed")
+				}
 			}
 		}
 		o.Runner = []string{"smoke-a", "smoke-b"}[i%2]

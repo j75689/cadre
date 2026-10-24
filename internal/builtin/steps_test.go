@@ -196,9 +196,18 @@ func TestADeadWorkersStepIsAdopted(t *testing.T) {
 	if r := e.task(t).Status.Run; r == nil || r.StepFree || r.Step != 1 {
 		t.Fatalf("run %+v; want step 1 still held by the dead worker", r)
 	}
-	time.Sleep(3500 * time.Millisecond) // the dead worker's lease and grace run out
-	if err := e.m.ReclaimExpired(ctx); err != nil {
-		t.Fatal(err)
+	// The dead worker's lease and grace run out, and the reclaim frees its
+	// step for the next worker.
+	for deadline := time.Now().Add(10 * time.Second); ; time.Sleep(200 * time.Millisecond) {
+		if err := e.m.ReclaimExpired(ctx); err != nil {
+			t.Fatal(err)
+		}
+		if r := e.task(t).Status.Run; r != nil && r.StepFree {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("the dead worker's step was never freed: %+v", e.task(t).Status.Run)
+		}
 	}
 	e.steps(t, p, builtin.Options{}, 3)
 	if tk := e.task(t); tk.Status.Phase != v1alpha1.PhaseReview || last(e.thread(t)).Body != "Done." {
