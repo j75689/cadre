@@ -293,7 +293,7 @@ func (m *Manager) notifyItem(ctx context.Context, key storage.Key, it v1alpha1.O
 	if len(pending) == 0 {
 		return true, nil, nil
 	}
-	if !slices.ContainsFunc(pending, func(nf *v1alpha1.Notifier) bool { return nf.Status.ReadyFor(nf.Generation) }) &&
+	if !slices.ContainsFunc(pending, m.canTry) &&
 		m.now().Sub(it.Notify.At.Time) <= NotifyTTL {
 		return false, nil, nil
 	}
@@ -397,14 +397,29 @@ func (m *Manager) payload(t *v1alpha1.Task, it v1alpha1.OutboxItem) Payload {
 	return p
 }
 
-// errNotReady is a delivery not attempted: the Notifier is not Ready.
+// errNotReady is a delivery not attempted: the Notifier is not Ready, or
+// this server cannot reach its channel.
 var errNotReady = errors.New("the Notifier is not Ready")
+
+// canTry reports whether nf can be delivered to from this server: it is
+// Ready, and a tool channel has a caller here. A server without one is not
+// the Notifier's fault, so nothing is tried, written or recorded.
+func (m *Manager) canTry(nf *v1alpha1.Notifier) bool {
+	if !nf.Status.ReadyFor(nf.Generation) {
+		return false
+	}
+	if nf.Spec.ToolServer != nil {
+		_, ok := m.cfg.Tools.(NotificationCaller)
+		return ok
+	}
+	return true
+}
 
 // deliver POSTs body to nf's webhook: signed if it has a secret, never
 // following a redirect, within notifyTimeout. Only a 2xx is a delivery.
 // Errors name the webhook without any credentials in its URL.
 func (m *Manager) deliver(ctx context.Context, nf *v1alpha1.Notifier, id string, body []byte) error {
-	if !nf.Status.ReadyFor(nf.Generation) {
+	if !m.canTry(nf) {
 		return errNotReady
 	}
 	ctx, cancel := context.WithTimeout(ctx, notifyTimeout)
@@ -454,15 +469,18 @@ func (m *Manager) deliver(ctx context.Context, nf *v1alpha1.Notifier, id string,
 	return nil
 }
 
-// notifyTool calls nf's tool through the same forwarder approved calls take,
-// with the notification under the argument notification and nf's static
-// arguments beside it. A call that fails or answers with an error is not a
-// delivery; the error names the ToolServer and the tool, never the
+// notifyTool calls nf's tool through the forwarder's notification entry
+// point, which calls only a ToolServer that takes notifications and a tool
+// its permissions allow, with the notification under the argument
+// notification and nf's static arguments beside it. A call not made, or
+// one the tool answers with an error, is not a delivery; the error names
+// the ToolServer, the tool and why a call was not made, never the
 // arguments nor what the tool answered.
 func (m *Manager) notifyTool(ctx context.Context, nf *v1alpha1.Notifier, body []byte) error {
 	ts := nf.Spec.ToolServer
-	if m.cfg.Tools == nil {
-		return errors.New("this server calls no ToolServers")
+	caller, ok := m.cfg.Tools.(NotificationCaller)
+	if !ok {
+		return errNotReady
 	}
 	args := map[string]any{}
 	for k, v := range ts.Arguments {
@@ -473,8 +491,11 @@ func (m *Manager) notifyTool(ctx context.Context, nf *v1alpha1.Notifier, body []
 	if err != nil {
 		return err
 	}
-	res := m.cfg.Tools.CallTool(ctx, nf.Namespace, ToolCall{ToolServer: ts.Name, Tool: ts.Tool, Arguments: raw})
-	if res.IsError {
+	res := caller.CallForNotification(ctx, nf.Namespace, ToolCall{ToolServer: ts.Name, Tool: ts.Tool, Arguments: raw})
+	switch {
+	case res.NotMade != "":
+		return fmt.Errorf("tool %s on ToolServer %s was not called: %s", ts.Tool, ts.Name, res.NotMade)
+	case res.IsError:
 		return fmt.Errorf("tool %s on ToolServer %s answered with an error", ts.Tool, ts.Name)
 	}
 	return nil

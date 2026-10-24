@@ -16,6 +16,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/builder"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/handler"
+	"sigs.k8s.io/controller-runtime/pkg/log"
 	"sigs.k8s.io/controller-runtime/pkg/predicate"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
@@ -56,6 +57,8 @@ func (r *notifierReconciler) setup(mgr ctrl.Manager) error {
 func (r *notifierReconciler) sendingTo(ctx context.Context, o client.Object) []reconcile.Request {
 	var list v1alpha1.NotifierList
 	if err := r.client.List(ctx, &list, client.InNamespace(o.GetNamespace()), client.MatchingFields{indexNotifierTool: o.GetName()}); err != nil {
+		// Its Notifiers are looked at again at the resync.
+		log.FromContext(ctx).Error(err, "list the Notifiers of a ToolServer", "toolServer", o.GetNamespace()+"/"+o.GetName())
 		return nil
 	}
 	reqs := make([]reconcile.Request, 0, len(list.Items))
@@ -100,6 +103,9 @@ func (r *notifierReconciler) decide(ctx context.Context, n *v1alpha1.Notifier) (
 			return false, "", "", err
 		case !ts.Status.ReadyFor(ts.Generation):
 			return false, "ToolServerNotReady", "ToolServer " + tool.Name + " is not Ready", nil
+		}
+		if !ts.Spec.Notifications {
+			return false, "ToolServerNotForNotifications", "ToolServer " + tool.Name + " does not take notifications: its spec.notifications is not set", nil
 		}
 		// A notification cannot wait for a human to approve the call.
 		if p := ts.PermissionFor(tool.Tool); p != v1alpha1.PermissionAllow {

@@ -14,6 +14,7 @@ import (
 	sdk "github.com/modelcontextprotocol/go-sdk/mcp"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/client-go/util/retry"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	v1alpha1 "github.com/j75689/cadre/api/v1alpha1"
@@ -103,11 +104,22 @@ func TestNotifierToolServer(t *testing.T) {
 	later := toolNotifier("later", "chat")
 	e.create(later)
 	e.ready(later, metav1.ConditionFalse, "ToolServerMissing")
-	e.create(&v1alpha1.ToolServer{ObjectMeta: meta2(ns, "chat"), Spec: v1alpha1.ToolServerSpec{URL: room.URL}})
-	e.ready(later, metav1.ConditionTrue, "Ready") // the ToolServer's arrival brings it back
-	locked := &v1alpha1.ToolServer{ObjectMeta: meta2(ns, "locked"), Spec: v1alpha1.ToolServerSpec{URL: room.URL,
+	chatServer := &v1alpha1.ToolServer{ObjectMeta: meta2(ns, "chat"), Spec: v1alpha1.ToolServerSpec{URL: room.URL}}
+	e.create(chatServer)
+	e.ready(later, metav1.ConditionFalse, "ToolServerNotForNotifications")
+	if err := retry.RetryOnConflict(retry.DefaultRetry, func() error {
+		if err := c.Get(ctx, client.ObjectKeyFromObject(chatServer), chatServer); err != nil {
+			return err
+		}
+		chatServer.Spec.Notifications = true
+		return c.Update(ctx, chatServer)
+	}); err != nil {
+		t.Fatal(err)
+	}
+	e.ready(later, metav1.ConditionTrue, "Ready") // the ToolServer's change brings it back
+	locked := &v1alpha1.ToolServer{ObjectMeta: meta2(ns, "locked"), Spec: v1alpha1.ToolServerSpec{URL: room.URL, Notifications: true,
 		Auth: &v1alpha1.ToolServerAuth{SecretRef: v1alpha1.SecretKeyRef{Name: "nope", Key: "k"}}}}
-	asking := &v1alpha1.ToolServer{ObjectMeta: meta2(ns, "asking"), Spec: v1alpha1.ToolServerSpec{URL: room.URL, Permissions: map[string]v1alpha1.Permission{"post": v1alpha1.PermissionAsk}}}
+	asking := &v1alpha1.ToolServer{ObjectMeta: meta2(ns, "asking"), Spec: v1alpha1.ToolServerSpec{URL: room.URL, Notifications: true, Permissions: map[string]v1alpha1.Permission{"post": v1alpha1.PermissionAsk}}}
 	e.create(locked, asking)
 	viaLocked, viaAsking := toolNotifier("via-locked", "locked"), toolNotifier("via-asking", "asking")
 	e.create(viaLocked, viaAsking)
@@ -127,8 +139,8 @@ func TestNotifierToolServer(t *testing.T) {
 	e.create(viaHook)
 	e.ready(viaHook, metav1.ConditionTrue, "Ready")
 	log := slog.New(slog.NewTextHandler(io.Discard, nil))
-	m := manager.New(store, manager.Config{Agents: manager.ReadyBuiltin(ns, "coder", "claude"), Notifiers: controller.Notifiers(mgr),
-		Tools: mcp.NewForwarder(controller.ToolServerSources(mgr), log)})
+	fwd := mcp.NewForwarder(controller.ToolServerSources(mgr), log)
+	m := manager.New(store, manager.Config{Agents: manager.ReadyBuiltin(ns, "coder", "claude"), Notifiers: controller.Notifiers(mgr), Tools: fwd})
 	ask := func(name string) storage.Key {
 		t.Helper()
 		tk, err := m.CreateTask(ctx, ns, name, v1alpha1.TaskSpec{Title: "Ask " + name, Assignee: &v1alpha1.Assignee{Kind: v1alpha1.AssigneeAgent, Name: "coder"}})
@@ -186,5 +198,30 @@ func TestNotifierToolServer(t *testing.T) {
 	}
 	if n, h := len(room.posted()), hooked.Load(); n != 3 || h != 2 {
 		t.Errorf("tool %d, webhook %d deliveries; want 3 and 2", n, h)
+	}
+
+	// The ToolServer turned to ask: a notification is refused at the call,
+	// whatever the Notifier's Ready still says, and an approved call is
+	// still made.
+	if err := retry.RetryOnConflict(retry.DefaultRetry, func() error {
+		if err := c.Get(ctx, client.ObjectKeyFromObject(chatServer), chatServer); err != nil {
+			return err
+		}
+		chatServer.Spec.Permissions = map[string]v1alpha1.Permission{"post": v1alpha1.PermissionAsk}
+		return c.Update(ctx, chatServer)
+	}); err != nil {
+		t.Fatal(err)
+	}
+	e.ready(chatServer, metav1.ConditionTrue, "External")
+	call := manager.ToolCall{ToolServer: "chat", Tool: "post", Arguments: []byte(`{"channel":"#a","notification":{"id":"n","event":"Done","at":"2026-10-25T09:00:00Z","task":{"namespace":"a","name":"b","title":"c","phase":"Done"}}}`)}
+	before := len(room.posted())
+	if res := fwd.CallForNotification(ctx, ns, call); res.NotMade != manager.NotMadeDenied {
+		t.Errorf("a notification to a tool that asks: %+v", res)
+	}
+	if res := fwd.CallTool(ctx, ns, call); res.IsError {
+		t.Errorf("an approved call to a tool that asks: %+v", res)
+	}
+	if n := len(room.posted()); n != before+1 {
+		t.Errorf("%d calls made, want only the approved one", n-before)
 	}
 }

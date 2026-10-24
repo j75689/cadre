@@ -88,6 +88,13 @@ type ToolServerSpec struct {
 	// +optional
 	Auth *ToolServerAuth `json:"auth,omitempty"`
 
+	// Notifications lets the namespace's Notifiers call this server's
+	// tools that Permissions allow, with its credential, on every event they
+	// listen for. Off by default: whoever may create a Notifier would
+	// otherwise drive any allowed tool, past the agents' toolRefs.
+	// +optional
+	Notifications bool `json:"notifications,omitempty"`
+
 	// Permissions decide per tool whether a call is allowed, denied or must
 	// be approved by a human first. "*" applies to tools not listed by name.
 	// Without permissions every tool is allowed; with them the list is an

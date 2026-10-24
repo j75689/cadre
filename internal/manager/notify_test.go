@@ -618,17 +618,30 @@ func TestNotifyWithoutNotifiersHonoursATurn(t *testing.T) {
 	}
 }
 
-// fakeTools records the calls it is asked to make.
+// fakeTools records the calls it is asked to make, and through which entry
+// point: only notifications may come in through CallForNotification.
 type fakeTools struct {
-	mu    sync.Mutex
-	calls []ToolCall
-	fail  bool
+	mu      sync.Mutex
+	calls   []ToolCall
+	fail    bool
+	notMade string
+	viaTool int // calls through CallTool, the approved-call path
 }
 
-func (f *fakeTools) CallTool(_ context.Context, _ string, call ToolCall) ToolResult {
+func (f *fakeTools) CallTool(context.Context, string, ToolCall) ToolResult {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.viaTool++
+	return ToolResult{Body: "ok"}
+}
+
+func (f *fakeTools) CallForNotification(_ context.Context, _ string, call ToolCall) ToolResult {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.calls = append(f.calls, call)
+	if f.notMade != "" {
+		return ToolResult{Body: "The call was not made.", IsError: true, NotMade: f.notMade}
+	}
 	return ToolResult{Body: "ok", IsError: f.fail}
 }
 
@@ -669,5 +682,38 @@ func TestNotifyThroughATool(t *testing.T) {
 	}
 	if len(notifyItems(e.get(t, key))) != 0 {
 		t.Error("delivered through the tool, the item stayed")
+	}
+	if tools.viaTool != 0 {
+		t.Errorf("%d notification calls through the approved-call path", tools.viaTool)
+	}
+}
+
+// A call never made says why, not that the tool erred.
+func TestNotifyToolNotMade(t *testing.T) {
+	nf := notifier("chat", "", nil, v1alpha1.NotifyQuestion)
+	nf.Spec.Webhook, nf.Spec.ToolServer = nil, &v1alpha1.NotifierToolServer{Name: "chat", Tool: "post"}
+	e, recorded := notifyEnv(t, nf)
+	e.m.cfg.Tools = &fakeTools{notMade: NotMadeDenied}
+	key := e.addTask(t, "x", v1alpha1.AssigneeAgent)
+	e.question(t, key)
+	_ = e.m.DeliverNotifications(ctx)
+	if last := (*recorded)[len(*recorded)-1]; last != "delivered chat: tool post on ToolServer chat was not called: "+NotMadeDenied {
+		t.Errorf("recorded %q", last)
+	}
+}
+
+// A server that cannot call tools leaves a tool's notifications alone: no
+// write, no attempt, no blame on the Notifier.
+func TestNotifyWithoutTools(t *testing.T) {
+	nf := notifier("chat", "", nil, v1alpha1.NotifyQuestion)
+	nf.Spec.Webhook, nf.Spec.ToolServer = nil, &v1alpha1.NotifierToolServer{Name: "chat", Tool: "post"}
+	e, recorded := notifyEnv(t, nf)
+	key := e.addTask(t, "x", v1alpha1.AssigneeAgent)
+	e.question(t, key)
+	var writes int
+	e.m.store = countWrites{e.store, &writes}
+	_ = e.m.DeliverNotifications(ctx)
+	if writes != 0 || len(*recorded) != 0 {
+		t.Errorf("%d writes, recorded %v", writes, *recorded)
 	}
 }

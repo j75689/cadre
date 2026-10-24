@@ -112,6 +112,13 @@ spec:
                 - image
                 - port
                 type: object
+              notifications:
+                description: |-
+                  Notifications lets the namespace's Notifiers call this server's
+                  tools that Permissions allow, with its credential, on every event they
+                  listen for. Off by default: whoever may create a Notifier would
+                  otherwise drive any allowed tool, past the agents' toolRefs.
+                type: boolean
               permissions:
                 additionalProperties:
                   description: Permission decides what happens when an agent calls
