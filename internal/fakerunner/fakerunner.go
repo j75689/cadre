@@ -52,9 +52,11 @@ type Options struct {
 	// Observe, if set, is told about every claim, renewal, finish and loss,
 	// as soon as the runner learns of it.
 	Observe func(Observation)
-	Once    bool          // stop after one run
-	Poll    time.Duration // wait between claims when there is no work
-	Log     io.Writer
+	Once    bool // stop after one run, or the first claim that finds no work
+	// Agent, if set, claims only that agent's tasks.
+	Agent string
+	Poll  time.Duration // wait between claims when there is no work
+	Log   io.Writer
 }
 
 // ObservationKind is what a runner learned.
@@ -137,7 +139,8 @@ func lostTask(err error) bool {
 		client.IsCode(err, httpjson.CodeForbidden) || client.IsCode(err, httpjson.CodeUnauthenticated)
 }
 
-// Run claims and works tasks until ctx is done, or after one run with Once.
+// Run claims and works tasks until ctx is done, or with Once after one run
+// or the first claim that finds no work.
 // A plan is validated before any task is claimed with it.
 func Run(ctx context.Context, c *client.Client, o Options) ([]Result, error) {
 	if o.Decide == nil {
@@ -159,9 +162,12 @@ func Run(ctx context.Context, c *client.Client, o Options) ([]Result, error) {
 		// The lease is counted from before the request, so the claim's
 		// round trip can only make the runner stop earlier.
 		sent := time.Now()
-		claim, err := c.Claim(ctx, runner.ClaimRequest{Runner: o.Runner, Namespaces: o.Namespaces, Labels: o.Labels})
+		claim, err := c.Claim(ctx, runner.ClaimRequest{Runner: o.Runner, Namespaces: o.Namespaces, Labels: o.Labels, Agent: o.Agent})
 		if err != nil && ctx.Err() == nil {
 			logf(o.Log, "claim failed: %v\n", err)
+		}
+		if claim == nil && err == nil && o.Once {
+			return results, nil // no work: a Job's runner exits
 		}
 		if claim == nil {
 			select {

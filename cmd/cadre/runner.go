@@ -12,6 +12,7 @@ import (
 	v1alpha1 "github.com/j75689/cadre/api/v1alpha1"
 	"github.com/j75689/cadre/internal/client"
 	"github.com/j75689/cadre/internal/fakerunner"
+	"github.com/j75689/cadre/internal/runner"
 )
 
 func newRunnerCmd(g *globals) *cobra.Command {
@@ -22,7 +23,15 @@ func newRunnerCmd(g *globals) *cobra.Command {
 		reason    string
 		tokenFile string
 	)
+	// In a Job (CADRE_RUNNER set) the fake claims under the Job's name, the
+	// Job's agent's tasks, once, as any Job's runner must; CADRE_SERVER and
+	// CADRE_NAMESPACE are the global flags' defaults already.
 	host, _ := os.Hostname()
+	job, inJob := runner.ReadJobEnv(os.Getenv)
+	if inJob {
+		host = job.Runner
+	}
+	o.Agent = job.Agent
 	fake := &cobra.Command{
 		Use:   "fake",
 		Short: "Claim tasks and finish them with a chosen outcome, without doing any work",
@@ -68,7 +77,7 @@ its lease while it "works", stops a run at once if the run loses its task
 	// agents as cadre-runner does.
 	f.StringToStringVarP(&o.Labels, "label", "l", map[string]string{v1alpha1.LabelRuntime: string(v1alpha1.RuntimeBuiltin)},
 		"claim labels, key=value; repeatable. The default claims builtin agents, as cadre-runner does")
-	f.BoolVar(&o.Once, "once", false, "stop after one run")
+	f.BoolVar(&o.Once, "once", inJob, "stop after one run, or the first claim that finds no work; on in a Job")
 	f.DurationVar(&o.Poll, "poll", time.Second, "wait between claims when there is no work")
 	f.StringVar(&tokenFile, "token-file", "", "a file holding this runner's token, read before every request: a minted token from its Runner's <name>-token Secret, or a ServiceAccount token for the audience cadre; by default "+client.DefaultTokenFile+" when it exists, else none")
 	cmd.AddCommand(fake)

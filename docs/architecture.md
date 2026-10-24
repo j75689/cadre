@@ -50,6 +50,7 @@ In phase one the API and the Task Manager ship in one binary, `cadre-server`, be
 - Sync CRDs into Cadre's configuration: create an `Agent` and the board can assign to it.
 - Schedules: read `Schedule` resources and create tasks when due.
 - Dispatch: hand claimed tasks to the right execution mode.
+- They run on one cadre-server replica at a time, elected with a Lease (`--leader-elect`, on by default in a cluster): starting a Job is not a conditional write, so two replicas would start Jobs for the same tasks. The Task Manager, the APIs and the MCP endpoint serve on every replica.
 
 ### Execution modes
 
@@ -62,7 +63,7 @@ There are two modes, not a list of backends:
 
 Step-mode workers always run inside the cluster, as a pool of interchangeable pods that talk to the Task Manager, never to storage directly. Anything that runs outside the cluster is an external runner in runtime mode, whatever loop it contains.
 
-Runtime-mode backends differ only in who starts the runner process. They all speak the same pull-based runner protocol and all call tools through the per-run MCP endpoint. In step mode, Agent Sandbox is the place where tools that need a shell execute: a kind of ToolServer, not an execution backend.
+Runtime-mode backends differ only in who starts the runner process. For the Kubernetes Job backend, cadre-server starts the Jobs itself (see [execution.md](execution.md#runtime-mode)): it watches Jobs cluster-wide, since an informer cannot be granted per namespace, but its cache keeps only those labelled `cadre.dev/agent`, and it may create and delete them only in the Team namespaces where `config/rbac/jobs.yaml` is bound. They all speak the same pull-based runner protocol and all call tools through the per-run MCP endpoint. In step mode, Agent Sandbox is the place where tools that need a shell execute: a kind of ToolServer, not an execution backend.
 
 ### Per-run tool server
 - Every run gets its own MCP endpoint (`/mcp/run`, authenticated by the run's bearer token) exposing Cadre's own tools (post to the thread, ask a question, create a subtask, read and write task files) plus the ToolServers the agent is allowed to use.

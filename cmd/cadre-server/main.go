@@ -1,8 +1,9 @@
 // Command cadre-server runs the Task Manager: the /api/v1 and /runner/v1
 // endpoints and the background loops (numbering, outbox dispatch, lease
 // reclaim), and the controllers that mark Agents, ModelProviders and
-// ToolServers Ready. Any number of replicas may run against the same cluster and
-// object store.
+// ToolServers Ready and start runner agents' Jobs. Any number of replicas
+// may run against the same cluster and object store; the controllers run on
+// the elected leader only (--leader-elect).
 package main
 
 import (
@@ -49,6 +50,8 @@ func run() error {
 		dispatch  = flag.Duration("dispatch-interval", manager.DefaultLoopConfig.Dispatch, "how often the outbox is dispatched and new tasks numbered")
 		auth      = flag.String("runner-auth", "required", "required: runners authenticate with a ServiceAccount token for audience cadre; none: no runner authentication, for tests and local development only")
 		builtin   = flag.String("builtin-runner", "system:serviceaccount:cadre-system:cadre-runner", "the identity of cadre-runner, the only runner that may claim builtin agents' tasks")
+		elect     = flag.Bool("leader-elect", true, "run the controllers on one replica at a time, elected with a Lease; the API, the runner protocol and the MCP endpoint serve on every replica")
+		electNS   = flag.String("leader-elect-namespace", "", "the namespace of the leader election Lease; by default the pod's own in a cluster (outside one, leader election needs it, or is off)")
 		s3cfg     kubernetes.S3Config
 	)
 	flag.StringVar(&s3cfg.Endpoint, "s3-endpoint", "", "S3-compatible endpoint; empty for AWS S3")
@@ -80,11 +83,23 @@ func run() error {
 		return fmt.Errorf("kubernetes config: %w", err)
 	}
 
-	ctrls, err := controller.NewManager(rest)
+	var ctrlOpts []controller.ManagerOption
+	inCluster := os.Getenv("KUBERNETES_SERVICE_HOST") != ""
+	switch {
+	case *elect && (inCluster || *electNS != ""):
+		ctrlOpts = append(ctrlOpts, controller.LeaderElection(*electNS))
+	case *elect:
+		log.Warn("outside a cluster without --leader-elect-namespace: leader election is off, so run one replica only")
+	}
+	ctrls, err := controller.NewManager(rest, ctrlOpts...)
 	if err != nil {
 		return fmt.Errorf("controllers: %w", err)
 	}
-	if err := controller.Setup(ctrls, controller.Options{}); err != nil {
+	if *publicURL, err = resolvePublicURL(*publicURL, *listen, os.Getenv("KUBERNETES_SERVICE_HOST") != ""); err != nil {
+		return err
+	}
+	// Runner agents' Jobs reach cadre-server where every runner does.
+	if err := controller.Setup(ctrls, controller.Options{ServerURL: *publicURL, Lease: *lease}); err != nil {
 		return fmt.Errorf("controllers: %w", err)
 	}
 	// One informer cache serves the controllers and the board index: the
@@ -112,9 +127,6 @@ func run() error {
 	forwarder := mcp.NewForwarder(controller.ToolServerSources(ctrls), log)
 	m := manager.New(store, manager.Config{Lease: *lease, Heartbeat: *heartbeat, StepIdle: *stepIdle, Agents: controller.Agents(ctrls), Tools: forwarder})
 	mux := http.NewServeMux()
-	if *publicURL, err = resolvePublicURL(*publicURL, *listen, os.Getenv("KUBERNETES_SERVICE_HOST") != ""); err != nil {
-		return err
-	}
 	var runnerOpts []runner.Option
 	if *auth == "required" {
 		reviews := runner.Cached(controller.TokenReviews(ctrls.GetClient()))

@@ -2,6 +2,7 @@ package v1alpha1_test
 
 import (
 	"context"
+	"strings"
 	"testing"
 
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
@@ -91,10 +92,18 @@ func TestConfigCRDs(t *testing.T) {
 		"runner in steps":       {v1alpha1.AgentSpec{ModelRef: "claude", Runtime: v1alpha1.AgentRuntime{Type: v1alpha1.RuntimeRunner, Selector: map[string]string{"a": "b"}, Execution: v1alpha1.RunModeStep}}, false},
 		// No schema default: a default of step would make every runner
 		// agent invalid.
-		"runner by default": {v1alpha1.AgentSpec{ModelRef: "claude", Runtime: v1alpha1.AgentRuntime{Type: v1alpha1.RuntimeRunner, Selector: map[string]string{"a": "b"}}}, true},
+		"runner by default":  {v1alpha1.AgentSpec{ModelRef: "claude", Runtime: v1alpha1.AgentRuntime{Type: v1alpha1.RuntimeRunner, Selector: map[string]string{"a": "b"}}}, true},
+		"builtin with a job": {v1alpha1.AgentSpec{ModelRef: "claude", Runtime: v1alpha1.AgentRuntime{Type: v1alpha1.RuntimeBuiltin, Job: &v1alpha1.AgentJob{RunnerRef: "r"}}}, false},
+		"runner with a job":  {v1alpha1.AgentSpec{ModelRef: "claude", Runtime: v1alpha1.AgentRuntime{Type: v1alpha1.RuntimeRunner, Selector: map[string]string{"a": "b"}, Job: &v1alpha1.AgentJob{RunnerRef: "r"}}}, true},
 	} {
 		expect(t, c, "Agent "+name, &v1alpha1.Agent{ObjectMeta: meta(), Spec: tc.spec}, tc.valid)
 	}
+	// A Job carries its agent's name in a label, which holds 63 characters.
+	long := strings.Repeat("a", 64)
+	jobSpec := v1alpha1.AgentSpec{ModelRef: "claude", Runtime: v1alpha1.AgentRuntime{Type: v1alpha1.RuntimeRunner, Selector: map[string]string{"a": "b"}, Job: &v1alpha1.AgentJob{RunnerRef: "r"}}}
+	expect(t, c, "Agent with a job and a long name", &v1alpha1.Agent{ObjectMeta: metav1.ObjectMeta{Name: long, Namespace: "default"}, Spec: jobSpec}, false)
+	jobSpec.Runtime.Job = nil
+	expect(t, c, "Agent without a job and a long name", &v1alpha1.Agent{ObjectMeta: metav1.ObjectMeta{Name: long, Namespace: "default"}, Spec: jobSpec}, true)
 
 	for name, tc := range map[string]struct {
 		spec  v1alpha1.RunnerSpec

@@ -79,7 +79,7 @@ func (s *Server) claim(w http.ResponseWriter, r *http.Request) {
 		httpjson.WriteError(w, http.StatusForbidden, CodeForbidden, msgStepsBuiltinOnly)
 		return
 	}
-	creq := manager.ClaimRequest{Runner: req.Runner, Identity: identityOf(r), Namespaces: req.Namespaces, Labels: s.claimLabels(r, req.Labels), Mode: req.Mode}
+	creq := manager.ClaimRequest{Runner: req.Runner, Identity: identityOf(r), Namespaces: req.Namespaces, Labels: s.claimLabels(r, req.Labels), Mode: req.Mode, Agent: req.Agent}
 	if id := authOf(r); s.auth != nil && id.Name != s.builtin && id.Scope != nil {
 		// A runner claims where its Runners say, with their labels; what
 		// it sends is not taken.

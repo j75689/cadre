@@ -45,6 +45,9 @@ type ClaimRequest struct {
 	// cadre-runner's identity may. The default, runtime, claims a whole
 	// run of any other agent: neither mode sees the other's tasks.
 	Mode v1alpha1.RunMode `json:"mode,omitempty"`
+	// Agent, if set, limits the claim to that agent's tasks, as a Job's
+	// runner claims only its Agent's.
+	Agent string `json:"agent,omitempty"`
 }
 
 // ClaimedTask is the task a claim hands out.

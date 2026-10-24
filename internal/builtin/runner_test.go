@@ -614,3 +614,19 @@ func (e *env) runVia(t *testing.T, transport http.RoundTripper, p builtin.Provid
 		t.Fatal(err)
 	}
 }
+
+// With Once a runner that finds no work stops, as a Job's runner must, in
+// either mode.
+func TestOnceStopsWithoutWork(t *testing.T) {
+	e := start(t)
+	o := builtin.Options{Runner: "r", Once: true, Poll: 10 * time.Millisecond, Namespaces: []string{"nowhere"}}
+	for name, run := range map[string]func(context.Context, *client.Client, builtin.Options) error{"runtime": builtin.Run, "step": builtin.RunSteps} {
+		runCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
+		begin := time.Now()
+		err := run(runCtx, e.c, o)
+		cancel()
+		if err != nil || time.Since(begin) > 2*time.Second {
+			t.Errorf("%s: %v after %s; want a stop after one empty claim", name, err, time.Since(begin))
+		}
+	}
+}

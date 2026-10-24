@@ -5,6 +5,9 @@ import (
 	"fmt"
 	"time"
 
+	authorizationv1 "k8s.io/api/authorization/v1"
+	corev1 "k8s.io/api/core/v1"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/types"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/builder"
@@ -21,6 +24,8 @@ const (
 	indexToolRefs = "spec.toolRefs"
 	// indexRunnerSA finds the Runners naming a ServiceAccount.
 	indexRunnerSA = "spec.serviceAccount.name"
+	// indexJobRunner finds the Agents whose Jobs run as a Runner.
+	indexJobRunner = "spec.runtime.job.runnerRef"
 )
 
 // setupIndexes lets a ModelProvider or ToolServer change find the Agents
@@ -34,6 +39,14 @@ func setupIndexes(mgr ctrl.Manager) error {
 	}
 	if err := idx.IndexField(context.Background(), &v1alpha1.Agent{}, indexToolRefs, func(o client.Object) []string {
 		return o.(*v1alpha1.Agent).Spec.ToolRefs
+	}); err != nil {
+		return err
+	}
+	if err := idx.IndexField(context.Background(), &v1alpha1.Agent{}, indexJobRunner, func(o client.Object) []string {
+		if job := o.(*v1alpha1.Agent).Spec.Runtime.Job; job != nil {
+			return []string{job.RunnerRef}
+		}
+		return nil
 	}); err != nil {
 		return err
 	}
@@ -108,6 +121,7 @@ func (r *agentReconciler) setup(mgr ctrl.Manager) error {
 	return ctrl.NewControllerManagedBy(mgr).For(&v1alpha1.Agent{}).Named("agent").WithOptions(r.options()).
 		Watches(&v1alpha1.ModelProvider{}, handler.EnqueueRequestsFromMapFunc(r.agentsUsing(indexModelRef))).
 		Watches(&v1alpha1.ToolServer{}, handler.EnqueueRequestsFromMapFunc(r.agentsUsing(indexToolRefs))).
+		Watches(&v1alpha1.Runner{}, handler.EnqueueRequestsFromMapFunc(r.agentsUsing(indexJobRunner))).
 		Complete(r)
 }
 
@@ -139,7 +153,12 @@ func (r *agentReconciler) Reconcile(ctx context.Context, req reconcile.Request) 
 	if err != nil {
 		return reconcile.Result{}, err
 	}
-	return reconcile.Result{}, r.setReady(ctx, &agent, &agent.Status, ready, reason, msg)
+	var res reconcile.Result
+	if agent.Spec.Runtime.Job != nil {
+		// Its Runner's ServiceAccount is read, not watched: check again.
+		res.RequeueAfter = r.resync
+	}
+	return res, r.setReady(ctx, &agent, &agent.Status, ready, reason, msg)
 }
 
 // resolve checks the Agent's references in order and names the first one
@@ -165,8 +184,56 @@ func (r *agentReconciler) resolve(ctx context.Context, agent *v1alpha1.Agent) (b
 			return false, "ToolServerNotReady", fmt.Sprintf("ToolServer %s is not Ready", name), nil
 		}
 	}
+	if job := agent.Spec.Runtime.Job; job != nil {
+		return r.resolveJob(ctx, agent, job)
+	}
 	return true, "Resolved", "", nil
 }
+
+// resolveJob checks the Runner an agent's Jobs run as: it must exist, run
+// in the cluster as a ServiceAccount that exists, and claim with labels
+// that include the agent's selector, or its Jobs could not claim its work.
+func (r *agentReconciler) resolveJob(ctx context.Context, agent *v1alpha1.Agent, job *v1alpha1.AgentJob) (bool, string, string, error) {
+	var rn v1alpha1.Runner
+	switch err := r.client.Get(ctx, client.ObjectKey{Namespace: agent.Namespace, Name: job.RunnerRef}, &rn); {
+	case client.IgnoreNotFound(err) != nil:
+		return false, "", "", err
+	case err != nil:
+		return false, "RunnerNotFound", fmt.Sprintf("Runner %s does not exist", job.RunnerRef), nil
+	case rn.Spec.ServiceAccount == nil:
+		return false, "RunnerOutsideTheCluster", fmt.Sprintf("Runner %s has no serviceAccount for the Jobs to run as", job.RunnerRef), nil
+	}
+	for k, v := range agent.Spec.Runtime.Selector {
+		if rn.Spec.Labels[k] != v {
+			return false, "RunnerLabelsMismatch", fmt.Sprintf("Runner %s's labels do not include the selector's %s=%s", job.RunnerRef, k, v), nil
+		}
+	}
+	var sa corev1.ServiceAccount
+	switch err := r.secrets.Get(ctx, client.ObjectKey{Namespace: agent.Namespace, Name: rn.Spec.ServiceAccount.Name}, &sa); {
+	case apierrors.IsForbidden(err):
+		return false, "Forbidden", forbidden, nil
+	case client.IgnoreNotFound(err) != nil:
+		return false, "", "", err
+	case err != nil:
+		return false, "ServiceAccountNotFound", fmt.Sprintf("ServiceAccount %s of Runner %s does not exist", rn.Spec.ServiceAccount.Name, job.RunnerRef), nil
+	}
+	for _, verb := range []string{"create", "delete", "patch"} {
+		review := &authorizationv1.SelfSubjectAccessReview{Spec: authorizationv1.SelfSubjectAccessReviewSpec{
+			ResourceAttributes: &authorizationv1.ResourceAttributes{Namespace: agent.Namespace, Verb: verb, Group: "batch", Resource: "jobs"},
+		}}
+		if err := r.client.Create(ctx, review); err != nil {
+			return false, "", "", err
+		}
+		if !review.Status.Allowed {
+			return false, "Forbidden", forbidden, nil
+		}
+	}
+	return true, "Resolved", "", nil
+}
+
+// forbidden says what a namespace whose Jobs cadre-server may not run
+// lacks.
+const forbidden = "cadre-server may not run Jobs in this namespace: bind the ClusterRole in config/rbac/jobs.yaml here"
 
 // noTeam ends a reconcile in a namespace that has no Team (yet): check again
 // later. An error is returned alone, since controller-runtime ignores a

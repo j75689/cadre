@@ -9,10 +9,14 @@
 // resources that depend on a Secret are re-checked periodically instead.
 // The one Secret they write is a Runner's minted token.
 //
-// Leader election is off: every status write is a conditional update, so two
-// cadre-server replicas reconciling the same object only race harmlessly. A
-// Helm chart may later enable leader election for the controllers alone.
+// The reconcilers run on one replica at a time, by leader election: a
+// status write is conditional and would race harmlessly, but starting a Job
+// is not, and two replicas would each start Jobs for the same tasks. The
+// cache, and with it the Task Manager and the MCP endpoint, runs on every
+// replica.
 //
+// +kubebuilder:rbac:groups=coordination.k8s.io,resources=leases,verbs=get;create;update
+// +kubebuilder:rbac:groups="",resources=events,verbs=create;patch
 // +kubebuilder:rbac:groups=cadre.dev,resources=teams;agents;modelproviders;toolservers,verbs=get;list;watch
 // +kubebuilder:rbac:groups=cadre.dev,resources=agents/status;modelproviders/status;toolservers/status,verbs=get;update
 // +kubebuilder:rbac:groups="",resources=secrets,verbs=get
@@ -22,13 +26,17 @@ import (
 	"context"
 	"time"
 
+	batchv1 "k8s.io/api/batch/v1"
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/labels"
 	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/apimachinery/pkg/types"
 	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
 	"k8s.io/client-go/rest"
+	"sigs.k8s.io/controller-runtime/pkg/cache"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/controller"
 	ctrl "sigs.k8s.io/controller-runtime/pkg/manager"
@@ -45,6 +53,12 @@ const DefaultResync = time.Minute
 type Options struct {
 	// Resync is how often Secret-dependent resources are re-checked.
 	Resync time.Duration
+	// ServerURL is where the pods of runner agents' Jobs reach cadre-server;
+	// without it no Job is started.
+	ServerURL string
+	// Lease is the run lease: a Job still running a lease after its run
+	// ended is deleted. Default 30 seconds.
+	Lease time.Duration
 }
 
 // SetupOption adjusts Setup.
@@ -81,6 +95,16 @@ func Setup(mgr ctrl.Manager, o Options, opts ...SetupOption) error {
 	}
 	if err := (&toolServerReconciler{b}).setup(mgr); err != nil {
 		return err
+	}
+	if o.ServerURL != "" {
+		if o.Lease <= 0 {
+			o.Lease = 30 * time.Second
+		}
+		jr := &jobReconciler{base: b, serverURL: o.ServerURL, lease: o.Lease,
+			claimed: map[types.NamespacedName]claim{}, created: map[types.NamespacedName]map[string]time.Time{}}
+		if err := jr.setup(mgr); err != nil {
+			return err
+		}
 	}
 	return (&agentReconciler{b}).setup(mgr)
 }
@@ -157,10 +181,26 @@ func isReady(obj client.Object, status v1alpha1.ConfigStatus) bool {
 	return status.ReadyFor(obj.GetGeneration())
 }
 
+// LeaderElectionID names the Lease the replicas' controllers elect a leader
+// with.
+const LeaderElectionID = "cadre-server-controllers"
+
+// ManagerOption adjusts NewManager.
+type ManagerOption func(*ctrl.Options)
+
+// LeaderElection has the reconcilers run on the leader only, elected with a
+// Lease in namespace (empty: the pod's own, in a cluster).
+func LeaderElection(namespace string) ManagerOption {
+	return func(o *ctrl.Options) {
+		o.LeaderElection, o.LeaderElectionID, o.LeaderElectionNamespace = true, LeaderElectionID, namespace
+		o.LeaderElectionReleaseOnCancel = true
+	}
+}
+
 // NewManager returns a controller manager for cadre-server: no metrics or
-// health endpoints of its own, no leader election, and Secrets kept out of
-// the cache even if a client asks for one.
-func NewManager(cfg *rest.Config) (ctrl.Manager, error) {
+// health endpoints of its own, leader election only with LeaderElection,
+// and Secrets kept out of the cache even if a client asks for one.
+func NewManager(cfg *rest.Config, opts ...ManagerOption) (ctrl.Manager, error) {
 	scheme := runtime.NewScheme()
 	if err := clientgoscheme.AddToScheme(scheme); err != nil {
 		return nil, err
@@ -168,10 +208,21 @@ func NewManager(cfg *rest.Config) (ctrl.Manager, error) {
 	if err := v1alpha1.AddToScheme(scheme); err != nil {
 		return nil, err
 	}
-	return ctrl.New(cfg, ctrl.Options{
+	// The Job informer holds runner agents' Jobs only: cadre-server may
+	// list every Job, but keeps none of the others.
+	jobs, err := labels.Parse(LabelAgent)
+	if err != nil {
+		return nil, err
+	}
+	o := ctrl.Options{
 		Scheme:                 scheme,
+		Cache:                  cache.Options{ByObject: map[client.Object]cache.ByObject{&batchv1.Job{}: {Label: jobs}}},
 		Metrics:                metricsserver.Options{BindAddress: "0"},
 		HealthProbeBindAddress: "0",
 		Client:                 client.Options{Cache: &client.CacheOptions{DisableFor: []client.Object{&corev1.Secret{}}}},
-	})
+	}
+	for _, opt := range opts {
+		opt(&o)
+	}
+	return ctrl.New(cfg, o)
 }

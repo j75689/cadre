@@ -26,6 +26,7 @@ import (
 	cadreclient "github.com/j75689/cadre/internal/client"
 	"github.com/j75689/cadre/internal/provider/anthropic"
 	"github.com/j75689/cadre/internal/provider/openai"
+	"github.com/j75689/cadre/internal/runner"
 )
 
 func main() {
@@ -35,15 +36,36 @@ func main() {
 	}
 }
 
+// defaults are the flags' defaults: a runner started for a Job (CADRE_RUNNER
+// set) claims under the Job's name, from the server and in the namespace
+// its Job says, one whole run, and exits; explicit flags still win.
+type defaults struct {
+	server, runner, namespaces, mode, agent string
+	once                                    bool
+}
+
+func flagDefaults(getenv func(string) string, host string) defaults {
+	d := defaults{server: "http://cadre-server:8080", runner: host, mode: "step"}
+	if env, ok := runner.ReadJobEnv(getenv); ok {
+		d.runner, d.mode, d.once, d.agent = env.Runner, "runtime", true, env.Agent
+		if env.Server != "" {
+			d.server = env.Server
+		}
+		d.namespaces = env.Namespace
+	}
+	return d
+}
+
 func run() error {
 	host, _ := os.Hostname()
+	d := flagDefaults(os.Getenv, host)
 	var (
-		server     = flag.String("server", "http://cadre-server:8080", "cadre-server's URL")
-		name       = flag.String("runner", host, "this runner's name, shown in status.run.runner")
-		namespaces = flag.String("namespaces", "", "comma-separated Team namespaces to take work from; empty for every one")
+		server     = flag.String("server", d.server, "cadre-server's URL; in a Job, "+runner.EnvServer)
+		name       = flag.String("runner", d.runner, "this runner's name, shown in status.run.runner; in a Job, "+runner.EnvRunner)
+		namespaces = flag.String("namespaces", d.namespaces, "comma-separated Team namespaces to take work from; empty for every one; in a Job, "+runner.EnvNamespace)
 		maxTurns   = flag.Int("max-turns", builtin.DefaultMaxTurns, "model responses per run before it hands the task to a human")
-		once       = flag.Bool("once", false, "stop after one run, or one step in step mode")
-		mode       = flag.String("mode", "step", "step: work the steps of builtin agents' runs, a step at a time; runtime: work whole runs of builtin agents set to execution: runtime")
+		once       = flag.Bool("once", d.once, "stop after one run (one step in step mode), or the first claim that finds no work; on in a Job")
+		mode       = flag.String("mode", d.mode, "step: work the steps of builtin agents' runs, a step at a time; runtime: work whole runs of builtin agents set to execution: runtime; runtime in a Job")
 		parallel   = flag.Int("parallel", 1, "in step mode, how many steps to work at once")
 		stepTime   = flag.Duration("step-timeout", builtin.DefaultStepTimeout, "in step mode, the longest one step may take before it is given back")
 		tokenFile  = flag.String("token-file", "", "the token to authenticate to cadre-server with, read before every request; by default the projected ServiceAccount token at "+cadreclient.DefaultTokenFile+" when it exists, else none")
@@ -79,6 +101,7 @@ func run() error {
 		Log:      log,
 		MaxTurns: *maxTurns,
 		Once:     *once,
+		Agent:    d.agent,
 
 		StepTimeout: *stepTime,
 		Providers: map[v1alpha1.ProviderType]builtin.Provider{

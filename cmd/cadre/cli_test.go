@@ -227,3 +227,37 @@ func TestApproveWhileTheCallIsRecorded(t *testing.T) {
 	}
 	mustContain(t, cadre(t, srv.URL, "task", "approve", "open-pr"), "The call returned: opened {}")
 }
+
+// In a Job the fake claims under the Job's name, the Job's agent's tasks
+// only, and exits after a claim that finds no work.
+func TestRunnerFakeInAJob(t *testing.T) {
+	claims := make(chan runner.ClaimRequest, 4)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var req runner.ClaimRequest
+		_ = json.NewDecoder(r.Body).Decode(&req)
+		claims <- req
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	defer srv.Close()
+	t.Setenv("CADRE_SERVER", srv.URL)
+	t.Setenv("CADRE_NAMESPACE", "team-a")
+	t.Setenv("CADRE_RUNNER", "coder-01jb")
+	t.Setenv("CADRE_AGENT", "coder")
+	root := newRoot()
+	root.SetOut(io.Discard)
+	root.SetErr(io.Discard)
+	root.SetArgs([]string{"runner", "fake", "--poll", "10ms"})
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	start := time.Now()
+	if err := root.ExecuteContext(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if time.Since(start) > 2*time.Second || len(claims) != 1 {
+		t.Fatalf("%d claims in %s; want one, then exit", len(claims), time.Since(start))
+	}
+	got := <-claims
+	if got.Runner != "coder-01jb" || got.Agent != "coder" || len(got.Namespaces) != 1 || got.Namespaces[0] != "team-a" {
+		t.Fatalf("claim %+v", got)
+	}
+}

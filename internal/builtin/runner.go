@@ -33,6 +33,8 @@ type Secrets interface {
 type Options struct {
 	Runner     string
 	Namespaces []string
+	// Agent, if set, claims only that agent's tasks, as a Job's runner does.
+	Agent string
 	// Labels are sent with every claim, with cadre.dev/runtime: builtin
 	// added.
 	Labels    map[string]string
@@ -41,7 +43,7 @@ type Options struct {
 	Log       *slog.Logger
 
 	Poll     time.Duration // between claims when there is no work; default 1s
-	Once     bool          // stop after one run
+	Once     bool          // stop after one run (one step in step mode), or the first claim that finds no work
 	MaxTurns int           // model responses per run; default 100
 	// RetryFor bounds how long a failing model call or start-up read is
 	// retried before the run fails; default 5 minutes.
@@ -90,7 +92,7 @@ func claims(ctx context.Context, c *client.Client, o Options, mode v1alpha1.RunM
 		labels = map[string]string{}
 	}
 	labels[v1alpha1.LabelRuntime] = string(v1alpha1.RuntimeBuiltin)
-	req := runner.ClaimRequest{Runner: o.Runner, Namespaces: o.Namespaces, Labels: labels}
+	req := runner.ClaimRequest{Runner: o.Runner, Namespaces: o.Namespaces, Labels: labels, Agent: o.Agent}
 	if mode == v1alpha1.RunModeStep {
 		req.Mode = mode
 	}
@@ -124,6 +126,8 @@ func claims(ctx context.Context, c *client.Client, o Options, mode v1alpha1.RunM
 				return nil
 			}
 			continue
+		case claim == nil && o.Once:
+			return nil // no work: a Job's runner exits
 		case claim == nil:
 			backoff = 0
 			if !wait(o.Poll) {
