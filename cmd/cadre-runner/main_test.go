@@ -25,3 +25,18 @@ func TestSecrets(t *testing.T) {
 		t.Fatal("a Secret in another namespace must not be found")
 	}
 }
+
+// A runner started for a Job takes its name, server and namespace from the
+// Job's environment, and works one whole run of the Job's agent.
+func TestFlagDefaults(t *testing.T) {
+	env := func(vars map[string]string) func(string) string { return func(k string) string { return vars[k] } }
+	if d := flagDefaults(env(nil), "host-1"); d != (defaults{server: "http://cadre-server:8080", runner: "host-1", mode: "step"}) {
+		t.Errorf("outside a Job: %+v", d)
+	}
+	d := flagDefaults(env(map[string]string{
+		"CADRE_SERVER": "http://cadre.test", "CADRE_NAMESPACE": "team-a", "CADRE_RUNNER": "coder-01jb", "CADRE_AGENT": "coder",
+	}), "host-1")
+	if d != (defaults{server: "http://cadre.test", runner: "coder-01jb", namespaces: "team-a", mode: "runtime", agent: "coder", once: true}) {
+		t.Errorf("in a Job: %+v", d)
+	}
+}

@@ -155,7 +155,7 @@ func (m *Manager) takeStepIn(ctx context.Context, ns string, req ClaimRequest) (
 		r := cand.Status.Run
 		// Pre-filters only: TakeStep decides on the fresh read.
 		if r == nil || r.Mode != v1alpha1.RunModeStep || (!r.StepFree && !now.After(r.LeaseUntil.Add(m.cfg.Heartbeat))) ||
-			cand.Spec.Assignee == nil || cand.Spec.Assignee.Kind != v1alpha1.AssigneeAgent {
+			cand.Spec.Assignee == nil || cand.Spec.Assignee.Kind != v1alpha1.AssigneeAgent || (req.Agent != "" && cand.Spec.Assignee.Name != req.Agent) {
 			continue
 		}
 		cached, err := m.agents.CachedAgent(ctx, ns, cand.Spec.Assignee.Name)

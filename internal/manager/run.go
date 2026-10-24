@@ -35,6 +35,8 @@ type ClaimRequest struct {
 	// step of a builtin agent's step-mode run, a runtime claim a whole run
 	// of any other.
 	Mode v1alpha1.RunMode
+	// Agent, if set, limits the claim to that agent's tasks.
+	Agent string
 }
 
 // Claimed is a task handed to a runner.
@@ -144,7 +146,7 @@ func (m *Manager) claimIn(ctx context.Context, ns string, req ClaimRequest) (*Cl
 	for _, cand := range todo {
 		// Pre-filters only: the Claim transition decides on a fresh read of
 		// the task, and the agent is read fresh below.
-		if cand.Spec.Assignee == nil || cand.Spec.Assignee.Kind != v1alpha1.AssigneeAgent {
+		if cand.Spec.Assignee == nil || cand.Spec.Assignee.Kind != v1alpha1.AssigneeAgent || (req.Agent != "" && cand.Spec.Assignee.Name != req.Agent) {
 			continue
 		}
 		// The cache may say no; anything else it says (an error, such as

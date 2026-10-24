@@ -88,9 +88,10 @@ type AgentJob struct {
 	RunnerRef string `json:"runnerRef"`
 
 	// Template is the pod a Job runs: the team's runner. Its runner reads
-	// CADRE_SERVER, CADRE_NAMESPACE and CADRE_RUNNER (its name, the Job's)
-	// and the token at /var/run/secrets/cadre/token, which cadre-server
-	// adds, claims once, works the run and exits. The API server checks the
+	// CADRE_SERVER, CADRE_NAMESPACE, CADRE_RUNNER (its name, the Job's),
+	// CADRE_AGENT and the token at /var/run/secrets/cadre/token, which
+	// cadre-server adds, claims once (this agent's tasks only), works the
+	// run and exits; cadre-runner does so by itself. The API server checks the
 	// template when a Job is created; the schema here does not.
 	// +kubebuilder:validation:Schemaless
 	// +kubebuilder:pruning:PreserveUnknownFields
@@ -165,6 +166,7 @@ type AgentSpec struct {
 // +kubebuilder:printcolumn:name="Runtime",type=string,JSONPath=`.spec.runtime.type`
 // +kubebuilder:printcolumn:name="Ready",type=string,JSONPath=`.status.conditions[?(@.type=="Ready")].status`
 // +kubebuilder:printcolumn:name="Age",type=date,JSONPath=`.metadata.creationTimestamp`
+// +kubebuilder:validation:XValidation:rule="!has(self.spec.runtime) || !has(self.spec.runtime.job) || size(self.metadata.name) <= 63",message="an agent with a job has a name of at most 63 characters, as its Jobs carry it in a label"
 type Agent struct {
 	metav1.TypeMeta   `json:",inline"`
 	metav1.ObjectMeta `json:"metadata,omitempty"`

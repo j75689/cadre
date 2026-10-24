@@ -9,15 +9,22 @@ import (
 	"github.com/oklog/ulid/v2"
 	batchv1 "k8s.io/api/batch/v1"
 	corev1 "k8s.io/api/core/v1"
+	"k8s.io/apimachinery/pkg/api/equality"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
 	ctrl "sigs.k8s.io/controller-runtime"
+	"sigs.k8s.io/controller-runtime/pkg/builder"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
+	"sigs.k8s.io/controller-runtime/pkg/event"
 	"sigs.k8s.io/controller-runtime/pkg/handler"
+	"sigs.k8s.io/controller-runtime/pkg/log"
+	"sigs.k8s.io/controller-runtime/pkg/predicate"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
 	v1alpha1 "github.com/j75689/cadre/api/v1alpha1"
+	"github.com/j75689/cadre/internal/runner"
 )
 
 // cadre-server watches Jobs everywhere (an informer cannot be granted per
@@ -62,10 +69,17 @@ type jobReconciler struct {
 	lease     time.Duration
 
 	mu      sync.Mutex
-	claimed map[types.NamespacedName]time.Time // Jobs seen running a run; when they were last seen so
+	claimed map[types.NamespacedName]claim // Jobs seen running a run
 	// created are the Jobs it created that the cache may not show yet,
 	// by agent: they wait for work all the same.
 	created map[types.NamespacedName]map[string]time.Time
+}
+
+// claim is a Job seen running a run: its agent, and when it was last seen
+// so.
+type claim struct {
+	agent string
+	at    time.Time
 }
 
 // createdFor is how long a created Job the cache does not show yet still
@@ -75,8 +89,22 @@ const createdFor = time.Minute
 func (r *jobReconciler) setup(mgr ctrl.Manager) error {
 	return ctrl.NewControllerManagedBy(mgr).For(&v1alpha1.Agent{}).Named("agent-jobs").WithOptions(r.options()).
 		Owns(&batchv1.Job{}).
-		Watches(&v1alpha1.Task{}, handler.EnqueueRequestsFromMapFunc(assignee)).
+		Watches(&v1alpha1.Task{}, handler.EnqueueRequestsFromMapFunc(assignee), builder.WithPredicates(jobRelevant)).
 		Complete(r)
+}
+
+// jobRelevant passes the task changes that change an agent's Jobs: its
+// phase, its assignee, the runner holding its run; not a heartbeat.
+var jobRelevant = predicate.Funcs{UpdateFunc: func(e event.UpdateEvent) bool {
+	o, n := e.ObjectOld.(*v1alpha1.Task), e.ObjectNew.(*v1alpha1.Task)
+	return o.Status.Phase != n.Status.Phase || !equality.Semantic.DeepEqual(o.Spec.Assignee, n.Spec.Assignee) || runnerOf(o) != runnerOf(n)
+}}
+
+func runnerOf(t *v1alpha1.Task) string {
+	if t.Status.Run == nil {
+		return ""
+	}
+	return t.Status.Run.RunnerName
 }
 
 // assignee maps a task to the agent it is assigned to.
@@ -91,7 +119,12 @@ func assignee(_ context.Context, o client.Object) []reconcile.Request {
 func (r *jobReconciler) Reconcile(ctx context.Context, req reconcile.Request) (reconcile.Result, error) {
 	var agent v1alpha1.Agent
 	if err := r.client.Get(ctx, req.NamespacedName, &agent); err != nil {
-		// A deleted agent's Jobs go with it: it owns them.
+		if apierrors.IsNotFound(err) {
+			// A deleted agent's Jobs go with it: it owns them.
+			r.mu.Lock()
+			delete(r.created, req.NamespacedName)
+			r.mu.Unlock()
+		}
 		return reconcile.Result{}, client.IgnoreNotFound(err)
 	}
 	var jobs batchv1.JobList
@@ -148,16 +181,24 @@ func (r *jobReconciler) Reconcile(ctx context.Context, req reconcile.Request) (r
 		}
 	}
 	r.mu.Unlock()
+	r.forgetGone(agent.Namespace, agent.Name, listed)
 	for i := range jobs.Items {
 		j := &jobs.Items[i]
+		key := client.ObjectKeyFromObject(j)
 		if finished(j) {
+			r.mu.Lock()
+			delete(r.claimed, key)
+			r.mu.Unlock()
 			continue
 		}
-		key := client.ObjectKeyFromObject(j)
+		if err := r.markRunning(ctx, j, now); err != nil {
+			return reconcile.Result{}, err
+		}
 		r.mu.Lock()
-		seen, wasClaimed := r.claimed[key]
+		c, wasClaimed := r.claimed[key]
+		seen := c.at
 		if running[j.Name] {
-			r.claimed[key] = now
+			r.claimed[key] = claim{agent: agent.Name, at: now}
 			r.mu.Unlock()
 			continue
 		}
@@ -166,13 +207,13 @@ func (r *jobReconciler) Reconcile(ctx context.Context, req reconcile.Request) (r
 		case wasClaimed && now.Sub(seen) > r.lease:
 			// Its run is over or went to another runner, yet it runs on:
 			// past a lease it is not coming back.
+		case wasClaimed:
+			continue
 		case stuck(j, now, r.lease):
 			// The same, known without memory, so after a restart too: a
 			// started runner claims at once, so a pod that ran a lease and
 			// more without holding a run is broken, whether it lost its run
 			// or never claimed one.
-		case wasClaimed:
-			continue
 		default:
 			pending++ // its runner has not claimed yet
 			continue
@@ -202,6 +243,11 @@ func (r *jobReconciler) Reconcile(ctx context.Context, req reconcile.Request) (r
 				return reconcile.Result{}, err
 			}
 			if err := r.client.Create(ctx, j); err != nil {
+				if apierrors.IsForbidden(err) {
+					// The Agent's Ready condition says so (resolveJob).
+					log.FromContext(ctx).Error(err, "cadre-server may not create Jobs here; bind config/rbac/jobs.yaml", "namespace", agent.Namespace)
+					return reconcile.Result{RequeueAfter: r.resync}, nil
+				}
 				return reconcile.Result{}, err
 			}
 			r.mu.Lock()
@@ -223,10 +269,44 @@ func (r *jobReconciler) remove(ctx context.Context, j *batchv1.Job) error {
 	return client.IgnoreNotFound(r.client.Delete(ctx, j, client.PropagationPolicy(metav1.DeletePropagationBackground)))
 }
 
+// AnnotationRunningSince is when a Job's pod was first seen running (ready):
+// a pod still scheduling or pulling its image is not stuck, however long
+// that takes. It is written once, so it outlives a restart.
+const AnnotationRunningSince = "cadre.dev/running-since"
+
+// markRunning notes when j's pod first runs.
+func (r *jobReconciler) markRunning(ctx context.Context, j *batchv1.Job, now time.Time) error {
+	if _, ok := j.Annotations[AnnotationRunningSince]; ok || j.Status.Ready == nil || *j.Status.Ready == 0 {
+		return nil
+	}
+	orig := j.DeepCopy()
+	if j.Annotations == nil {
+		j.Annotations = map[string]string{}
+	}
+	j.Annotations[AnnotationRunningSince] = now.UTC().Format(time.RFC3339)
+	err := r.client.Patch(ctx, j, client.MergeFrom(orig))
+	if apierrors.IsForbidden(err) {
+		return nil // the Agent's Ready condition says so (resolveJob)
+	}
+	return client.IgnoreNotFound(err)
+}
+
 // stuck reports whether j's pod has run for longer than twice the lease,
 // a lease and its grace, while no run names it.
 func stuck(j *batchv1.Job, now time.Time, lease time.Duration) bool {
-	return j.Status.Active > 0 && j.Status.StartTime != nil && now.Sub(j.Status.StartTime.Time) > 2*lease
+	since, err := time.Parse(time.RFC3339, j.Annotations[AnnotationRunningSince])
+	return err == nil && j.Status.Active > 0 && now.Sub(since) > 2*lease
+}
+
+// forgetGone drops what it remembers of agent's Jobs that are gone.
+func (r *jobReconciler) forgetGone(ns, agent string, listed map[string]bool) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	for key, c := range r.claimed {
+		if key.Namespace == ns && c.agent == agent && !listed[key.Name] {
+			delete(r.claimed, key)
+		}
+	}
 }
 
 func finished(j *batchv1.Job) bool {
@@ -267,9 +347,10 @@ func (r *jobReconciler) newJob(agent *v1alpha1.Agent, spec *v1alpha1.AgentJob, r
 		}}},
 	}}})
 	env := []corev1.EnvVar{
-		{Name: "CADRE_SERVER", Value: r.serverURL},
-		{Name: "CADRE_NAMESPACE", Value: agent.Namespace},
-		{Name: "CADRE_RUNNER", Value: name},
+		{Name: runner.EnvServer, Value: r.serverURL},
+		{Name: runner.EnvNamespace, Value: agent.Namespace},
+		{Name: runner.EnvRunner, Value: name},
+		{Name: runner.EnvAgent, Value: agent.Name},
 	}
 	for i := range pod.Containers {
 		c := &pod.Containers[i]

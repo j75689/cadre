@@ -5,7 +5,9 @@ import (
 	"fmt"
 	"time"
 
+	authorizationv1 "k8s.io/api/authorization/v1"
 	corev1 "k8s.io/api/core/v1"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/types"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/builder"
@@ -208,13 +210,30 @@ func (r *agentReconciler) resolveJob(ctx context.Context, agent *v1alpha1.Agent,
 	}
 	var sa corev1.ServiceAccount
 	switch err := r.secrets.Get(ctx, client.ObjectKey{Namespace: agent.Namespace, Name: rn.Spec.ServiceAccount.Name}, &sa); {
+	case apierrors.IsForbidden(err):
+		return false, "Forbidden", forbidden, nil
 	case client.IgnoreNotFound(err) != nil:
 		return false, "", "", err
 	case err != nil:
 		return false, "ServiceAccountNotFound", fmt.Sprintf("ServiceAccount %s of Runner %s does not exist", rn.Spec.ServiceAccount.Name, job.RunnerRef), nil
 	}
+	for _, verb := range []string{"create", "delete", "patch"} {
+		review := &authorizationv1.SelfSubjectAccessReview{Spec: authorizationv1.SelfSubjectAccessReviewSpec{
+			ResourceAttributes: &authorizationv1.ResourceAttributes{Namespace: agent.Namespace, Verb: verb, Group: "batch", Resource: "jobs"},
+		}}
+		if err := r.client.Create(ctx, review); err != nil {
+			return false, "", "", err
+		}
+		if !review.Status.Allowed {
+			return false, "Forbidden", forbidden, nil
+		}
+	}
 	return true, "Resolved", "", nil
 }
+
+// forbidden says what a namespace whose Jobs cadre-server may not run
+// lacks.
+const forbidden = "cadre-server may not run Jobs in this namespace: bind the ClusterRole in config/rbac/jobs.yaml here"
 
 // noTeam ends a reconcile in a namespace that has no Team (yet): check again
 // later. An error is returned alone, since controller-runtime ignores a

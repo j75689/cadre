@@ -13,8 +13,10 @@ import (
 
 	batchv1 "k8s.io/api/batch/v1"
 	corev1 "k8s.io/api/core/v1"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/client-go/rest"
+	"k8s.io/client-go/util/retry"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	v1alpha1 "github.com/j75689/cadre/api/v1alpha1"
@@ -175,8 +177,11 @@ func eventually(t *testing.T, within time.Duration, cond func() (bool, string)) 
 type kubelet struct {
 	e    *jobEnv
 	plan fakerunner.Plan
-	mu   sync.Mutex
-	seen map[string]bool
+	// pending leaves every pod Pending, as one waiting for a node or its
+	// image: active, never ready, never running its runner.
+	pending bool
+	mu      sync.Mutex
+	seen    map[string]bool
 }
 
 func (k *kubelet) run(ctx context.Context, t *testing.T, agent string) {
@@ -196,9 +201,16 @@ func (k *kubelet) run(ctx context.Context, t *testing.T, agent string) {
 
 func (k *kubelet) pod(ctx context.Context, t *testing.T, j batchv1.Job) {
 	started := metav1.Now()
-	j.Status = batchv1.JobStatus{StartTime: &started, Active: 1}
+	ready := int32(1)
+	if k.pending {
+		ready = 0
+	}
+	j.Status = batchv1.JobStatus{StartTime: &started, Active: 1, Ready: &ready}
 	if err := k.e.c.Status().Update(context.Background(), &j); err != nil && ctx.Err() == nil {
 		t.Errorf("start %s: %v", j.Name, err)
+		return
+	}
+	if k.pending {
 		return
 	}
 	env := map[string]string{}
@@ -206,19 +218,27 @@ func (k *kubelet) pod(ctx context.Context, t *testing.T, j batchv1.Job) {
 		env[v.Name] = v.Value
 	}
 	_, err := fakerunner.Run(ctx, cadreclient.New(env["CADRE_SERVER"], nil), fakerunner.Options{
-		Runner: env["CADRE_RUNNER"], Namespaces: []string{env["CADRE_NAMESPACE"]},
+		Runner: env["CADRE_RUNNER"], Namespaces: []string{env["CADRE_NAMESPACE"]}, Agent: env["CADRE_AGENT"],
 		Labels: map[string]string{"pool": "jobs"}, Plan: k.plan, Once: true, Poll: 50 * time.Millisecond,
 	})
 	if err != nil && ctx.Err() == nil {
 		t.Errorf("pod of %s: %v", j.Name, err)
 		return
 	}
-	now := metav1.Now()
-	j.Status = batchv1.JobStatus{StartTime: &started, CompletionTime: &now, Succeeded: 1, Conditions: []batchv1.JobCondition{
-		{Type: batchv1.JobSuccessCriteriaMet, Status: corev1.ConditionTrue, LastTransitionTime: now},
-		{Type: batchv1.JobComplete, Status: corev1.ConditionTrue, LastTransitionTime: now},
-	}}
-	if err := k.e.c.Status().Update(context.Background(), &j); err != nil && ctx.Err() == nil {
+	// The controller may have annotated the Job meanwhile: complete the
+	// latest, as the Job controller does.
+	err = retry.RetryOnConflict(retry.DefaultRetry, func() error {
+		if err := k.e.c.Get(context.Background(), client.ObjectKeyFromObject(&j), &j); err != nil {
+			return err
+		}
+		now := metav1.Now()
+		j.Status = batchv1.JobStatus{StartTime: &started, CompletionTime: &now, Succeeded: 1, Conditions: []batchv1.JobCondition{
+			{Type: batchv1.JobSuccessCriteriaMet, Status: corev1.ConditionTrue, LastTransitionTime: now},
+			{Type: batchv1.JobComplete, Status: corev1.ConditionTrue, LastTransitionTime: now},
+		}}
+		return k.e.c.Status().Update(context.Background(), &j)
+	})
+	if err != nil && !apierrors.IsNotFound(err) && ctx.Err() == nil {
 		t.Errorf("complete %s: %v", j.Name, err)
 	}
 }
@@ -259,7 +279,7 @@ func TestJobsDoARunnerAgentsWork(t *testing.T) {
 		t.Errorf("the pod runs as %q, want the Runner's ServiceAccount", pod.ServiceAccountName)
 	case pod.RestartPolicy != corev1.RestartPolicyNever || *j.Spec.BackoffLimit != 0 || *j.Spec.ActiveDeadlineSeconds != 3600 || *j.Spec.TTLSecondsAfterFinished != 600:
 		t.Errorf("job spec %+v", j.Spec)
-	case env["CADRE_SERVER"] != e.url || env["CADRE_NAMESPACE"] != jobsNS || env["CADRE_RUNNER"] != j.Name:
+	case env["CADRE_SERVER"] != e.url || env["CADRE_NAMESPACE"] != jobsNS || env["CADRE_RUNNER"] != j.Name || env["CADRE_AGENT"] != "coder":
 		t.Errorf("env %v", env)
 	case vol.Projected == nil || vol.Projected.Sources[0].ServiceAccountToken.Audience != controller.RunnerAudience:
 		t.Errorf("token volume %+v", vol)
@@ -343,6 +363,88 @@ func TestFrozenPodIsDeleted(t *testing.T) {
 		}
 		return true, ""
 	})
+}
+
+// A pod still Pending (waiting for a node, pulling its image) is not
+// stuck, however long that takes: its clock starts when it runs.
+func TestAPendingPodIsLeftToStart(t *testing.T) {
+	e := startJobs(t)
+	agent := jobAgent("slow", 1)
+	e.create(agent)
+	e.ready(agent, metav1.ConditionTrue, "Resolved")
+	e.task(t, "waits", "slow")
+	ctx, stop := context.WithCancel(context.Background())
+	defer stop()
+	k := &kubelet{e: e, pending: true, seen: map[string]bool{}}
+	go k.run(ctx, t, "slow")
+	var first string
+	eventually(t, 10*time.Second, func() (bool, string) {
+		jobs := e.jobs(t, "slow")
+		if len(jobs) == 0 || jobs[0].Status.Active == 0 {
+			return false, "no started Job"
+		}
+		first = jobs[0].Name
+		return true, ""
+	})
+	time.Sleep(3 * e.lease) // past the stuck rule's two leases
+	jobs := e.jobs(t, "slow")
+	if len(jobs) != 1 || jobs[0].Name != first || jobs[0].DeletionTimestamp != nil {
+		t.Fatalf("jobs %v; want the Pending one, kept", names(jobs))
+	}
+}
+
+// Two agents sharing a Runner: each Job's pod claims its own agent's task
+// only.
+func TestAJobWorksItsOwnAgentsTasks(t *testing.T) {
+	e := startJobs(t)
+	for _, name := range []string{"left", "right"} {
+		a := jobAgent(name, 1)
+		e.create(a)
+		e.ready(a, metav1.ConditionTrue, "Resolved")
+	}
+	// The right agent's task is the older: a claim that ignored the agent
+	// would take it first.
+	e.task(t, "for right", "right")
+	e.task(t, "for left", "left")
+	ctx, stop := context.WithCancel(context.Background())
+	defer stop()
+	for _, name := range []string{"left", "right"} {
+		k := &kubelet{e: e, plan: fakerunner.Plan{Work: 100 * time.Millisecond, Outcome: v1alpha1.RunOutcomeDone}, seen: map[string]bool{}}
+		go k.run(ctx, t, name)
+	}
+	byJob := map[string]string{}
+	eventually(t, 30*time.Second, func() (bool, string) {
+		for _, name := range []string{"left", "right"} {
+			for _, j := range e.jobs(t, name) {
+				byJob[j.Name] = name
+			}
+		}
+		tasks, err := e.m.ListTasks(context.Background(), storage.Query{Namespace: jobsNS})
+		if err != nil {
+			return false, err.Error()
+		}
+		for _, tk := range tasks {
+			if tk.Status.Phase != v1alpha1.PhaseDone {
+				return false, tk.Name + " is " + string(tk.Status.Phase)
+			}
+		}
+		return true, ""
+	})
+	tasks, _ := e.m.ListTasks(context.Background(), storage.Query{Namespace: jobsNS})
+	for _, tk := range tasks {
+		runs, err := e.m.Runs(context.Background(), storage.Key{Namespace: tk.Namespace, Name: tk.Name})
+		if err != nil || len(runs) != 1 || byJob[runs[0].RunnerName] != tk.Spec.Assignee.Name {
+			t.Errorf("%s (%s): runs %+v; want one, by a Job of its own agent", tk.Name, tk.Spec.Assignee.Name, runs)
+		}
+	}
+}
+
+func names(jobs []batchv1.Job) []string {
+	out := make([]string, 0, len(jobs))
+	for _, j := range jobs {
+		out = append(out, j.Name)
+	}
+	return out
 }
 
 // An agent that loses its job has its Jobs deleted.

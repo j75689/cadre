@@ -50,6 +50,7 @@ In phase one the API and the Task Manager ship in one binary, `cadre-server`, be
 - Sync CRDs into Cadre's configuration: create an `Agent` and the board can assign to it.
 - Schedules: read `Schedule` resources and create tasks when due.
 - Dispatch: hand claimed tasks to the right execution mode.
+- They run on one cadre-server replica at a time, elected with a Lease (`--leader-elect`, on by default in a cluster): starting a Job is not a conditional write, so two replicas would start Jobs for the same tasks. The Task Manager, the APIs and the MCP endpoint serve on every replica.
 
 ### Execution modes
 

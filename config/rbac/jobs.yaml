@@ -1,5 +1,6 @@
-# cadre-server starts Jobs for runner agents that have runtime.job, and
-# reads the ServiceAccount each Job runs as. It watches Jobs everywhere with
+# cadre-server starts Jobs for runner agents that have runtime.job, notes on
+# each when its pod first runs (an annotation), and reads the
+# ServiceAccount each Job runs as. It watches Jobs everywhere with
 # the cadre-server ClusterRole (role.yaml), which is read-only for them;
 # creating and deleting Jobs, and reading ServiceAccounts, it may do only in
 # the Team namespaces where this ClusterRole is bound.
@@ -20,6 +21,7 @@ rules:
   verbs:
   - create
   - delete
+  - patch
 - apiGroups:
   - ""
   resources:
