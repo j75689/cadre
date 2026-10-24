@@ -14,6 +14,7 @@ import (
 	batchv1 "k8s.io/api/batch/v1"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/client-go/rest"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	v1alpha1 "github.com/j75689/cadre/api/v1alpha1"
@@ -29,11 +30,16 @@ import (
 
 // jobEnv is cadre-server in one process, on envtest: the controllers, the
 // Task Manager and its loops, the runner protocol. Runners are not
-// authenticated; envtest has no kubelet, so kubelet stands in for it.
+// authenticated; envtest has no kubelet, so kubelet stands in for it. The
+// controllers run on a manager of their own, so restart can stop them and
+// start fresh ones, as a cadre-server restart does.
 type jobEnv struct {
 	*env
-	m   *manager.Manager
-	url string
+	m       *manager.Manager
+	url     string
+	cfg     *rest.Config
+	lease   time.Duration
+	stopped func() // stops the running controllers
 }
 
 const jobsNS = "team-jobs"
@@ -41,25 +47,22 @@ const jobsNS = "team-jobs"
 func startJobs(t *testing.T) *jobEnv {
 	t.Helper()
 	cfg := testenv.APIServer(t)
-	mgr, err := controller.NewManager(cfg)
+	serving, err := controller.NewManager(cfg)
 	if err != nil {
 		t.Fatal(err)
 	}
 	mux := http.NewServeMux()
 	srv := httptest.NewServer(mux)
 	t.Cleanup(srv.Close)
-	lease := 2 * time.Second
-	if err := controller.Setup(mgr, controller.Options{Resync: 200 * time.Millisecond, ServerURL: srv.URL, Lease: lease}, controller.SkipNameValidation()); err != nil {
-		t.Fatal(err)
-	}
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan error, 1)
-	go func() { done <- mgr.Start(ctx) }()
-	store, err := kubernetes.Open(ctx, kubernetes.Config{REST: cfg, S3: testenv.S3(t), Cache: mgr.GetCache()})
+	go func() { done <- serving.Start(ctx) }()
+	store, err := kubernetes.Open(ctx, kubernetes.Config{REST: cfg, S3: testenv.S3(t), Cache: serving.GetCache()})
 	if err != nil {
 		t.Fatal(err)
 	}
-	m := manager.New(store, manager.Config{Agents: controller.Agents(mgr), Lease: lease, Heartbeat: 500 * time.Millisecond})
+	lease := 2 * time.Second
+	m := manager.New(store, manager.Config{Agents: controller.Agents(serving), Lease: lease, Heartbeat: 500 * time.Millisecond})
 	log := slog.New(slog.NewTextHandler(io.Discard, nil))
 	runner.NewServer(m, log, srv.URL).Register(mux)
 	loops := make(chan struct{})
@@ -67,7 +70,14 @@ func startJobs(t *testing.T) *jobEnv {
 		defer close(loops)
 		m.Run(ctx, manager.LoopConfig{Reclaim: 200 * time.Millisecond, Dispatch: 200 * time.Millisecond}, log)
 	}()
+	c, err := client.New(cfg, client.Options{Scheme: serving.GetScheme()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	e := &jobEnv{env: &env{t: t, c: c}, m: m, url: srv.URL, cfg: cfg, lease: lease}
+	e.restart()
 	t.Cleanup(func() {
+		e.stopped()
 		cancel()
 		<-loops
 		_ = store.Close()
@@ -75,11 +85,6 @@ func startJobs(t *testing.T) *jobEnv {
 			t.Errorf("manager: %v", err)
 		}
 	})
-	c, err := client.New(cfg, client.Options{Scheme: mgr.GetScheme()})
-	if err != nil {
-		t.Fatal(err)
-	}
-	e := &jobEnv{env: &env{t: t, c: c}, m: m, url: srv.URL}
 	e.create(
 		&corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: jobsNS}},
 		&v1alpha1.Team{ObjectMeta: meta2(jobsNS, v1alpha1.TeamName), Spec: v1alpha1.TeamSpec{MaxConcurrentRuns: 3}},
@@ -92,6 +97,31 @@ func startJobs(t *testing.T) *jobEnv {
 		}},
 	)
 	return e
+}
+
+// restart stops the controllers, if they run, and starts fresh ones, which
+// remember nothing.
+func (e *jobEnv) restart() {
+	e.t.Helper()
+	if e.stopped != nil {
+		e.stopped()
+	}
+	mgr, err := controller.NewManager(e.cfg)
+	if err != nil {
+		e.t.Fatal(err)
+	}
+	if err := controller.Setup(mgr, controller.Options{Resync: 200 * time.Millisecond, ServerURL: e.url, Lease: e.lease}, controller.SkipNameValidation()); err != nil {
+		e.t.Fatal(err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	go func() { done <- mgr.Start(ctx) }()
+	e.stopped = func() {
+		cancel()
+		if err := <-done; err != nil {
+			e.t.Errorf("controllers: %v", err)
+		}
+	}
 }
 
 // jobAgent is a runner agent whose work runs in Jobs.
@@ -165,6 +195,12 @@ func (k *kubelet) run(ctx context.Context, t *testing.T, agent string) {
 }
 
 func (k *kubelet) pod(ctx context.Context, t *testing.T, j batchv1.Job) {
+	started := metav1.Now()
+	j.Status = batchv1.JobStatus{StartTime: &started, Active: 1}
+	if err := k.e.c.Status().Update(context.Background(), &j); err != nil && ctx.Err() == nil {
+		t.Errorf("start %s: %v", j.Name, err)
+		return
+	}
 	env := map[string]string{}
 	for _, v := range j.Spec.Template.Spec.Containers[0].Env {
 		env[v.Name] = v.Value
@@ -178,7 +214,7 @@ func (k *kubelet) pod(ctx context.Context, t *testing.T, j batchv1.Job) {
 		return
 	}
 	now := metav1.Now()
-	j.Status = batchv1.JobStatus{StartTime: &now, CompletionTime: &now, Succeeded: 1, Conditions: []batchv1.JobCondition{
+	j.Status = batchv1.JobStatus{StartTime: &started, CompletionTime: &now, Succeeded: 1, Conditions: []batchv1.JobCondition{
 		{Type: batchv1.JobSuccessCriteriaMet, Status: corev1.ConditionTrue, LastTransitionTime: now},
 		{Type: batchv1.JobComplete, Status: corev1.ConditionTrue, LastTransitionTime: now},
 	}}
@@ -264,42 +300,60 @@ func TestJobsDoARunnerAgentsWork(t *testing.T) {
 	}
 }
 
-// An agent that loses its job has its Jobs deleted, and a Job whose run is
-// no longer its own is deleted a lease later.
-func TestJobsAreCleanedUp(t *testing.T) {
+// A pod that freezes mid-run has its run reclaimed and its Job deleted,
+// even when cadre-server restarted in between and forgot the Job claimed.
+func TestFrozenPodIsDeleted(t *testing.T) {
 	e := startJobs(t)
 	agent := jobAgent("coder", 1)
 	e.create(agent)
 	e.ready(agent, metav1.ConditionTrue, "Resolved")
 	e.task(t, "stuck", "coder")
 
-	// A pod that freezes mid-run: its run is reclaimed, its Job lives on.
 	ctx, stop := context.WithCancel(context.Background())
 	defer stop()
 	k := &kubelet{e: e, plan: fakerunner.Plan{Work: time.Minute, Outcome: v1alpha1.RunOutcomeDone, Stall: time.Minute}, seen: map[string]bool{}}
 	go k.run(ctx, t, "coder")
-	var first string
+	var frozen string
 	eventually(t, 10*time.Second, func() (bool, string) {
-		jobs := e.jobs(t, "coder")
-		if len(jobs) == 0 {
-			return false, "no Job"
+		tasks, err := e.m.ListTasks(context.Background(), storage.Query{Namespace: jobsNS})
+		if err != nil || len(tasks) != 1 || tasks[0].Status.Run == nil {
+			return false, "the task is not running"
 		}
-		first = jobs[0].Name
-		return true, ""
+		frozen = tasks[0].Status.Run.RunnerName
+		return frozen != "", ""
 	})
+	// cadre-server is down while the run is reclaimed, and comes back
+	// knowing nothing of the Job's claim.
+	e.stopped()
+	e.stopped = func() {}
+	eventually(t, 15*time.Second, func() (bool, string) {
+		tasks, err := e.m.ListTasks(context.Background(), storage.Query{Namespace: jobsNS})
+		if err != nil || len(tasks) != 1 {
+			return false, "no task"
+		}
+		r := tasks[0].Status.Run
+		return r == nil || r.RunnerName != frozen, "the frozen pod still holds the run"
+	})
+	e.restart()
 	eventually(t, 30*time.Second, func() (bool, string) {
 		for _, j := range e.jobs(t, "coder") {
-			if j.Name == first && j.DeletionTimestamp == nil {
-				return false, "the stuck Job is still there"
+			if j.Name == frozen && j.DeletionTimestamp == nil {
+				return false, "the frozen Job is still there"
 			}
 		}
 		return true, ""
 	})
-	stop()
+}
 
-	// Losing the job block deletes the Jobs still waiting.
+// An agent that loses its job has its Jobs deleted.
+func TestJobsGoWithTheJobBlock(t *testing.T) {
+	e := startJobs(t)
+	agent := jobAgent("coder", 1)
+	e.create(agent)
+	e.ready(agent, metav1.ConditionTrue, "Resolved")
+	e.task(t, "never run", "coder")
 	eventually(t, 10*time.Second, func() (bool, string) {
-		return len(e.jobs(t, "coder")) > 0, "no Job for the reclaimed task"
+		return len(e.jobs(t, "coder")) > 0, "no Job"
 	})
 	var a v1alpha1.Agent
 	if err := e.c.Get(context.Background(), client.ObjectKeyFromObject(agent), &a); err != nil {

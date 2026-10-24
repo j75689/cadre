@@ -52,9 +52,10 @@ const (
 // still runs a lease after the run is no longer its own.
 //
 // Which Jobs claimed a run it learns from the Running tasks, whose
-// status.run.runnerName is the Job's name; it remembers them in memory, so
-// a restart forgets a Job orphaned before it, which the Job's active
-// deadline still ends.
+// status.run.runnerName is the Job's name, and remembers for the moment a
+// run ends. A Job whose pod has run twice the lease with no run naming it
+// is deleted whether it is remembered or not, so a restart, which forgets,
+// leaves no stuck Job counted as waiting for work.
 type jobReconciler struct {
 	base
 	serverURL string
@@ -161,16 +162,23 @@ func (r *jobReconciler) Reconcile(ctx context.Context, req reconcile.Request) (r
 			continue
 		}
 		r.mu.Unlock()
-		if !wasClaimed {
+		switch {
+		case wasClaimed && now.Sub(seen) > r.lease:
+			// Its run is over or went to another runner, yet it runs on:
+			// past a lease it is not coming back.
+		case stuck(j, now, r.lease):
+			// The same, known without memory, so after a restart too: a
+			// started runner claims at once, so a pod that ran a lease and
+			// more without holding a run is broken, whether it lost its run
+			// or never claimed one.
+		case wasClaimed:
+			continue
+		default:
 			pending++ // its runner has not claimed yet
 			continue
 		}
-		// Its run is over or went to another runner, yet it runs on:
-		// past a lease it is not coming back.
-		if now.Sub(seen) > r.lease {
-			if err := r.remove(ctx, j); err != nil {
-				return reconcile.Result{}, err
-			}
+		if err := r.remove(ctx, j); err != nil {
+			return reconcile.Result{}, err
 		}
 	}
 
@@ -213,6 +221,12 @@ func (r *jobReconciler) remove(ctx context.Context, j *batchv1.Job) error {
 	delete(r.claimed, client.ObjectKeyFromObject(j))
 	r.mu.Unlock()
 	return client.IgnoreNotFound(r.client.Delete(ctx, j, client.PropagationPolicy(metav1.DeletePropagationBackground)))
+}
+
+// stuck reports whether j's pod has run for longer than twice the lease,
+// a lease and its grace, while no run names it.
+func stuck(j *batchv1.Job, now time.Time, lease time.Duration) bool {
+	return j.Status.Active > 0 && j.Status.StartTime != nil && now.Sub(j.Status.StartTime.Time) > 2*lease
 }
 
 func finished(j *batchv1.Job) bool {
