@@ -57,6 +57,14 @@ type recorder struct {
 	runnerErr []string                            // errors a runner gave up on while the chaos ran
 }
 
+// runs is how many runs were observed so far. Runners in Job pods go on
+// observing into quiescence, so it takes the lock.
+func (r *recorder) runs() int {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return len(r.obs)
+}
+
 func newRecorder() *recorder {
 	return &recorder{
 		obs: map[string][]fakerunner.Observation{}, cancelled: map[string]bool{},
@@ -248,7 +256,7 @@ func TestChaos(t *testing.T) {
 	spawn(func() { sampleSemaphore(chaos, admin, rec) })
 
 	wg.Wait()
-	t.Logf("chaos over: %d tasks created, %d runs observed, %d proxied requests", created, len(rec.obs), px.count.Load())
+	t.Logf("chaos over: %d tasks created, %d runs observed, %d proxied requests", created, rec.runs(), px.count.Load())
 
 	// Quiesce with both servers up: every lease expires and is reclaimed,
 	// every outbox drains, every task is numbered, the Team counts settle.
