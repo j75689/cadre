@@ -261,6 +261,9 @@ func TestEndingsThatNeedAHuman(t *testing.T) {
 		{"context full", &scripted{steps: []step{func(context.Context, []builtin.ToolResult) (*builtin.Reply, error) {
 			return &builtin.Reply{Stop: builtin.StopContextFull}, nil
 		}}}, builtin.Options{}, v1alpha1.PhaseReview, "context window is full"},
+		{"paused", &scripted{steps: []step{func(context.Context, []builtin.ToolResult) (*builtin.Reply, error) {
+			return &builtin.Reply{Stop: builtin.StopPaused}, nil
+		}}}, builtin.Options{}, v1alpha1.PhaseReview, "paused too often"},
 		{"permanent error", &scripted{steps: []step{permanent}}, builtin.Options{}, v1alpha1.PhaseFailed, "The model call failed; check the agent's ModelProvider"},
 		{"max turns", &scripted{steps: []step{calls(post), calls(post), calls(post)}}, builtin.Options{MaxTurns: 2}, v1alpha1.PhaseReview, "after 2 model turns"},
 		{"context ceiling", &scripted{steps: []step{calls(post), say("never")}, limit: 1200}, builtin.Options{}, v1alpha1.PhaseReview, "1000 of the model's 1200 context tokens"},

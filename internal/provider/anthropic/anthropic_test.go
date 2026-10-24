@@ -7,6 +7,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"reflect"
 	"strings"
 	"sync"
 	"testing"
@@ -26,6 +27,7 @@ var ctx = context.Background()
 type api struct {
 	*httptest.Server
 	mu       sync.Mutex
+	noModels bool // answer the Models API with 404, as a gateway might
 	requests []map[string]any
 	headers  []http.Header
 	replies  []func(w http.ResponseWriter, body map[string]any)
@@ -36,6 +38,10 @@ func newAPI(t *testing.T, replies ...func(w http.ResponseWriter, body map[string
 	a := &api{replies: replies}
 	a.Server = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Method == http.MethodGet && strings.HasPrefix(r.URL.Path, "/v1/models/") {
+			if a.noModels {
+				http.NotFound(w, r)
+				return
+			}
 			w.Header().Set("Content-Type", "application/json")
 			_, _ = fmt.Fprintf(w, `{"id":%q,"type":"model","display_name":"x","created_at":"2026-01-01T00:00:00Z","max_input_tokens":1000000,"max_tokens":128000}`, strings.TrimPrefix(r.URL.Path, "/v1/models/"))
 			return
@@ -96,7 +102,7 @@ func setup(base string) builtin.Setup {
 		System:     "be careful",
 		Prompt:     func(int64) string { return "# Task #1" },
 		Tools: []builtin.Tool{
-			{Name: "thread_post", Description: "post", InputSchema: json.RawMessage(`{"type":"object","properties":{"body":{"type":"string"}},"required":["body"],"additionalProperties":false}`)},
+			{Name: "thread_post", Description: "post", InputSchema: json.RawMessage(`{"type":"object","properties":{"body":{"type":"string"},"kind":{"enum":["note","summary"]},"ref":{"$ref":"#/$defs/ref"}},"required":["body"],"additionalProperties":false,"$defs":{"ref":{"type":"string","minLength":1}}}`)},
 		},
 	}
 }
@@ -141,13 +147,16 @@ func TestAConversation(t *testing.T) {
 	}
 	thinking, _ := first["thinking"].(map[string]any)
 	output, _ := first["output_config"].(map[string]any)
-	if thinking["type"] != "adaptive" || output["effort"] != "xhigh" || first["fallbacks"] != "default" || first["cache_control"] == nil || first["max_tokens"] != float64(64000) {
+	if thinking["type"] != "adaptive" || output["effort"] != "xhigh" || first["fallbacks"] != "default" || first["cache_control"] == nil || first["max_tokens"] != float64(128000) {
 		t.Fatalf("request: %v", first)
 	}
 	tool := first["tools"].([]any)[0].(map[string]any)
 	schema := tool["input_schema"].(map[string]any)
-	if tool["name"] != "thread_post" || schema["type"] != "object" || schema["additionalProperties"] != false || schema["required"].([]any)[0] != "body" {
-		t.Fatalf("tool: %v", tool)
+	// The schema goes out whole: every keyword the tool's server wrote.
+	var want map[string]any
+	_ = json.Unmarshal(setup("").Tools[0].InputSchema, &want)
+	if tool["name"] != "thread_post" || !reflect.DeepEqual(schema, want) {
+		t.Fatalf("tool schema %v, want %v", schema, want)
 	}
 	// The history goes back append-only: the thinking block with its
 	// signature unchanged, then one user message with the result.
@@ -232,5 +241,49 @@ func TestRefusal(t *testing.T) {
 	r, err := conv.Turn(ctx)
 	if err != nil || r.Stop != builtin.StopRefusal || r.RefusalCategory != "cyber" {
 		t.Fatalf("refusal: %+v, %v", r, err)
+	}
+}
+
+// Only the first request probes optional features: later, a 400 that
+// mentions one is an ordinary error, and the request keeps its shape.
+func TestFeaturesAreProbedOnTheFirstRequestOnly(t *testing.T) {
+	a := newAPI(t, sse("end_turn", "ok"), fail(400, "thinking blocks cannot be modified"))
+	conv, _ := (&anthropic.Provider{Endpoint: a.URL}).Start(ctx, setup(""))
+	if _, err := conv.Turn(ctx); err != nil {
+		t.Fatal(err)
+	}
+	conv.AddResults(nil)
+	if _, err := conv.Turn(ctx); !builtin.IsPermanent(err) {
+		t.Fatalf("a later 400: %v, want a permanent error", err)
+	}
+	if len(a.requests) != 2 {
+		t.Fatalf("%d requests, want no retry without thinking", len(a.requests))
+	}
+}
+
+// Without the Models API the output cap falls back to 64000.
+func TestLimitsWithoutTheModelsAPI(t *testing.T) {
+	a := newAPI(t, sse("end_turn", "ok"))
+	a.noModels = true
+	conv, _ := (&anthropic.Provider{Endpoint: a.URL}).Start(ctx, setup(""))
+	if _, err := conv.Turn(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if conv.ContextLimit() != 0 || a.requests[0]["max_tokens"] != float64(64000) {
+		t.Fatalf("limit %d, max_tokens %v", conv.ContextLimit(), a.requests[0]["max_tokens"])
+	}
+}
+
+// A turn the API keeps pausing is resumed five times, then ends paused.
+func TestPausedTurns(t *testing.T) {
+	var replies []func(http.ResponseWriter, map[string]any)
+	for range 6 {
+		replies = append(replies, sse("pause_turn", "working"))
+	}
+	a := newAPI(t, replies...)
+	conv, _ := (&anthropic.Provider{Endpoint: a.URL}).Start(ctx, setup(""))
+	r, err := conv.Turn(ctx)
+	if err != nil || r.Stop != builtin.StopPaused || len(a.requests) != 6 {
+		t.Fatalf("reply %+v, %v after %d requests", r, err, len(a.requests))
 	}
 }

@@ -66,6 +66,9 @@ const (
 	StopRefusal   Stop = "refusal"
 	// StopContextFull is the model's context window filling up.
 	StopContextFull Stop = "context_full"
+	// StopPaused is a turn the API kept pausing, past what the provider
+	// resumes.
+	StopPaused Stop = "paused"
 )
 
 // Reply is one model response.

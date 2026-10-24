@@ -25,7 +25,8 @@ import (
 
 // Request settings.
 const (
-	// maxTokens leaves the model room for a long turn; responses are
+	// maxTokens is the output cap when the Models API cannot say the
+	// model's own; it leaves room for a long turn, and responses are
 	// streamed, so a long one cannot hit an HTTP timeout.
 	maxTokens   = 64000
 	defaultBase = "https://api.anthropic.com"
@@ -102,7 +103,7 @@ func (p *Provider) Start(ctx context.Context, s builtin.Setup) (builtin.Conversa
 		// gateway.
 		fallbacks: s.Model.Type == v1alpha1.ProviderAnthropic && s.Model.BaseURL == "",
 	}
-	c.limit = c.contextWindow(ctx)
+	c.limit, c.params.MaxTokens = c.modelLimits(ctx)
 	c.params.Messages = []sdk.BetaMessageParam{sdk.NewBetaUserMessage(sdk.NewBetaTextBlock(s.Prompt(c.limit)))}
 	return c, nil
 }
@@ -137,23 +138,34 @@ type conversation struct {
 	model  string
 	params sdk.BetaMessageNewParams
 	limit  int64
-	// Optional request features. A model that rejects one gets the
-	// request again without it, and the run remembers.
+	// Optional request features. A model that rejects one on the first
+	// request gets it again without it, and the run remembers. Later
+	// requests never change shape: the conversation carries what the
+	// first one started.
 	effort              sdk.BetaOutputConfigEffort // "" once rejected
 	thinking, fallbacks bool
+	started             bool // a request has been answered
 }
 
-// contextWindow reads the model's window from the Models API, once per
-// run; 0 when it cannot be read (a gateway without the Models API, say).
-func (c *conversation) contextWindow(ctx context.Context) int64 {
+// modelLimits reads the model's context window and output cap from the
+// Models API, once per run. Unreadable (a gateway without the Models API,
+// say), the window is 0 and the cap maxTokens.
+func (c *conversation) modelLimits(ctx context.Context) (window, output int64) {
 	info, err := c.client.Models.Get(ctx, c.model, sdk.ModelGetParams{})
 	if err != nil {
-		c.log.Warn("read the model's context window", "model", c.model, "err", classify(err))
-		return 0
+		c.log.Warn("read the model's limits", "model", c.model, "err", classify(err))
+		return 0, maxTokens
 	}
-	return info.MaxInputTokens
+	output = info.MaxTokens
+	if output <= 0 {
+		output = maxTokens
+	}
+	return info.MaxInputTokens, output
 }
 
+// ContextLimit is the model's window, 0 when the Models API could not be
+// read. The loop then has no ceiling of its own, and the API's
+// model_context_window_exceeded stop (StopContextFull) ends the run instead.
 func (c *conversation) ContextLimit() int64 { return c.limit }
 
 // maxPauses bounds how often one turn is continued after the API paused it.
@@ -166,21 +178,29 @@ func (c *conversation) Turn(ctx context.Context) (*builtin.Reply, error) {
 			return nil, err
 		}
 		c.params.Messages = append(c.params.Messages, msg.ToParam())
-		if msg.StopReason == sdk.BetaStopReasonPauseTurn && pauses < maxPauses {
-			pauses++
-			continue // the API paused a long turn; sending it back resumes it
+		if msg.StopReason != sdk.BetaStopReasonPauseTurn {
+			return reply(msg), nil
 		}
-		return reply(msg), nil
+		if pauses++; pauses > maxPauses {
+			r := reply(msg)
+			r.Stop = builtin.StopPaused
+			return r, nil
+		}
+		// The API paused a long turn; sending it back resumes it.
 	}
 }
 
-// send makes one streamed request, dropping an optional feature the model
-// rejects and trying once more without it.
+// send makes one streamed request. On the run's first request it drops an
+// optional feature the model rejects and tries again without it.
 func (c *conversation) send(ctx context.Context) (*sdk.BetaMessage, error) {
 	for {
 		msg, err := c.stream(ctx)
 		if err == nil {
+			c.started = true
 			return msg, nil
+		}
+		if c.started {
+			return nil, classify(err)
 		}
 		switch feature := rejected(err); {
 		case feature == "thinking" && c.thinking:
