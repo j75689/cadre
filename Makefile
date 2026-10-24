@@ -21,7 +21,7 @@ define go-install
 	mkdir -p $(TOOLS); mv $$tmp/$$(basename $(2)) $(1); rm -rf $$tmp
 endef
 
-.PHONY: all build test smoke chaos fmt vet lint check tidy clean generate manifests verify-generated tools
+.PHONY: all build test smoke chaos fmt vet lint check tidy clean generate manifests verify-generated verify-tidy tools
 
 all: build
 
@@ -64,7 +64,10 @@ verify-generated: generate manifests ## Fail if generated files are out of date
 tidy:
 	go mod tidy
 
-check: fmt vet lint verify-generated test ## Everything CI runs
+verify-tidy: ## Fail if go.mod or go.sum is not tidy
+	go mod tidy && git diff --exit-code go.mod go.sum
+
+check: verify-tidy fmt vet lint verify-generated test ## Everything CI runs
 
 tools: $(CONTROLLER_GEN) $(GOLANGCI_LINT) $(ENVTEST) ## Install pinned tools into bin/tools
 
