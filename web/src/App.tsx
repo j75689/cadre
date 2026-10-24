@@ -11,6 +11,12 @@ function TeamBoard() {
   return <Board key={ns} />;
 }
 
+// Likewise a task page belongs to one task.
+function OneTask() {
+  const { ns = "", name = "" } = useParams();
+  return <TaskPage key={`${ns}/${name}`} />;
+}
+
 function Layout() {
   return (
     <>
@@ -32,7 +38,7 @@ export function App() {
       <Route element={<Layout />}>
         <Route index element={<Teams />} />
         <Route path="t/:ns" element={<TeamBoard />} />
-        <Route path="t/:ns/tasks/:name" element={<TaskPage />} />
+        <Route path="t/:ns/tasks/:name" element={<OneTask />} />
         <Route path="*" element={<main><p>Not found. <Link to="/">Teams</Link></p></main>} />
       </Route>
     </Routes>

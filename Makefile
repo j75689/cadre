@@ -43,7 +43,7 @@ ui-check: web/node_modules/.package-lock.json ## Typecheck, lint and unit-test t
 	cd web && npm run typecheck && npm run lint && npm test
 
 image: ## Build one command's image: make image CMD=cadre-server [TAG=dev]
-	@test -n "$(CMD)" || { echo "set CMD to one of: $(CMDS)"; exit 1; }
+	@case " $(CMDS) " in *" $(CMD) "*) [ -n "$(CMD)" ] ;; *) false ;; esac || { echo "set CMD to one of: $(CMDS)"; exit 1; }
 	DOCKER_BUILDKIT=1 docker build --build-arg CMD=$(CMD) --build-arg VERSION=$(TAG) -t $(REGISTRY)/$(CMD):$(TAG) .
 
 images: ## Build every command's image [TAG=dev]

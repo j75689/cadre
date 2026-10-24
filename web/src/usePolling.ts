@@ -15,7 +15,11 @@ export function usePolling(load: (signal: AbortSignal) => Promise<void>, interva
     const tick = async () => {
       clearTimeout(timer);
       controller?.abort();
-      if (document.visibilityState === "hidden") return;
+      if (document.visibilityState === "hidden") {
+        // The aborted tick is no longer current: it must not schedule.
+        controller = undefined;
+        return;
+      }
       const mine = new AbortController();
       controller = mine;
       try {

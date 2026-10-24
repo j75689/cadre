@@ -24,7 +24,7 @@ func TestWebHandler(t *testing.T) {
 		"assets/index-AbC1.js": {Data: []byte("console.log(1)")},
 		"favicon.svg":          {Data: []byte("<svg/>")},
 	})
-	for _, path := range []string{"/", "/t/x", "/t/x/tasks/y", "/index.html", "/assets/missing.js", "/.gitkeep"} {
+	for _, path := range []string{"/", "/t/x", "/t/x/tasks/y", "/index.html", "/.gitkeep"} {
 		w := get(t, h, http.MethodGet, path)
 		if w.Code != http.StatusOK || !strings.Contains(w.Body.String(), "<title>Cadre</title>") || w.Header().Get("Cache-Control") != "no-cache" {
 			t.Errorf("%s: %d %q, Cache-Control %q; want index.html, no-cache", path, w.Code, w.Body.String(), w.Header().Get("Cache-Control"))
@@ -33,6 +33,10 @@ func TestWebHandler(t *testing.T) {
 	w := get(t, h, http.MethodGet, "/assets/index-AbC1.js")
 	if w.Code != http.StatusOK || w.Body.String() != "console.log(1)" || !strings.Contains(w.Header().Get("Cache-Control"), "max-age=31536000") {
 		t.Errorf("hashed asset: %d %q, Cache-Control %q", w.Code, w.Body.String(), w.Header().Get("Cache-Control"))
+	}
+	// An asset of an older build is gone, not the app.
+	if w := get(t, h, http.MethodGet, "/assets/index-OLD.js"); w.Code != http.StatusNotFound {
+		t.Errorf("a missing asset: %d %q, want 404", w.Code, w.Body.String())
 	}
 	if w := get(t, h, http.MethodGet, "/favicon.svg"); w.Code != http.StatusOK || w.Header().Get("Cache-Control") != "no-cache" {
 		t.Errorf("an unhashed file: %d, Cache-Control %q", w.Code, w.Header().Get("Cache-Control"))

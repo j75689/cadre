@@ -36,6 +36,25 @@ describe("usePolling", () => {
     expect(starts.map((s) => s - t0)).toEqual([0, 50, 1150, 2250]);
   });
 
+  it("schedules nothing from a tick aborted by hiding the tab", async () => {
+    const t0 = Date.now();
+    const starts: number[] = [];
+    let visibility: DocumentVisibilityState = "visible";
+    vi.spyOn(document, "visibilityState", "get").mockImplementation(() => visibility);
+    renderHook(() => usePolling(slowLoad(starts), 1000, []));
+    await vi.advanceTimersByTimeAsync(50);
+    visibility = "hidden";
+    document.dispatchEvent(new Event("visibilitychange"));
+    await vi.advanceTimersByTimeAsync(3000);
+    expect(starts).toHaveLength(1);
+    // Shown again: polling resumes from then.
+    visibility = "visible";
+    document.dispatchEvent(new Event("visibilitychange"));
+    await vi.advanceTimersByTimeAsync(1150);
+    expect(starts.map((s) => s - t0)).toEqual([0, 3050, 4150]);
+    vi.restoreAllMocks();
+  });
+
   it("stops when unmounted", async () => {
     const starts: number[] = [];
     const { unmount } = renderHook(() => usePolling(slowLoad(starts), 1000, []));

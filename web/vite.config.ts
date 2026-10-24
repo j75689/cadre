@@ -4,7 +4,7 @@ import react from "@vitejs/plugin-react";
 import type { Plugin } from "vite";
 import { defineConfig } from "vitest/config";
 
-const outDir = resolve(__dirname, "../internal/web/dist");
+const outDir = resolve(import.meta.dirname, "../internal/web/dist");
 
 // The build empties dist; .gitkeep goes back so a checkout keeps the
 // directory go:embed needs.

@@ -40,4 +40,22 @@ describe("App", () => {
     expect(screen.queryByText("A's task")).toBeNull();
     expect(screen.getByText("Loading…")).toBeTruthy();
   });
+
+  it("shows another task's page fresh, not the last one's", async () => {
+    localStorage.setItem("cadre.identity", "dana");
+    // Task x answers; task y never does.
+    vi.stubGlobal("fetch", (url: string) => {
+      if (url.endsWith("/tasks/y")) return new Promise(() => {});
+      return Promise.resolve(new Response(JSON.stringify({ metadata: { name: "x", namespace: "a" }, spec: { title: "Task x" }, status: { phase: "Todo" } })));
+    });
+    render(
+      <MemoryRouter initialEntries={["/t/a/tasks/x"]}>
+        <Navigator />
+        <App />
+      </MemoryRouter>,
+    );
+    expect(await screen.findByText("Task x")).toBeTruthy();
+    act(() => nav.go("/t/a/tasks/y"));
+    expect(screen.queryByText("Task x")).toBeNull();
+  });
 });

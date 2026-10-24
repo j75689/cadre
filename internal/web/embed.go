@@ -77,7 +77,15 @@ func FS(root fs.FS) http.Handler {
 		}
 		name := strings.TrimPrefix(path.Clean(r.URL.Path), "/")
 		if name != "" && name != "index.html" && name != ".gitkeep" {
-			if info, err := fs.Stat(root, name); err == nil && !info.IsDir() {
+			info, err := fs.Stat(root, name)
+			if (err != nil || info.IsDir()) && strings.HasPrefix(name, "assets/") {
+				// An asset of another build, asked for by a page loaded
+				// before a redeploy: index.html in its place would be
+				// refused as a script.
+				http.NotFound(w, r)
+				return
+			}
+			if err == nil && !info.IsDir() {
 				// Vite names what it emits under assets/ after its
 				// content: a file there never changes.
 				if strings.HasPrefix(name, "assets/") {
