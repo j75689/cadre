@@ -30,13 +30,23 @@ jobs:
       - name: Verify go.mod is tidy
         run: go mod tidy && git diff --exit-code go.mod go.sum
       - name: Format
-        run: test -z "$(gofmt -l .)" || { gofmt -l .; exit 1; }
+        run: make fmt
       - name: Vet
         run: go vet ./...
       - name: Verify generated code and CRDs
         run: make verify-generated
       - name: Lint
         run: make lint
+      - uses: actions/setup-node@v4
+        with:
+          node-version-file: web/.nvmrc
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+      - name: Web UI checks
+        run: make ui-check
+      # The embed tests run against a real build.
+      - name: Build the web UI
+        run: make ui
       # The kubernetes driver's conformance suite runs against a real
       # S3-compatible store that enforces If-None-Match. Service containers
       # cannot pass arguments, so the server is started here.

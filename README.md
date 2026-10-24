@@ -42,6 +42,10 @@ Not a SaaS. Not a workflow engine. Not an LLM gateway. Not a sandbox. Cadre inte
 | [docs/execution.md](docs/execution.md) | state transitions, step and runtime modes, runner protocol, per-run MCP, fencing and idempotency |
 | [docs/storage.md](docs/storage.md) | the three operations, the kubernetes and postgres drivers, conformance tests |
 
+## Web UI
+
+cadre-server serves the board at `/`: the web UI is built into it (`make ui` before `make build`; the image carries it). Developing it: [web/README.md](web/README.md).
+
 ## Images
 
 `ghcr.io/j75689/cadre-server`, `ghcr.io/j75689/cadre-runner` and `ghcr.io/j75689/cadre`, for linux/amd64 and linux/arm64: `main` follows the main branch, `vX.Y.Z` each release. See [Installation](docs/architecture.md#installation).

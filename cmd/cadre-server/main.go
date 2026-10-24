@@ -31,6 +31,7 @@ import (
 	"github.com/j75689/cadre/internal/mcp"
 	"github.com/j75689/cadre/internal/runner"
 	"github.com/j75689/cadre/internal/storage/kubernetes"
+	"github.com/j75689/cadre/internal/web"
 )
 
 // version is set at build time with -ldflags "-X main.version=...".
@@ -162,6 +163,8 @@ func run() error {
 		}
 		w.WriteHeader(http.StatusOK)
 	})
+	// The board UI takes every path the routes above do not.
+	mux.Handle("/", web.Handler())
 
 	srv := &http.Server{
 		Addr:              *listen,
