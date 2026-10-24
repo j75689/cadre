@@ -19,7 +19,7 @@ import (
 
 	v1alpha1 "github.com/j75689/cadre/api/v1alpha1"
 	"github.com/j75689/cadre/internal/builtin"
-	"github.com/j75689/cadre/internal/runes"
+	"github.com/j75689/cadre/internal/provider"
 	"github.com/j75689/cadre/internal/runner"
 )
 
@@ -289,7 +289,8 @@ func rejected(err error) string {
 	if !errors.As(err, &apiErr) || apiErr.StatusCode != http.StatusBadRequest {
 		return ""
 	}
-	msg := strings.ToLower(message(apiErr))
+	_, msg := errorBody(apiErr)
+	msg = strings.ToLower(msg)
 	switch {
 	case strings.Contains(msg, "thinking"):
 		return "thinking"
@@ -301,56 +302,16 @@ func rejected(err error) string {
 	return ""
 }
 
-// classify marks the errors retrying cannot fix: every 4xx but a timeout,
-// a conflict and a rate limit. Server errors, overload and network
-// failures stay retriable. An API error is reduced to its status, request
-// id, error type and message: the SDK's own text carries the raw response
-// body, which a gateway may fill with anything, so it is never logged.
+// classify reduces an API error for the log and marks what retrying
+// cannot fix; see provider.Classify.
 func classify(err error) error {
 	var apiErr *sdk.Error
 	if !errors.As(err, &apiErr) {
 		return err
 	}
-	kind, _ := errorBody(apiErr)
-	reduced := apiError{status: apiErr.StatusCode, requestID: apiErr.RequestID, message: message(apiErr)}
-	switch s := apiErr.StatusCode; {
-	case permanentKinds[kind]:
-		// An error event in a stream comes with the stream's 200: its
-		// type says what it is.
-		return builtin.Permanent(reduced)
-	case s == http.StatusRequestTimeout, s == http.StatusConflict, s == http.StatusTooManyRequests, s >= 500:
-		return reduced
-	case s >= 400:
-		return builtin.Permanent(reduced)
-	}
-	return reduced
+	kind, msg := errorBody(apiErr)
+	return provider.Classify(&provider.APIError{API: "the Messages API", Status: apiErr.StatusCode, Kind: kind, Message: msg, RequestID: apiErr.RequestID})
 }
-
-// permanentKinds are the API error types retrying cannot fix.
-var permanentKinds = map[string]bool{
-	"invalid_request_error": true, "authentication_error": true, "permission_error": true, "not_found_error": true,
-}
-
-// apiError is an API error without its response body.
-type apiError struct {
-	status    int
-	requestID string
-	message   string
-}
-
-func (e apiError) Error() string {
-	msg := fmt.Sprintf("the Messages API answered %d %s", e.status, http.StatusText(e.status))
-	if e.message != "" {
-		msg += ": " + e.message
-	}
-	if e.requestID != "" {
-		msg += " (request " + e.requestID + ")"
-	}
-	return msg
-}
-
-// maxMessage bounds how much of an API error's message is kept.
-const maxMessage = 300
 
 // errorBody is an API error's type and message, from its body.
 func errorBody(e *sdk.Error) (kind, msg string) {
@@ -364,16 +325,6 @@ func errorBody(e *sdk.Error) (kind, msg string) {
 		return "", ""
 	}
 	return body.Error.Type, body.Error.Message
-}
-
-// message is an API error's type and message, clipped.
-func message(e *sdk.Error) string {
-	kind, msg := errorBody(e)
-	out := strings.TrimPrefix(strings.TrimSpace(kind+": "+msg), ": ")
-	if len(out) > maxMessage {
-		out = runes.Cut(out, maxMessage) + "…"
-	}
-	return out
 }
 
 func (c *conversation) AddResults(results []builtin.ToolResult) {

@@ -221,3 +221,110 @@ func TestFeaturesAreProbedOnTheFirstRequestOnly(t *testing.T) {
 		t.Fatalf("a later 400: %v after %d requests; want no retry", err, len(a.requests))
 	}
 }
+
+// streamed writes raw chunks as a stream.
+func streamed(chunks ...string) func(http.ResponseWriter) {
+	return func(w http.ResponseWriter) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		for _, c := range chunks {
+			_, _ = fmt.Fprintf(w, "data: %s\n\n", c)
+		}
+		_, _ = fmt.Fprint(w, "data: [DONE]\n\n")
+	}
+}
+
+const head = `{"id":"c1","object":"chat.completion.chunk","created":1,"model":"m","choices":[{"index":0,"delta":{"role":"assistant","content":"x"},"finish_reason":null}]}`
+
+// A chunk that does not fit the reply so far fails the turn instead of
+// cutting it short.
+func TestAChunkThatDoesNotFitFailsTheTurn(t *testing.T) {
+	other := `{"id":"other","object":"chat.completion.chunk","created":1,"model":"m","choices":[{"index":0,"delta":{"content":"y"},"finish_reason":"stop"}]}`
+	a := newAPI(t, streamed(head, other))
+	conv, _ := (&openai.Provider{}).Start(ctx, setup(a.URL))
+	if r, err := conv.Turn(ctx); err == nil {
+		t.Fatalf("a mismatched chunk: %+v, want an error", r)
+	}
+}
+
+// Errors inside a stream are classified and reduced like status errors;
+// a full context window is a full window, not a failure.
+func TestErrorsInTheStream(t *testing.T) {
+	for _, tc := range []struct {
+		body      string
+		permanent bool
+		stop      builtin.Stop
+	}{
+		{`{"error":{"message":"bad input","type":"invalid_request_error","code":null}}`, true, ""},
+		{`{"error":{"message":"busy","type":"server_error","code":null}}`, false, ""},
+		{`{"error":{"message":"This model's maximum context length is 8192 tokens","type":"invalid_request_error","code":"context_length_exceeded"}}`, false, builtin.StopContextFull},
+	} {
+		a := newAPI(t, streamed(head, tc.body), streamed(head, tc.body))
+		conv, _ := (&openai.Provider{}).Start(ctx, setup(a.URL))
+		r, err := conv.Turn(ctx)
+		switch {
+		case tc.stop != "":
+			if err != nil || r.Stop != tc.stop {
+				t.Errorf("%s: %+v, %v; want %s", tc.body, r, err, tc.stop)
+			}
+		case err == nil || builtin.IsPermanent(err) != tc.permanent || strings.Contains(err.Error(), "{"):
+			t.Errorf("%s: %v; want permanent %v and no raw body", tc.body, err, tc.permanent)
+		}
+	}
+	// The same as a status error.
+	a := newAPI(t, func(w http.ResponseWriter) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(400)
+		_, _ = fmt.Fprint(w, `{"error":{"message":"too long","type":"invalid_request_error","code":"context_length_exceeded"}}`)
+	})
+	conv, _ := (&openai.Provider{}).Start(ctx, setup(a.URL))
+	if r, err := conv.Turn(ctx); err != nil || r.Stop != builtin.StopContextFull {
+		t.Fatalf("a 400 context_length_exceeded: %+v, %v", r, err)
+	}
+}
+
+// A reply cut off at its output limit makes no call, even a complete one.
+func TestACutOffReplyMakesNoCall(t *testing.T) {
+	a := newAPI(t, sse("length", "", [2]string{"thread_post", `{"body":"hi"}`}))
+	conv, _ := (&openai.Provider{}).Start(ctx, setup(a.URL))
+	if r, err := conv.Turn(ctx); err != nil || r.Stop != builtin.StopMaxTokens || len(r.Calls) != 0 {
+		t.Fatalf("a cut-off reply: %+v, %v", r, err)
+	}
+}
+
+// Calls the loop cannot make (arguments that are not JSON, a tool kind it
+// does not know) are answered by the provider with an error, in order, so
+// the next request has a result for every call.
+func TestCallsItCannotMakeAreAnswered(t *testing.T) {
+	a := newAPI(t, sse("tool_calls", "", [2]string{"thread_post", `{"body":`}, [2]string{"thread_post", `{"body":"ok"}`}), sse("stop", "done"))
+	conv, _ := (&openai.Provider{}).Start(ctx, setup(a.URL))
+	r, err := conv.Turn(ctx)
+	if err != nil || r.Stop != builtin.StopToolUse || len(r.Calls) != 1 || r.Calls[0].ID != "call_1" {
+		t.Fatalf("reply: %+v, %v", r, err)
+	}
+	conv.AddResults([]builtin.ToolResult{{CallID: "call_1", Text: "posted"}})
+	if _, err := conv.Turn(ctx); err != nil {
+		t.Fatal(err)
+	}
+	msgs := a.requests[1]["messages"].([]any)
+	first, second := msgs[3].(map[string]any), msgs[4].(map[string]any)
+	if first["tool_call_id"] != "call_0" || !strings.Contains(first["content"].(string), "not valid JSON") || second["tool_call_id"] != "call_1" || second["content"] != "posted" {
+		t.Fatalf("tool messages: %v / %v", first, second)
+	}
+}
+
+// OpenAI names an unsupported reasoning_effort in param, not in the text.
+func TestReasoningEffortRejectedByParam(t *testing.T) {
+	byParam := func(w http.ResponseWriter) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(400)
+		_, _ = fmt.Fprint(w, `{"error":{"message":"Unsupported value: 'medium' is not supported with this model.","type":"invalid_request_error","param":"reasoning_effort","code":"unsupported_value"}}`)
+	}
+	a := newAPI(t, byParam, sse("stop", "ok"))
+	conv, _ := (&openai.Provider{}).Start(ctx, setup(a.URL))
+	if _, err := conv.Turn(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := a.requests[1]["reasoning_effort"]; ok {
+		t.Fatal("reasoning_effort was sent again")
+	}
+}

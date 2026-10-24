@@ -547,3 +547,17 @@ func TestFailingClaimsBackOff(t *testing.T) {
 		t.Fatalf("%d claims in 1.2s, want 2", n)
 	}
 }
+
+// A tool turn whose calls the provider answered itself (none for the loop)
+// goes on to the next turn; it is not taken for the agent's summary.
+func TestAToolTurnWithoutCallsGoesOn(t *testing.T) {
+	e := start(t)
+	empty := func(context.Context, []builtin.ToolResult) (*builtin.Reply, error) {
+		return &builtin.Reply{Stop: builtin.StopToolUse}, nil
+	}
+	p := &scripted{steps: []step{empty, say("Done after all.")}}
+	e.run(t, p, builtin.Options{})
+	if tk := e.task(t); tk.Status.Phase != v1alpha1.PhaseReview || last(e.thread(t)).Body != "Done after all." || p.turns != 2 {
+		t.Fatalf("phase %s, %d turns, last %q", tk.Status.Phase, p.turns, last(e.thread(t)).Body)
+	}
+}
