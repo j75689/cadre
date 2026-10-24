@@ -369,3 +369,127 @@ func TestCookiesBehindHTTPS(t *testing.T) {
 		t.Errorf("authorization URL %s", loc)
 	}
 }
+
+func TestSafeNextAfterCleaning(t *testing.T) {
+	for next, want := range map[string]string{
+		"/./\\evil.example.test":    "/",
+		"/x/../\\evil.example.test": "/",
+		"/.//evil.example.test":     "/evil.example.test",
+		"/auth/login":               "/",
+		"/auth/../auth/callback":    "/",
+		"/auth":                     "/",
+		"/authors":                  "/authors",
+		"/a/./b/../c":               "/a/c",
+		"/t/a/":                     "/t/a/",
+		"/t/a?x=1&y=%2F":            "/t/a?x=1&y=%2F",
+		"/t/a\r\nSet-Cookie: x":     "/",
+	} {
+		if got := auth.SafeNext(next); got != want {
+			t.Errorf("SafeNext(%q) = %q, want %q", next, got, want)
+		}
+	}
+}
+
+func TestOriginOf(t *testing.T) {
+	for raw, want := range map[string]string{
+		"https://cadre.example.test:443/x": "https://cadre.example.test",
+		"HTTPS://Cadre.Example.Test":       "https://cadre.example.test",
+		"http://localhost:80":              "http://localhost",
+		"http://localhost:8080/t/a":        "http://localhost:8080",
+		"https://[::1]:8443":               "https://[::1]:8443",
+	} {
+		if got, ok := auth.OriginOf(raw); !ok || got != want {
+			t.Errorf("OriginOf(%q) = %q, %v; want %q", raw, got, ok, want)
+		}
+	}
+	for _, bad := range []string{"", "null", "javascript:x", "cadre.example.test"} {
+		if got, ok := auth.OriginOf(bad); ok {
+			t.Errorf("OriginOf(%q) = %q", bad, got)
+		}
+	}
+}
+
+func TestEmailMustBeVerified(t *testing.T) {
+	s := start(t)
+	c := &http.Client{}
+	for v, code := range map[any]int{false: http.StatusUnauthorized, "false": http.StatusUnauthorized, true: http.StatusOK} {
+		s.idp.SetClaim("email_verified", v)
+		if res, _ := get(t, c, s.URL+base+"/whoami", http.Header{"Authorization": {"Bearer " + s.idp.IDToken(oidctest.CLIClientID, "", 0)}}); res.StatusCode != code {
+			t.Errorf("email_verified %v: %d, want %d", v, res.StatusCode, code)
+		}
+	}
+}
+
+// A session too large for a cookie is refused with a reason, rather than
+// set and dropped by the browser; a good one comes with the marker the UI
+// reads.
+func TestSessionCookieSize(t *testing.T) {
+	s := start(t)
+	res := s.login(t, browser(t), "/t/x")
+	var marker string
+	for r := res; r != nil; r = r.Request.Response {
+		for _, h := range r.Header.Values("Set-Cookie") {
+			if strings.HasPrefix(h, auth.JustLoggedIn+"=") {
+				marker = h
+			}
+		}
+	}
+	if marker == "" || strings.Contains(marker, "HttpOnly") || strings.Contains(marker, "Secure") {
+		t.Errorf("just-logged-in cookie %q", marker)
+	}
+	many := make([]string, 300)
+	for i := range many {
+		many[i] = "team-with-a-rather-long-group-name-" + strings.Repeat("x", i%7)
+	}
+	s.idp.SetClaim("groups", many)
+	res = s.login(t, browser(t), "/t/x")
+	if out := body(t, res); res.StatusCode != http.StatusUnauthorized || !strings.Contains(out, "300 groups") {
+		t.Fatalf("a huge session: %d %s", res.StatusCode, out)
+	}
+}
+
+// A provider that is down at start does not stop the server: logins and
+// bearer tokens wait for it, answered 503, and work once it is back.
+func TestDiscoveryRetries(t *testing.T) {
+	idp := oidctest.New(t)
+	idp.SetDown(true)
+	ctx, cancel := context.WithCancel(context.Background())
+	t.Cleanup(cancel)
+	authn, err := auth.NewOIDC(ctx, auth.Config{
+		Issuer: idp.URL, ClientID: oidctest.ClientID, UsernameClaim: "email", PublicURL: "http://localhost:8080",
+		SessionKey: []byte(strings.Repeat("k", 32)), Log: slog.New(slog.NewTextHandler(io.Discard, nil)),
+	})
+	if err != nil || authn.Ready() {
+		t.Fatalf("with the provider down: %v, ready %v", err, authn.Ready())
+	}
+	mux := http.NewServeMux()
+	authn.Register(mux, base)
+	h := authn.Wrap(mux, base)
+	serve := func(path string, header http.Header) int {
+		w := httptest.NewRecorder()
+		req := httptest.NewRequest(http.MethodGet, path, nil)
+		for k, v := range header {
+			req.Header[k] = v
+		}
+		h.ServeHTTP(w, req)
+		return w.Code
+	}
+	bearer := http.Header{"Authorization": {"Bearer " + idp.IDToken(oidctest.ClientID, "", 0)}}
+	if code := serve("/auth/login", nil); code != http.StatusServiceUnavailable {
+		t.Errorf("login while down: %d", code)
+	}
+	if code := serve(base+"/me", bearer); code != http.StatusServiceUnavailable {
+		t.Errorf("bearer while down: %d", code)
+	}
+	if code := serve(base+"/auth", nil); code != http.StatusOK {
+		t.Errorf("/auth while down: %d", code)
+	}
+	idp.SetDown(false)
+	deadline := time.Now().Add(10 * time.Second)
+	for !authn.Ready() && time.Now().Before(deadline) {
+		time.Sleep(50 * time.Millisecond)
+	}
+	if code := serve(base+"/me", bearer); code != http.StatusOK {
+		t.Errorf("bearer once back: %d", code)
+	}
+}

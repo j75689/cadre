@@ -97,25 +97,26 @@ People log in with any OIDC provider; there is no provider-specific code. This c
 
 - **Modes.** `--auth=oidc` requires a login for every `/api/v1` route except `GET /api/v1/auth`. `--auth=none` requires nothing: a request's author is whatever the client names, so anyone may act as anyone; cadre-server logs a warning, as for `--runner-auth=none`. The default is `oidc` in a cluster and `none` outside one.
 - **Flags.**
-  - `--oidc-issuer`: the provider's discovery document is read from it at start, and its keys are cached and refreshed.
+  - `--oidc-issuer`: the provider's discovery document is read from it at start, and its keys are cached and refreshed. A provider that cannot be reached at start does not stop cadre-server: discovery is retried in the background, with a pause growing to 30 seconds, each failure logged. Until it succeeds, logins and bearer tokens are answered 503 ("logins are not ready"); existing sessions keep working.
   - `--oidc-client-id` and `--oidc-client-secret-file`: the web UI's client, which is confidential.
   - `--oidc-cli-client-id`: a public client for `cadre login`, by default the same client. ID tokens for either client are accepted. Most providers will not let one client be both confidential (for the browser) and public (for a CLI without a secret), hence the second client.
   - `--oidc-scopes`: default `openid profile email groups`.
-  - `--oidc-username-claim`: default `email`; a token without it is refused.
+  - `--oidc-username-claim`: default `email`. A token without it is refused, and so is one whose `email_verified` is false: anyone could have registered an unverified address. A token without `email_verified` is accepted. The `sub` claim is kept too, as the stable key.
   - `--oidc-groups-claim`: default `groups`.
   - `--session-key-file`: 32 bytes, raw or 64 hex characters, required with `oidc`. Every replica must have the same key. Until the Helm chart makes it, create the Secret by hand: `kubectl -n cadre-system create secret generic cadre-session-key --from-literal=key=$(openssl rand -hex 32)`, and mount it.
-  - The callback is `<--public-url>/auth/callback`.
+  - `--external-url`: where browsers reach cadre-server, such as its ingress, by default `--public-url` (which is where runners reach it, often a Service inside the cluster). The callback is `<--external-url>/auth/callback`, cookies are `Secure` when it is https, and the origin check below compares against it.
 - **Browser.**
-  - `GET /auth/login?next=<path>` starts the authorization code flow with PKCE. `next` must be a path on this site; anything else becomes `/`. The state, nonce, PKCE verifier and `next` are kept, encrypted, in a cookie for ten minutes.
+  - `GET /auth/login?next=<path>` starts the authorization code flow with PKCE. `next` must be a path on this site, checked after cleaning it as the redirect will: a backslash, another host, or a path under `/auth/` becomes `/`. The state, nonce, PKCE verifier and `next` are kept, encrypted, in a cookie for ten minutes.
   - `GET /auth/callback` checks the state, exchanges the code, and verifies the ID token: signature, issuer, audience, expiry and nonce.
   - It then sets the session cookie: the subject, username, display name (the `name` claim) and groups, encrypted and authenticated with the session key, so any replica reads it. It expires with the ID token, and after 12 hours at most. There is no refresh: an expired session logs in again.
-  - The cookie is `HttpOnly`, `SameSite=Lax` and path `/`. Behind https it is also `Secure` and named with the `__Host-` prefix.
-  - `POST /auth/logout` clears it.
+  - The cookie is `HttpOnly`, `SameSite=Lax` and path `/`. Behind https it is also `Secure` and named with the `__Host-` prefix. A session that would not fit a browser cookie (about 4 KB, which a user in hundreds of groups can exceed) is refused with a message saying so, rather than silently dropped by the browser; have the provider send fewer groups.
+  - Beside the session the callback sets `cadre-just-logged-in` for a minute, readable by the page. A page that gets a 401 while it is there knows the browser dropped the session (an https external URL reached over http, or blocked cookies). It shows that instead of sending the browser round the login again.
+  - `POST /auth/logout` clears the cookie in this browser. It revokes nothing: a session cookie copied elsewhere, or a bearer token, stays valid until it expires (12 hours at most). The emergency lever is rotating the session key, which ends every session at once; bearer tokens then still last until their own expiry.
   - A change made with the cookie (any method but GET or HEAD) must carry an `Origin`, or failing that a `Referer`, of the public URL, or it is refused with 403.
 - **CLI.**
-  - `cadre login` asks `GET /api/v1/auth` for the issuer, client and scopes. It then runs the same code flow with PKCE in the browser, with the callback on a localhost listener.
+  - `cadre login` asks `GET /api/v1/auth` for the issuer, client and scopes. It then runs the same code flow with PKCE in the browser, with the callback on a listener at `http://127.0.0.1:<port>/callback`: the loopback address itself, since `localhost` may resolve to another one. A request to it without this login's state is turned away and the wait goes on.
   - It keeps the ID token, and nothing else, in `$XDG_CONFIG_HOME/cadre/credentials` (by default `~/.config`), mode 0600, by server URL.
-  - Every request to that server then sends `Authorization: Bearer <ID token>`, verified like the browser's; bearer requests need no `Origin`. An expired token means logging in again.
+  - Every request to that server then sends `Authorization: Bearer <ID token>`, verified like the browser's; bearer requests need no `Origin`. Once the token expires the CLI says so and asks for cadre login again.
   - `--as` is refused by a server with logins ("identity comes from login") and still names the author with `--auth=none`.
 - **Identity in the API.** The author of a comment, reply or approval is the caller's username. The `author` fields of those requests count only with `--auth=none`. `GET /api/v1/me` returns the mode and the identity.
 - **Not yet.** Roles per team and their enforcement come next. The MCP endpoint for outside agents is not behind the login yet.
@@ -125,7 +126,7 @@ People log in with any OIDC provider; there is no provider-specific code. This c
 1. `kubectl apply -f hack/dex/dex.yaml`
 2. `kubectl -n dex port-forward svc/dex 5556:5556`
 3. Write a session key: `openssl rand -hex 32 > /tmp/cadre-session-key`.
-4. Run cadre-server outside the cluster with `--auth=oidc --oidc-issuer=http://localhost:5556/dex --oidc-client-id=cadre --oidc-cli-client-id=cadre-cli --oidc-client-secret-file=<a file holding cadre-dev-not-a-secret> --session-key-file=/tmp/cadre-session-key`.
+4. Run cadre-server outside the cluster, at its default `http://localhost:8080`, with `--auth=oidc --oidc-issuer=http://localhost:5556/dex --oidc-client-id=cadre --oidc-cli-client-id=cadre-cli --oidc-client-secret-file=<a file holding cadre-dev-not-a-secret> --session-key-file=/tmp/cadre-session-key`.
 
 The browser and cadre-server then both reach the issuer at the same address. Dex's static users have no groups.
 

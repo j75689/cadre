@@ -60,6 +60,7 @@ func run() error {
 		elect     = flag.Bool("leader-elect", true, "run the controllers on one replica at a time, elected with a Lease; the API, the runner protocol and the MCP endpoint serve on every replica")
 		electNS   = flag.String("leader-elect-namespace", "", "the namespace of the leader election Lease; by default the pod's own in a cluster (outside one, leader election needs it, or is off)")
 		showVer   = flag.Bool("version", false, "print the version and exit")
+		external  = flag.String("external-url", "", "the URL people's browsers reach this server at (an ingress, say): logins come back to <URL>/auth/callback, cookies are Secure when it is https, and changes made with a session must come from it; default --public-url")
 		authMode  = flag.String("auth", "", "how people log in to the API and the UI: oidc, or none (anyone may act as anyone, for local development only); default oidc in a cluster, none outside one")
 		oidcCfg   oidcFlags
 		s3cfg     kubernetes.S3Config
@@ -120,7 +121,10 @@ func run() error {
 	if *publicURL, err = resolvePublicURL(*publicURL, *listen, os.Getenv("KUBERNETES_SERVICE_HOST") != ""); err != nil {
 		return err
 	}
-	authn, err := newAuthenticator(ctx, *authMode, inCluster, oidcCfg, *publicURL, log)
+	if *external == "" {
+		*external = *publicURL
+	}
+	authn, err := newAuthenticator(ctx, *authMode, inCluster, oidcCfg, *external, log)
 	if err != nil {
 		return err
 	}
@@ -239,8 +243,8 @@ type oidcFlags struct {
 }
 
 // newAuthenticator builds the --auth mode: oidc by default in a cluster,
-// none outside one.
-func newAuthenticator(ctx context.Context, mode string, inCluster bool, f oidcFlags, publicURL string, log *slog.Logger) (auth.Authenticator, error) {
+// none outside one. externalURL is where browsers reach the server.
+func newAuthenticator(ctx context.Context, mode string, inCluster bool, f oidcFlags, externalURL string, log *slog.Logger) (auth.Authenticator, error) {
 	if mode == "" {
 		mode = auth.ModeNone
 		if inCluster {
@@ -278,7 +282,7 @@ func newAuthenticator(ctx context.Context, mode string, inCluster bool, f oidcFl
 		Issuer: f.issuer, ClientID: f.clientID, ClientSecret: secret, CLIClientID: f.cliClientID,
 		Scopes:        strings.FieldsFunc(f.scopes, func(r rune) bool { return r == ' ' || r == ',' }),
 		UsernameClaim: f.usernameClaim, GroupsClaim: f.groupsClaim,
-		PublicURL: publicURL, SessionKey: key, Log: log,
+		PublicURL: externalURL, SessionKey: key, Log: log,
 	})
 }
 

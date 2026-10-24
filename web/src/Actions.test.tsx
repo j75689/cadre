@@ -72,6 +72,12 @@ describe("Actions", () => {
     expect(screen.getByRole("button", { name: "Reject" })).toBeTruthy();
   });
 
+  it("asks for no name while logging in is still being checked", () => {
+    vi.stubGlobal("fetch", () => new Promise(() => {}));
+    renderActions(task("Todo"), "");
+    expect(screen.queryByText(/give your name/i)).toBeNull();
+  });
+
   it("hides cancel and comment once the task has ended", () => {
     renderActions(task("Done"));
     expect(screen.queryByRole("region", { name: "Actions" })).toBeNull();

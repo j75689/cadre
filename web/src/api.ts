@@ -119,10 +119,18 @@ export function loginURL(): string {
   return `/auth/login?next=${encodeURIComponent(location.pathname + location.search)}`;
 }
 
-// toLogin sends the browser to log in; tests replace it.
+// auth sends the browser to log in; tests replace it. justLoggedIn reads
+// the marker the login's callback leaves for a minute: a 401 then means the
+// browser did not keep the session cookie, and logging in again would only
+// go round in a circle.
 export const auth = {
   toLogin: () => location.assign(loginURL()),
+  justLoggedIn: () => document.cookie.split(";").some((c) => c.trim().startsWith("cadre-just-logged-in=")),
 };
+
+export const sessionDropped =
+  "You logged in, but this browser did not keep the session. Likely causes: the server's external URL is https and this page is not, " +
+  "or the browser blocks cookies for this site.";
 
 async function request<T>(method: string, path: string, body?: unknown, signal?: AbortSignal): Promise<T> {
   const init: RequestInit = { method, headers: { Accept: "application/json" }, signal };
@@ -131,7 +139,10 @@ async function request<T>(method: string, path: string, body?: unknown, signal?:
     init.headers = { ...init.headers, "Content-Type": "application/json" };
   }
   const res = await fetch("/api/v1" + path, init);
-  if (res.status === 401) auth.toLogin();
+  if (res.status === 401) {
+    if (auth.justLoggedIn()) throw new APIError(401, sessionDropped);
+    auth.toLogin();
+  }
   if (!res.ok) {
     let message = res.statusText;
     try {

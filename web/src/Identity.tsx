@@ -8,6 +8,7 @@ import { loadIdentity, saveIdentity } from "./identityStore";
 // pre-OIDC placeholder, kept for that mode.
 interface IdentityState {
   mode: "loading" | "oidc" | "none" | "error";
+  problem?: string;
   // name is shown; author is sent with actions ("" with a login).
   name: string;
   author: string;
@@ -18,6 +19,7 @@ const IdentityContext = createContext<IdentityState>({ mode: "loading", name: ""
 
 export function IdentityProvider({ children }: { children: ReactNode }) {
   const [mode, setMode] = useState<IdentityState["mode"]>("loading");
+  const [problem, setProblem] = useState("");
   const [user, setUser] = useState("");
   const [typed, setTyped] = useState(loadIdentity);
   useEffect(() => {
@@ -31,9 +33,12 @@ export function IdentityProvider({ children }: { children: ReactNode }) {
           setMode("none");
         }
       },
-      // A 401 is on its way to the login page already.
-      () => {
-        if (!controller.signal.aborted) setMode("error");
+      // A 401 is on its way to the login page already, unless the
+      // session was just dropped.
+      (e) => {
+        if (controller.signal.aborted) return;
+        setMode("error");
+        setProblem((e as Error).message);
       },
     );
     return () => controller.abort();
@@ -43,7 +48,11 @@ export function IdentityProvider({ children }: { children: ReactNode }) {
     setTyped(next);
   };
   const value: IdentityState =
-    mode === "oidc" ? { mode, name: user, author: "", setName } : mode === "none" ? { mode, name: typed, author: typed, setName } : { mode, name: "", author: "", setName };
+    mode === "oidc"
+      ? { mode, name: user, author: "", setName }
+      : mode === "none"
+        ? { mode, name: typed, author: typed, setName }
+        : { mode, name: "", author: "", setName, problem };
   return <IdentityContext.Provider value={value}>{children}</IdentityContext.Provider>;
 }
 
@@ -57,9 +66,9 @@ export function useIdentity() {
 // IdentityBox is the header's: the user and a logout with a login, a name
 // box without one.
 export function IdentityBox() {
-  const { mode, name } = useContext(IdentityContext);
+  const { mode, name, problem } = useContext(IdentityContext);
   if (mode === "loading") return null;
-  if (mode === "error") return <div className="identity error">Could not tell who you are.</div>;
+  if (mode === "error") return <div className="identity error">Could not tell who you are{problem ? `: ${problem}` : "."}</div>;
   if (mode === "oidc") {
     return (
       <div className="identity">

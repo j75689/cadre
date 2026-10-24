@@ -69,4 +69,13 @@ describe("an unauthenticated request", () => {
     );
     await vi.waitFor(() => expect(toLogin).toHaveBeenCalled());
   });
+
+  it("says the session was dropped, rather than going round the login again", async () => {
+    const toLogin = vi.spyOn(auth, "toLogin").mockImplementation(() => {});
+    vi.spyOn(auth, "justLoggedIn").mockReturnValue(true);
+    me({ error: { code: "unauthenticated", message: "log in at /auth/login" } }, 401);
+    renderBox();
+    expect(await screen.findByText(/did not keep the session/)).toBeTruthy();
+    expect(toLogin).not.toHaveBeenCalled();
+  });
 });

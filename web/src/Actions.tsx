@@ -30,7 +30,7 @@ interface Props {
 export function Actions({ task, onTask, onRefresh }: Props) {
   const can = allowed(task);
   const { namespace: ns, name } = task.metadata;
-  const { author, ready } = useIdentity();
+  const { mode, author, ready } = useIdentity();
   if (!can.comment && !can.reply && !can.approve && !can.cancel) return null;
   const run = async <T,>(call: () => Promise<T>, done: (r: T) => void): Promise<string> => {
     try {
@@ -44,7 +44,7 @@ export function Actions({ task, onTask, onRefresh }: Props) {
   };
   return (
     <section className="actions" aria-label="Actions">
-      {!ready && <p className="hint">Give your name at the top to act on this task.</p>}
+      {mode === "none" && !ready && <p className="hint">Give your name at the top to act on this task.</p>}
       {can.reply && (
         <TextAction
           label="Reply"

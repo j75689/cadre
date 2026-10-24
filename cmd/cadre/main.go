@@ -70,13 +70,25 @@ func newRoot() *cobra.Command {
 }
 
 // client talks to the server, with the ID token cadre login stored for it,
-// if any and not expired.
+// if any. One that has expired fails every request with a pointer to cadre
+// login.
 func (g *globals) client() *client.Client {
 	creds, err := loadCredentials()
-	if c, ok := creds[serverKey(g.server)]; err == nil && ok && time.Now().Before(c.Expires) {
-		return client.New(g.server, &http.Client{Transport: client.Bearer(c.IDToken, nil)})
+	c, ok := creds[serverKey(g.server)]
+	switch {
+	case err != nil || !ok:
+		return client.New(g.server, nil)
+	case !time.Now().Before(c.Expires):
+		return client.New(g.server, &http.Client{Transport: expired{g.server}})
 	}
-	return client.New(g.server, nil)
+	return client.New(g.server, &http.Client{Transport: client.Bearer(c.IDToken, nil)})
+}
+
+// expired refuses to send a request with a login that has run out.
+type expired struct{ server string }
+
+func (e expired) RoundTrip(*http.Request) (*http.Response, error) {
+	return nil, fmt.Errorf("your login to %s expired; run cadre login", e.server)
 }
 
 func envOr(key, def string) string {

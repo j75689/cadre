@@ -40,6 +40,7 @@ type Provider struct {
 	// Nonce, when set, replaces the nonce asked for, as a broken or
 	// hostile provider would.
 	Nonce string
+	down  bool
 	codes map[string]grant
 }
 
@@ -72,6 +73,13 @@ func New(t *testing.T) *Provider {
 }
 
 func (p *Provider) discovery(w http.ResponseWriter, _ *http.Request) {
+	p.mu.Lock()
+	down := p.down
+	p.mu.Unlock()
+	if down {
+		http.Error(w, "down", http.StatusServiceUnavailable)
+		return
+	}
 	writeJSON(w, map[string]any{
 		"issuer": p.URL, "authorization_endpoint": p.URL + "/authorize", "token_endpoint": p.URL + "/token",
 		"jwks_uri": p.URL + "/keys", "response_types_supported": []string{"code"},
@@ -175,6 +183,13 @@ func (p *Provider) SetClaim(name string, v any) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	p.Claims[name] = v
+}
+
+// SetDown makes discovery fail, as a provider that is down, or work again.
+func (p *Provider) SetDown(down bool) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	p.down = down
 }
 
 // SetNonce makes the next ID tokens carry nonce, whatever was asked.

@@ -7,9 +7,11 @@ import (
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"os"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/j75689/cadre/internal/api"
 	"github.com/j75689/cadre/internal/auth"
@@ -55,10 +57,19 @@ func TestLoginFromTheCLI(t *testing.T) {
 	// The browser approves at once and follows the redirect home.
 	opened := ""
 	orig := openBrowser
-	openBrowser = func(_ io.Writer, url string) {
-		opened = url
+	openBrowser = func(_ io.Writer, authURL string) {
+		opened = authURL
 		go func() {
-			if res, err := http.Get(url); err == nil {
+			// Something else on the machine hits the callback first, with
+			// the wrong state: turned away, the login waits on.
+			u, _ := url.Parse(authURL)
+			if res, err := http.Get(u.Query().Get("redirect_uri") + "?state=stray&code=x"); err == nil {
+				if res.StatusCode != http.StatusBadRequest {
+					t.Errorf("stray callback: %d", res.StatusCode)
+				}
+				_ = res.Body.Close()
+			}
+			if res, err := http.Get(authURL); err == nil {
 				_ = res.Body.Close()
 			}
 		}()
@@ -72,7 +83,8 @@ func TestLoginFromTheCLI(t *testing.T) {
 	if err != nil || !strings.Contains(out, "as dana@example.test") {
 		t.Fatalf("login: %q %v", out, err)
 	}
-	if !strings.Contains(opened, "client_id="+oidctest.CLIClientID) || !strings.Contains(opened, "code_challenge=") {
+	authURL, _ := url.Parse(opened)
+	if q := authURL.Query(); q.Get("client_id") != oidctest.CLIClientID || q.Get("code_challenge") == "" || !strings.HasPrefix(q.Get("redirect_uri"), "http://127.0.0.1:") {
 		t.Errorf("authorization URL %s", opened)
 	}
 	path, _ := credentialsPath()
@@ -117,5 +129,18 @@ func TestLoginFromTheCLI(t *testing.T) {
 	t.Cleanup(other.Close)
 	if _, err := run("--server", other.URL, "-n", "team-a", "task", "list"); err != nil {
 		t.Fatal(err)
+	}
+}
+
+// An expired login says so, rather than leaving the server to say "log in
+// at /auth/login".
+func TestExpiredLogin(t *testing.T) {
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+	if err := (credentials{"http://cadre.example.test": {IDToken: "old", Expires: time.Now().Add(-time.Minute)}}).save(); err != nil {
+		t.Fatal(err)
+	}
+	_, err := run("--server", "http://cadre.example.test/", "-n", "team-a", "task", "list")
+	if err == nil || !strings.Contains(err.Error(), "your login to http://cadre.example.test/ expired; run cadre login") {
+		t.Fatalf("expired login: %v", err)
 	}
 }

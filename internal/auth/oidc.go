@@ -9,8 +9,10 @@ import (
 	"log/slog"
 	"net/http"
 	"net/url"
+	"path"
 	"slices"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	"github.com/coreos/go-oidc/v3/oidc"
@@ -51,20 +53,42 @@ type Config struct {
 	Log        *slog.Logger
 }
 
+// maxCookie bounds the sealed session: browsers drop a cookie past about
+// 4 KB without a word, which would send the user round the login forever.
+const maxCookie = 3800
+
+// JustLoggedIn names a short-lived cookie the callback sets beside the
+// session, readable by the page: a page that finds it and is still not
+// logged in knows the session cookie was dropped, and does not send the
+// browser round the login again. It is neither Secure nor __Host-, so that
+// it arrives over plain http too, where a Secure session would not.
+const JustLoggedIn = "cadre-just-logged-in"
+
+// discoveryRetry bounds the wait between failed discoveries.
+const discoveryRetry = 30 * time.Second
+
 // OIDC is --auth=oidc.
 type OIDC struct {
-	cfg      Config
-	verifier *oidc.IDTokenVerifier
-	oauth    oauth2.Config
-	seal     sealer
-	origin   string // scheme://host of PublicURL
-	secure   bool
-	session  string // cookie names
-	login    string
+	cfg Config
+	// ready holds the provider once its discovery document is read: until
+	// then nobody can log in or be verified, but sessions still work.
+	ready   atomic.Pointer[discovered]
+	seal    sealer
+	origin  string // of PublicURL, as originOf gives it
+	secure  bool
+	session string // cookie names
+	login   string
 }
 
-// NewOIDC reads the provider's discovery document and returns the
-// authenticator.
+type discovered struct {
+	verifier *oidc.IDTokenVerifier
+	oauth    oauth2.Config
+}
+
+// NewOIDC returns the authenticator and reads the provider's discovery
+// document: once now, and if that fails again in the background until it
+// succeeds or ctx ends. A provider that is down does not stop cadre-server
+// starting: logins and bearer tokens are answered 503 meanwhile.
 func NewOIDC(ctx context.Context, cfg Config) (*OIDC, error) {
 	switch {
 	case cfg.Issuer == "" || cfg.ClientID == "":
@@ -83,40 +107,69 @@ func NewOIDC(ctx context.Context, cfg Config) (*OIDC, error) {
 	}
 	pub, err := url.Parse(cfg.PublicURL)
 	if err != nil || (pub.Scheme != "http" && pub.Scheme != "https") || pub.Host == "" {
-		return nil, fmt.Errorf("public URL %q: not an http or https URL", cfg.PublicURL)
+		return nil, fmt.Errorf("external URL %q: not an http or https URL", cfg.PublicURL)
 	}
 	seal, err := newSealer(cfg.SessionKey)
 	if err != nil {
 		return nil, err
 	}
-	if cfg.HTTPClient != nil {
-		ctx = oidc.ClientContext(ctx, cfg.HTTPClient)
-	}
-	provider, err := oidc.NewProvider(ctx, cfg.Issuer)
-	if err != nil {
-		return nil, fmt.Errorf("OIDC discovery for %s: %w", cfg.Issuer, err)
-	}
-	o := &OIDC{
-		cfg: cfg,
-		// The audience is checked by hand: either client's tokens are
-		// accepted.
-		verifier: provider.Verifier(&oidc.Config{SkipClientIDCheck: true, Now: cfg.Now}),
-		oauth: oauth2.Config{
-			ClientID: cfg.ClientID, ClientSecret: cfg.ClientSecret, Endpoint: provider.Endpoint(),
-			RedirectURL: strings.TrimRight(cfg.PublicURL, "/") + "/auth/callback", Scopes: cfg.Scopes,
-		},
-		seal:    seal,
-		origin:  pub.Scheme + "://" + pub.Host,
-		secure:  pub.Scheme == "https",
-		session: "cadre-session",
-		login:   "cadre-login",
-	}
+	origin, _ := originOf(cfg.PublicURL)
+	o := &OIDC{cfg: cfg, seal: seal, origin: origin, secure: pub.Scheme == "https", session: "cadre-session", login: "cadre-login"}
 	if o.secure {
 		// __Host- cookies are sent only to this host, over https, for /.
 		o.session, o.login = "__Host-"+o.session, "__Host-"+o.login
 	}
+	if err := o.discover(ctx); err != nil {
+		cfg.Log.Warn("OIDC discovery failed; logins wait for it, retrying", "issuer", cfg.Issuer, "err", err)
+		go o.rediscover(ctx)
+	}
 	return o, nil
 }
+
+// discover reads the discovery document, within a bound.
+func (o *OIDC) discover(ctx context.Context) error {
+	ctx, cancel := context.WithTimeout(ctx, 10*time.Second)
+	defer cancel()
+	if o.cfg.HTTPClient != nil {
+		ctx = oidc.ClientContext(ctx, o.cfg.HTTPClient)
+	}
+	provider, err := oidc.NewProvider(ctx, o.cfg.Issuer)
+	if err != nil {
+		return err
+	}
+	o.ready.Store(&discovered{
+		// The audience is checked by hand: either client's tokens are
+		// accepted.
+		verifier: provider.Verifier(&oidc.Config{SkipClientIDCheck: true, Now: o.cfg.Now}),
+		oauth: oauth2.Config{
+			ClientID: o.cfg.ClientID, ClientSecret: o.cfg.ClientSecret, Endpoint: provider.Endpoint(),
+			RedirectURL: strings.TrimRight(o.cfg.PublicURL, "/") + "/auth/callback", Scopes: o.cfg.Scopes,
+		},
+	})
+	return nil
+}
+
+// rediscover retries discovery with a growing pause until it succeeds.
+func (o *OIDC) rediscover(ctx context.Context) {
+	for wait := time.Second; ; wait = min(2*wait, discoveryRetry) {
+		select {
+		case <-ctx.Done():
+			return
+		case <-time.After(wait):
+		}
+		err := o.discover(ctx)
+		if err == nil {
+			o.cfg.Log.Info("OIDC discovery succeeded; logins are open", "issuer", o.cfg.Issuer)
+			return
+		}
+		o.cfg.Log.Warn("OIDC discovery failed again", "issuer", o.cfg.Issuer, "err", err)
+	}
+}
+
+// Ready reports whether the provider has been discovered.
+func (o *OIDC) Ready() bool { return o.ready.Load() != nil }
+
+const notReady = "logins are not ready: cadre-server cannot reach the OIDC provider yet"
 
 // Info implements Authenticator.
 func (o *OIDC) Info() Info {
@@ -147,17 +200,32 @@ func (o *OIDC) Register(mux *http.ServeMux, base string) {
 	})
 }
 
-// SafeNext returns next if it is a path on this server, and "/" otherwise:
-// a login must not end on another site.
+// SafeNext returns next, cleaned, if it is a path on this server, and "/"
+// otherwise: a login must not end on another site, nor on a login. The path
+// is cleaned here as http.Redirect would clean it, so what is checked is
+// what the browser gets: "/./\evil.example" would otherwise become
+// "/\evil.example", which browsers read as another host. A backslash is
+// refused outright.
 func SafeNext(next string) string {
-	if !strings.HasPrefix(next, "/") || strings.HasPrefix(next, "//") || strings.HasPrefix(next, "/\\") {
+	if !strings.HasPrefix(next, "/") || strings.ContainsAny(next, "\\\x00\r\n\t") {
 		return "/"
 	}
 	u, err := url.Parse(next)
-	if err != nil || u.Scheme != "" || u.Host != "" {
+	if err != nil || u.Scheme != "" || u.Host != "" || u.User != nil {
 		return "/"
 	}
-	return next
+	clean := path.Clean(u.Path)
+	if strings.HasSuffix(u.Path, "/") && clean != "/" {
+		clean += "/"
+	}
+	if !strings.HasPrefix(clean, "/") || strings.HasPrefix(clean, "//") || clean == "/auth" || strings.HasPrefix(clean, "/auth/") {
+		return "/"
+	}
+	out := (&url.URL{Path: clean}).EscapedPath()
+	if u.RawQuery != "" {
+		out += "?" + u.RawQuery
+	}
+	return out
 }
 
 func random() string {
@@ -177,6 +245,11 @@ func (o *OIDC) clear(name string) *http.Cookie {
 }
 
 func (o *OIDC) startLogin(w http.ResponseWriter, r *http.Request) {
+	d := o.ready.Load()
+	if d == nil {
+		http.Error(w, notReady, http.StatusServiceUnavailable)
+		return
+	}
 	p := pending{State: random(), Nonce: random(), Verifier: oauth2.GenerateVerifier(), Next: SafeNext(r.URL.Query().Get("next")), Expires: o.cfg.Now().Add(loginTTL)}
 	sealed, err := o.seal.seal(o.login, p)
 	if err != nil {
@@ -184,7 +257,7 @@ func (o *OIDC) startLogin(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	http.SetCookie(w, o.cookie(o.login, sealed, loginTTL))
-	http.Redirect(w, r, o.oauth.AuthCodeURL(p.State, oidc.Nonce(p.Nonce), oauth2.S256ChallengeOption(p.Verifier)), http.StatusFound)
+	http.Redirect(w, r, d.oauth.AuthCodeURL(p.State, oidc.Nonce(p.Nonce), oauth2.S256ChallengeOption(p.Verifier)), http.StatusFound)
 }
 
 // loginFailed ends a callback that went wrong. The details go to the log:
@@ -196,6 +269,11 @@ func (o *OIDC) loginFailed(w http.ResponseWriter, why string, err error) {
 }
 
 func (o *OIDC) callback(w http.ResponseWriter, r *http.Request) {
+	d := o.ready.Load()
+	if d == nil {
+		http.Error(w, notReady, http.StatusServiceUnavailable)
+		return
+	}
 	var p pending
 	c, err := r.Cookie(o.login)
 	if err == nil {
@@ -220,7 +298,7 @@ func (o *OIDC) callback(w http.ResponseWriter, r *http.Request) {
 	if o.cfg.HTTPClient != nil {
 		ctx = context.WithValue(ctx, oauth2.HTTPClient, o.cfg.HTTPClient)
 	}
-	tok, err := o.oauth.Exchange(ctx, q.Get("code"), oauth2.VerifierOption(p.Verifier))
+	tok, err := d.oauth.Exchange(ctx, q.Get("code"), oauth2.VerifierOption(p.Verifier))
 	if err != nil {
 		o.loginFailed(w, "the code exchange failed", err)
 		return
@@ -230,7 +308,7 @@ func (o *OIDC) callback(w http.ResponseWriter, r *http.Request) {
 		o.loginFailed(w, "no ID token", nil)
 		return
 	}
-	id, expires, nonce, err := o.verify(ctx, raw)
+	id, expires, nonce, err := o.verify(ctx, d, raw)
 	if err != nil {
 		o.loginFailed(w, "the ID token is not valid", err)
 		return
@@ -247,8 +325,16 @@ func (o *OIDC) callback(w http.ResponseWriter, r *http.Request) {
 		o.loginFailed(w, "the session could not be made", err)
 		return
 	}
+	if len(o.session)+len(sealed) > maxCookie {
+		o.loginFailed(w, fmt.Sprintf("the session is too large for a browser cookie (%d groups in the %q claim); "+
+			"have the provider send fewer, for example only the groups Cadre's roles name", len(id.Groups), o.cfg.GroupsClaim), nil)
+		return
+	}
 	http.SetCookie(w, o.clear(o.login))
 	http.SetCookie(w, o.cookie(o.session, sealed, expires.Sub(o.cfg.Now())))
+	marker := o.cookie(JustLoggedIn, "1", time.Minute)
+	marker.HttpOnly, marker.Secure = false, false
+	http.SetCookie(w, marker)
 	http.Redirect(w, r, p.Next, http.StatusFound)
 }
 
@@ -264,11 +350,11 @@ func (o *OIDC) logout(w http.ResponseWriter, r *http.Request) {
 // verify checks an ID token: signature, issuer, expiry, and an audience of
 // one of the two clients. It returns the identity, the token's expiry and
 // its nonce.
-func (o *OIDC) verify(ctx context.Context, raw string) (*Identity, time.Time, string, error) {
+func (o *OIDC) verify(ctx context.Context, d *discovered, raw string) (*Identity, time.Time, string, error) {
 	if o.cfg.HTTPClient != nil {
 		ctx = oidc.ClientContext(ctx, o.cfg.HTTPClient)
 	}
-	tok, err := o.verifier.Verify(ctx, raw)
+	tok, err := d.verifier.Verify(ctx, raw)
 	if err != nil {
 		return nil, time.Time{}, "", err
 	}
@@ -282,6 +368,11 @@ func (o *OIDC) verify(ctx context.Context, raw string) (*Identity, time.Time, st
 	username, _ := claims[o.cfg.UsernameClaim].(string)
 	if username == "" {
 		return nil, time.Time{}, "", fmt.Errorf("the token has no %q claim", o.cfg.UsernameClaim)
+	}
+	// An address the provider has not verified names nobody: anyone could
+	// have registered it. Without the claim the provider vouches for it.
+	if v, ok := claims["email_verified"]; ok && (v == false || v == "false") {
+		return nil, time.Time{}, "", errors.New("the token's email is not verified")
 	}
 	name, _ := claims["name"].(string)
 	if name == "" {
@@ -311,11 +402,32 @@ func groups(v any) []string {
 // sameOrigin reports whether a browser request came from this site: its
 // Origin, or failing that its Referer, is the public URL's.
 func (o *OIDC) sameOrigin(r *http.Request) bool {
-	if origin := r.Header.Get("Origin"); origin != "" {
-		return origin == o.origin
+	from := r.Header.Get("Origin")
+	if from == "" {
+		from = r.Header.Get("Referer")
 	}
-	ref := r.Header.Get("Referer")
-	return ref == o.origin || strings.HasPrefix(ref, o.origin+"/")
+	got, ok := originOf(from)
+	return ok && got == o.origin
+}
+
+// originOf is the scheme, host and port of a URL, the host in lower case
+// and a default port dropped, so that equal origins compare equal.
+func originOf(raw string) (string, bool) {
+	u, err := url.Parse(raw)
+	if err != nil || (u.Scheme != "http" && u.Scheme != "https") || u.Host == "" {
+		return "", false
+	}
+	host, port := strings.ToLower(u.Hostname()), u.Port()
+	if (u.Scheme == "http" && port == "80") || (u.Scheme == "https" && port == "443") {
+		port = ""
+	}
+	if strings.Contains(host, ":") {
+		host = "[" + host + "]"
+	}
+	if port != "" {
+		host += ":" + port
+	}
+	return u.Scheme + "://" + host, true
 }
 
 // Wrap implements Authenticator. Under base, every route but base/auth
@@ -328,8 +440,13 @@ func (o *OIDC) Wrap(next http.Handler, base string) http.Handler {
 			return
 		}
 		if h := r.Header.Get("Authorization"); h != "" {
+			d := o.ready.Load()
+			if d == nil {
+				httpjson.WriteError(w, http.StatusServiceUnavailable, httpjson.CodeUnavailable, notReady)
+				return
+			}
 			raw, ok := strings.CutPrefix(h, "Bearer ")
-			id, _, _, err := o.verify(r.Context(), strings.TrimSpace(raw))
+			id, _, _, err := o.verify(r.Context(), d, strings.TrimSpace(raw))
 			if !ok || err != nil {
 				httpjson.WriteError(w, http.StatusUnauthorized, httpjson.CodeUnauthenticated, "the bearer token is not a valid ID token for this server; run cadre login")
 				return

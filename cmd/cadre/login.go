@@ -169,8 +169,10 @@ func login(ctx context.Context, w io.Writer, info *auth.Info) (credential, error
 	}
 	conf := oauth2.Config{
 		ClientID: clientID, Endpoint: provider.Endpoint(), Scopes: info.Scopes,
-		// localhost, which providers allow a native client at any port.
-		RedirectURL: fmt.Sprintf("http://localhost:%d/callback", ln.Addr().(*net.TCPAddr).Port),
+		// The loopback address the listener is on, not "localhost", which
+		// may resolve to another one (RFC 8252, 8.3); providers allow a
+		// native client there at any port.
+		RedirectURL: "http://" + ln.Addr().String() + "/callback",
 	}
 	state, nonce, verifier := randomString(), randomString(), oauth2.GenerateVerifier()
 	type result struct {
@@ -179,11 +181,14 @@ func login(ctx context.Context, w io.Writer, info *auth.Info) (credential, error
 	}
 	done := make(chan result, 1)
 	srv := &http.Server{ReadHeaderTimeout: 10 * time.Second, Handler: http.HandlerFunc(func(rw http.ResponseWriter, r *http.Request) {
-		if r.URL.Path != "/callback" {
-			http.NotFound(rw, r)
+		// Only the provider's redirect, with this login's state, decides
+		// it: anything else on the port is turned away and the wait goes
+		// on.
+		if r.URL.Path != "/callback" || r.URL.Query().Get("state") != state {
+			http.Error(rw, "not this login's callback", http.StatusBadRequest)
 			return
 		}
-		cred, err := finishLogin(r, &conf, provider.Verifier(&oidc.Config{ClientID: clientID}), state, nonce, verifier)
+		cred, err := finishLogin(r, &conf, provider.Verifier(&oidc.Config{ClientID: clientID}), nonce, verifier)
 		if err != nil {
 			http.Error(rw, "Login failed: "+err.Error(), http.StatusBadRequest)
 		} else {
@@ -195,7 +200,12 @@ func login(ctx context.Context, w io.Writer, info *auth.Info) (credential, error
 		}
 	})}
 	go func() { _ = srv.Serve(ln) }()
-	defer func() { _ = srv.Close() }()
+	// Shut down gracefully, so the page the browser waits for is sent.
+	defer func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		_ = srv.Shutdown(ctx)
+	}()
 	openBrowser(w, conf.AuthCodeURL(state, oidc.Nonce(nonce), oauth2.S256ChallengeOption(verifier)))
 	select {
 	case r := <-done:
@@ -205,13 +215,11 @@ func login(ctx context.Context, w io.Writer, info *auth.Info) (credential, error
 	}
 }
 
-func finishLogin(r *http.Request, conf *oauth2.Config, verifier *oidc.IDTokenVerifier, state, nonce, codeVerifier string) (credential, error) {
+// finishLogin completes a callback whose state is this login's.
+func finishLogin(r *http.Request, conf *oauth2.Config, verifier *oidc.IDTokenVerifier, nonce, codeVerifier string) (credential, error) {
 	q := r.URL.Query()
-	switch {
-	case q.Get("error") != "":
+	if q.Get("error") != "" {
 		return credential{}, fmt.Errorf("the provider refused: %s %s", q.Get("error"), q.Get("error_description"))
-	case q.Get("state") != state:
-		return credential{}, errors.New("state mismatch")
 	}
 	tok, err := conf.Exchange(r.Context(), q.Get("code"), oauth2.VerifierOption(codeVerifier))
 	if err != nil {
