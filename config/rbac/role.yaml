@@ -20,6 +20,14 @@ rules:
   - delete
   - get
 - apiGroups:
+  - apps
+  resources:
+  - deployments
+  verbs:
+  - get
+  - list
+  - watch
+- apiGroups:
   - authentication.k8s.io
   resources:
   - tokenreviews
@@ -60,6 +68,7 @@ rules:
   - cadre.dev
   resources:
   - runners/finalizers
+  - toolservers/finalizers
   verbs:
   - update
 - apiGroups:
