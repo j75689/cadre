@@ -48,7 +48,7 @@ Not a SaaS. Not a workflow engine. Not an LLM gateway. Not a sandbox. Cadre inte
 | --- | --- | --- |
 | **M0** state machine (done) | `Task` and `Team` CRDs, storage interface, conformance suite, kubernetes driver, every transition, outbox dispatcher, `cadre` CLI with a fake runner | two managers survive the chaos test; no task runs twice |
 | **M1** runner (done) | `Agent`, `ModelProvider`, `ToolServer`, runner protocol, per-run MCP, `cadre-runner` builtin loop (Anthropic, OpenAI-compatible) | `kubectl apply` a Task, the agent asks a question, a human answers from the CLI, the agent finishes |
-| **M2** execution | builtin loop in step mode, Job backend, managed ToolServers | a rolling update of workers never interrupts a run |
+| **M2** execution | builtin loop in step mode, the default for builtin agents since October 2026 (`runtime.execution: runtime` is the fallback), Job backend, managed ToolServers | a rolling update of workers never interrupts a run |
 | **M3** platform | web UI, OIDC and policy RBAC, `Schedule`, `Notifier`, Helm chart | a team uses Cadre day to day without kubectl |
 | **M4** extensions | postgres driver, operator, plugin interface, deliverables and publishers, Agent Sandbox, agentgateway | a publisher attaches as a plugin |
 

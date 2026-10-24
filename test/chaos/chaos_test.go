@@ -106,7 +106,7 @@ func TestChaos(t *testing.T) {
 				Type: v1alpha1.ProviderBedrock, Model: "anthropic.claude", WorkloadIdentity: true, Region: "us-east-1",
 			}},
 			&v1alpha1.Agent{ObjectMeta: metav1.ObjectMeta{Name: "coder", Namespace: ns}, Spec: v1alpha1.AgentSpec{
-				ModelRef: "claude", Runtime: v1alpha1.AgentRuntime{Type: v1alpha1.RuntimeBuiltin},
+				ModelRef: "claude", Runtime: v1alpha1.AgentRuntime{Type: v1alpha1.RuntimeBuiltin, Execution: v1alpha1.RunModeRuntime},
 			}},
 			// Its tasks are run a step at a time, by the step workers.
 			&v1alpha1.Agent{ObjectMeta: metav1.ObjectMeta{Name: "stepper", Namespace: ns}, Spec: v1alpha1.AgentSpec{

@@ -15,10 +15,10 @@ import (
 
 func TestClaimableBy(t *testing.T) {
 	runnerAgent := ReadyAgent(ns, "a", "m", v1alpha1.AgentRuntime{Type: v1alpha1.RuntimeRunner, Selector: map[string]string{"pool": "claude-code", "zone": "a"}})
-	builtinAgent := ReadyAgent(ns, "b", "m", v1alpha1.AgentRuntime{Type: v1alpha1.RuntimeBuiltin})
-	stale := ReadyAgent(ns, "c", "m", v1alpha1.AgentRuntime{Type: v1alpha1.RuntimeBuiltin})
+	builtinAgent := ReadyAgent(ns, "b", "m", v1alpha1.AgentRuntime{Type: v1alpha1.RuntimeBuiltin, Execution: v1alpha1.RunModeRuntime})
+	stale := ReadyAgent(ns, "c", "m", v1alpha1.AgentRuntime{Type: v1alpha1.RuntimeBuiltin, Execution: v1alpha1.RunModeRuntime})
 	stale.Generation = 2 // spec changed since it was found Ready
-	notReady := ReadyAgent(ns, "d", "m", v1alpha1.AgentRuntime{Type: v1alpha1.RuntimeBuiltin})
+	notReady := ReadyAgent(ns, "d", "m", v1alpha1.AgentRuntime{Type: v1alpha1.RuntimeBuiltin, Execution: v1alpha1.RunModeRuntime})
 	notReady.Status.Conditions[0].Status = metav1.ConditionFalse
 
 	for name, tc := range map[string]struct {
@@ -49,9 +49,9 @@ func TestClaimSkipsUnclaimableAgents(t *testing.T) {
 	e := newEnv(t, 3)
 	agents := StaticAgents{
 		Agents: map[string]*v1alpha1.Agent{
-			ns + "/coder": ReadyAgent(ns, "coder", "claude", v1alpha1.AgentRuntime{Type: v1alpha1.RuntimeBuiltin}),
+			ns + "/coder": ReadyAgent(ns, "coder", "claude", v1alpha1.AgentRuntime{Type: v1alpha1.RuntimeBuiltin, Execution: v1alpha1.RunModeRuntime}),
 			ns + "/broken": func() *v1alpha1.Agent {
-				a := ReadyAgent(ns, "broken", "claude", v1alpha1.AgentRuntime{Type: v1alpha1.RuntimeBuiltin})
+				a := ReadyAgent(ns, "broken", "claude", v1alpha1.AgentRuntime{Type: v1alpha1.RuntimeBuiltin, Execution: v1alpha1.RunModeRuntime})
 				a.Status.Conditions[0].Status = metav1.ConditionFalse
 				return a
 			}(),

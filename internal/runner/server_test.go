@@ -27,7 +27,7 @@ const ns = "team-a"
 var (
 	agents = manager.StaticAgents{
 		Agents: map[string]*v1alpha1.Agent{ns + "/coder": func() *v1alpha1.Agent {
-			a := manager.ReadyAgent(ns, "coder", "claude", v1alpha1.AgentRuntime{Type: v1alpha1.RuntimeBuiltin})
+			a := manager.ReadyAgent(ns, "coder", "claude", v1alpha1.AgentRuntime{Type: v1alpha1.RuntimeBuiltin, Execution: v1alpha1.RunModeRuntime})
 			a.Spec.Instructions = "Fix what you are given."
 			a.Spec.Effort = v1alpha1.EffortXHigh
 			a.Spec.ToolRefs = []string{"github"}

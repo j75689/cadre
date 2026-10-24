@@ -163,7 +163,7 @@ spec:
     ...
   runtime:
     type: builtin               # builtin | runner
-    # execution: step           # builtin only: run a step at a time (see execution.md); default runtime
+    # execution: runtime        # builtin: step (the default) runs a step at a time, runtime one worker per run (see execution.md)
     # selector: { pool: claude-code }   # runner: which runner pool may claim this agent's tasks
 ```
 
@@ -188,7 +188,7 @@ spec:
 | Agent | `toolRefs` | ToolServers in the same namespace, a set |
 | Agent | `runtime.type` | `builtin` (the default) or `runner` |
 | Agent | `runtime.selector` | required, with at least one label, for `runner`; forbidden for `builtin` |
-| Agent | `runtime.execution` | `runtime` (the default) or `step`; `step` for `builtin` only |
+| Agent | `runtime.execution` | `step` or `runtime`; `step` for `builtin` only. Left out, it is `step` for `builtin` and `runtime` for `runner`; there is no schema default, so an Agent stored with `runtime` before step became the default stays runtime |
 | Runner | `serviceAccount` | `{name}` of the ServiceAccount, in the Runner's own namespace, that an in-cluster runner authenticates as. Without it the runner is outside the cluster and Cadre mints its token: exactly one of the two |
 | Runner | `labels` | required, at least one: the labels the runner's claims are matched with, set here and never taken from the runner's request; the `cadre.dev/` prefix is reserved |
 | Agent | `effort` | `low`, `medium`, `high` (the default), `xhigh` or `max`: how much thinking the builtin loop asks the model for. It is on the Agent, not the ModelProvider, because one model serves agents that need different depth |

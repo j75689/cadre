@@ -87,14 +87,14 @@ func ReadyAgent(namespace, name, modelRef string, runtime v1alpha1.AgentRuntime)
 	return a
 }
 
-// ReadyBuiltin returns Agents holding one Ready builtin agent and the
-// ModelProvider it names, as a cluster with working controllers would; for
-// tests.
+// ReadyBuiltin returns Agents holding one Ready builtin agent, run whole
+// (runtime execution), and the ModelProvider it names, as a cluster with
+// working controllers would; for tests.
 func ReadyBuiltin(namespace, agent, model string) StaticAgents {
 	mp := &v1alpha1.ModelProvider{Spec: v1alpha1.ModelProviderSpec{Type: v1alpha1.ProviderAnthropic, Model: "claude-opus-5-5"}}
 	mp.Namespace, mp.Name = namespace, model
 	return StaticAgents{
-		Agents:         map[string]*v1alpha1.Agent{namespace + "/" + agent: ReadyAgent(namespace, agent, model, v1alpha1.AgentRuntime{Type: v1alpha1.RuntimeBuiltin})},
+		Agents:         map[string]*v1alpha1.Agent{namespace + "/" + agent: ReadyAgent(namespace, agent, model, v1alpha1.AgentRuntime{Type: v1alpha1.RuntimeBuiltin, Execution: v1alpha1.RunModeRuntime})},
 		ModelProviders: map[string]*v1alpha1.ModelProvider{namespace + "/" + model: mp},
 	}
 }
