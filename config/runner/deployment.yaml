@@ -21,6 +21,8 @@ spec:
       containers:
       - name: cadre-runner
         image: ghcr.io/j75689/cadre-runner:main
+        # :main moves; a pinned release tag can drop this.
+        imagePullPolicy: Always
         args:
         - --server=http://cadre-server.cadre-system.svc:8080
         # Give every replica its own name, shown in status.run.runner.
