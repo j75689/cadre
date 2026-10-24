@@ -205,7 +205,8 @@ func TestAnswerRetryWritesOneAnswer(t *testing.T) {
 		t.Fatal(err)
 	}
 	// The answer's revision advance lands; the Reply write after it fails.
-	m := e.manager(&failSecondWrite{Driver: e.store})
+	// The answer's revision advance lands, the Reply does not.
+	m := e.manager(&failNthWrite{Driver: e.store, nth: 2})
 	if _, _, err := m.Answer(ctx, key, alice, "use staging"); !errors.Is(err, errTimeout) {
 		t.Fatalf("first answer: %v, want the injected failure", err)
 	}
@@ -234,17 +235,16 @@ func TestAnswerRetryWritesOneAnswer(t *testing.T) {
 	}
 }
 
-// failSecondWrite lets the first task status write through and fails the
-// second, without effect: the answer's revision advance lands, the Reply
-// does not.
-type failSecondWrite struct {
+// failNthWrite fails the nth task status write (from 1), without effect,
+// and lets the others through.
+type failNthWrite struct {
 	storage.Driver
-	n int
+	nth, n int
 }
 
-func (f *failSecondWrite) UpdateTaskStatus(c context.Context, t *v1alpha1.Task) error {
+func (f *failNthWrite) UpdateTaskStatus(c context.Context, t *v1alpha1.Task) error {
 	f.n++
-	if f.n == 2 {
+	if f.n == f.nth {
 		return errTimeout
 	}
 	return f.Driver.UpdateTaskStatus(c, t)

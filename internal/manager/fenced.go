@@ -114,7 +114,9 @@ func (m *Manager) callItem(ctx context.Context, key storage.Key, t *v1alpha1.Tas
 	item := v1alpha1.OutboxItem{ID: id, Kind: v1alpha1.OutboxAppendThread}
 	blob := blobName(runID, item.ID)
 	if call != nil {
-		call.ID = item.ID
+		// A ToolCall entry names the call; only its result says how it
+		// went.
+		call.ID, call.IsError = item.ID, false
 	}
 	content, err := json.Marshal(threadBlob{Body: body, Call: call})
 	if err != nil {
@@ -149,7 +151,46 @@ func (m *Manager) appliedEntry(ctx context.Context, key storage.Key, item v1alph
 	if e, err := m.findEntry(ctx, key, item.Thread.After, item.ID); err == nil && e != nil {
 		return e
 	}
-	return &ThreadEntry{Kind: EntryKind(item.Thread.Kind), RunID: item.Thread.RunID, ItemID: item.ID}
+	e := &ThreadEntry{Kind: EntryKind(item.Thread.Kind), RunID: item.Thread.RunID, ItemID: item.ID}
+	if e.Kind == EntryToolCall {
+		e.Call = &ToolCall{ID: item.ID}
+	}
+	return e
+}
+
+// finishWaitingOn ends the run waiting on the entry item writes, with
+// req, and returns the entry. A retry that finds the run already finished
+// so (its first attempt's Finish landed, its answer lost) committed
+// nothing of its own: it returns the first attempt's entry, the one the
+// wait names.
+func (m *Manager) finishWaitingOn(ctx context.Context, key storage.Key, item v1alpha1.OutboxItem, req FinishRequest) (*ThreadEntry, error) {
+	_, again, err := m.Finish(ctx, key, req)
+	if err != nil {
+		return nil, err
+	}
+	if !again {
+		return m.appliedEntry(ctx, key, item), nil
+	}
+	t, err := m.store.GetTask(ctx, key)
+	if err != nil {
+		return nil, err
+	}
+	w := t.Status.Waiting
+	switch {
+	case w == nil || w.ItemID == "":
+		// The wait ended already; the entry is in the thread.
+	case outboxItem(t, w.ItemID) != nil:
+		return m.appliedEntry(ctx, key, *outboxItem(t, w.ItemID)), nil
+	case w.ThreadSeq > 0:
+		entries, err := m.ReadThread(ctx, key, w.ThreadSeq-1, 1)
+		if err != nil {
+			return nil, err
+		}
+		if len(entries) == 1 && entries[0].ItemID == w.ItemID {
+			return &entries[0], nil
+		}
+	}
+	return &ThreadEntry{Kind: EntryKind(item.Thread.Kind), RunID: item.Thread.RunID}, nil
 }
 
 // findEntry returns the thread entry item itemID wrote after after, or nil.

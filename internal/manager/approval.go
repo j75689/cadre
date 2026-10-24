@@ -119,13 +119,10 @@ func (m *Manager) RunToolCall(ctx context.Context, key storage.Key, runID string
 		return nil, err
 	}
 	step, attempt := stepFence(t)
-	if _, _, err := m.Finish(ctx, key, FinishRequest{
+	return m.finishWaitingOn(ctx, key, item, FinishRequest{
 		RunID: runID, Step: step, Attempt: attempt, Outcome: task.OutcomeWaiting, Reason: v1alpha1.WaitingToolApproval,
 		WaitingItem: item.ID, Outbox: []v1alpha1.OutboxItem{item},
-	}); err != nil {
-		return nil, err
-	}
-	return m.appliedEntry(ctx, key, item), nil
+	})
 }
 
 // canonical is arguments as the thread stores them: checked to be JSON and

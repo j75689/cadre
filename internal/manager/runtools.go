@@ -84,13 +84,10 @@ func (m *Manager) RunAsk(ctx context.Context, key storage.Key, runID, question s
 		return nil, err
 	}
 	step, attempt := stepFence(t)
-	if _, _, err := m.Finish(ctx, key, FinishRequest{
+	return m.finishWaitingOn(ctx, key, item, FinishRequest{
 		RunID: runID, Step: step, Attempt: attempt, Outcome: task.OutcomeWaiting, Reason: v1alpha1.WaitingQuestion,
 		WaitingItem: item.ID, Outbox: []v1alpha1.OutboxItem{item},
-	}); err != nil {
-		return nil, err
-	}
-	return m.appliedEntry(ctx, key, item), nil
+	})
 }
 
 // MaxThreadPage is the most thread entries a run reads in one call.
