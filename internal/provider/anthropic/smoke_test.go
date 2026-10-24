@@ -77,7 +77,7 @@ func TestSmoke(t *testing.T) {
 		t.Fatal(err)
 	}
 	const builtinSA = "system:serviceaccount:cadre-system:cadre-runner"
-	auth := controller.Runners(kube, kube, runner.Cached(controller.TokenReviews(kube)), builtinSA)
+	auth := controller.Runners(kube, runner.Cached(controller.TokenReviews(kube)), builtinSA)
 	log := slog.New(slog.NewTextHandler(io.Discard, nil))
 	if testing.Verbose() {
 		log = slog.New(slog.NewTextHandler(os.Stderr, nil))

@@ -105,3 +105,21 @@ func TestBearerToken(t *testing.T) {
 		}
 	}
 }
+
+// Refusals remembers refusals only: an identity is asked again every time.
+func TestRefusals(t *testing.T) {
+	next := &counting{ids: map[string]Identity{"good": {Name: "r"}}}
+	r := Refusals(next)
+	ctx := context.Background()
+	for range 2 {
+		if _, err := r.Authenticate(ctx, "good"); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := r.Authenticate(ctx, "bad"); !errors.Is(err, ErrUnauthenticated) {
+			t.Fatal(err)
+		}
+	}
+	if next.calls != 3 {
+		t.Fatalf("%d checks, want the good token twice and the bad one once", next.calls)
+	}
+}

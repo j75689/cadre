@@ -6,10 +6,9 @@ import metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 // Secrets can be found.
 const LabelRunner = "cadre.dev/runner"
 
-// ServiceAccountRef names a ServiceAccount.
+// ServiceAccountRef names a ServiceAccount in the referring object's own
+// namespace.
 type ServiceAccountRef struct {
-	// +kubebuilder:validation:MinLength=1
-	Namespace string `json:"namespace"`
 	// +kubebuilder:validation:MinLength=1
 	Name string `json:"name"`
 }
@@ -18,19 +17,20 @@ type ServiceAccountRef struct {
 // its namespace.
 type RunnerSpec struct {
 	// ServiceAccount, for a runner in the cluster, is the ServiceAccount it
-	// authenticates as, with a projected token for the audience cadre.
-	// Without it the runner is outside the cluster, and Cadre mints a
-	// token for it into the Secret <name>-token.
+	// authenticates as, with a projected token for the audience cadre. It
+	// is the ServiceAccount of that name in the Runner's own namespace: a
+	// Team cannot enlist another Team's runner. Without it the runner is outside the cluster, and
+	// Cadre mints a token for it into the Secret <name>-token.
 	// +optional
 	ServiceAccount *ServiceAccountRef `json:"serviceAccount,omitempty"`
 
 	// Labels are what the runner's claims are matched with: an agent of
 	// runtime type runner whose selector they include. The server takes
 	// them from here, never from the runner's request. The cadre.dev/
-	// prefix is reserved.
+	// prefix is reserved. A Runner without labels could claim nothing.
+	// +kubebuilder:validation:MinProperties=1
 	// +kubebuilder:validation:XValidation:rule="self.all(k, !k.startsWith('cadre.dev/'))",message="the cadre.dev/ label prefix is reserved"
-	// +optional
-	Labels map[string]string `json:"labels,omitempty"`
+	Labels map[string]string `json:"labels"`
 }
 
 // RunnerStatus is a Runner's status.
@@ -67,7 +67,7 @@ type Runner struct {
 	metav1.TypeMeta   `json:",inline"`
 	metav1.ObjectMeta `json:"metadata,omitempty"`
 
-	Spec   RunnerSpec   `json:"spec,omitempty"`
+	Spec   RunnerSpec   `json:"spec"`
 	Status RunnerStatus `json:"status,omitempty"`
 }
 

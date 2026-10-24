@@ -3,6 +3,7 @@ package controller_test
 import (
 	"context"
 	"errors"
+	"fmt"
 	"io"
 	"log/slog"
 	"net/http"
@@ -12,6 +13,8 @@ import (
 
 	authnv1 "k8s.io/api/authentication/v1"
 	corev1 "k8s.io/api/core/v1"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
+	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/client-go/kubernetes"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -23,6 +26,7 @@ import (
 	"github.com/j75689/cadre/internal/runner"
 	"github.com/j75689/cadre/internal/storage/memory"
 	"github.com/j75689/cadre/internal/testenv"
+	"github.com/j75689/cadre/internal/token"
 )
 
 const builtinSA = "system:serviceaccount:cadre-system:cadre-runner"
@@ -61,7 +65,7 @@ func TestRunners(t *testing.T) {
 			}
 		}
 	}
-	for _, ns := range []string{"team-a", "team-b", "bots", "cadre-system"} {
+	for _, ns := range []string{"team-a", "team-b", "cadre-system"} {
 		create(&corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: ns}})
 	}
 	create(
@@ -69,10 +73,11 @@ func TestRunners(t *testing.T) {
 		&v1alpha1.Team{ObjectMeta: metav1.ObjectMeta{Namespace: "team-b", Name: v1alpha1.TeamName}},
 		&v1alpha1.Runner{ObjectMeta: metav1.ObjectMeta{Namespace: "team-a", Name: "laptop"}, Spec: v1alpha1.RunnerSpec{Labels: map[string]string{"pool": "gpu"}}},
 		&v1alpha1.Runner{ObjectMeta: metav1.ObjectMeta{Namespace: "team-a", Name: "ci"}, Spec: v1alpha1.RunnerSpec{
-			ServiceAccount: &v1alpha1.ServiceAccountRef{Namespace: "bots", Name: "ci"}, Labels: map[string]string{"pool": "ci-a"}}},
+			ServiceAccount: &v1alpha1.ServiceAccountRef{Name: "ci"}, Labels: map[string]string{"pool": "ci-a"}}},
+		// team-b names a ServiceAccount "ci" too: its own, not team-a's.
 		&v1alpha1.Runner{ObjectMeta: metav1.ObjectMeta{Namespace: "team-b", Name: "ci"}, Spec: v1alpha1.RunnerSpec{
-			ServiceAccount: &v1alpha1.ServiceAccountRef{Namespace: "bots", Name: "ci"}, Labels: map[string]string{"pool": "ci-b"}}},
-		&corev1.ServiceAccount{ObjectMeta: metav1.ObjectMeta{Namespace: "bots", Name: "ci"}},
+			ServiceAccount: &v1alpha1.ServiceAccountRef{Name: "ci"}, Labels: map[string]string{"pool": "ci-b"}}},
+		&corev1.ServiceAccount{ObjectMeta: metav1.ObjectMeta{Namespace: "team-a", Name: "ci"}},
 		&corev1.ServiceAccount{ObjectMeta: metav1.ObjectMeta{Namespace: "cadre-system", Name: "cadre-runner"}},
 	)
 	saToken := func(ns, name string) string {
@@ -83,7 +88,8 @@ func TestRunners(t *testing.T) {
 		}
 		return tr.Status.Token
 	}
-	// minted waits for the laptop's token, different from old.
+	// minted waits for the laptop's token, different from old, and for
+	// the Runner's status to name it.
 	minted := func(old string) string {
 		t.Helper()
 		deadline := time.Now().Add(10 * time.Second)
@@ -92,7 +98,7 @@ func TestRunners(t *testing.T) {
 			var rn v1alpha1.Runner
 			if c.Get(ctx, client.ObjectKey{Namespace: "team-a", Name: "laptop-token"}, &s) == nil &&
 				c.Get(ctx, client.ObjectKey{Namespace: "team-a", Name: "laptop"}, &rn) == nil &&
-				rn.Status.TokenHash != "" && string(s.Data["token"]) != old {
+				string(s.Data["token"]) != old && rn.Status.TokenHash == token.Hash(string(s.Data["token"])) {
 				if s.Labels[v1alpha1.LabelRunner] != "laptop" || len(s.OwnerReferences) != 1 || rn.Status.TokenSecret != "laptop-token" {
 					t.Fatalf("secret %+v, status %+v", s.ObjectMeta, rn.Status)
 				}
@@ -104,9 +110,9 @@ func TestRunners(t *testing.T) {
 		return ""
 	}
 
-	auth := controller.Runners(mgr.GetClient(), mgr.GetAPIReader(), runner.Cached(controller.TokenReviews(c)), builtinSA)
+	auth := controller.Runners(mgr.GetClient(), runner.Cached(controller.TokenReviews(c)), builtinSA)
 	tok := minted("")
-	id, err := auth.Authenticate(ctx, tok)
+	id, err := authenticated(ctx, auth, tok)
 	if err != nil || id.Name != "cadre:runner:team-a/laptop" || len(id.Scope) != 1 || id.Scope["team-a"]["pool"] != "gpu" {
 		t.Fatalf("minted token: %+v, %v", id, err)
 	}
@@ -121,23 +127,24 @@ func TestRunners(t *testing.T) {
 		t.Fatal(err)
 	}
 	next := minted(tok)
-	if _, err := auth.Authenticate(ctx, tok); !errors.Is(err, runner.ErrUnauthenticated) {
-		t.Fatalf("the rotated-out token: %v, want unauthenticated", err)
+	if err := refused(ctx, auth, tok); err != nil {
+		t.Fatalf("the rotated-out token: %v", err)
 	}
-	if _, err := auth.Authenticate(ctx, next); err != nil {
+	if _, err := authenticated(ctx, auth, next); err != nil {
 		t.Fatalf("the new token: %v", err)
 	}
 
-	// A ServiceAccount claims where its Runners are, with their labels.
+	// A ServiceAccount claims where its Runners are, in its own namespace,
+	// with their labels: team-b's "ci" Runner names team-b's account.
 	var ciID runner.Identity
 	deadline := time.Now().Add(10 * time.Second)
 	for time.Now().Before(deadline) {
-		if ciID, err = auth.Authenticate(ctx, saToken("bots", "ci")); err == nil && len(ciID.Scope) == 2 {
+		if ciID, err = auth.Authenticate(ctx, saToken("team-a", "ci")); err == nil && len(ciID.Scope) == 1 {
 			break
 		}
 		time.Sleep(50 * time.Millisecond)
 	}
-	if ciID.Name != "system:serviceaccount:bots:ci" || ciID.Scope["team-a"]["pool"] != "ci-a" || ciID.Scope["team-b"]["pool"] != "ci-b" {
+	if ciID.Name != "system:serviceaccount:team-a:ci" || len(ciID.Scope) != 1 || ciID.Scope["team-a"]["pool"] != "ci-a" {
 		t.Fatalf("ci's identity: %+v, %v", ciID, err)
 	}
 	if b, err := auth.Authenticate(ctx, saToken("cadre-system", "cadre-runner")); err != nil || b.Scope != nil {
@@ -178,8 +185,81 @@ func TestRunners(t *testing.T) {
 		t.Fatalf("a second claim: %+v, %v; team-b is not the laptop's", again, err)
 	}
 	// ci's labels (ci-a, ci-b) match no gpu agent, whatever it sends.
-	ci := cadreclient.New(srv.URL, &http.Client{Transport: bearer(saToken("bots", "ci"))})
+	ci := cadreclient.New(srv.URL, &http.Client{Transport: bearer(saToken("team-a", "ci"))})
 	if c, err := ci.Claim(ctx, runner.ClaimRequest{Runner: "ci", Labels: map[string]string{"pool": "gpu"}}); err != nil || c != nil {
 		t.Fatalf("ci claiming with a label it sends: %+v, %v; want nothing", c, err)
 	}
+
+	// A Secret of the token's name the Runner does not own is no token:
+	// the current one stops, and the Runner says why.
+	if err := c.Delete(ctx, &corev1.Secret{ObjectMeta: metav1.ObjectMeta{Namespace: "team-a", Name: "laptop-token"}}); err != nil {
+		t.Fatal(err)
+	}
+	create(&corev1.Secret{ObjectMeta: metav1.ObjectMeta{Namespace: "team-a", Name: "laptop-token"}, Data: map[string][]byte{"token": []byte(next)}})
+	if err := refused(ctx, auth, next); err != nil {
+		t.Fatalf("a token in a Secret the Runner does not own: %v", err)
+	}
+	waitRunner(t, c, "laptop", func(rn *v1alpha1.Runner) bool {
+		cond := meta.FindStatusCondition(rn.Status.Conditions, v1alpha1.ConditionReady)
+		return rn.Status.TokenHash == "" && cond != nil && cond.Status == metav1.ConditionFalse && cond.Reason == "SecretNotOwned"
+	})
+
+	// Switching a Runner to a ServiceAccount deletes its own minted
+	// Secret, so switching back mints a fresh token.
+	create(&v1alpha1.Runner{ObjectMeta: metav1.ObjectMeta{Namespace: "team-a", Name: "switch"}, Spec: v1alpha1.RunnerSpec{Labels: map[string]string{"pool": "x"}}})
+	waitRunner(t, c, "switch", func(rn *v1alpha1.Runner) bool { return rn.Status.TokenHash != "" })
+	var rn v1alpha1.Runner
+	if err := c.Get(ctx, client.ObjectKey{Namespace: "team-a", Name: "switch"}, &rn); err != nil {
+		t.Fatal(err)
+	}
+	rn.Spec.ServiceAccount = &v1alpha1.ServiceAccountRef{Name: "ci"}
+	if err := c.Update(ctx, &rn); err != nil {
+		t.Fatal(err)
+	}
+	waitRunner(t, c, "switch", func(rn *v1alpha1.Runner) bool { return rn.Status.TokenHash == "" })
+	for deadline := time.Now().Add(10 * time.Second); ; time.Sleep(50 * time.Millisecond) {
+		err := c.Get(ctx, client.ObjectKey{Namespace: "team-a", Name: "switch-token"}, &corev1.Secret{})
+		if apierrors.IsNotFound(err) {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("the minted Secret outlived the switch: %v", err)
+		}
+	}
+}
+
+// refused waits for tok to be refused.
+func refused(ctx context.Context, auth runner.Authenticator, tok string) error {
+	var err error
+	for deadline := time.Now().Add(10 * time.Second); time.Now().Before(deadline); time.Sleep(100 * time.Millisecond) {
+		if _, err = auth.Authenticate(ctx, tok); errors.Is(err, runner.ErrUnauthenticated) {
+			return nil
+		}
+	}
+	return fmt.Errorf("still accepted, last %w", err)
+}
+
+// waitRunner waits for the Runner name in team-a to satisfy ok.
+func waitRunner(t *testing.T, c client.Client, name string, ok func(*v1alpha1.Runner) bool) {
+	t.Helper()
+	var rn v1alpha1.Runner
+	for deadline := time.Now().Add(10 * time.Second); time.Now().Before(deadline); time.Sleep(50 * time.Millisecond) {
+		if c.Get(context.Background(), client.ObjectKey{Namespace: "team-a", Name: name}, &rn) == nil && ok(&rn) {
+			return
+		}
+	}
+	t.Fatalf("Runner %s never got there: %+v", name, rn.Status)
+}
+
+// authenticated waits for tok to authenticate: the Runner cache may lag
+// the status write by a moment.
+func authenticated(ctx context.Context, auth runner.Authenticator, tok string) (runner.Identity, error) {
+	var id runner.Identity
+	var err error
+	for deadline := time.Now().Add(10 * time.Second); time.Now().Before(deadline); time.Sleep(100 * time.Millisecond) {
+		if id, err = auth.Authenticate(ctx, tok); err == nil {
+			return id, nil
+		}
+	}
+	return id, err
 }

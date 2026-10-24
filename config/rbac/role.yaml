@@ -10,6 +10,7 @@ rules:
   - secrets
   verbs:
   - create
+  - delete
   - get
 - apiGroups:
   - authentication.k8s.io
@@ -39,6 +40,12 @@ rules:
   - toolservers/status
   verbs:
   - get
+  - update
+- apiGroups:
+  - cadre.dev
+  resources:
+  - runners/finalizers
+  verbs:
   - update
 - apiGroups:
   - cadre.dev

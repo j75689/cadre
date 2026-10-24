@@ -63,7 +63,8 @@ spec:
                   Labels are what the runner's claims are matched with: an agent of
                   runtime type runner whose selector they include. The server takes
                   them from here, never from the runner's request. The cadre.dev/
-                  prefix is reserved.
+                  prefix is reserved. A Runner without labels could claim nothing.
+                minProperties: 1
                 type: object
                 x-kubernetes-validations:
                 - message: the cadre.dev/ label prefix is reserved
@@ -71,20 +72,19 @@ spec:
               serviceAccount:
                 description: |-
                   ServiceAccount, for a runner in the cluster, is the ServiceAccount it
-                  authenticates as, with a projected token for the audience cadre.
-                  Without it the runner is outside the cluster, and Cadre mints a
-                  token for it into the Secret <name>-token.
+                  authenticates as, with a projected token for the audience cadre. It
+                  is the ServiceAccount of that name in the Runner's own namespace: a
+                  Team cannot enlist another Team's runner. Without it the runner is outside the cluster, and
+                  Cadre mints a token for it into the Secret <name>-token.
                 properties:
                   name:
                     minLength: 1
                     type: string
-                  namespace:
-                    minLength: 1
-                    type: string
                 required:
                 - name
-                - namespace
                 type: object
+            required:
+            - labels
             type: object
           status:
             description: RunnerStatus is a Runner's status.
@@ -172,6 +172,8 @@ spec:
                   outside the cluster.
                 type: string
             type: object
+        required:
+        - spec
         type: object
     served: true
     storage: true
