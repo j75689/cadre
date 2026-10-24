@@ -156,8 +156,14 @@ func (r *scheduleReconciler) Reconcile(ctx context.Context, req reconcile.Reques
 	}
 	at := fire(next)
 	changed = setTime(&st.NextScheduleTime, stamp(at)) || changed
-	return reconcile.Result{RequeueAfter: min(at.Sub(now), r.resync)}, r.writeStatus(ctx, &s, &st.ConfigStatus, true, "Scheduled", "", changed)
+	// A tick held back by a late one is due already: come back at once. A
+	// delay of zero or less would requeue nothing.
+	return reconcile.Result{RequeueAfter: max(min(at.Sub(now), r.resync), overdue)}, r.writeStatus(ctx, &s, &st.ConfigStatus, true, "Scheduled", "", changed)
 }
+
+// overdue is how soon a Schedule whose next tick is due already is looked
+// at again.
+const overdue = 100 * time.Millisecond
 
 // parser reads standard five-field cron expressions and descriptors.
 var parser = cron.NewParser(cron.Minute | cron.Hour | cron.Dom | cron.Month | cron.Dow | cron.Descriptor)

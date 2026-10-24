@@ -2,6 +2,7 @@ package controller_test
 
 import (
 	"context"
+	"fmt"
 	"strings"
 	"sync"
 	"testing"
@@ -281,6 +282,37 @@ func TestSchedules(t *testing.T) {
 		e.expectTasks(s)
 		e.clock.set(next.Add(time.Second))
 		e.expectTasks(s, taskName(s, t1))
+	})
+
+	t.Run("a late tick and the one it held back", func(t *testing.T) {
+		e.t = t
+		e.clock.set(time.Now())
+		// A Schedule whose first tick's jitter outlasts the second tick, and
+		// the second is due when the first fires, but not the third.
+		const jitter = 5 * time.Minute
+		var s *v1alpha1.Schedule
+		var t1 time.Time
+		var offset func(time.Time) time.Duration
+		for i := 0; s == nil; i++ {
+			if i == 50 {
+				t.Fatal("no Schedule with fitting jitter in 50")
+			}
+			c := e.schedule(ns, fmt.Sprintf("late-%d", i), v1alpha1.ScheduleSpec{Cron: "* * * * *", Jitter: &metav1.Duration{Duration: jitter}})
+			offset = func(tick time.Time) time.Duration { return controller.JitterOffset(string(c.UID), tick, jitter) }
+			first := c.CreationTimestamp.Truncate(time.Minute).Add(time.Minute)
+			o1, o2, o3 := offset(first), offset(first.Add(time.Minute)), offset(first.Add(2*time.Minute))
+			if o1 > time.Minute+2*time.Second && o2+time.Minute < o1 && o3+2*time.Minute > o1+2*time.Second {
+				s, t1 = c, first
+				continue
+			}
+			if err := e.c.Delete(context.Background(), c); err != nil {
+				t.Fatal(err)
+			}
+		}
+		t2 := t1.Add(time.Minute)
+		// The clock stops just after t1's fire time: nothing else happens.
+		e.clock.set(t1.Add(offset(t1)).Add(time.Second))
+		e.expectTasks(s, taskName(s, t1), taskName(s, t2))
 	})
 
 	t.Run("invalid", func(t *testing.T) {
