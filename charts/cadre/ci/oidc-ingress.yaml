@@ -1,0 +1,38 @@
+image:
+  tag: v0.1.0
+server:
+  timings:
+    lease: 60s
+    heartbeat: 20s
+  resources:
+    requests: { cpu: 100m, memory: 128Mi }
+ingress:
+  enabled: true
+  className: nginx
+  host: cadre.example.test
+  tlsSecret: cadre-tls
+auth:
+  oidc:
+    issuer: https://dex.example.test
+    clientId: cadre
+    cliClientId: cadre-cli
+    clientSecret:
+      secretName: cadre-oidc
+  admins:
+    users: [admin@example.test]
+    groups: [platform]
+  sessionKey:
+    existingSecret: cadre-session
+storage:
+  s3:
+    endpoint: http://seaweedfs.storage.svc:8333
+    bucket: cadre
+    pathStyle: true
+    credentialsSecret: cadre-s3
+workloads:
+  clusterWide: true
+runner:
+  replicas: 2
+  parallel: 4
+  namespaces: [team-a, team-b]
+  stepTimeout: 10m

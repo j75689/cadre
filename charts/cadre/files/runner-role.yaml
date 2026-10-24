@@ -1,0 +1,34 @@
+# cadre-runner reads each run's model credential from the ModelProvider's
+# Secret, in the task's namespace, with its own ServiceAccount. It needs get
+# on Secrets and nothing else: no list or watch, because it reads each one
+# fresh and never caches it.
+#
+# The ClusterRole grants nothing by itself. Bind it in each Team namespace
+# whose builtin agents cadre-runner should run, with a RoleBinding like the
+# one below (replace team-a and the runner's namespace).
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: cadre-runner
+rules:
+- apiGroups:
+  - ""
+  resources:
+  - secrets
+  verbs:
+  - get
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: cadre-runner
+  namespace: team-a
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: cadre-runner
+subjects:
+- kind: ServiceAccount
+  name: cadre-runner
+  namespace: cadre-system

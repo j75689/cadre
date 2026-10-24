@@ -37,6 +37,8 @@ jobs:
         run: make verify-generated
       - name: Lint
         run: make lint
+      - name: Helm chart
+        run: make chart-lint
       - uses: actions/setup-node@v4
         with:
           node-version-file: web/.nvmrc

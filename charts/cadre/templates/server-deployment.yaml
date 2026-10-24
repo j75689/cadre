@@ -1,0 +1,168 @@
+{{- $oidc := eq .Values.auth.mode "oidc" -}}
+{{- $s3 := .Values.storage.s3 -}}
+{{- if and $oidc (not (include "cadre.externalURL" .)) }}
+{{- fail "auth.mode oidc needs the URL browsers reach cadre-server at, for logins to return to: set ingress.enabled with ingress.host, or server.externalURL (also when TLS terminates before the Ingress, as https://<host>)" }}
+{{- end }}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "cadre.server" . }}
+  labels:
+    {{- include "cadre.labels" . | nindent 4 }}
+    app.kubernetes.io/name: cadre-server
+spec:
+  replicas: {{ .Values.server.replicas }}
+  selector:
+    matchLabels:
+      app.kubernetes.io/instance: {{ .Release.Name }}
+      app.kubernetes.io/name: cadre-server
+  template:
+    metadata:
+      labels:
+        {{- include "cadre.labels" . | nindent 8 }}
+        app.kubernetes.io/name: cadre-server
+      {{- $key := "" }}
+      {{- if $oidc }}{{ $key = include "cadre.sessionKey" . }}{{ end }}
+      {{- if or .Values.server.podAnnotations $key }}
+      annotations:
+        {{- with .Values.server.podAnnotations }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+        {{- with $key }}
+        # A new session key rolls the pods, which read it at start.
+        checksum/session-key: {{ sha256sum . }}
+        {{- end }}
+      {{- end }}
+    spec:
+      serviceAccountName: {{ include "cadre.server" . }}
+      {{- with .Values.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      securityContext:
+        runAsNonRoot: true
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: cadre-server
+          image: {{ include "cadre.image" (dict "root" . "name" "cadre-server") }}
+          imagePullPolicy: {{ include "cadre.pullPolicy" . }}
+          args:
+            - --listen=:8080
+            - --public-url={{ include "cadre.publicURL" . }}
+            {{- with include "cadre.externalURL" . }}
+            - --external-url={{ . }}
+            {{- end }}
+            - --leader-elect=true
+            - --leader-elect-namespace={{ .Release.Namespace }}
+            - --runner-auth={{ .Values.server.runnerAuth }}
+            - --builtin-runner=system:serviceaccount:{{ .Release.Namespace }}:{{ include "cadre.runner" . }}
+            - --auth={{ .Values.auth.mode }}
+            {{- if $oidc }}
+            {{- with .Values.auth.oidc }}
+            - --oidc-issuer={{ required "auth.oidc.issuer is required with auth.mode oidc" .issuer }}
+            - --oidc-client-id={{ required "auth.oidc.clientId is required with auth.mode oidc" .clientId }}
+            {{- with .cliClientId }}
+            - --oidc-cli-client-id={{ . }}
+            {{- end }}
+            - --oidc-scopes={{ .scopes }}
+            - --oidc-username-claim={{ .usernameClaim }}
+            - --oidc-groups-claim={{ .groupsClaim }}
+            {{- if .clientSecret.secretName }}
+            - --oidc-client-secret-file=/etc/cadre/oidc/{{ .clientSecret.key }}
+            {{- end }}
+            {{- end }}
+            - --session-key-file=/etc/cadre/session/key
+            {{- with .Values.auth.admins.users }}
+            - --admin-users={{ join "," . }}
+            {{- end }}
+            {{- with .Values.auth.admins.groups }}
+            - --admin-groups={{ join "," . }}
+            {{- end }}
+            {{- end }}
+            - --s3-bucket={{ required "storage.s3.bucket is required" $s3.bucket }}
+            {{- with $s3.endpoint }}
+            - --s3-endpoint={{ . }}
+            {{- end }}
+            - --s3-region={{ $s3.region }}
+            - --s3-prefix={{ $s3.prefix }}
+            - --s3-path-style={{ $s3.pathStyle }}
+            {{- with .Values.server.timings }}
+            {{- with .lease }}
+            - --lease={{ . }}
+            {{- end }}
+            {{- with .heartbeat }}
+            - --heartbeat={{ . }}
+            {{- end }}
+            {{- with .stepIdle }}
+            - --step-idle={{ . }}
+            {{- end }}
+            {{- with .reclaimInterval }}
+            - --reclaim-interval={{ . }}
+            {{- end }}
+            {{- with .dispatchInterval }}
+            - --dispatch-interval={{ . }}
+            {{- end }}
+            {{- end }}
+          {{- with $s3.credentialsSecret }}
+          env:
+            - name: CADRE_S3_ACCESS_KEY
+              valueFrom:
+                secretKeyRef: { name: {{ . }}, key: {{ $s3.accessKeyKey }} }
+            - name: CADRE_S3_SECRET_KEY
+              valueFrom:
+                secretKeyRef: { name: {{ . }}, key: {{ $s3.secretKeyKey }} }
+          {{- end }}
+          ports:
+            - name: http
+              containerPort: 8080
+          livenessProbe:
+            httpGet: { path: /healthz, port: http }
+            periodSeconds: 10
+          readinessProbe:
+            httpGet: { path: /readyz, port: http }
+            periodSeconds: 5
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
+          {{- with .Values.server.resources }}
+          resources:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          {{- if $oidc }}
+          volumeMounts:
+            - name: session-key
+              mountPath: /etc/cadre/session
+              readOnly: true
+            {{- if .Values.auth.oidc.clientSecret.secretName }}
+            - name: oidc-client-secret
+              mountPath: /etc/cadre/oidc
+              readOnly: true
+            {{- end }}
+          {{- end }}
+      {{- if $oidc }}
+      volumes:
+        - name: session-key
+          secret:
+            secretName: {{ include "cadre.sessionKeySecret" . }}
+            items: [{ key: key, path: key }]
+        {{- with .Values.auth.oidc.clientSecret.secretName }}
+        - name: oidc-client-secret
+          secret:
+            secretName: {{ . }}
+        {{- end }}
+      {{- end }}
+      {{- with .Values.server.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.server.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.server.affinity }}
+      affinity:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}

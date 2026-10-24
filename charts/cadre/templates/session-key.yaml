@@ -1,0 +1,17 @@
+{{- if and (eq .Values.auth.mode "oidc") (not .Values.auth.sessionKey.existingSecret) }}
+{{- $name := include "cadre.sessionKeySecret" . }}
+{{- /* Made once: an existing key is kept, so sessions survive upgrades.
+       helm template sees no cluster and renders a fresh key. */}}
+apiVersion: v1
+kind: Secret
+metadata:
+  name: {{ $name }}
+  labels:
+    {{- include "cadre.labels" . | nindent 4 }}
+  annotations:
+    # Kept on uninstall: a reinstall then keeps the sessions it signed.
+    helm.sh/resource-policy: keep
+type: Opaque
+data:
+  key: {{ include "cadre.sessionKey" . }}
+{{- end }}

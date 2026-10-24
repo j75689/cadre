@@ -1,0 +1,44 @@
+{{- with include "cadre.externalURL" . }}
+cadre-server is at {{ . }}
+{{- else }}
+cadre-server is at {{ include "cadre.publicURL" . }}
+{{- if and (not .Values.server.publicURL) (eq .Values.server.service.type "ClusterIP") }}, inside the cluster only.
+From a workstation: kubectl -n {{ .Release.Namespace }} port-forward svc/{{ include "cadre.server" . }} {{ .Values.server.service.port }}
+{{- else }}.
+{{- end }}
+{{- end }}
+Runners reach it at {{ include "cadre.publicURL" . }}
+{{- if and .Values.runner.enabled .Values.runner.serverURL }}; the chart's runner at {{ .Values.runner.serverURL }}{{ end }}.
+{{ if eq .Values.auth.mode "oidc" }}
+First login: open {{ include "cadre.externalURL" . }}, or run
+cadre --server {{ include "cadre.externalURL" . }} login.
+{{- if or .Values.auth.admins.users .Values.auth.admins.groups }}
+The admins in auth.admins may create teams: cadre --server {{ include "cadre.externalURL" . }} -n <namespace> team init.
+{{- else }}
+No admins are set (auth.admins), so nobody can create a team yet.
+{{- end }}
+
+Session cookies are encrypted with the key in Secret
+{{ .Release.Namespace }}/{{ include "cadre.sessionKeySecret" . }}, under key "key".
+{{- if not .Values.auth.sessionKey.existingSecret }}
+The chart made it and keeps it across upgrades and uninstalls. To sign
+everyone out, delete the Secret and helm upgrade: that makes a new key and
+rolls the server pods.
+{{- end }}
+{{- else }}
+WARNING: auth.mode is none: anyone who reaches cadre-server may act as anyone.
+For local development only.
+{{- end }}
+{{- if or (not .Values.workloads.clusterWide) .Values.runner.enabled }}
+
+Each Team namespace needs these bindings, which the chart cannot make
+for namespaces it does not know (see the chart's README):
+{{- if not .Values.workloads.clusterWide }}
+  - ClusterRole {{ include "cadre.server" . }}-workloads to ServiceAccount
+    {{ .Release.Namespace }}/{{ include "cadre.server" . }}, for runner Jobs and managed ToolServers;
+{{- end }}
+{{- if .Values.runner.enabled }}
+  - ClusterRole {{ include "cadre.runner" . }} to ServiceAccount
+    {{ .Release.Namespace }}/{{ include "cadre.runner" . }}, for the builtin agents' model credentials.
+{{- end }}
+{{- end }}

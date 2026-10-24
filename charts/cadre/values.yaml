@@ -1,0 +1,110 @@
+# Images: <registry>/cadre-server and <registry>/cadre-runner, at tag, by
+# default the chart's appVersion.
+image:
+  registry: ghcr.io/j75689
+  tag: ""
+  # pullPolicy is Always regardless when the tag is main or latest.
+  pullPolicy: IfNotPresent
+imagePullSecrets: []
+
+server:
+  replicas: 2
+  # publicURL is where runners reach cadre-server, for their per-run MCP
+  # endpoint. Default: the in-cluster Service.
+  publicURL: ""
+  # externalURL is where people's browsers reach it, and where logins
+  # return to. Default: the Ingress host when the Ingress is enabled (https
+  # with ingress.tlsSecret); required otherwise with auth.mode oidc. Set it
+  # also when TLS terminates before the Ingress (a cloud load balancer, a
+  # controller's default certificate): https://<host>.
+  externalURL: ""
+  # runnerAuth: required (runners authenticate with a ServiceAccount token
+  # for the audience cadre) or none (tests and local development only).
+  runnerAuth: required
+  # Timings, each passed only when set: lease, heartbeat, stepIdle,
+  # reclaimInterval, dispatchInterval (Go durations such as 30s).
+  timings: {}
+  resources: {}
+  nodeSelector: {}
+  tolerations: []
+  affinity: {}
+  podAnnotations: {}
+  service:
+    type: ClusterIP
+    port: 8080
+
+ingress:
+  enabled: false
+  className: ""
+  host: ""
+  # tlsSecret, when set, serves the host over https from that Secret.
+  tlsSecret: ""
+  annotations: {}
+
+auth:
+  # mode: oidc (people log in) or none (anyone may act as anyone; for local
+  # development only).
+  mode: oidc
+  oidc:
+    issuer: ""
+    clientId: ""
+    # cliClientId is the public client cadre login uses, if not clientId.
+    cliClientId: ""
+    scopes: "openid profile email groups"
+    usernameClaim: email
+    groupsClaim: groups
+    # clientSecret names the Secret key holding clientId's secret.
+    clientSecret:
+      secretName: ""
+      key: client-secret
+  # admins are admin on every team and may create teams.
+  admins:
+    users: []
+    groups: []
+  sessionKey:
+    # existingSecret names a Secret with the session key under key "key"
+    # (32 bytes, raw or 64 hex characters). Without it the chart creates
+    # <release>-session-key once and keeps it across upgrades.
+    existingSecret: ""
+
+storage:
+  s3:
+    endpoint: ""
+    region: us-east-1
+    bucket: ""
+    prefix: cadre/
+    pathStyle: false
+    # credentialsSecret names a Secret with the keys below; without it the
+    # AWS default credential chain is used (workload identity, say).
+    credentialsSecret: ""
+    accessKeyKey: access-key
+    secretKeyKey: secret-key
+
+workloads:
+  # clusterWide binds the workloads ClusterRole (Jobs for runner agents,
+  # managed ToolServers) in every namespace. Off: bind it per Team
+  # namespace yourself, as the chart's README shows.
+  clusterWide: false
+
+runner:
+  enabled: true
+  # serverURL is where this runner reaches cadre-server. Default:
+  # server.publicURL; set it to the Service when publicURL is an external
+  # address for runners elsewhere.
+  serverURL: ""
+  replicas: 1
+  # mode: step (work builtin agents' runs a step at a time) or runtime.
+  mode: step
+  # parallel: in step mode, how many steps each replica works at once.
+  parallel: 1
+  # namespaces limits the Team namespaces work is taken from; empty for all.
+  namespaces: []
+  # maxTurns (model responses per run) and stepTimeout (a Go duration),
+  # each passed only when set.
+  maxTurns: 0
+  stepTimeout: ""
+  resources: {}
+  nodeSelector: {}
+  tolerations: []
+  affinity: {}
+  podAnnotations: {}

@@ -46,6 +46,14 @@ Not a SaaS. Not a workflow engine. Not an LLM gateway. Not a sandbox. Cadre inte
 
 cadre-server serves the board, task pages with their threads and actions, and a form for new tasks at `/`: the web UI is built into it (`make ui` before `make build`; the image carries it). Developing it: [web/README.md](web/README.md).
 
+## Installation
+
+```sh
+helm install cadre oci://ghcr.io/j75689/charts/cadre -n cadre-system --create-namespace
+```
+
+with an OIDC issuer and client, the URL browsers reach it at (an Ingress host or `server.externalURL`), bootstrap admins and an S3 bucket set: see the chart's [README](charts/cadre/README.md) for the values, the per-Team RBAC and upgrading the CRDs.
+
 ## Images
 
 `ghcr.io/j75689/cadre-server`, `ghcr.io/j75689/cadre-runner` and `ghcr.io/j75689/cadre`, for linux/amd64 and linux/arm64: `main` follows the main branch, `vX.Y.Z` each release. See [Installation](docs/architecture.md#installation).
