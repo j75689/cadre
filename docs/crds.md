@@ -17,7 +17,7 @@ All YAML is illustrative. The API group is provisionally `cadre.dev/v1alpha1`.
 | `ToolServer` | namespace | one MCP server, managed by Cadre or external |
 | `Schedule` | namespace | create a task on a cron schedule |
 | `Notifier` | namespace | whom to notify when a human is needed |
-| `Runner` | namespace | an out-of-cluster runner and its credential |
+| `Runner` | namespace | a runner allowed to claim in its namespace: in the cluster by ServiceAccount, or outside it with a token Cadre mints |
 
 Deliverables, approval policies and publishers are plugins with their own CRDs, outside the core.
 
@@ -181,6 +181,8 @@ spec:
 | Agent | `toolRefs` | ToolServers in the same namespace, a set |
 | Agent | `runtime.type` | `builtin` (the default) or `runner` |
 | Agent | `runtime.selector` | required, with at least one label, for `runner`; forbidden for `builtin` |
+| Runner | `serviceAccount` | `{namespace, name}` of the ServiceAccount an in-cluster runner authenticates as. Without it the runner is outside the cluster and Cadre mints its token: exactly one of the two |
+| Runner | `labels` | the labels the runner's claims are matched with, set here and never taken from the runner's request; the `cadre.dev/` prefix is reserved |
 | Agent | `effort` | `low`, `medium`, `high` (the default), `xhigh` or `max`: how much thinking the builtin loop asks the model for. It is on the Agent, not the ModelProvider, because one model serves agents that need different depth |
 
 All three report a `Ready` condition and `observedGeneration` in their status:
@@ -190,8 +192,29 @@ All three report a `Ready` condition and `observedGeneration` in their status:
 | ModelProvider | the referenced Secret has the key, or `workloadIdentity` is set |
 | ToolServer | an external server's Secret has its key, when `auth` is set; a managed ToolServer is not Ready (`ManagedNotSupported`) until managed servers arrive in M2 |
 | Agent | its ModelProvider and every ToolServer exist and are Ready; the reason names the first that is not |
+| Runner | always, once reconciled: `ServiceAccount` for an in-cluster runner, `TokenMinted` once an outside runner's token exists |
 
 Controllers only act in namespaces with a `Team`. Secrets are read one by one when a resource is reconciled, never watched or cached, and the resources that reference them are re-checked every minute.
+
+## Runner
+
+```yaml
+apiVersion: cadre.dev/v1alpha1
+kind: Runner
+metadata: { name: laptop, namespace: team-a }
+spec:
+  labels: { pool: claude-code }   # claims match agents whose runtime.selector this includes
+  # serviceAccount: { namespace: ci, name: runner }   # in the cluster: authenticate as this ServiceAccount
+status:
+  tokenSecret: laptop-token       # outside the cluster: the minted token, key token
+  tokenHash: 3f9a...              # its SHA-256; a token with another hash is refused
+  mintedAt: ...
+```
+
+- A Runner lives in the Team namespace it serves, and lets its runner claim there only: the namespace is the tenant boundary. A runner serving several Teams has a Runner in each, naming the same ServiceAccount.
+- The claim's labels come from the Runner; what the runner sends is ignored, so it cannot claim agents meant for another pool.
+- A Runner without `serviceAccount` gets a token minted into the Secret `<name>-token`, labelled `cadre.dev/runner: <name>` and owned by the Runner. The Secret reaches the runner's machine out of band (`kubectl get secret`, a secret manager); Cadre never serves it. Deleting the Secret rotates the token: a new one is minted on the next reconcile, within a minute, and the old one stops working then.
+- `cadre-runner` needs no Runner: its identity (`--builtin-runner`) may claim builtin agents in every Team namespace.
 
 ## Schedule and Notifier
 

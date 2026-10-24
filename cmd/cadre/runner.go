@@ -70,7 +70,7 @@ its lease while it "works", stops a run at once if the run loses its task
 		"claim labels, key=value; repeatable. The default claims builtin agents, as cadre-runner does")
 	f.BoolVar(&o.Once, "once", false, "stop after one run")
 	f.DurationVar(&o.Poll, "poll", time.Second, "wait between claims when there is no work")
-	f.StringVar(&tokenFile, "token-file", "", "the token to authenticate with, read before every request; by default the projected ServiceAccount token at "+client.DefaultTokenFile+" when it exists, else none")
+	f.StringVar(&tokenFile, "token-file", "", "a file holding this runner's token, read before every request: a minted token from its Runner's <name>-token Secret, or a ServiceAccount token for the audience cadre; by default "+client.DefaultTokenFile+" when it exists, else none")
 	cmd.AddCommand(fake)
 	return cmd
 }

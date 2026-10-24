@@ -49,9 +49,13 @@ func (s *Server) claim(w http.ResponseWriter, r *http.Request) {
 	if !httpjson.Decode(w, r, &req) {
 		return
 	}
-	c, err := s.m.Claim(r.Context(), manager.ClaimRequest{
-		Runner: req.Runner, Identity: identityOf(r), Namespaces: req.Namespaces, Labels: s.claimLabels(r, req.Labels),
-	})
+	creq := manager.ClaimRequest{Runner: req.Runner, Identity: identityOf(r), Namespaces: req.Namespaces, Labels: s.claimLabels(r, req.Labels)}
+	if id := authOf(r); s.auth != nil && id.Name != s.builtin && id.Scope != nil {
+		// A runner claims where its Runners say, with their labels; what
+		// it sends is not taken.
+		creq.Labels, creq.Scope = nil, id.Scope
+	}
+	c, err := s.m.Claim(r.Context(), creq)
 	if err != nil {
 		httpjson.Fail(w, s.log, err)
 		return

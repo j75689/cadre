@@ -1,11 +1,13 @@
-// Package controller holds the reconcilers that turn Agent, ModelProvider and
-// ToolServer resources into something the Task Manager can use: each gets a
-// Ready condition saying whether it can be used.
+// Package controller holds the reconcilers that turn Agent, ModelProvider,
+// ToolServer and Runner resources into something the Task Manager can use:
+// each gets a Ready condition saying whether it can be used, and a Runner
+// outside the cluster gets a minted token.
 //
 // The reconcilers only act in namespaces that have a Team. They read Secrets
 // one at a time, directly from the API server, and never watch or cache
 // them, so cadre-server never holds the cluster's Secrets in memory; the
 // resources that depend on a Secret are re-checked periodically instead.
+// The one Secret they write is a Runner's minted token.
 //
 // Leader election is off: every status write is a conditional update, so two
 // cadre-server replicas reconciling the same object only race harmlessly. A
@@ -74,6 +76,9 @@ func Setup(mgr ctrl.Manager, o Options, opts ...SetupOption) error {
 	if err := (&modelProviderReconciler{b}).setup(mgr); err != nil {
 		return err
 	}
+	if err := (&runnerReconciler{b}).setup(mgr); err != nil {
+		return err
+	}
 	if err := (&toolServerReconciler{b}).setup(mgr); err != nil {
 		return err
 	}
@@ -122,11 +127,17 @@ func (b base) secretHasKey(ctx context.Context, ns string, ref v1alpha1.SecretKe
 // setReady writes the Ready condition and observedGeneration with a
 // conditional update, and only when they change.
 func (b base) setReady(ctx context.Context, obj client.Object, status *v1alpha1.ConfigStatus, ready bool, reason, message string) error {
+	return b.writeStatus(ctx, obj, status, ready, reason, message, false)
+}
+
+// writeStatus is setReady, writing also when changed says other status
+// fields changed.
+func (b base) writeStatus(ctx context.Context, obj client.Object, status *v1alpha1.ConfigStatus, ready bool, reason, message string, changed bool) error {
 	cond := metav1.Condition{Type: v1alpha1.ConditionReady, Status: metav1.ConditionFalse, Reason: reason, Message: message, ObservedGeneration: obj.GetGeneration()}
 	if ready {
 		cond.Status = metav1.ConditionTrue
 	}
-	changed := meta.SetStatusCondition(&status.Conditions, cond)
+	changed = meta.SetStatusCondition(&status.Conditions, cond) || changed
 	if status.ObservedGeneration != obj.GetGeneration() {
 		status.ObservedGeneration = obj.GetGeneration()
 		changed = true

@@ -18,6 +18,10 @@ import (
 type Identity struct {
 	Name    string    // system:serviceaccount:<namespace>:<name>, say
 	Expires time.Time // zero if the credential does not say
+	// Scope is where the runner may claim: the labels its claims are
+	// matched with, by namespace, taken from its Runners. Nil means the
+	// claim's own namespaces and labels stand, as for cadre-runner.
+	Scope map[string]map[string]string
 }
 
 // An Authenticator turns a runner's bearer token into its identity. It
@@ -43,8 +47,10 @@ type identityKey struct{}
 
 // identityOf is the authenticated identity of a request; empty when the
 // server does not authenticate runners.
-func identityOf(r *http.Request) string {
-	id, _ := r.Context().Value(identityKey{}).(string)
+func identityOf(r *http.Request) string { return authOf(r).Name }
+
+func authOf(r *http.Request) Identity {
+	id, _ := r.Context().Value(identityKey{}).(Identity)
 	return id
 }
 
@@ -71,7 +77,7 @@ func (s *Server) authenticated(h http.HandlerFunc) http.HandlerFunc {
 			httpjson.WriteError(w, http.StatusServiceUnavailable, CodeUnavailable, "temporarily unavailable; retry")
 			return
 		}
-		h(w, r.WithContext(context.WithValue(r.Context(), identityKey{}, id.Name)))
+		h(w, r.WithContext(context.WithValue(r.Context(), identityKey{}, id)))
 	}
 }
 
