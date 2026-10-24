@@ -74,7 +74,7 @@ Runtime-mode backends differ only in who starts the runner process. They all spe
 - Runtime-mode runners never receive provider keys; they only receive the per-run MCP endpoint.
 
 ### Events
-- Work hints ("run X has a next step") are optional and may be lost or duplicated. Correctness rests on conditional writes alone. The kubernetes driver gets hints for free from informer watches; a message queue is a later latency optimisation.
+- Work hints ("run X has a next step") are optional and may be lost or duplicated. Correctness rests on conditional writes alone. The kubernetes driver gets hints for free from informer watches; a message queue is a later latency optimisation. Today they number a task applied with kubectl, and create a run's subtasks, as soon as the watch sees the change; the periodic scan (`--dispatch-interval`) stays as the fallback.
 - UI events are watch events on Task resources and only say "something changed, refetch". `thread.revision` on the Task status makes thread appends visible through the same watch. No Redis, no message queue.
 
 ## Identity and access

@@ -8,6 +8,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"sync"
 	"time"
 
 	"github.com/oklog/ulid/v2"
@@ -38,6 +39,11 @@ var DefaultConfig = Config{Lease: 30 * time.Second, Heartbeat: 10 * time.Second}
 
 // Manager is a Task Manager instance.
 type Manager struct {
+	// busyKeys are the tasks a call of this Manager is numbering or
+	// dispatching, whose hints are not followed meanwhile.
+	busyMu   sync.Mutex
+	busyKeys map[storage.Key]int
+
 	store  storage.Driver
 	cfg    Config
 	agents Agents
@@ -65,7 +71,7 @@ func New(store storage.Driver, cfg Config, opts ...Option) *Manager {
 	if cfg.Agents == nil {
 		cfg.Agents = StaticAgents{}
 	}
-	m := &Manager{store: store, cfg: cfg, agents: cfg.Agents, now: time.Now, newID: func() string { return ulid.Make().String() }}
+	m := &Manager{busyKeys: map[storage.Key]int{}, store: store, cfg: cfg, agents: cfg.Agents, now: time.Now, newID: func() string { return ulid.Make().String() }}
 	for _, o := range opts {
 		o(m)
 	}

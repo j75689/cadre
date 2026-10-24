@@ -146,10 +146,15 @@ func (m *Manager) RunCreateSubtask(ctx context.Context, key storage.Key, runID s
 		return nil, err
 	}
 	created := &SubtaskCreated{Name: task.SubtaskName(item)}
+	subKey := storage.Key{Namespace: key.Namespace, Name: created.Name}
+	// This call dispatches and numbers at once: the hints its writes send
+	// are not followed meanwhile.
+	defer m.busy(key)()
+	defer m.busy(subKey)()
 	if err := m.dispatchTask(ctx, key); err != nil {
 		return created, nil
 	}
-	if sub, err := m.numberTask(ctx, storage.Key{Namespace: key.Namespace, Name: created.Name}); err == nil {
+	if sub, err := m.numberTask(ctx, subKey); err == nil {
 		created.Number = sub.Status.Number
 	} else if sub, err := m.store.GetTask(ctx, storage.Key{Namespace: key.Namespace, Name: created.Name}); err == nil {
 		created.Number = sub.Status.Number // numbered by someone else first

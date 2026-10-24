@@ -78,11 +78,6 @@ func run() error {
 	if err != nil {
 		return fmt.Errorf("kubernetes config: %w", err)
 	}
-	store, err := kubernetes.Open(ctx, kubernetes.Config{REST: rest, S3: s3cfg})
-	if err != nil {
-		return err
-	}
-	defer func() { _ = store.Close() }()
 
 	ctrls, err := controller.NewManager(rest)
 	if err != nil {
@@ -91,6 +86,27 @@ func run() error {
 	if err := controller.Setup(ctrls, controller.Options{}); err != nil {
 		return fmt.Errorf("controllers: %w", err)
 	}
+	// One informer cache serves the controllers and the board index: the
+	// controller manager starts it, and the driver adds its informers to it
+	// and waits for them to sync.
+	// A manager that fails to start would leave the driver waiting for a
+	// cache that never syncs: its failure ends the wait, and the server.
+	controllers := make(chan error, 1)
+	openCtx, opened := context.WithCancelCause(ctx)
+	go func() {
+		err := ctrls.Start(ctx)
+		opened(fmt.Errorf("controllers stopped: %w", err))
+		controllers <- err
+	}()
+	store, err := kubernetes.Open(openCtx, kubernetes.Config{REST: rest, S3: s3cfg, Cache: ctrls.GetCache()})
+	if err != nil {
+		if cause := context.Cause(openCtx); cause != nil && ctx.Err() == nil {
+			return cause
+		}
+		return err
+	}
+	opened(nil)
+	defer func() { _ = store.Close() }()
 
 	forwarder := mcp.NewForwarder(controller.ToolServerSources(ctrls), log)
 	m := manager.New(store, manager.Config{Lease: *lease, Heartbeat: *heartbeat, Agents: controller.Agents(ctrls), Tools: forwarder})
@@ -132,8 +148,6 @@ func run() error {
 		defer close(loops)
 		m.Run(ctx, manager.LoopConfig{Reclaim: *reclaim, Dispatch: *dispatch}, log)
 	}()
-	controllers := make(chan error, 1)
-	go func() { controllers <- ctrls.Start(ctx) }()
 	served := make(chan error, 1)
 	go func() { served <- srv.ListenAndServe() }()
 	log.Info("cadre-server started", "listen", *listen)

@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"sync"
 	"time"
 
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -284,6 +285,122 @@ func (m *Manager) readdSlot(ctx context.Context, key storage.Key, runID string) 
 	return err
 }
 
+// hintQueue bounds the tasks waiting to be handled after a notification.
+// A hint that does not fit is dropped: the next full scan handles its task.
+const hintQueue = 1024
+
+// hintWorkers handle hints at once, each a different task.
+const hintWorkers = 4
+
+// busy marks key as being numbered or dispatched by a call of this Manager,
+// so the hints its own writes send are not followed meanwhile. It returns
+// the function that clears the mark. Marks nest: a key marked twice is
+// clear once both are cleared.
+func (m *Manager) busy(key storage.Key) func() {
+	m.busyMu.Lock()
+	m.busyKeys[key]++
+	m.busyMu.Unlock()
+	return func() {
+		m.busyMu.Lock()
+		if m.busyKeys[key]--; m.busyKeys[key] <= 0 {
+			delete(m.busyKeys, key)
+		}
+		m.busyMu.Unlock()
+	}
+}
+
+// claimHint marks key busy for a hint, unless something already is.
+func (m *Manager) claimHint(key storage.Key) (func(), bool) {
+	m.busyMu.Lock()
+	defer m.busyMu.Unlock()
+	if m.busyKeys[key] > 0 {
+		return nil, false
+	}
+	m.busyKeys[key] = 1
+	return func() {
+		m.busyMu.Lock()
+		if m.busyKeys[key]--; m.busyKeys[key] <= 0 {
+			delete(m.busyKeys, key)
+		}
+		m.busyMu.Unlock()
+	}, true
+}
+
+// FollowHints numbers a new task, or applies a task's outbox, as soon as
+// the store says the task changed, instead of at the next full scan, until
+// ctx is done. It returns once subscribed. A notification is only a hint:
+// the task is read fresh before anything is done, every write is
+// conditional as always, and the full scan on the ticker stays, for the
+// hints that are dropped. Run calls it.
+func (m *Manager) FollowHints(ctx context.Context, log *slog.Logger) {
+	n, ok := m.store.(storage.Notifier)
+	if !ok {
+		return
+	}
+	hints := make(chan storage.Key, hintQueue)
+	var queued sync.Map // keys queued and not yet taken, so a burst of
+	// changes to one task queues it once
+	n.NotifyTasks(func(t *v1alpha1.Task) {
+		if ctx.Err() != nil || (t.Status.Phase != "" && len(t.Status.Outbox) == 0) {
+			return
+		}
+		key := storage.Key{Namespace: t.Namespace, Name: t.Name}
+		if _, dup := queued.LoadOrStore(key, struct{}{}); dup {
+			return
+		}
+		select {
+		case hints <- key:
+		default:
+			queued.Delete(key)
+		}
+	})
+	for range hintWorkers {
+		go func() {
+			for {
+				select {
+				case <-ctx.Done():
+					return
+				case key := <-hints:
+					queued.Delete(key)
+					done, ok := m.claimHint(key)
+					if !ok {
+						continue // being handled already, by a hint or a call
+					}
+					err := m.handleHint(ctx, key)
+					done()
+					if err != nil && ctx.Err() == nil && !isLostCandidate(err) {
+						log.Warn("handle a changed task", "task", key.String(), "err", err)
+					}
+				}
+			}
+		}()
+	}
+}
+
+// handleHint numbers the task if it is new and applies its outbox if it has
+// one, on a fresh read.
+func (m *Manager) handleHint(ctx context.Context, key storage.Key) error {
+	t, err := m.store.GetTask(ctx, key)
+	if errors.Is(err, storage.ErrNotFound) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	if t.Status.Phase == "" {
+		// A task unborn on this read may still be numbered by the scan in
+		// the meantime; the number claimed here is then skipped, as
+		// numbers are unique, not dense.
+		if t, err = m.numberTask(ctx, key); err != nil {
+			return err
+		}
+	}
+	if len(t.Status.Outbox) > 0 {
+		return m.dispatchTask(ctx, key)
+	}
+	return nil
+}
+
 // LoopConfig sets how often the background loops run.
 type LoopConfig struct {
 	Reclaim  time.Duration // how often expired leases are reclaimed
@@ -305,6 +422,7 @@ func (m *Manager) Run(ctx context.Context, cfg LoopConfig, log *slog.Logger) {
 	if cfg.Dispatch <= 0 {
 		cfg.Dispatch = DefaultLoopConfig.Dispatch
 	}
+	m.FollowHints(ctx, log)
 	reclaim := time.NewTicker(cfg.Reclaim)
 	dispatch := time.NewTicker(cfg.Dispatch)
 	defer reclaim.Stop()

@@ -171,3 +171,11 @@ type Index interface {
 	// that have one are the namespaces Cadre serves.
 	ListTeams(ctx context.Context) ([]v1alpha1.Team, error)
 }
+
+// Notifier is what a Driver may also offer: it hands every Task it sees
+// change, as its index does, to fn. A notification is a hint, like the
+// index: one may be late, duplicated or dropped, so nothing may depend on
+// it but latency. fn must not block; it runs on the driver's watch.
+type Notifier interface {
+	NotifyTasks(fn func(*v1alpha1.Task))
+}

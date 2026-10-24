@@ -18,6 +18,7 @@ import (
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/client-go/rest"
+	toolscache "k8s.io/client-go/tools/cache"
 	"sigs.k8s.io/controller-runtime/pkg/cache"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
@@ -29,6 +30,11 @@ import (
 type Config struct {
 	REST *rest.Config
 	S3   S3Config
+	// Cache, when set, is the informer cache the index is served from,
+	// shared with others (the controller manager's): the driver adds its
+	// informers to it but neither starts nor stops it. Without it the
+	// driver runs a cache of its own.
+	Cache cache.Cache
 }
 
 // Driver implements storage.Driver on the Kubernetes API and object storage.
@@ -40,14 +46,45 @@ type Driver struct {
 	client client.Client
 	// index is the informer cache that serves ListTasks.
 	index cache.Cache
-	stop  context.CancelFunc
+	stop  context.CancelFunc // nil when the cache is shared
 	done  chan error
 
 	closeOnce sync.Once
 	closeErr  error
+
+	mu   sync.RWMutex
+	subs []func(*v1alpha1.Task)
+
+	// handler is the Task informer's handler, removed on Close when the
+	// cache outlives the driver.
+	tasks   cache.Informer
+	handler toolscache.ResourceEventHandlerRegistration
 }
 
-var _ storage.Driver = (*Driver)(nil)
+var (
+	_ storage.Driver   = (*Driver)(nil)
+	_ storage.Notifier = (*Driver)(nil)
+)
+
+// NotifyTasks implements storage.Notifier from the Task informer.
+func (d *Driver) NotifyTasks(fn func(*v1alpha1.Task)) {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	d.subs = append(d.subs, fn)
+}
+
+func (d *Driver) notify(obj any) {
+	t, ok := obj.(*v1alpha1.Task)
+	if !ok {
+		return
+	}
+	d.mu.RLock()
+	subs := d.subs
+	d.mu.RUnlock()
+	for _, fn := range subs {
+		fn(t.DeepCopy())
+	}
+}
 
 // Open connects to the cluster and object storage, and returns once the
 // index has been rebuilt from a full list of Tasks. It refuses to start on an
@@ -68,31 +105,55 @@ func Open(ctx context.Context, cfg Config) (*Driver, error) {
 	if err := log.probe(ctx); err != nil {
 		return nil, err
 	}
-	index, err := cache.New(cfg.REST, cache.Options{Scheme: scheme})
-	if err != nil {
-		return nil, fmt.Errorf("index cache: %w", err)
-	}
-	for _, obj := range []client.Object{&v1alpha1.Task{}, &v1alpha1.Team{}} {
-		if _, err := index.GetInformer(ctx, obj); err != nil {
-			return nil, fmt.Errorf("informer for %T: %w", obj, err)
+	d := &Driver{objectLog: log, client: c, index: cfg.Cache}
+	if d.index == nil {
+		if d.index, err = cache.New(cfg.REST, cache.Options{Scheme: scheme}); err != nil {
+			return nil, fmt.Errorf("index cache: %w", err)
 		}
 	}
-
-	runCtx, stop := context.WithCancel(context.Background())
-	d := &Driver{objectLog: log, client: c, index: index, stop: stop, done: make(chan error, 1)}
-	go func() { d.done <- index.Start(runCtx) }()
-	if !index.WaitForCacheSync(ctx) {
+	var synced []toolscache.InformerSynced
+	for _, obj := range []client.Object{&v1alpha1.Task{}, &v1alpha1.Team{}} {
+		inf, err := d.index.GetInformer(ctx, obj)
+		if err != nil {
+			return nil, fmt.Errorf("informer for %T: %w", obj, err)
+		}
+		synced = append(synced, inf.HasSynced)
+		if _, ok := obj.(*v1alpha1.Task); ok {
+			d.tasks = inf
+			if d.handler, err = inf.AddEventHandler(toolscache.ResourceEventHandlerFuncs{
+				AddFunc:    func(o any) { d.notify(o) },
+				UpdateFunc: func(_, o any) { d.notify(o) },
+			}); err != nil {
+				return nil, fmt.Errorf("watch tasks: %w", err)
+			}
+		}
+	}
+	if cfg.Cache == nil {
+		runCtx, stop := context.WithCancel(context.Background())
+		d.stop, d.done = stop, make(chan error, 1)
+		go func() { d.done <- d.index.Start(runCtx) }()
+	}
+	// The driver's own informers only: a shared cache may hold others
+	// that sync later, or never.
+	if !toolscache.WaitForCacheSync(ctx.Done(), synced...) {
 		_ = d.Close()
 		return nil, errors.New("index did not sync")
 	}
 	return d, nil
 }
 
-// Close stops the informer. It is idempotent.
+// Close stops the informer cache, when it is the driver's own. It is
+// idempotent.
 func (d *Driver) Close() error {
 	d.closeOnce.Do(func() {
-		d.stop()
-		d.closeErr = <-d.done
+		if d.stop != nil {
+			d.stop()
+			d.closeErr = <-d.done
+			return
+		}
+		if d.handler != nil {
+			d.closeErr = d.tasks.RemoveEventHandler(d.handler)
+		}
 	})
 	return d.closeErr
 }
