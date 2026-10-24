@@ -4,6 +4,7 @@ import (
 	"context"
 	"strings"
 	"testing"
+	"time"
 
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -78,6 +79,28 @@ func TestConfigCRDs(t *testing.T) {
 		"managed bad path":   {v1alpha1.ToolServerSpec{Managed: &v1alpha1.ManagedServer{Image: "i", Port: 1, Path: "mcp"}}, false},
 	} {
 		expect(t, c, "ToolServer "+name, &v1alpha1.ToolServer{ObjectMeta: meta(), Spec: tc.spec}, tc.valid)
+	}
+
+	task := v1alpha1.TaskSpec{Title: "Today's thread", Assignee: &v1alpha1.Assignee{Kind: v1alpha1.AssigneeAgent, Name: "writer"}}
+	withParent := task
+	withParent.ParentRef = &v1alpha1.TaskReference{Name: "epic"}
+	for name, tc := range map[string]struct {
+		name  string
+		spec  v1alpha1.ScheduleSpec
+		valid bool
+	}{
+		"valid":         {"", v1alpha1.ScheduleSpec{Cron: "0 9 * * *", Timezone: "Asia/Taipei", Jitter: &metav1.Duration{Duration: time.Minute}, Task: task}, true},
+		"with a parent": {"", v1alpha1.ScheduleSpec{Cron: "0 9 * * *", Task: withParent}, false},
+		"no cron":       {"", v1alpha1.ScheduleSpec{Task: task}, false},
+		"no title":      {"", v1alpha1.ScheduleSpec{Cron: "@daily", Task: v1alpha1.TaskSpec{}}, false},
+		"name of 50":    {strings.Repeat("s", 50), v1alpha1.ScheduleSpec{Cron: "@daily", Task: task}, true},
+		"name over 50":  {strings.Repeat("s", 51), v1alpha1.ScheduleSpec{Cron: "@daily", Task: task}, false},
+	} {
+		m := meta()
+		if tc.name != "" {
+			m.Name = tc.name
+		}
+		expect(t, c, "Schedule "+name, &v1alpha1.Schedule{ObjectMeta: m, Spec: tc.spec}, tc.valid)
 	}
 
 	for name, tc := range map[string]struct {

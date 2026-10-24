@@ -25,6 +25,7 @@ func addKnownTypes(scheme *runtime.Scheme) error {
 	scheme.AddKnownTypes(GroupVersion,
 		&Task{}, &TaskList{}, &Team{}, &TeamList{},
 		&Agent{}, &AgentList{}, &ModelProvider{}, &ModelProviderList{}, &ToolServer{}, &ToolServerList{}, &Runner{}, &RunnerList{},
+		&Schedule{}, &ScheduleList{},
 	)
 	metav1.AddToGroupVersion(scheme, GroupVersion)
 	return nil

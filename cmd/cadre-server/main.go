@@ -1,7 +1,7 @@
 // Command cadre-server runs the Task Manager: the /api/v1 and /runner/v1
 // endpoints and the background loops (numbering, outbox dispatch, lease
 // reclaim), and the controllers that mark Agents, ModelProviders and
-// ToolServers Ready and start runner agents' Jobs. Any number of replicas
+// ToolServers Ready, start runner agents' Jobs and create Schedules' tasks. Any number of replicas
 // may run against the same cluster and object store; the controllers run on
 // the elected leader only (--leader-elect).
 package main
@@ -18,6 +18,7 @@ import (
 	"os/signal"
 	"syscall"
 	"time"
+	_ "time/tzdata" // Schedules' time zones, in an image without zoneinfo
 
 	"github.com/go-logr/logr"
 	ctrl "sigs.k8s.io/controller-runtime/pkg/client/config"
@@ -123,6 +124,12 @@ func run() error {
 	}
 	opened(nil)
 	defer func() { _ = store.Close() }()
+	// Schedules create tasks through the store, which exists only now that
+	// the manager runs: their controller joins it late, as controller-runtime
+	// allows, and starts once this replica leads.
+	if err := controller.SetupSchedules(ctrls, store, controller.Options{}); err != nil {
+		return fmt.Errorf("controllers: %w", err)
+	}
 
 	forwarder := mcp.NewForwarder(controller.ToolServerSources(ctrls), log)
 	m := manager.New(store, manager.Config{Lease: *lease, Heartbeat: *heartbeat, StepIdle: *stepIdle, Agents: controller.Agents(ctrls), Tools: forwarder})
