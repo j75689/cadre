@@ -114,3 +114,19 @@ func TestAnotherProvidersOpening(t *testing.T) {
 		t.Fatalf("resume a step of no known kind: %v, want a permanent error", err)
 	}
 }
+
+// A turn that stopped for tool use but asked for none gets no empty
+// message added, live or resumed.
+func TestNoResultsAddNoMessage(t *testing.T) {
+	replies := func() []func(w http.ResponseWriter, body map[string]any) {
+		return []func(w http.ResponseWriter, body map[string]any){sse("tool_use", "Hmm."), sse("end_turn", "Done.")}
+	}
+	live := newAPI(t, replies()...)
+	providertest.Live(ctx, t, &anthropic.Provider{Endpoint: live.URL}, setup(""), nil)
+	steps := newAPI(t, replies()...)
+	providertest.StepByStep(ctx, t, &anthropic.Provider{Endpoint: steps.URL}, setup(""), nil)
+	providertest.Same(t, live.bodies, steps.bodies)
+	if msgs := steps.requests[1]["messages"].([]any); len(msgs) != 2 {
+		t.Fatalf("second request's messages: %v; want the prompt and the turn only", msgs)
+	}
+}

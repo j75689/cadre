@@ -276,10 +276,34 @@ type FinishRequest struct {
 	Reason    v1alpha1.WaitingReason
 	ThreadSeq int64
 	Subtasks  []Subtask
+	// Comment, if set, is the run's last comment, written by its agent in
+	// the same fenced write: why the run ended, or its summary.
+	Comment string
 	// WaitingItem and Outbox, for a finish that waits on an entry it
 	// writes: the entry's fenced outbox item, and the item's id.
 	WaitingItem string
 	Outbox      []v1alpha1.OutboxItem
+}
+
+// finishComment is the outbox item of a finish's comment. Its blob is
+// written only once the finish is known to be its run's (in step mode, its
+// step's and attempt's): a stale worker's finish, which the Finish below
+// refuses, writes nothing. In step mode the id derives from the run, the
+// step and the attempt, so the attempt's retried finish writes the same
+// one.
+func (m *Manager) finishComment(ctx context.Context, key storage.Key, req FinishRequest) (v1alpha1.OutboxItem, error) {
+	t, err := m.activeRun(ctx, key, req.RunID)
+	if err != nil {
+		return v1alpha1.OutboxItem{}, err
+	}
+	id := m.newID()
+	if r := t.Status.Run; r.Mode == v1alpha1.RunModeStep {
+		if err := m.heldStep(ctx, key, StepRequest{RunID: req.RunID, Step: req.Step, Attempt: req.Attempt, Runner: req.Runner}); err != nil {
+			return v1alpha1.OutboxItem{}, err
+		}
+		id = derivedID(r.ID, r.Step, "cadre.dev/finish", int(r.Attempt))
+	}
+	return m.entryItem(ctx, key, t, req.RunID, id, EntryComment, req.Comment, nil)
 }
 
 // Finish ends the run. If this same finish already landed (a retry), it
@@ -291,6 +315,20 @@ func (m *Manager) Finish(ctx context.Context, key storage.Key, req FinishRequest
 	items, err := m.subtaskItems(req.Subtasks)
 	if err != nil {
 		return "", false, err
+	}
+	if req.Comment != "" {
+		item, err := m.finishComment(ctx, key, req)
+		switch {
+		case errors.Is(err, task.ErrRunMismatch):
+			// The run is over: the Finish below says whether this one
+			// ended it.
+		case err != nil:
+			return "", false, err
+		default:
+			items = append(items, item)
+			// Written at once when it can be, as a run tool's entry is.
+			defer m.applyNow(ctx, key)
+		}
 	}
 	t, err := m.transition(ctx, key, task.Finish{
 		RunID: req.RunID, Runner: req.Runner, Step: req.Step, Attempt: req.Attempt, Outcome: req.Outcome,

@@ -156,7 +156,7 @@ func (s *Server) finish(w http.ResponseWriter, r *http.Request) {
 		httpjson.WriteError(w, http.StatusBadRequest, CodeInvalid, "waiting is required exactly when the outcome is Waiting")
 		return
 	}
-	mreq := manager.FinishRequest{RunID: req.RunID, Runner: identityOf(r), Step: req.Step, Attempt: req.Attempt, Outcome: req.Outcome}
+	mreq := manager.FinishRequest{RunID: req.RunID, Runner: identityOf(r), Step: req.Step, Attempt: req.Attempt, Outcome: req.Outcome, Comment: req.Comment}
 	if req.Waiting != nil {
 		mreq.Reason, mreq.ThreadSeq = req.Waiting.Reason, req.Waiting.ThreadSeq
 	}

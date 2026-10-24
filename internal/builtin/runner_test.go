@@ -119,9 +119,15 @@ func start(t *testing.T) *env {
 // lease.
 func startWithLease(t *testing.T, lease time.Duration) *env {
 	t.Helper()
-	m := manager.New(memory.NewBackend().Open(), manager.Config{
-		Agents: manager.ReadyBuiltin(ns, "coder", "claude"), Lease: lease, Heartbeat: time.Second,
-	})
+	return startIn(t, lease, v1alpha1.RunModeRuntime)
+}
+
+// startIn is startWithLease for an agent run in mode.
+func startIn(t *testing.T, lease time.Duration, mode v1alpha1.RunMode) *env {
+	t.Helper()
+	agents := manager.ReadyBuiltin(ns, "coder", "claude")
+	agents.Agents[ns+"/coder"].Spec.Runtime.Execution = mode
+	m := manager.New(memory.NewBackend().Open(), manager.Config{Agents: agents, Lease: lease, Heartbeat: time.Second})
 	log := slog.New(slog.NewTextHandler(io.Discard, nil))
 	mux := http.NewServeMux()
 	srv := httptest.NewServer(mux)

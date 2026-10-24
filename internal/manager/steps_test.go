@@ -401,3 +401,53 @@ func TestAToolCallAtALaterStep(t *testing.T) {
 		t.Fatalf("waiting %+v", w)
 	}
 }
+
+// A finish's comment is written with it, by the run's agent, once: a
+// finish retried after it landed writes no second one, in either mode.
+func TestAFinishCarriesItsComment(t *testing.T) {
+	e, m := stepEnv(t)
+	for _, agent := range []string{"coder", "stepper"} {
+		key := e.stepTask(t, m, "t-"+agent, agent)
+		var c *Claimed
+		var err error
+		if agent == "stepper" {
+			c = takeStep(t, m, "w")
+		} else if c, err = m.Claim(ctx, ClaimRequest{Runner: "r", Labels: builtin}); err != nil || c == nil {
+			t.Fatalf("claim: %+v, %v", c, err)
+		}
+		req := FinishRequest{RunID: c.RunID, Step: c.Step, Attempt: c.Attempt, Outcome: task.OutcomeReview, Comment: "All done."}
+		for range 2 {
+			if _, _, err := m.Finish(ctx, key, req); err != nil {
+				t.Fatalf("%s: finish: %v", agent, err)
+			}
+		}
+		thread, _ := m.ReadThread(ctx, key, 0, 0)
+		if len(thread) != 1 || thread[0].Body != "All done." || thread[0].Author.Kind != AuthorAgent || thread[0].Author.Name != agent || thread[0].RunID != c.RunID {
+			t.Fatalf("%s: thread %+v; want the comment once, by the agent", agent, thread)
+		}
+	}
+}
+
+// A stale worker's finish writes nothing: its comment cannot become the
+// one a later finish of the step commits.
+func TestAStaleFinishLeavesNoComment(t *testing.T) {
+	e, m := stepEnv(t)
+	key := e.stepTask(t, m, "steps", "stepper")
+	first := takeStep(t, m, "w1")
+	e.clock.add(time.Minute) // w1 stalls; its step is freed and taken again
+	if err := m.ReclaimExpired(ctx); err != nil {
+		t.Fatal(err)
+	}
+	second := takeStep(t, m, "w2")
+	stale := FinishRequest{RunID: first.RunID, Step: first.Step, Attempt: first.Attempt, Outcome: task.OutcomeFailed, Comment: "The reply was cut off."}
+	if _, _, err := m.Finish(ctx, key, stale); !errors.Is(err, task.ErrAttemptMismatch) {
+		t.Fatalf("a stale finish: %v, want ErrAttemptMismatch", err)
+	}
+	if _, _, err := m.Finish(ctx, key, FinishRequest{RunID: second.RunID, Step: second.Step, Attempt: second.Attempt, Outcome: task.OutcomeReview, Comment: "All done."}); err != nil {
+		t.Fatal(err)
+	}
+	thread, _ := m.ReadThread(ctx, key, 0, 0)
+	if len(thread) != 1 || thread[0].Body != "All done." {
+		t.Fatalf("thread %+v; want the second worker's comment only", thread)
+	}
+}

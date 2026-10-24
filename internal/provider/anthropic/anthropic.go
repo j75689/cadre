@@ -430,7 +430,13 @@ func errorBody(e *sdk.Error) (kind, msg string) {
 	return body.Error.Type, body.Error.Message
 }
 
+// AddResults appends the results in one user message. With none (a turn
+// that stopped for tool use but asked for none) it appends nothing: the API
+// refuses an empty message.
 func (c *conversation) AddResults(results []builtin.ToolResult) {
+	if len(results) == 0 {
+		return
+	}
 	blocks := make([]sdk.BetaContentBlockParamUnion, 0, len(results))
 	for _, r := range results {
 		blocks = append(blocks, sdk.NewBetaToolResultBlock(r.CallID, r.Text, r.IsError))

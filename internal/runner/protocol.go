@@ -235,6 +235,9 @@ type FinishRequest struct {
 	Outcome  v1alpha1.RunOutcome `json:"outcome"`
 	Waiting  *Waiting            `json:"waiting,omitempty"`
 	Subtasks []Subtask           `json:"subtasks,omitempty"`
+	// Comment, if set, is the run's last comment, posted by its agent in
+	// the same write as the finish: why the run ended, or its summary.
+	Comment string `json:"comment,omitempty"`
 }
 
 // FinishResponse is the 200 body of a finish. AlreadyFinished is true when

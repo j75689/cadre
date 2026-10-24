@@ -40,10 +40,12 @@ const (
 	StepFinish    StepKind = "finish"     // the last turn asked for none: finish the run
 )
 
-// StepCall is a tool call a model turn asked for.
+// StepCall is a tool call a model turn asked for, with its input as the
+// model wrote it.
 type StepCall struct {
-	ID   string `json:"id"`
-	Name string `json:"name"`
+	ID    string          `json:"id"`
+	Name  string          `json:"name"`
+	Input json.RawMessage `json:"input,omitempty"`
 }
 
 // TranscriptEntry is one committed step. Messages and Request are the
@@ -58,12 +60,20 @@ type TranscriptEntry struct {
 	SDK      string          `json:"sdk,omitempty"` // module@version
 	Effort   string          `json:"effort,omitempty"`
 	Request  json.RawMessage `json:"request,omitempty"`
-	// Later steps: what the step added to the conversation.
-	Messages []json.RawMessage `json:"messages,omitempty"`
-	Calls    []StepCall        `json:"calls,omitempty"` // an llm_turn's calls; none means the run's last turn
-	Stop     string            `json:"stop,omitempty"`
-	Usage    json.RawMessage   `json:"usage,omitempty"`
-	At       time.Time         `json:"at"`
+	// Later steps: what the step added to the conversation. An llm_turn
+	// records the model's messages as its provider sends them back, its
+	// settings when the turn changed them, its calls (none means the run's
+	// last turn), its text and how full the context was; an exec_tools
+	// step, the calls' results. Settings and Results are the worker's own.
+	Messages      []json.RawMessage `json:"messages,omitempty"`
+	Settings      json.RawMessage   `json:"settings,omitempty"`
+	Calls         []StepCall        `json:"calls,omitempty"`
+	Text          string            `json:"text,omitempty"`
+	Stop          string            `json:"stop,omitempty"`
+	Usage         json.RawMessage   `json:"usage,omitempty"`
+	ContextTokens int64             `json:"contextTokens,omitempty"`
+	Results       json.RawMessage   `json:"results,omitempty"`
+	At            time.Time         `json:"at"`
 }
 
 // Attempt is a failed attempt at a step, kept for diagnosis.
@@ -114,9 +124,13 @@ func (m *Manager) stepKind(ctx context.Context, key storage.Key, runID string, s
 	return nextKind(prev), nil
 }
 
+// StopToolUse is an llm_turn's stop when the model asked for calls, even
+// ones its provider answered itself, so the turn has none to make.
+const StopToolUse = "tool_use"
+
 func nextKind(prev *TranscriptEntry) StepKind {
 	switch {
-	case prev.Kind == StepLLMTurn && len(prev.Calls) == 0:
+	case prev.Kind == StepLLMTurn && len(prev.Calls) == 0 && prev.Stop != StopToolUse:
 		return StepFinish
 	case prev.Kind == StepLLMTurn:
 		return StepExecTools
@@ -398,11 +412,15 @@ func (m *Manager) itemID(ctx context.Context, key storage.Key, t *v1alpha1.Task)
 	if turn == nil || turn.Kind != StepLLMTurn || !slices.ContainsFunc(turn.Calls, func(c StepCall) bool { return c.ID == call }) {
 		return "", fmt.Errorf("step %d's model turn asked for no call %q: %w", run.Step-1, call, ErrInvalid)
 	}
-	n := callCounter(ctx)
-	sum := sha256.Sum256([]byte(fmt.Sprintf("%s\x00%d\x00%s\x00%d", run.ID, run.Step, call, n)))
+	return derivedID(run.ID, run.Step, call, callCounter(ctx)), nil
+}
+
+// derivedID is the item id of the n-th item a step's call records.
+func derivedID(runID string, step int64, call string, n int) string {
+	sum := sha256.Sum256([]byte(fmt.Sprintf("%s\x00%d\x00%s\x00%d", runID, step, call, n)))
 	var id ulid.ULID
 	copy(id[:], sum[:16])
-	return id.String(), nil
+	return id.String()
 }
 
 type counterKey struct{}
