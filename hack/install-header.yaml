@@ -1,0 +1,16 @@
+# Cadre install.yaml: the insecure, bring-your-own-bucket form.
+#
+# This is the Helm chart rendered with auth.mode=none and the S3 bucket
+# CHANGE-ME. There are no logins: anyone who reaches cadre-server may act as
+# anyone, and everyone is an admin of every team. Use it to try Cadre, never
+# where others can reach it. The supported install is the chart:
+#
+#   helm install cadre oci://ghcr.io/j75689/charts/cadre -n cadre-system --create-namespace
+#
+# To use this file:
+#   1. kubectl create namespace cadre-system
+#   2. Replace CHANGE-ME below with your bucket (and add an endpoint and
+#      credentials if it is not on AWS; see the chart's values).
+#   3. kubectl apply --server-side -f install.yaml
+#   4. Bind the per-Team ClusterRoles in each Team namespace, as the chart's
+#      README shows.

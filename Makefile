@@ -27,7 +27,7 @@ define go-install
 	mkdir -p $(TOOLS); mv $$tmp/$$(basename $(2)) $(1); rm -rf $$tmp
 endef
 
-.PHONY: all build test smoke chaos fmt vet lint check tidy clean generate manifests verify-generated verify-tidy tools image images ui ui-check chart-files chart-lint
+.PHONY: all build test smoke chaos fmt vet lint check tidy clean generate manifests verify-generated verify-tidy tools image images ui ui-check chart-files chart-lint chart-dist print-helm
 
 all: build
 
@@ -103,6 +103,20 @@ chart-lint: $(HELM) $(KUBECONFORM) ## Lint the Helm chart and validate its outpu
 		out=$$($(HELM) template cadre charts/cadre -n cadre-system -f $$f); \
 		printf '%s\n' "$$out" | $(KUBECONFORM) -strict -summary -kubernetes-version $(ENVTEST_K8S_VERSION) -; \
 	done
+
+# chart-dist packages the chart at RELEASE (a vX.Y.Z tag: chart version X.Y.Z,
+# appVersion the tag) and renders install.yaml from it, both into dist/.
+chart-dist: $(HELM) ## Package the chart and render install.yaml for RELEASE=vX.Y.Z
+	@case "$(RELEASE)" in v[0-9]*) ;; *) echo "RELEASE must be a vX.Y.Z tag, not '$(RELEASE)'"; exit 1;; esac
+	@mkdir -p dist
+	$(HELM) package charts/cadre --version $(patsubst v%,%,$(RELEASE)) --app-version $(RELEASE) -d dist
+	@set -e; out=$$($(HELM) template cadre dist/cadre-$(patsubst v%,%,$(RELEASE)).tgz -n cadre-system --include-crds \
+		--set auth.mode=none --set storage.s3.bucket=CHANGE-ME); \
+		{ cat hack/install-header.yaml; printf '%s\n' "$$out"; } > dist/install.yaml
+	@echo "dist/cadre-$(patsubst v%,%,$(RELEASE)).tgz dist/install.yaml"
+
+print-helm: $(HELM) ## Print the pinned helm's path, installing it
+	@echo $(HELM)
 
 verify-generated: generate manifests ## Fail if generated files are out of date
 	@test -z "$$(git status --porcelain -- api/*/zz_generated.deepcopy.go config/crd config/rbac charts/cadre/crds charts/cadre/files)" || { git status --short -- api/*/zz_generated.deepcopy.go config/crd config/rbac charts/cadre/crds charts/cadre/files; echo "generated files are stale: run make generate manifests and commit"; exit 1; }
