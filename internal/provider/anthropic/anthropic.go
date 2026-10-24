@@ -4,6 +4,7 @@
 package anthropic
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -80,28 +81,37 @@ func (p *Provider) Begin(ctx context.Context, s builtin.Setup) (*builtin.Opening
 }
 
 // Resume rebuilds a conversation from its opening and its recorded steps:
-// the same parameters, settings and history it had live.
+// the same parameters, settings and history it had live. A recorded turn
+// goes back as it was recorded, byte for byte, never decoded into the
+// SDK's types and encoded again: a tool call's input keeps its keys' order
+// and its numbers, and a block this SDK does not know stays as it came.
 func (p *Provider) Resume(_ context.Context, s builtin.Setup, o *builtin.Opening, steps []builtin.Recorded) (builtin.StepConversation, error) {
 	s.Model.Model, s.System, s.Tools = o.Model, o.System, o.Tools
 	c, err := p.open(s)
 	if err != nil {
 		return nil, err
 	}
+	if err := provider.CheckOpening(o, v1alpha1.ProviderAnthropic, sdkModule, c.log); err != nil {
+		return nil, err
+	}
 	c.apply(o.Settings)
 	c.params.Messages = []sdk.BetaMessageParam{sdk.NewBetaUserMessage(sdk.NewBetaTextBlock(o.Prompt))}
 	for i, st := range steps {
-		for _, raw := range st.Messages {
-			var m sdk.BetaMessageParam
-			if err := json.Unmarshal(raw, &m); err != nil {
-				return nil, builtin.Permanent(fmt.Errorf("recorded step %d: %w", i, err))
+		switch st.Kind {
+		case builtin.RecordedTurn:
+			for _, raw := range st.Messages {
+				if !json.Valid(raw) {
+					return nil, builtin.Permanent(fmt.Errorf("recorded step %d: a message that is not JSON", i))
+				}
+				c.params.Messages = append(c.params.Messages, param.Override[sdk.BetaMessageParam](raw))
 			}
-			c.params.Messages = append(c.params.Messages, m)
-		}
-		if st.Settings != nil {
-			c.apply(*st.Settings)
-		}
-		if len(st.Results) > 0 {
+			if st.Settings != nil {
+				c.apply(*st.Settings)
+			}
+		case builtin.RecordedResults:
 			c.AddResults(st.Results)
+		default:
+			return nil, builtin.Permanent(fmt.Errorf("recorded step %d is of kind %q", i, st.Kind))
 		}
 	}
 	return c, nil
@@ -241,8 +251,11 @@ func effortSupported(e sdk.EffortCapability, level sdk.BetaOutputConfigEffort) b
 // encoding/json sorts: the same schema is the same bytes on every request,
 // as the prompt cache needs.
 func inputSchema(raw json.RawMessage) (sdk.BetaToolInputSchemaParam, error) {
+	// Numbers are kept as written, not turned into float64.
+	dec := json.NewDecoder(bytes.NewReader(raw))
+	dec.UseNumber()
 	var m map[string]any
-	if err := json.Unmarshal(raw, &m); err != nil {
+	if err := dec.Decode(&m); err != nil {
 		return sdk.BetaToolInputSchemaParam{}, fmt.Errorf("input schema: %w", err)
 	}
 	if m == nil {
@@ -279,33 +292,17 @@ type conversation struct {
 // model_context_window_exceeded stop (StopContextFull) ends the run instead.
 func (c *conversation) ContextLimit() int64 { return c.limit }
 
-// record is what the messages from from on and any change of settings
-// since before add up to.
-func (c *conversation) record(before builtin.Settings, from int) (builtin.Recorded, error) {
-	var r builtin.Recorded
-	for _, m := range c.params.Messages[from:] {
-		raw, err := json.Marshal(m)
-		if err != nil {
-			return builtin.Recorded{}, fmt.Errorf("record the model's reply: %w", err)
-		}
-		r.Messages = append(r.Messages, raw)
-	}
-	if now := c.settings(); now != before {
-		r.Settings = &now
-	}
-	return r, nil
-}
-
 // maxPauses bounds how often one turn is continued after the API paused it.
 const maxPauses = 5
 
 func (c *conversation) Turn(ctx context.Context) (*builtin.Reply, error) {
+	c.last = builtin.Recorded{}
 	before, from := c.settings(), len(c.params.Messages)
 	r, err := c.turn(ctx)
 	if err != nil {
 		return nil, err
 	}
-	rec, err := c.record(before, from)
+	rec, err := provider.RecordTurn(c.params.Messages[from:], before, c.settings())
 	if err != nil {
 		c.params.Messages = c.params.Messages[:from]
 		return nil, builtin.Permanent(err)
@@ -320,7 +317,7 @@ func (c *conversation) turn(ctx context.Context) (*builtin.Reply, error) {
 		if err != nil {
 			return nil, err
 		}
-		c.params.Messages = append(c.params.Messages, msg.ToParam())
+		c.params.Messages = append(c.params.Messages, toParam(msg))
 		if msg.StopReason != sdk.BetaStopReasonPauseTurn {
 			return reply(msg), nil
 		}
@@ -441,6 +438,35 @@ func (c *conversation) AddResults(results []builtin.ToolResult) {
 	c.params.Messages = append(c.params.Messages, sdk.NewBetaUserMessage(blocks...))
 }
 
+// toParam is msg as it goes back to the API. A tool call's input goes back
+// as the model wrote it, not decoded and encoded again, which would sort
+// its keys and round its large numbers: the call is made with those bytes
+// too.
+func toParam(msg *sdk.BetaMessage) sdk.BetaMessageParam {
+	p := msg.ToParam()
+	inputs := toolInputs(msg)
+	for _, block := range p.Content {
+		if tu := block.OfToolUse; tu != nil {
+			if raw, ok := inputs[tu.ID]; ok {
+				tu.Input = raw
+			}
+		}
+	}
+	return p
+}
+
+// toolInputs are the inputs of msg's tool calls as the model wrote them,
+// by call id.
+func toolInputs(msg *sdk.BetaMessage) map[string]json.RawMessage {
+	inputs := map[string]json.RawMessage{}
+	for _, block := range msg.Content {
+		if block.Type == "tool_use" && json.Valid(block.Input) {
+			inputs[block.ID] = block.Input
+		}
+	}
+	return inputs
+}
+
 // reply is what the loop needs from a message.
 func reply(msg *sdk.BetaMessage) *builtin.Reply {
 	u := msg.Usage
@@ -452,13 +478,14 @@ func reply(msg *sdk.BetaMessage) *builtin.Reply {
 		ContextTokens: u.InputTokens + u.CacheReadInputTokens + u.CacheCreationInputTokens + u.OutputTokens,
 	}
 	var text []string
+	inputs := toolInputs(msg)
 	for _, block := range msg.Content {
 		switch b := block.AsAny().(type) {
 		case sdk.BetaTextBlock:
 			text = append(text, b.Text)
 		case sdk.BetaToolUseBlock:
-			input, err := json.Marshal(b.Input)
-			if err != nil || b.Input == nil {
+			input, ok := inputs[b.ID]
+			if !ok || len(input) == 0 {
 				input = []byte("{}")
 			}
 			out.Calls = append(out.Calls, builtin.ToolCall{ID: b.ID, Name: b.Name, Input: input})

@@ -142,11 +142,27 @@ type Settings struct {
 
 // Recorded is what one step added to a conversation: a turn's messages, as
 // the provider sends them back, and its settings when the turn changed
-// them; or the results of the turn's calls.
+// them; or the results of the turn's calls, perhaps none (a provider
+// answers some calls itself when the results are added).
 type Recorded struct {
+	Kind     RecordKind        `json:"kind"`
 	Messages []json.RawMessage `json:"messages,omitempty"`
 	Settings *Settings         `json:"settings,omitempty"`
 	Results  []ToolResult      `json:"results,omitempty"`
+}
+
+// RecordKind says what a step recorded.
+type RecordKind string
+
+// What a step records.
+const (
+	RecordedTurn    RecordKind = "turn"
+	RecordedResults RecordKind = "results"
+)
+
+// ResultsRecord is the record of a step that ran a turn's calls.
+func ResultsRecord(results []ToolResult) Recorded {
+	return Recorded{Kind: RecordedResults, Results: results}
 }
 
 // A StepConversation is a Conversation whose turns can be recorded.

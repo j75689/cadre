@@ -4,29 +4,73 @@
 package provider
 
 import (
+	"bytes"
+	"encoding/json"
 	"fmt"
+	"log/slog"
 	"net/http"
 	"runtime/debug"
 	"strings"
 
+	v1alpha1 "github.com/j75689/cadre/api/v1alpha1"
 	"github.com/j75689/cadre/internal/builtin"
 	"github.com/j75689/cadre/internal/runes"
 )
 
-// ModuleVersion is module path@version as this binary was built with it, or
-// path@unknown when the build does not say.
+// ModuleVersion is module path@version as this binary was built with it:
+// path@(devel) for a module replaced by a directory, which has no version,
+// and path@unknown when the build does not say.
 func ModuleVersion(path string) string {
 	if info, ok := debug.ReadBuildInfo(); ok {
 		for _, d := range info.Deps {
-			if d.Path == path {
-				if d.Replace != nil {
-					d = d.Replace
-				}
-				return path + "@" + d.Version
+			if d.Path != path {
+				continue
 			}
+			if d.Replace != nil {
+				d = d.Replace
+			}
+			if d.Version == "" {
+				return path + "@(devel)"
+			}
+			return path + "@" + d.Version
 		}
 	}
 	return path + "@unknown"
+}
+
+// CheckOpening checks that a conversation's opening is this provider's
+// before it is rebuilt from it: one opened by another provider cannot be,
+// and one opened with another build of the SDK may build other requests,
+// which only costs the prompt cache, so it is logged.
+func CheckOpening(o *builtin.Opening, provider v1alpha1.ProviderType, sdkModule string, log *slog.Logger) error {
+	if o.Provider != provider {
+		return builtin.Permanent(fmt.Errorf("the conversation was opened by the %s provider, not %s", o.Provider, provider))
+	}
+	if now := ModuleVersion(sdkModule); o.SDK != now {
+		log.Warn("the conversation was opened with another SDK build; resuming it may miss the prompt cache", "opened", o.SDK, "now", now)
+	}
+	return nil
+}
+
+// RecordTurn is the record of a turn: the messages it appended, as the
+// provider sends them back, and its settings when the turn changed them.
+func RecordTurn[M any](messages []M, before, after builtin.Settings) (builtin.Recorded, error) {
+	r := builtin.Recorded{Kind: builtin.RecordedTurn}
+	for _, m := range messages {
+		// As the SDK encodes it, without the HTML escaping json.Marshal
+		// adds on top.
+		var buf bytes.Buffer
+		enc := json.NewEncoder(&buf)
+		enc.SetEscapeHTML(false)
+		if err := enc.Encode(m); err != nil {
+			return builtin.Recorded{}, fmt.Errorf("record the model's reply: %w", err)
+		}
+		r.Messages = append(r.Messages, bytes.TrimSuffix(buf.Bytes(), []byte("\n")))
+	}
+	if after != before {
+		r.Settings = &after
+	}
+	return r, nil
 }
 
 // MaxMessage bounds how much of an API error's message is kept.
