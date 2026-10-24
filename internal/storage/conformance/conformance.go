@@ -46,6 +46,7 @@ func Run(t *testing.T, f Factory) {
 		{"ClaimExactlyOnce", testClaimExactlyOnce},
 		{"RedeliveredStepAdvancesOnce", testRedeliveredStepAdvancesOnce},
 		{"OutboxAppliedOnceAfterDispatcherDies", testOutboxAppliedOnce},
+		{"NotifyItemRoundTrips", testNotifyItemRoundTrips},
 		{"TeamSemaphoreAndCounter", testTeamSemaphoreAndCounter},
 		{"IndexRebuildsAfterRestart", testIndexRebuilds},
 		{"IndexQuery", testIndexQuery},

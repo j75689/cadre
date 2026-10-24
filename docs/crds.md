@@ -129,7 +129,7 @@ status:
 | `status.run.attempt` | step mode: how many workers took the current step, reset when it is committed. A worker's heartbeats, records, commits, releases and finish carry the attempt it was given and are refused (`attempt_mismatch`) once the step was freed or taken again. The run fails when the third one dies or gives up |
 | `status.run.stepFree` | step mode: the step waits for a worker; `runner` and `runnerName` are empty, `lastRunner` and `lastRunnerName` keep the last worker, and `leaseUntil` is the idle deadline (1 hour by default), past which the run fails |
 | `status.run.stepItems` | step mode: the outbox items the current step recorded, and where their entries are looked for; a step done again records each once. Cleared when the step is committed |
-| `status.outbox[].kind` | `CreateSubtask`, whose `spec` is the subtask's `TaskSpec`; `RunEnded`, whose `run` is the ended run (id, mode, runner, step, reason `Finished`, `Interrupted` or `Cancelled`, outcome, end time); `Notify` is added once its payload is defined |
+| `status.outbox[].kind` | `CreateSubtask`, whose `spec` is the subtask's `TaskSpec`; `RunEnded`, whose `run` is the ended run (id, mode, runner, step, reason `Finished`, `Interrupted` or `Cancelled`, outcome, end time); `AppendThread` and `WriteFile`, the second phase of a fenced write; `Notify`, whose `notify` is the event, the thread entry waited on, when it happened, and the Notifiers that took it so far (`delivered`) |
 
 A `CreateSubtask` item names the subtask after its own id, lowercased (a valid DNS-1123 label). Re-applying the item is then a create of an object that already exists, which is what makes the dispatcher idempotent.
 
@@ -285,7 +285,50 @@ Ready is False with reason `InvalidSchedule` when the cron or the zone is refuse
 
 There is no concurrency policy: a tick's task is created whether or not the previous one is finished.
 
-`Notifier` names a channel (an MCP ToolServer or a webhook) and when to use it: a question for a human, a tool approval, a review.
+### Notifier
+
+A `Notifier` tells a channel when a task starts to wait on a human or ends. The channel is a webhook; an MCP ToolServer as a channel is to come.
+
+```yaml
+apiVersion: cadre.dev/v1alpha1
+kind: Notifier
+metadata: { name: oncall, namespace: team-a }
+spec:
+  on: [Question, ToolApproval, Failed]
+  webhook:
+    url: https://hooks.example.test/cadre
+    secretRef: { name: cadre-webhook, key: secret }
+    headers: { X-Team: backend }
+status:
+  lastSent: "2026-10-25T09:00:03Z"
+  conditions: [{ type: Ready, status: "True", reason: Ready }]
+```
+
+| Field | |
+|---|---|
+| `on` | required, at least one, each once: `Question`, `ToolApproval` and `Review` (a task starting to wait, for that reason), `Done`, `Failed` and `Cancelled` (a task ending) |
+| `webhook.url` | required, http or https; every notification is POSTed there |
+| `webhook.secretRef` | a Secret key holding a signing secret: every delivery then carries `X-Cadre-Signature: sha256=<hex HMAC-SHA256 of the body>` |
+| `webhook.headers` | static headers sent with each delivery. An `Authorization` header is refused: headers are readable by anyone who can read the Notifier, so a credential does not belong there; the receiver checks the signature instead |
+
+Ready is False with reason `InvalidURL` (no host, or not http or https), `SecretMissing` (the signing Secret or its key cannot be read), or `NoTeam`; otherwise it is True. The reconciler only decides Ready; it never delivers. `status.lastSent` is the last delivery, and `status.lastError` the last that failed, with its message and time.
+
+**What is sent.** A POST of `Content-Type: application/json`, with `Idempotency-Key: <id>`, `User-Agent: cadre-server/<version>`, the static headers and the signature, within 10 seconds, following no redirect. Only a 2xx counts as delivered. The body:
+
+```json
+{
+  "id": "01JB...", "event": "Question", "at": "2026-10-25T09:00:00Z", "threadSeq": 7,
+  "task": { "namespace": "team-a", "name": "fix-login", "number": 123, "title": "Fix login",
+            "phase": "Waiting", "assignee": { "kind": "Agent", "name": "coder" } },
+  "url": "https://cadre.example.test/t/team-a/tasks/fix-login"
+}
+```
+
+`url` is the task's page at cadre-server's `--external-url`. `threadSeq` is the entry the task waits on, when it is known.
+
+**At least once.** A notification is an outbox item on the Task, written in the same conditional write as the transition it tells of, and only when a Notifier in the namespace listens for the event. The dispatcher delivers it on its next pass to every Notifier listening for the event. A Notifier that took it is recorded on the item, so a failing one does not make the others receive it again; the item stays until all have taken it, retried at the dispatcher's pace. A receiver may still get one twice, when a dispatcher dies between the delivery and the record: it deduplicates on `id`, which is also the `Idempotency-Key`. A notification not taken within 24 hours is dropped, with a Warning Event `NotificationDropped` on the Task naming the Notifiers that never took it, so a dead webhook does not pin the task's outbox. Cancelling a task keeps its notifications, and tells `Cancelled` too.
+
+**Egress.** The URL is whatever the Notifier says, and cadre-server does not filter private addresses. Creating a Notifier needs Kubernetes RBAC on the CRD: it is an admin's lever, granted as such.
 
 ## Credentials
 

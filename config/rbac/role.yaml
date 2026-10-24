@@ -39,6 +39,7 @@ rules:
   resources:
   - agents
   - modelproviders
+  - notifiers
   - runners
   - schedules
   - toolservers
@@ -51,6 +52,7 @@ rules:
   resources:
   - agents/status
   - modelproviders/status
+  - notifiers/status
   - runners/status
   - schedules/status
   - tasks/status

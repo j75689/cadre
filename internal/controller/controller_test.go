@@ -85,6 +85,8 @@ func conditions(obj client.Object) []metav1.Condition {
 		return o.Status.Conditions
 	case *v1alpha1.Schedule:
 		return o.Status.Conditions
+	case *v1alpha1.Notifier:
+		return o.Status.Conditions
 	}
 	return nil
 }

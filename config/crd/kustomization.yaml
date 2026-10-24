@@ -3,6 +3,7 @@ kind: Kustomization
 resources:
   - bases/cadre.dev_agents.yaml
   - bases/cadre.dev_modelproviders.yaml
+  - bases/cadre.dev_notifiers.yaml
   - bases/cadre.dev_runners.yaml
   - bases/cadre.dev_schedules.yaml
   - bases/cadre.dev_tasks.yaml

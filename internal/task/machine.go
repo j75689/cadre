@@ -58,6 +58,7 @@ const (
 	KindThread    Kind = "ThreadAdvanced"
 	KindWaitingAt Kind = "WaitingAt"
 	KindReserve   Kind = "ReserveItem"
+	KindDelivered Kind = "NotifyDelivered"
 )
 
 // unborn is the phase of a Task object that exists but has not been numbered.
@@ -85,6 +86,7 @@ var From = map[Kind][]v1alpha1.Phase{
 	KindThread:    append([]v1alpha1.Phase{unborn}, allPhases...),
 	KindWaitingAt: allPhases,
 	KindReserve:   allPhases,
+	KindDelivered: allPhases,
 }
 
 // Event is one input to the state machine.
@@ -298,6 +300,15 @@ type ReserveItem struct {
 }
 
 func (ReserveItem) kind() Kind { return KindReserve }
+
+// NotifyDelivered records that the Notifiers To took the Notify item ID,
+// so later passes send it only to the others.
+type NotifyDelivered struct {
+	ID string
+	To []string
+}
+
+func (NotifyDelivered) kind() Kind { return KindDelivered }
 
 func (Create) kind() Kind    { return KindCreate }
 func (Claim) kind() Kind     { return KindClaim }
@@ -545,6 +556,20 @@ func Apply(t *v1alpha1.Task, ev Event, now time.Time) (Result, error) {
 			if s.Outbox[i].ID == ev.ID && s.Outbox[i].Seq == ev.From {
 				s.Outbox[i].Seq = ev.To
 			}
+		}
+
+	case NotifyDelivered:
+		for i := range s.Outbox {
+			n := s.Outbox[i].Notify
+			if s.Outbox[i].ID != ev.ID || n == nil {
+				continue
+			}
+			for _, to := range ev.To {
+				if !slices.Contains(n.Delivered, to) {
+					n.Delivered = append(n.Delivered, to)
+				}
+			}
+			slices.Sort(n.Delivered)
 		}
 
 	case WaitingAt:

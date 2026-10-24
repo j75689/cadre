@@ -108,12 +108,22 @@ func (m *Manager) dispatchTask(ctx context.Context, key storage.Key) error {
 	}
 	var applied []string
 	var errs []error
+	took := map[string][]string{}
 	for _, it := range t.Status.Outbox {
 		if err := m.applyItem(ctx, t, it); err != nil {
+			var u *undelivered
+			if errors.As(err, &u) && len(u.took) > 0 {
+				took[it.ID] = u.took
+			}
 			errs = append(errs, fmt.Errorf("outbox item %s: %w", it.ID, err))
 			continue
 		}
 		applied = append(applied, it.ID)
+	}
+	if len(took) > 0 {
+		if err := m.markDelivered(ctx, key, took); err != nil {
+			errs = append(errs, err)
+		}
 	}
 	if len(applied) > 0 {
 		if _, err := m.transition(ctx, key, task.AckOutbox{IDs: applied}); err != nil {
@@ -182,6 +192,14 @@ func (m *Manager) applyItem(ctx context.Context, parent *v1alpha1.Task, it v1alp
 			return fmt.Errorf("no file: %w", ErrInvalid)
 		}
 		return m.applyFile(ctx, parent, it)
+	case v1alpha1.OutboxNotify:
+		if it.Notify == nil {
+			return fmt.Errorf("no notification: %w", ErrInvalid)
+		}
+		if m.cfg.Notifiers == nil {
+			return nil // nobody to tell
+		}
+		return m.applyNotify(ctx, parent, it)
 	default:
 		return fmt.Errorf("unknown kind %q: %w", it.Kind, ErrInvalid)
 	}

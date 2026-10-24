@@ -2,6 +2,7 @@ package v1alpha1_test
 
 import (
 	"context"
+	"fmt"
 	"strings"
 	"testing"
 	"time"
@@ -201,5 +202,25 @@ func TestTeamRolesCRD(t *testing.T) {
 		if err := c.Create(ctx, team, client.DryRunAll); !apierrors.IsInvalid(err) {
 			t.Errorf("%s: got %v, want Invalid", name, err)
 		}
+	}
+}
+
+func TestNotifierCRD(t *testing.T) {
+	c := startAPIServer(t)
+	n := 0
+	for name, tc := range map[string]struct {
+		spec  v1alpha1.NotifierSpec
+		valid bool
+	}{
+		"valid": {v1alpha1.NotifierSpec{On: []v1alpha1.NotifyEvent{v1alpha1.NotifyQuestion, v1alpha1.NotifyDone},
+			Webhook: v1alpha1.Webhook{URL: "https://hooks.example.test/x", SecretRef: &v1alpha1.SecretKeyRef{Name: "s", Key: "k"}, Headers: map[string]string{"X-Team": "a"}}}, true},
+		"no events":          {v1alpha1.NotifierSpec{Webhook: v1alpha1.Webhook{URL: "https://hooks.example.test/x"}}, false},
+		"an unknown event":   {v1alpha1.NotifierSpec{On: []v1alpha1.NotifyEvent{"Running"}, Webhook: v1alpha1.Webhook{URL: "https://hooks.example.test/x"}}, false},
+		"not a URL":          {v1alpha1.NotifierSpec{On: []v1alpha1.NotifyEvent{v1alpha1.NotifyDone}, Webhook: v1alpha1.Webhook{URL: "hooks.example.test"}}, false},
+		"an Authorization":   {v1alpha1.NotifierSpec{On: []v1alpha1.NotifyEvent{v1alpha1.NotifyDone}, Webhook: v1alpha1.Webhook{URL: "https://h.example.test", Headers: map[string]string{"authorization": "Bearer x"}}}, false},
+		"twice the same one": {v1alpha1.NotifierSpec{On: []v1alpha1.NotifyEvent{v1alpha1.NotifyDone, v1alpha1.NotifyDone}, Webhook: v1alpha1.Webhook{URL: "https://h.example.test"}}, false},
+	} {
+		n++
+		expect(t, c, "Notifier "+name, &v1alpha1.Notifier{ObjectMeta: metav1.ObjectMeta{Name: fmt.Sprintf("n%d", n)}, Spec: tc.spec}, tc.valid)
 	}
 }

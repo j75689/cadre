@@ -75,6 +75,7 @@ var validEvents = []struct {
 	{ThreadAdvanced{Seq: 1}, step},
 	{WaitingAt{ItemID: "01JB0000000000000000000001", Seq: 1}, step},
 	{ReserveItem{ID: "01JB0000000000000000000001", To: 1}, step},
+	{NotifyDelivered{ID: "01JB0000000000000000000001", To: []string{"hook"}}, step},
 }
 
 func TestTableIsExhaustive(t *testing.T) {
@@ -640,4 +641,22 @@ func TestReserveItem(t *testing.T) {
 		t.Fatalf("moving on from 4: %d", got)
 	}
 	wantErr(t, tk, ReserveItem{ID: id, From: 4, To: 0}, ErrInvalidEvent)
+}
+
+// NotifyDelivered adds to a Notify item's Delivered, once each, and leaves
+// other items alone.
+func TestNotifyDelivered(t *testing.T) {
+	const id = "01JB0000000000000000000001"
+	tk := taskIn(v1alpha1.PhaseWaiting, step)
+	tk.Status.Outbox = []v1alpha1.OutboxItem{
+		{ID: id, Kind: v1alpha1.OutboxNotify, Notify: &v1alpha1.Notification{Event: v1alpha1.NotifyQuestion, Delivered: []string{"b"}}},
+		item("01JB0000000000000000000002"),
+	}
+	tk.Status = apply(t, tk, NotifyDelivered{ID: id, To: []string{"c", "a", "b"}}).Status
+	if got := tk.Status.Outbox[0].Notify.Delivered; strings.Join(got, ",") != "a,b,c" {
+		t.Errorf("delivered %v", got)
+	}
+	if tk.Status.Outbox[1].Notify != nil {
+		t.Errorf("another item changed: %+v", tk.Status.Outbox[1])
+	}
 }

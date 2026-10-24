@@ -169,7 +169,10 @@ func run() error {
 	}
 
 	forwarder := mcp.NewForwarder(controller.ToolServerSources(ctrls), log)
-	m := manager.New(store, manager.Config{Lease: *lease, Heartbeat: *heartbeat, StepIdle: *stepIdle, Agents: controller.Agents(ctrls), Tools: forwarder})
+	m := manager.New(store, manager.Config{
+		Lease: *lease, Heartbeat: *heartbeat, StepIdle: *stepIdle, Agents: controller.Agents(ctrls), Tools: forwarder,
+		Notifiers: controller.Notifiers(ctrls), ExternalURL: *external, Version: version,
+	})
 	var runnerOpts []runner.Option
 	if *auth == "required" {
 		reviews := runner.Cached(controller.TokenReviews(ctrls.GetClient()))

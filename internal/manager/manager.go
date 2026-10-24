@@ -35,6 +35,13 @@ type Config struct {
 	// StepIdle is how long a free step of a step-mode run waits for a
 	// worker before the run fails.
 	StepIdle time.Duration
+
+	// Notifiers are told when a task waits on a human or ends. Without
+	// them nobody is.
+	Notifiers Notifiers
+	// ExternalURL is where people's browsers reach the board, for the link
+	// in a notification; Version names this server in its User-Agent.
+	ExternalURL, Version string
 }
 
 // DefaultConfig is the configuration used when a field is zero.
@@ -121,6 +128,10 @@ func (m *Manager) transition(ctx context.Context, key storage.Key, ev task.Event
 		}
 		res, err := task.Apply(t, ev, m.now())
 		if err != nil {
+			return t, err
+		}
+		// Written with the transition that tells it, or not at all.
+		if err := m.addNotify(ctx, t, &res.Status); err != nil {
 			return t, err
 		}
 		if !res.ReleasesSlot && equality.Semantic.DeepEqual(&t.Status, &res.Status) {

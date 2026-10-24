@@ -98,6 +98,9 @@ func Setup(mgr ctrl.Manager, o Options, opts ...SetupOption) error {
 	if err := (&toolServerReconciler{b}).setup(mgr); err != nil {
 		return err
 	}
+	if err := (&notifierReconciler{b}).setup(mgr); err != nil {
+		return err
+	}
 	if o.ServerURL != "" {
 		if o.Lease <= 0 {
 			o.Lease = 30 * time.Second

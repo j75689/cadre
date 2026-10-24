@@ -235,7 +235,42 @@ spec:
                       - RunEnded
                       - AppendThread
                       - WriteFile
+                      - Notify
                       type: string
+                    notify:
+                      description: Notify is the notification, for kind Notify.
+                      properties:
+                        at:
+                          description: At is when it happened.
+                          format: date-time
+                          type: string
+                        delivered:
+                          description: |-
+                            Delivered names the Notifiers that took it, so a pass that finds
+                            one still failing does not send it to the others again.
+                          items:
+                            type: string
+                          type: array
+                          x-kubernetes-list-type: set
+                        event:
+                          description: Event is what happened.
+                          enum:
+                          - Question
+                          - ToolApproval
+                          - Review
+                          - Done
+                          - Failed
+                          - Cancelled
+                          type: string
+                        threadSeq:
+                          description: ThreadSeq is the thread entry the task waits
+                            on, if known yet.
+                          format: int64
+                          type: integer
+                      required:
+                      - at
+                      - event
+                      type: object
                     run:
                       description: Run is the ended run to record, for kind RunEnded.
                       properties:
@@ -409,6 +444,8 @@ spec:
                     rule: self.kind != 'AppendThread' || has(self.thread)
                   - message: a WriteFile item needs file
                     rule: self.kind != 'WriteFile' || has(self.file)
+                  - message: a Notify item needs notify
+                    rule: self.kind != 'Notify' || has(self.notify)
                 type: array
                 x-kubernetes-list-map-keys:
                 - id
