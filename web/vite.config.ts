@@ -19,8 +19,13 @@ export default defineConfig({
   plugins: [react(), keepDist],
   build: { outDir, emptyOutDir: true },
   server: {
-    // npm run dev against a cadre-server on its default port.
-    proxy: { "/api": "http://localhost:8080" },
+    // npm run dev against a cadre-server on its default port. Requests
+    // pass as the server's own origin, which its check on cookie-made
+    // changes wants: development only.
+    proxy: {
+      "/api": { target: "http://localhost:8080", headers: { origin: "http://localhost:8080" } },
+      "/auth": { target: "http://localhost:8080", headers: { origin: "http://localhost:8080" } },
+    },
   },
   test: {
     environment: "jsdom",

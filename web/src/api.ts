@@ -113,6 +113,24 @@ export class APIError extends Error {
   }
 }
 
+// loginURL is where a request found unauthenticated sends the browser, to
+// come back to the page it was on.
+export function loginURL(): string {
+  return `/auth/login?next=${encodeURIComponent(location.pathname + location.search)}`;
+}
+
+// auth sends the browser to log in; tests replace it. justLoggedIn reads
+// the marker the login's callback leaves for a minute: a 401 then means the
+// browser did not keep the session cookie, and logging in again would only
+// go round in a circle.
+export const auth = {
+  toLogin: () => location.assign(loginURL()),
+  justLoggedIn: () => document.cookie.split(";").some((c) => c.trim().startsWith("cadre-just-logged-in=")),
+};
+
+export const sessionDropped =
+  "You logged in, but this browser did not keep the session: it blocks or cleared cookies for this site. Allow them and reload.";
+
 async function request<T>(method: string, path: string, body?: unknown, signal?: AbortSignal): Promise<T> {
   const init: RequestInit = { method, headers: { Accept: "application/json" }, signal };
   if (body !== undefined) {
@@ -120,6 +138,10 @@ async function request<T>(method: string, path: string, body?: unknown, signal?:
     init.headers = { ...init.headers, "Content-Type": "application/json" };
   }
   const res = await fetch("/api/v1" + path, init);
+  if (res.status === 401) {
+    if (auth.justLoggedIn()) throw new APIError(401, sessionDropped);
+    auth.toLogin();
+  }
   if (!res.ok) {
     let message = res.statusText;
     try {
@@ -135,6 +157,21 @@ async function request<T>(method: string, path: string, body?: unknown, signal?:
 
 const get = <T,>(path: string, signal?: AbortSignal) => request<T>("GET", path, undefined, signal);
 const post = <T,>(path: string, body: unknown) => request<T>("POST", path, body);
+
+// Me is who the server takes this browser for: with a login, the user; with
+// --auth=none, nobody, and the UI asks for a name instead.
+export interface Me {
+  mode: "oidc" | "none";
+  username?: string;
+  name?: string;
+  groups?: string[];
+}
+
+export const getMe = (signal?: AbortSignal) => get<Me>("/me", signal);
+
+export async function logout(): Promise<void> {
+  await fetch("/auth/logout", { method: "POST" });
+}
 
 export const listTeams = (signal?: AbortSignal) => get<{ items: Team[] }>("/teams", signal);
 
@@ -154,14 +191,16 @@ export function readThread(ns: string, name: string, after: number, limit: numbe
   return get<{ items: ThreadEntry[] }>(`${taskPath(ns, name)}/thread?${q}`, signal);
 }
 
+// An action names its author only without a login: with one the server
+// knows who acts, and "" leaves the field out.
 export const comment = (ns: string, name: string, author: string, body: string) =>
-  post<ThreadEntry>(`${taskPath(ns, name)}/comments`, { author, body });
+  post<ThreadEntry>(`${taskPath(ns, name)}/comments`, { author: author || undefined, body });
 
 export const reply = (ns: string, name: string, author: string, body: string) =>
-  post<{ task: Task; entry: ThreadEntry }>(`${taskPath(ns, name)}/reply`, { author, body });
+  post<{ task: Task; entry: ThreadEntry }>(`${taskPath(ns, name)}/reply`, { author: author || undefined, body });
 
 export const approve = (ns: string, name: string, author: string, ok: boolean, note: string) =>
-  post<{ task: Task; decision: ThreadEntry; result?: ThreadEntry }>(`${taskPath(ns, name)}/approve`, { author, approve: ok, note: note || undefined });
+  post<{ task: Task; decision: ThreadEntry; result?: ThreadEntry }>(`${taskPath(ns, name)}/approve`, { author: author || undefined, approve: ok, note: note || undefined });
 
 export const cancel = (ns: string, name: string) => post<Task>(`${taskPath(ns, name)}/cancel`, {});
 

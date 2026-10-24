@@ -12,6 +12,7 @@ import (
 	"k8s.io/apimachinery/pkg/api/meta"
 
 	v1alpha1 "github.com/j75689/cadre/api/v1alpha1"
+	"github.com/j75689/cadre/internal/auth"
 	"github.com/j75689/cadre/internal/httpjson"
 	"github.com/j75689/cadre/internal/manager"
 	"github.com/j75689/cadre/internal/storage"
@@ -126,7 +127,7 @@ func (s *Server) comment(w http.ResponseWriter, r *http.Request) {
 	if !httpjson.Decode(w, r, &req) {
 		return
 	}
-	entry, err := s.m.AppendThread(r.Context(), taskKey(r), manager.Author{Kind: manager.AuthorUser, Name: req.Author}, manager.EntryComment, req.Body)
+	entry, err := s.m.AppendThread(r.Context(), taskKey(r), manager.Author{Kind: manager.AuthorUser, Name: auth.Author(r, req.Author)}, manager.EntryComment, req.Body)
 	if err != nil {
 		httpjson.Fail(w, s.log, err)
 		return
@@ -160,7 +161,7 @@ func (s *Server) reply(w http.ResponseWriter, r *http.Request) {
 	if !httpjson.Decode(w, r, &req) {
 		return
 	}
-	t, entry, err := s.m.Answer(r.Context(), taskKey(r), manager.Author{Kind: manager.AuthorUser, Name: req.Author}, req.Body)
+	t, entry, err := s.m.Answer(r.Context(), taskKey(r), manager.Author{Kind: manager.AuthorUser, Name: auth.Author(r, req.Author)}, req.Body)
 	if err != nil {
 		httpjson.Fail(w, s.log, err)
 		return
@@ -186,7 +187,7 @@ func (s *Server) approve(w http.ResponseWriter, r *http.Request) {
 		httpjson.WriteError(w, http.StatusBadRequest, httpjson.CodeInvalid, "approve is required: true to approve, false to deny")
 		return
 	}
-	a, err := s.m.Approve(r.Context(), taskKey(r), manager.Author{Kind: manager.AuthorUser, Name: req.Author}, *req.Approve, req.Note)
+	a, err := s.m.Approve(r.Context(), taskKey(r), manager.Author{Kind: manager.AuthorUser, Name: auth.Author(r, req.Author)}, *req.Approve, req.Note)
 	if err != nil {
 		httpjson.Fail(w, s.log, err)
 		return

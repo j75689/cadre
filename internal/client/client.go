@@ -16,6 +16,7 @@ import (
 
 	v1alpha1 "github.com/j75689/cadre/api/v1alpha1"
 	"github.com/j75689/cadre/internal/api"
+	"github.com/j75689/cadre/internal/auth"
 	"github.com/j75689/cadre/internal/httpjson"
 	"github.com/j75689/cadre/internal/manager"
 	"github.com/j75689/cadre/internal/runner"
@@ -189,6 +190,39 @@ func (c *Client) ListTeams(ctx context.Context) (*api.TeamList, error) {
 	var out api.TeamList
 	_, err := c.do(ctx, http.MethodGet, api.Base+"/teams", nil, &out)
 	return &out, err
+}
+
+// AuthInfo says how the server's users log in.
+func (c *Client) AuthInfo(ctx context.Context) (*auth.Info, error) {
+	var out auth.Info
+	_, err := c.do(ctx, http.MethodGet, api.Base+"/auth", nil, &out)
+	return &out, err
+}
+
+// Me returns who the server takes the caller for.
+func (c *Client) Me(ctx context.Context) (*auth.Me, error) {
+	var out auth.Me
+	_, err := c.do(ctx, http.MethodGet, api.Base+"/me", nil, &out)
+	return &out, err
+}
+
+// Bearer sends "Authorization: Bearer <token>" on every request.
+func Bearer(token string, next http.RoundTripper) http.RoundTripper {
+	if next == nil {
+		next = http.DefaultTransport
+	}
+	return bearer{token: token, next: next}
+}
+
+type bearer struct {
+	token string
+	next  http.RoundTripper
+}
+
+func (b bearer) RoundTrip(r *http.Request) (*http.Response, error) {
+	r = r.Clone(r.Context())
+	r.Header.Set("Authorization", "Bearer "+b.token)
+	return b.next.RoundTrip(r)
 }
 
 // Claim asks for a task; it returns nil when there is no work.

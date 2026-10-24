@@ -16,6 +16,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"strings"
 	"syscall"
 	"time"
 	_ "time/tzdata" // Schedules' time zones, in an image without zoneinfo
@@ -25,6 +26,7 @@ import (
 	ctrllog "sigs.k8s.io/controller-runtime/pkg/log"
 
 	"github.com/j75689/cadre/internal/api"
+	"github.com/j75689/cadre/internal/auth"
 	"github.com/j75689/cadre/internal/controller"
 	"github.com/j75689/cadre/internal/httpjson"
 	"github.com/j75689/cadre/internal/manager"
@@ -58,8 +60,19 @@ func run() error {
 		elect     = flag.Bool("leader-elect", true, "run the controllers on one replica at a time, elected with a Lease; the API, the runner protocol and the MCP endpoint serve on every replica")
 		electNS   = flag.String("leader-elect-namespace", "", "the namespace of the leader election Lease; by default the pod's own in a cluster (outside one, leader election needs it, or is off)")
 		showVer   = flag.Bool("version", false, "print the version and exit")
+		external  = flag.String("external-url", "", "the URL people's browsers reach this server at (an ingress, say): logins come back to <URL>/auth/callback, cookies are Secure when it is https, and changes made with a session must come from it; default --public-url")
+		authMode  = flag.String("auth", "", "how people log in to the API and the UI: oidc, or none (anyone may act as anyone, for local development only); default oidc in a cluster, none outside one")
+		oidcCfg   oidcFlags
 		s3cfg     kubernetes.S3Config
 	)
+	flag.StringVar(&oidcCfg.issuer, "oidc-issuer", "", "the OIDC provider's issuer URL")
+	flag.StringVar(&oidcCfg.clientID, "oidc-client-id", "", "the OIDC client the web UI logs in with; ID tokens are checked for it")
+	flag.StringVar(&oidcCfg.secretFile, "oidc-client-secret-file", "", "a file holding that client's secret")
+	flag.StringVar(&oidcCfg.cliClientID, "oidc-cli-client-id", "", "the public OIDC client cadre login uses, if not the web UI's; ID tokens for it are accepted too")
+	flag.StringVar(&oidcCfg.scopes, "oidc-scopes", "openid profile email groups", "the scopes asked for, space- or comma-separated")
+	flag.StringVar(&oidcCfg.groupsClaim, "oidc-groups-claim", "groups", "the ID token claim listing a user's groups")
+	flag.StringVar(&oidcCfg.usernameClaim, "oidc-username-claim", "email", "the ID token claim naming a user")
+	flag.StringVar(&oidcCfg.sessionKeyFile, "session-key-file", "", "a file holding the 32-byte key (raw or hex) that encrypts session cookies, the same on every replica; required with --auth=oidc")
 	flag.StringVar(&s3cfg.Endpoint, "s3-endpoint", "", "S3-compatible endpoint; empty for AWS S3")
 	flag.StringVar(&s3cfg.Region, "s3-region", "us-east-1", "S3 region")
 	flag.StringVar(&s3cfg.Bucket, "s3-bucket", "", "bucket for the log (required)")
@@ -108,6 +121,13 @@ func run() error {
 	if *publicURL, err = resolvePublicURL(*publicURL, *listen, os.Getenv("KUBERNETES_SERVICE_HOST") != ""); err != nil {
 		return err
 	}
+	if *external == "" {
+		*external = *publicURL
+	}
+	authn, err := newAuthenticator(ctx, *authMode, inCluster, oidcCfg, *external, log)
+	if err != nil {
+		return err
+	}
 	// Runner agents' Jobs reach cadre-server where every runner does.
 	if err := controller.Setup(ctrls, controller.Options{ServerURL: *publicURL, Lease: *lease}); err != nil {
 		return fmt.Errorf("controllers: %w", err)
@@ -150,7 +170,7 @@ func run() error {
 	} else {
 		log.Warn("runners are not authenticated (--runner-auth=none): any client may claim and finish runs")
 	}
-	mux := newMux(m, log, *publicURL, runnerOpts, mcp.WithForwarder(forwarder))
+	mux := newMux(m, log, *publicURL, authn, runnerOpts, mcp.WithForwarder(forwarder))
 
 	srv := &http.Server{
 		Addr:              *listen,
@@ -194,8 +214,9 @@ func run() error {
 
 // newMux routes everything cadre-server serves: the runner protocol, the
 // per-run MCP endpoint, the API, the health probes and the board UI.
-func newMux(m *manager.Manager, log *slog.Logger, publicURL string, runnerOpts []runner.Option, mcpOpts ...mcp.Option) *http.ServeMux {
+func newMux(m *manager.Manager, log *slog.Logger, publicURL string, authn auth.Authenticator, runnerOpts []runner.Option, mcpOpts ...mcp.Option) http.Handler {
 	mux := http.NewServeMux()
+	authn.Register(mux, api.Base)
 	runner.NewServer(m, log, publicURL, runnerOpts...).Register(mux)
 	mcp.NewServer(m, log, mcpOpts...).Register(mux)
 	api.NewServer(m, log).Register(mux)
@@ -211,7 +232,58 @@ func newMux(m *manager.Manager, log *slog.Logger, publicURL string, runnerOpts [
 	// The board UI, at its own paths only: a wrong method on a route above
 	// stays the mux's 405.
 	web.Register(mux)
-	return mux
+	// People are authenticated on the API only: runners and the per-run
+	// MCP endpoint check their own tokens.
+	return authn.Wrap(mux, api.Base)
+}
+
+// oidcFlags are the --oidc-* flags.
+type oidcFlags struct {
+	issuer, clientID, secretFile, cliClientID, scopes, groupsClaim, usernameClaim, sessionKeyFile string
+}
+
+// newAuthenticator builds the --auth mode: oidc by default in a cluster,
+// none outside one. externalURL is where browsers reach the server.
+func newAuthenticator(ctx context.Context, mode string, inCluster bool, f oidcFlags, externalURL string, log *slog.Logger) (auth.Authenticator, error) {
+	if mode == "" {
+		mode = auth.ModeNone
+		if inCluster {
+			mode = auth.ModeOIDC
+		}
+	}
+	switch mode {
+	case auth.ModeNone:
+		log.Warn("people are not authenticated (--auth=none): anyone may act as anyone through the API and the UI")
+		return auth.None{}, nil
+	case auth.ModeOIDC:
+	default:
+		return nil, fmt.Errorf("--auth %q: must be oidc or none", mode)
+	}
+	if f.issuer == "" || f.clientID == "" || f.sessionKeyFile == "" {
+		return nil, errors.New("--auth=oidc needs --oidc-issuer, --oidc-client-id and --session-key-file")
+	}
+	keyData, err := os.ReadFile(f.sessionKeyFile)
+	if err != nil {
+		return nil, fmt.Errorf("--session-key-file: %w", err)
+	}
+	key, err := auth.ParseSessionKey(keyData)
+	if err != nil {
+		return nil, fmt.Errorf("--session-key-file: %w", err)
+	}
+	var secret string
+	if f.secretFile != "" {
+		data, err := os.ReadFile(f.secretFile)
+		if err != nil {
+			return nil, fmt.Errorf("--oidc-client-secret-file: %w", err)
+		}
+		secret = strings.TrimSpace(string(data))
+	}
+	return auth.NewOIDC(ctx, auth.Config{
+		Issuer: f.issuer, ClientID: f.clientID, ClientSecret: secret, CLIClientID: f.cliClientID,
+		Scopes:        strings.FieldsFunc(f.scopes, func(r rune) bool { return r == ' ' || r == ',' }),
+		UsernameClaim: f.usernameClaim, GroupsClaim: f.groupsClaim,
+		PublicURL: externalURL, SessionKey: key, Log: log,
+	})
 }
 
 // requestTimeout bounds one request's work, comfortably above the Task
