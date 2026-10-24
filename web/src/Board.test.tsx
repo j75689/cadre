@@ -37,11 +37,18 @@ describe("Columns", () => {
 
   it("shows the card's fields and links to the task", () => {
     renderBoard(columns([task("c", "Waiting", { priority: "urgent", assignee: { kind: "Agent", name: "writer" }, labels: ["ops"] }, 12)]));
-    const card = screen.getByRole("link");
-    expect(card.getAttribute("href")).toBe("/t/team-a/tasks/c");
+    const title = screen.getByRole("link", { name: "Title of c" });
+    expect(title.getAttribute("href")).toBe("/t/team-a/tasks/c");
+    const card = screen.getByRole("article");
     for (const text of ["#12", "urgent", "agent writer", "waiting: Question", "ops"]) {
       expect(within(card).getByText(text)).toBeTruthy();
     }
+  });
+
+  it("links a subtask to its parent", () => {
+    renderBoard(columns([task("child", "Todo", { parentRef: { name: "epic" } })]));
+    expect(screen.getByRole("link", { name: "epic" }).getAttribute("href")).toBe("/t/team-a/tasks/epic");
+    expect(screen.getByText(/subtask of/)).toBeTruthy();
   });
 
   it("offers more only where the last page was full", () => {

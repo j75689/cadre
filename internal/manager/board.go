@@ -376,6 +376,20 @@ func (m *Manager) InitTeam(ctx context.Context, namespace string, spec v1alpha1.
 	return team, nil
 }
 
+// ListAgents lists the Agents of a Team's namespace, by name.
+func (m *Manager) ListAgents(ctx context.Context, namespace string) ([]v1alpha1.Agent, error) {
+	if err := validNamespace(namespace); err != nil {
+		return nil, err
+	}
+	if _, err := m.store.GetTeam(ctx, namespace); err != nil {
+		if errors.Is(err, storage.ErrNotFound) {
+			return nil, fmt.Errorf("namespace %s has no Team: %w", namespace, err)
+		}
+		return nil, err
+	}
+	return m.agents.ListAgents(ctx, namespace)
+}
+
 // ListTeams lists every Team.
 func (m *Manager) ListTeams(ctx context.Context) ([]v1alpha1.Team, error) {
 	return m.store.ListTeams(ctx)

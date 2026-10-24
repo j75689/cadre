@@ -101,6 +101,7 @@ main {
 }
 
 .card {
+  position: relative;
   display: block;
   background: var(--card);
   border: 1px solid var(--line);
@@ -133,8 +134,25 @@ main {
 }
 
 .title {
+  display: block;
   margin: 0.25rem 0;
   font-weight: 600;
+  color: inherit;
+  text-decoration: none;
+}
+
+/* The title link covers the card; other links in it sit above. */
+.card .title::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+}
+
+.card .parent {
+  position: relative;
+  z-index: 1;
+  font-size: 0.8rem;
+  color: var(--muted);
 }
 
 .assignee,
@@ -171,4 +189,133 @@ main {
   padding: 0.75rem;
   overflow-x: auto;
   font-size: 0.8rem;
+}
+
+.new {
+  margin-right: auto;
+  margin-left: 1rem;
+}
+
+.task-layout {
+  display: grid;
+  grid-template-columns: minmax(0, 3fr) minmax(16rem, 1fr);
+  gap: 1.5rem;
+}
+
+@media (max-width: 800px) {
+  .task-layout {
+    grid-template-columns: 1fr;
+  }
+}
+
+.description,
+.entry .body {
+  white-space: pre-wrap;
+  font-family: inherit;
+  margin: 0.25rem 0 0;
+}
+
+.thread {
+  list-style: none;
+  padding: 0;
+}
+
+.entry {
+  background: var(--card);
+  border: 1px solid var(--line);
+  border-radius: 4px;
+  padding: 0.5rem 0.75rem;
+  margin-bottom: 0.5rem;
+}
+
+.entry.author-agent {
+  border-left: 3px solid var(--accent);
+}
+
+.entry.waiting-on {
+  border-color: var(--high);
+  box-shadow: 0 0 0 2px color-mix(in srgb, var(--high) 35%, transparent);
+}
+
+.entry-head {
+  font-size: 0.8rem;
+  color: var(--muted);
+}
+
+.entry-head .kind {
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+  font-weight: 600;
+}
+
+.waiting-badge {
+  color: var(--high);
+  font-weight: 600;
+}
+
+.call pre {
+  margin: 0.25rem 0;
+}
+
+.actions {
+  display: grid;
+  gap: 0.75rem;
+  margin-top: 1rem;
+}
+
+.action label,
+.new-task label {
+  display: grid;
+  gap: 0.25rem;
+  margin-bottom: 0.5rem;
+}
+
+.action textarea,
+.new-task input,
+.new-task textarea,
+.new-task select {
+  font: inherit;
+}
+
+.new-task form {
+  max-width: 40rem;
+}
+
+.new-task fieldset {
+  border: 1px solid var(--line);
+  border-radius: 4px;
+  margin-bottom: 0.5rem;
+}
+
+.details {
+  display: grid;
+  grid-template-columns: auto 1fr;
+  gap: 0.25rem 0.75rem;
+  font-size: 0.875rem;
+}
+
+.details > div {
+  display: contents;
+}
+
+.details dt {
+  color: var(--muted);
+}
+
+.details dd {
+  margin: 0;
+}
+
+.runs ol {
+  padding-left: 1rem;
+}
+
+.run-head {
+  background: none;
+  border: none;
+  padding: 0;
+  color: var(--accent);
+  cursor: pointer;
+  text-align: left;
+  font: inherit;
 }

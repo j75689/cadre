@@ -44,5 +44,8 @@ cluster, for example with `--runner-auth=none` for development.
 - The API is same-origin: requests go to `/api/v1/...`.
 - The name the UI acts as (`src/identityStore.ts`, `src/Identity.tsx`) is a
   placeholder until sign-in: it is asked once and kept in `localStorage`.
+  Actions read it with `useIdentity()` and are disabled without one.
+- Tests use `src/testing.ts` for task and thread fixtures, and stub `fetch`
+  with `vi.stubGlobal`; polling tests use Vitest's fake timers.
 - Dependencies stay few: react, react-dom and react-router at runtime, plain
   CSS, no component kit.

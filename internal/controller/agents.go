@@ -3,6 +3,8 @@ package controller
 import (
 	"context"
 	"fmt"
+	"slices"
+	"strings"
 
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
@@ -40,6 +42,15 @@ func (a agents) CachedAgent(ctx context.Context, ns, name string) (*v1alpha1.Age
 
 func (a agents) Agent(ctx context.Context, ns, name string) (*v1alpha1.Agent, error) {
 	return get[v1alpha1.Agent](ctx, a.fresh, ns, name)
+}
+
+func (a agents) ListAgents(ctx context.Context, ns string) ([]v1alpha1.Agent, error) {
+	var list v1alpha1.AgentList
+	if err := a.cached.List(ctx, &list, client.InNamespace(ns)); err != nil {
+		return nil, err
+	}
+	slices.SortFunc(list.Items, func(x, y v1alpha1.Agent) int { return strings.Compare(x.Name, y.Name) })
+	return list.Items, nil
 }
 
 func (a agents) ModelProvider(ctx context.Context, ns, name string) (*v1alpha1.ModelProvider, error) {

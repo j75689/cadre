@@ -3,6 +3,8 @@ package manager
 import (
 	"context"
 	"fmt"
+	"slices"
+	"strings"
 
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
@@ -10,9 +12,10 @@ import (
 	"github.com/j75689/cadre/internal/storage"
 )
 
-// Agents gives the Task Manager the configuration a claim needs. Agents and
-// ModelProviders are CRDs, not storage-driver data, so they come from here.
-// All three methods return storage.ErrNotFound for a missing object.
+// Agents gives the Task Manager the configuration a claim needs, and the
+// board its Agents. Agents and ModelProviders are CRDs, not storage-driver
+// data, so they come from here. The lookups return storage.ErrNotFound for a
+// missing object.
 type Agents interface {
 	// CachedAgent may answer from a cache. It only pre-filters claim
 	// candidates; no decision rests on it.
@@ -21,6 +24,9 @@ type Agents interface {
 	Agent(ctx context.Context, namespace, name string) (*v1alpha1.Agent, error)
 	// ModelProvider reads the ModelProvider fresh.
 	ModelProvider(ctx context.Context, namespace, name string) (*v1alpha1.ModelProvider, error)
+	// ListAgents lists a namespace's Agents, possibly from a cache, for
+	// display: no decision rests on it.
+	ListAgents(ctx context.Context, namespace string) ([]v1alpha1.Agent, error)
 }
 
 // claimableBy reports whether a runner sending labels may claim the tasks of
@@ -67,6 +73,18 @@ func (s StaticAgents) Agent(_ context.Context, ns, name string) (*v1alpha1.Agent
 		return a.DeepCopy(), nil
 	}
 	return nil, fmt.Errorf("agent %s/%s: %w", ns, name, storage.ErrNotFound)
+}
+
+// ListAgents implements Agents, by name.
+func (s StaticAgents) ListAgents(_ context.Context, ns string) ([]v1alpha1.Agent, error) {
+	var out []v1alpha1.Agent
+	for _, a := range s.Agents {
+		if a.Namespace == ns {
+			out = append(out, *a.DeepCopy())
+		}
+	}
+	slices.SortFunc(out, func(a, b v1alpha1.Agent) int { return strings.Compare(a.Name, b.Name) })
+	return out, nil
 }
 
 // ModelProvider implements Agents.
