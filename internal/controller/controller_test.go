@@ -28,7 +28,7 @@ func start(t *testing.T) *env {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := controller.Setup(mgr, controller.Options{Resync: 200 * time.Millisecond}); err != nil {
+	if err := controller.Setup(mgr, controller.Options{Resync: 200 * time.Millisecond}, controller.SkipNameValidation()); err != nil {
 		t.Fatal(err)
 	}
 	ctx, cancel := context.WithCancel(context.Background())
@@ -122,7 +122,7 @@ func TestReadiness(t *testing.T) {
 
 	managed := &v1alpha1.ToolServer{ObjectMeta: meta2(ns, "github"), Spec: v1alpha1.ToolServerSpec{Managed: &v1alpha1.ManagedServer{Image: "example/mcp:1.0", Port: 8080}}}
 	e.create(managed)
-	e.ready(managed, metav1.ConditionFalse, "ManagedNotSupported")
+	e.ready(managed, metav1.ConditionFalse, "Deploying")
 	e.ready(agent, metav1.ConditionFalse, "ToolServerNotReady")
 
 	if err := e.c.Delete(context.Background(), managed); err != nil {

@@ -149,7 +149,7 @@ func (f *Forwarder) forwardedTools(ctx context.Context, t *v1alpha1.Task) map[st
 	var wg sync.WaitGroup
 	for i, ref := range agent.Spec.ToolRefs {
 		ts, err := f.sources.CachedToolServer(ctx, t.Namespace, ref)
-		if err != nil || ts.Spec.URL == "" || !ts.Status.ReadyFor(ts.Generation) {
+		if err != nil || ts.Endpoint() == "" || !ts.Status.ReadyFor(ts.Generation) {
 			if err != nil && !isNotFound(err) {
 				f.log.Warn("forward tools: read ToolServer", "toolServer", t.Namespace+"/"+ref, "err", err)
 			}
@@ -277,7 +277,7 @@ func (f *Forwarder) connect(ctx context.Context, ts *v1alpha1.ToolServer) (*sdk.
 		if a.Prefix != nil {
 			prefix = *a.Prefix
 		}
-		endpoint, err := url.Parse(ts.Spec.URL)
+		endpoint, err := url.Parse(ts.Endpoint())
 		if err != nil {
 			return nil, fmt.Errorf("ToolServer URL: %w", err)
 		}
@@ -288,7 +288,7 @@ func (f *Forwarder) connect(ctx context.Context, ts *v1alpha1.ToolServer) (*sdk.
 	}
 	client := sdk.NewClient(&sdk.Implementation{Name: "cadre", Version: v1alpha1.GroupVersion.Version}, nil)
 	return client.Connect(ctx, &sdk.StreamableClientTransport{
-		Endpoint: ts.Spec.URL,
+		Endpoint: ts.Endpoint(),
 		// Redirects are not followed: the credential must not travel to
 		// wherever a ToolServer points.
 		HTTPClient: NoRedirects(transport),
@@ -418,7 +418,7 @@ func (f *Forwarder) callable(ctx context.Context, namespace, server, tool string
 		f.log.Warn("forward call: read ToolServer", "toolServer", namespace+"/"+server, "err", err)
 		return nil, "", msgUnreachable
 	}
-	if err != nil || ts.Spec.URL == "" || !ts.Status.ReadyFor(ts.Generation) {
+	if err != nil || ts.Endpoint() == "" || !ts.Status.ReadyFor(ts.Generation) {
 		return nil, "", "This tool's server is gone or not Ready."
 	}
 	perm := permissionFor(ts.Spec.Permissions, tool)

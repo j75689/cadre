@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"time"
 
+	appsv1 "k8s.io/api/apps/v1"
 	authorizationv1 "k8s.io/api/authorization/v1"
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
@@ -91,28 +92,32 @@ type toolServerReconciler struct{ base }
 func (r *toolServerReconciler) setup(mgr ctrl.Manager) error {
 	return ctrl.NewControllerManagedBy(mgr).
 		For(&v1alpha1.ToolServer{}, builder.WithPredicates(predicate.GenerationChangedPredicate{})).
+		// A managed server's Deployment says when it is Available.
+		Owns(&appsv1.Deployment{}).
 		Named("toolserver").WithOptions(r.options()).Complete(r)
 }
 
 func (r *toolServerReconciler) Reconcile(ctx context.Context, req reconcile.Request) (reconcile.Result, error) {
 	var ts v1alpha1.ToolServer
 	if err := r.client.Get(ctx, req.NamespacedName, &ts); err != nil {
+		// A deleted managed server's Deployment and Service go with it:
+		// it owns them.
 		return reconcile.Result{}, client.IgnoreNotFound(err)
 	}
 	if ok, err := r.hasTeam(ctx, req.Namespace); err != nil || !ok {
 		return noTeam(err, r.resync)
 	}
+	if ts.Spec.Managed != nil {
+		return r.reconcileManaged(ctx, &ts)
+	}
 	ready, reason, msg := true, "External", ""
-	switch {
-	case ts.Spec.Managed != nil:
-		ready, reason, msg = false, "ManagedNotSupported", "managed ToolServers arrive in M2"
-	case ts.Spec.Auth != nil:
+	if ts.Spec.Auth != nil {
 		var err error
 		if ready, reason, msg, err = r.secretHasKey(ctx, ts.Namespace, ts.Spec.Auth.SecretRef); err != nil {
 			return reconcile.Result{}, err
 		}
 	}
-	return reconcile.Result{RequeueAfter: r.resync}, r.setReady(ctx, &ts, &ts.Status, ready, reason, msg)
+	return reconcile.Result{RequeueAfter: r.resync}, r.setReady(ctx, &ts, &ts.Status.ConfigStatus, ready, reason, msg)
 }
 
 type agentReconciler struct{ base }
@@ -180,7 +185,7 @@ func (r *agentReconciler) resolve(ctx context.Context, agent *v1alpha1.Agent) (b
 			return false, "", "", err
 		case err != nil:
 			return false, "ToolServerNotFound", fmt.Sprintf("ToolServer %s does not exist", name), nil
-		case !isReady(&ts, ts.Status):
+		case !isReady(&ts, ts.Status.ConfigStatus):
 			return false, "ToolServerNotReady", fmt.Sprintf("ToolServer %s is not Ready", name), nil
 		}
 	}
@@ -233,7 +238,7 @@ func (r *agentReconciler) resolveJob(ctx context.Context, agent *v1alpha1.Agent,
 
 // forbidden says what a namespace whose Jobs cadre-server may not run
 // lacks.
-const forbidden = "cadre-server may not run Jobs in this namespace: bind the ClusterRole in config/rbac/jobs.yaml here"
+const forbidden = "cadre-server may not run Jobs in this namespace: bind the ClusterRole in config/rbac/workloads.yaml here"
 
 // noTeam ends a reconcile in a namespace that has no Team (yet): check again
 // later. An error is returned alone, since controller-runtime ignores a

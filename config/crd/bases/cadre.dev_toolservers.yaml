@@ -18,6 +18,9 @@ spec:
     - jsonPath: .spec.url
       name: URL
       type: string
+    - jsonPath: .status.url
+      name: Managed
+      type: string
     - jsonPath: .status.conditions[?(@.type=="Ready")].status
       name: Ready
       type: string
@@ -93,6 +96,12 @@ spec:
                     description: Image is the server's container image.
                     minLength: 1
                     type: string
+                  path:
+                    default: /mcp
+                    description: Path is the MCP endpoint's path on the server; default
+                      /mcp.
+                    pattern: ^/
+                    type: string
                   port:
                     description: Port is the port the server listens on.
                     format: int32
@@ -132,10 +141,10 @@ spec:
             x-kubernetes-validations:
             - message: set exactly one of url and managed
               rule: has(self.url) != has(self.managed)
+            - message: 'a managed server takes no auth: it runs in the cluster, unauthenticated'
+              rule: '!has(self.managed) || !has(self.auth)'
           status:
-            description: |-
-              ConfigStatus is the status of a configuration resource: whether it can be
-              used, and for which generation of its spec that was decided.
+            description: ToolServerStatus is a ToolServer's status.
             properties:
               conditions:
                 description: |-
@@ -204,6 +213,11 @@ spec:
                   describe.
                 format: int64
                 type: integer
+              url:
+                description: |-
+                  URL is a managed server's endpoint, at its Service, once Cadre runs
+                  it.
+                type: string
             type: object
         required:
         - spec

@@ -151,6 +151,9 @@ spec:
   managed:                      # the controller creates a Deployment and a Service
     image: ghcr.io/searxng/searxng:2026.10.1
     port: 8080
+    # path: /mcp                # the MCP endpoint's path on the server; default /mcp
+status:
+  url: http://searxng.team-a.svc:8080/mcp   # set by the controller: the Service's address and the path
 ---
 apiVersion: cadre.dev/v1alpha1
 kind: Agent
@@ -169,7 +172,7 @@ spec:
 
 - `runtime.type: builtin` is Cadre's own LLM loop. `runner` hands the task to any runner whose labels match the selector (see [execution.md](execution.md)).
 - `permissions` on a ToolServer decide per tool whether a call is allowed, denied or must ask a human first (`ask` ends the run with `Waiting{ToolApproval}`). Without `permissions` every tool is allowed. With them the list is an allowlist: `"*"` covers tools not listed by name, and a tool matching neither is denied.
-- The managed mode of ToolServer creates a Deployment and a Service only. NetworkPolicy and ServiceAccount management may follow.
+- The managed mode of ToolServer creates a Deployment and a Service only, both named after the ToolServer, labelled `cadre.dev/toolserver: <name>` and owned by it, so deleting the ToolServer deletes them. The Deployment runs one replica of `image` listening on `port`; the ClusterIP Service maps `port` to it; `status.url` is `http://<name>.<namespace>.svc:<port><path>`, where Cadre reaches the server. A managed server takes no `auth`: it runs in the cluster and is reached unauthenticated. NetworkPolicy and ServiceAccount management may follow.
 
 | Resource | Field | Rule |
 | --- | --- | --- |
@@ -181,6 +184,8 @@ spec:
 | ModelProvider | `region` | required for `bedrock`, forbidden otherwise |
 | ModelProvider | `project`, `location` | required for `vertex`, forbidden otherwise |
 | ToolServer | `url`, `managed` | exactly one of them |
+| ToolServer | `managed.path` | the MCP endpoint's path, starting with `/`; default `/mcp` |
+| ToolServer | `auth` | not with `managed`: a managed server is reached unauthenticated in the cluster |
 | ToolServer | `transport` | `streamable_http`, the default |
 | ToolServer | `auth.header`, `auth.prefix` | the request header carrying the Secret's value and what goes before it; default `Authorization` and `Bearer `, an empty prefix for a bare key such as `X-API-Key` |
 | ToolServer | `permissions` | tool name or `"*"` → `allow`, `deny` or `ask` |
@@ -199,7 +204,7 @@ All three report a `Ready` condition and `observedGeneration` in their status:
 | Resource | Ready when |
 | --- | --- |
 | ModelProvider | the referenced Secret has the key, or `workloadIdentity` is set |
-| ToolServer | an external server's Secret has its key, when `auth` is set; a managed ToolServer is not Ready (`ManagedNotSupported`) until managed servers arrive in M2 |
+| ToolServer | an external server's Secret has its key, when `auth` is set. A managed one's Deployment is Available for its current spec (`Available`); until then `Deploying`, and `Forbidden` where cadre-server may not create its Deployment or Service (bind `config/rbac/workloads.yaml` in the namespace), `NameTaken` where a Deployment of its name is not Cadre's |
 | Agent | its ModelProvider and every ToolServer exist and are Ready; the reason names the first that is not |
 | Runner | `ServiceAccount` for an in-cluster runner; `TokenMinted` once an outside runner's token exists. A Secret of the token's name that the Runner does not own, or one without a token, makes it not Ready (`SecretNotOwned`) and no token works until it is deleted |
 

@@ -30,7 +30,7 @@ import (
 // cadre-server watches Jobs everywhere (an informer cannot be granted per
 // namespace) but caches only its own; creating and deleting them, and
 // reading the ServiceAccounts they run as, it may do only where
-// config/rbac/jobs.yaml is bound, in each Team namespace.
+// config/rbac/workloads.yaml is bound, in each Team namespace.
 //
 // +kubebuilder:rbac:groups=batch,resources=jobs,verbs=get;list;watch
 // +kubebuilder:rbac:groups=cadre.dev,resources=tasks,verbs=get;list;watch
@@ -275,7 +275,7 @@ func (r *jobReconciler) Reconcile(ctx context.Context, req reconcile.Request) (r
 			if err := r.client.Create(ctx, j); err != nil {
 				if apierrors.IsForbidden(err) {
 					// The Agent's Ready condition says so (resolveJob).
-					log.FromContext(ctx).Error(err, "cadre-server may not create Jobs here; bind config/rbac/jobs.yaml", "namespace", agent.Namespace)
+					log.FromContext(ctx).Error(err, "cadre-server may not create Jobs here; bind config/rbac/workloads.yaml", "namespace", agent.Namespace)
 					return reconcile.Result{RequeueAfter: r.resync}, nil
 				}
 				return reconcile.Result{}, err

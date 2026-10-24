@@ -55,12 +55,19 @@ type ManagedServer struct {
 	// +kubebuilder:validation:Minimum=1
 	// +kubebuilder:validation:Maximum=65535
 	Port int32 `json:"port"`
+
+	// Path is the MCP endpoint's path on the server; default /mcp.
+	// +kubebuilder:validation:Pattern=`^/`
+	// +kubebuilder:default=/mcp
+	// +optional
+	Path string `json:"path,omitempty"`
 }
 
 // ToolServerSpec describes one MCP server: an external one at a URL, or one
 // Cadre runs.
 //
 // +kubebuilder:validation:XValidation:rule="has(self.url) != has(self.managed)",message="set exactly one of url and managed"
+// +kubebuilder:validation:XValidation:rule="!has(self.managed) || !has(self.auth)",message="a managed server takes no auth: it runs in the cluster, unauthenticated"
 type ToolServerSpec struct {
 	// Transport is how Cadre talks to the server.
 	// +kubebuilder:default=streamable_http
@@ -95,14 +102,34 @@ type ToolServerSpec struct {
 // +kubebuilder:subresource:status
 // +kubebuilder:resource:scope=Namespaced
 // +kubebuilder:printcolumn:name="URL",type=string,JSONPath=`.spec.url`
+// +kubebuilder:printcolumn:name="Managed",type=string,JSONPath=`.status.url`
 // +kubebuilder:printcolumn:name="Ready",type=string,JSONPath=`.status.conditions[?(@.type=="Ready")].status`
 // +kubebuilder:printcolumn:name="Age",type=date,JSONPath=`.metadata.creationTimestamp`
 type ToolServer struct {
 	metav1.TypeMeta   `json:",inline"`
 	metav1.ObjectMeta `json:"metadata,omitempty"`
 
-	Spec   ToolServerSpec `json:"spec"`
-	Status ConfigStatus   `json:"status,omitempty"`
+	Spec   ToolServerSpec   `json:"spec"`
+	Status ToolServerStatus `json:"status,omitempty"`
+}
+
+// ToolServerStatus is a ToolServer's status.
+type ToolServerStatus struct {
+	ConfigStatus `json:",inline"`
+
+	// URL is a managed server's endpoint, at its Service, once Cadre runs
+	// it.
+	// +optional
+	URL string `json:"url,omitempty"`
+}
+
+// Endpoint is where the server is reached: its url, or for a managed one
+// the URL Cadre gave it.
+func (t *ToolServer) Endpoint() string {
+	if t.Spec.Managed != nil {
+		return t.Status.URL
+	}
+	return t.Spec.URL
 }
 
 // ToolServerList is a list of ToolServers.

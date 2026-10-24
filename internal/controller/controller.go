@@ -26,6 +26,7 @@ import (
 	"context"
 	"time"
 
+	appsv1 "k8s.io/api/apps/v1"
 	batchv1 "k8s.io/api/batch/v1"
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
@@ -218,15 +219,22 @@ func NewManager(cfg *rest.Config, opts ...ManagerOption) (ctrl.Manager, error) {
 	if err := v1alpha1.AddToScheme(scheme); err != nil {
 		return nil, err
 	}
-	// The Job informer holds runner agents' Jobs only: cadre-server may
-	// list every Job, but keeps none of the others.
+	// The Job and Deployment informers hold cadre-server's own only, by
+	// label: it may list every Job and Deployment, but keeps none of the
+	// others.
 	jobs, err := labels.Parse(LabelAgent)
 	if err != nil {
 		return nil, err
 	}
+	deployments, err := labels.Parse(LabelToolServer)
+	if err != nil {
+		return nil, err
+	}
 	o := ctrl.Options{
-		Scheme:                 scheme,
-		Cache:                  cache.Options{ByObject: map[client.Object]cache.ByObject{&batchv1.Job{}: {Label: jobs}}},
+		Scheme: scheme,
+		Cache: cache.Options{ByObject: map[client.Object]cache.ByObject{
+			&batchv1.Job{}: {Label: jobs}, &appsv1.Deployment{}: {Label: deployments},
+		}},
 		Metrics:                metricsserver.Options{BindAddress: "0"},
 		HealthProbeBindAddress: "0",
 		Client:                 client.Options{Cache: &client.CacheOptions{DisableFor: []client.Object{&corev1.Secret{}}}},

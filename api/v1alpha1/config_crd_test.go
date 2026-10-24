@@ -74,6 +74,8 @@ func TestConfigCRDs(t *testing.T) {
 		"unknown permission": {v1alpha1.ToolServerSpec{URL: "https://x", Permissions: map[string]v1alpha1.Permission{"*": "maybe"}}, false},
 		"unknown transport":  {v1alpha1.ToolServerSpec{URL: "https://x", Transport: "stdio"}, false},
 		"managed port of 0":  {v1alpha1.ToolServerSpec{Managed: &v1alpha1.ManagedServer{Image: "i"}}, false},
+		"managed with auth":  {v1alpha1.ToolServerSpec{Managed: &v1alpha1.ManagedServer{Image: "i", Port: 1}, Auth: &v1alpha1.ToolServerAuth{SecretRef: v1alpha1.SecretKeyRef{Name: "s", Key: "k"}}}, false},
+		"managed bad path":   {v1alpha1.ToolServerSpec{Managed: &v1alpha1.ManagedServer{Image: "i", Port: 1, Path: "mcp"}}, false},
 	} {
 		expect(t, c, "ToolServer "+name, &v1alpha1.ToolServer{ObjectMeta: meta(), Spec: tc.spec}, tc.valid)
 	}

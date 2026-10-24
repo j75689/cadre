@@ -61,7 +61,7 @@ func (s *sources) SecretValue(_ context.Context, _ string, ref v1alpha1.SecretKe
 
 func ready(ts *v1alpha1.ToolServer) *v1alpha1.ToolServer {
 	ts.Namespace, ts.Generation = ns, 1
-	ts.Status = v1alpha1.ConfigStatus{ObservedGeneration: 1, Conditions: []metav1.Condition{
+	ts.Status.ConfigStatus = v1alpha1.ConfigStatus{ObservedGeneration: 1, Conditions: []metav1.Condition{
 		{Type: v1alpha1.ConditionReady, Status: metav1.ConditionTrue, ObservedGeneration: 1, Reason: "External"},
 	}}
 	return ts
@@ -76,6 +76,13 @@ type upstream struct {
 }
 
 func newUpstream(t *testing.T) *upstream {
+	t.Helper()
+	return newUpstreamWithKey(t, "not-a-real-key")
+}
+
+// newUpstreamWithKey is newUpstream wanting key in X-API-Key; "" wants
+// none, as a managed server in the cluster.
+func newUpstreamWithKey(t *testing.T, key string) *upstream {
 	t.Helper()
 	u := &upstream{}
 	server := sdk.NewServer(&sdk.Implementation{Name: "upstream", Version: "v0"}, nil)
@@ -109,7 +116,7 @@ func newUpstream(t *testing.T) *upstream {
 	})
 	handler := sdk.NewStreamableHTTPHandler(func(*http.Request) *sdk.Server { return server }, &sdk.StreamableHTTPOptions{Stateless: true})
 	u.Server = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.Header.Get("X-API-Key") != "not-a-real-key" {
+		if key != "" && r.Header.Get("X-API-Key") != key {
 			http.Error(w, "unauthorized", http.StatusUnauthorized)
 			return
 		}
@@ -231,6 +238,29 @@ func TestForwardedTools(t *testing.T) {
 
 // Tool lists are cached per ToolServer generation; a new generation lists
 // again.
+// A managed ToolServer is reached at the URL Cadre gave it, its status's,
+// unauthenticated; its tools are listed and called like any other's.
+func TestAManagedServerIsReachedAtItsStatusURL(t *testing.T) {
+	e, _, src := forwardingEnv(t)
+	inhouse := newUpstreamWithKey(t, "")
+	ts := ready(&v1alpha1.ToolServer{ObjectMeta: metav1.ObjectMeta{Name: "inhouse"}, Spec: v1alpha1.ToolServerSpec{
+		Managed: &v1alpha1.ManagedServer{Image: "example.test/inhouse:v1", Port: 8080, Path: "/mcp"},
+	}})
+	ts.Status.URL = inhouse.URL + "/mcp"
+	src.toolServers["inhouse"] = ts
+	src.agent.Spec.ToolRefs = append(src.agent.Spec.ToolRefs, "inhouse")
+
+	s := e.session(t, e.claim(t).MCPToken)
+	tools, err := s.ListTools(ctx, nil)
+	if err != nil || !slices.ContainsFunc(tools.Tools, func(tool *sdk.Tool) bool { return tool.Name == "inhouse__search" }) {
+		t.Fatalf("tools %v, %v; want inhouse__search", tools, err)
+	}
+	res, err := s.CallTool(ctx, &sdk.CallToolParams{Name: "inhouse__search", Arguments: map[string]any{"query": "in the cluster"}})
+	if err != nil || res.IsError || inhouse.lastArg.Load() != "in the cluster" {
+		t.Fatalf("call: %+v, %v; the managed server saw %v", res, err, inhouse.lastArg.Load())
+	}
+}
+
 func TestDiscoveryIsCached(t *testing.T) {
 	e, up, src := forwardingEnv(t)
 	c := e.claim(t)
