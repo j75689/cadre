@@ -22,6 +22,7 @@ import (
 	"github.com/j75689/cadre/internal/builtin"
 	cadreclient "github.com/j75689/cadre/internal/client"
 	"github.com/j75689/cadre/internal/provider/anthropic"
+	"github.com/j75689/cadre/internal/provider/openai"
 )
 
 func main() {
@@ -65,6 +66,7 @@ func run() error {
 		Once:     *once,
 		Providers: map[v1alpha1.ProviderType]builtin.Provider{
 			v1alpha1.ProviderAnthropic: &anthropic.Provider{Log: log},
+			v1alpha1.ProviderOpenAI:    &openai.Provider{Log: log},
 		},
 	}
 	for _, ns := range strings.Split(*namespaces, ",") {
