@@ -83,6 +83,9 @@ status:
     runner: system:serviceaccount:cadre-system:cadre-runner   # who holds the run: the runner's authenticated identity
     runnerName: cadre-runner-7f3a   # the name it gave itself, for display
     step: 7                   # advances in step mode only
+    attempt: 1                # step mode: workers that took the current step; fences the worker's events
+    stepFree: false           # step mode: the step waits for a worker
+    stepItems: [{ id: 01JB..., after: 41 }]   # step mode: outbox items the current step recorded
     leaseUntil: ...
   outbox:                     # written with the state change; applied idempotently, then cleared
     - { id: 01JB..., kind: CreateSubtask, spec: {...} }
@@ -110,6 +113,9 @@ status:
 | `status.run.mode` | `runtime` or `step` |
 | `status.run.runner` | who holds the run: the runner's authenticated identity (`system:serviceaccount:<ns>:<name>` for an in-cluster runner); only requests from it may renew or finish the run. It is empty for a run claimed with `--runner-auth=none`, and such a run is not fenced on its sender |
 | `status.run.runnerName` | the name the runner gave itself, for display |
+| `status.run.attempt` | step mode: how many workers took the current step, reset when it is committed. A worker's heartbeats, records, commits, releases and finish carry the attempt it was given and are refused (`attempt_mismatch`) once the step was freed or taken again. The run fails when the third one dies or gives up |
+| `status.run.stepFree` | step mode: the step waits for a worker; `runner` and `runnerName` are empty, `lastRunner` and `lastRunnerName` keep the last worker, and `leaseUntil` is the idle deadline (1 hour by default), past which the run fails |
+| `status.run.stepItems` | step mode: the outbox items the current step recorded, and where their entries are looked for; a step done again records each once. Cleared when the step is committed |
 | `status.outbox[].kind` | `CreateSubtask`, whose `spec` is the subtask's `TaskSpec`; `RunEnded`, whose `run` is the ended run (id, mode, runner, step, reason `Finished`, `Interrupted` or `Cancelled`, outcome, end time); `Notify` is added once its payload is defined |
 
 A `CreateSubtask` item names the subtask after its own id, lowercased (a valid DNS-1123 label). Re-applying the item is then a create of an object that already exists, which is what makes the dispatcher idempotent.
@@ -157,6 +163,7 @@ spec:
     ...
   runtime:
     type: builtin               # builtin | runner
+    # execution: step           # builtin only: run a step at a time (see execution.md); default runtime
     # selector: { pool: claude-code }   # runner: which runner pool may claim this agent's tasks
 ```
 
@@ -181,6 +188,7 @@ spec:
 | Agent | `toolRefs` | ToolServers in the same namespace, a set |
 | Agent | `runtime.type` | `builtin` (the default) or `runner` |
 | Agent | `runtime.selector` | required, with at least one label, for `runner`; forbidden for `builtin` |
+| Agent | `runtime.execution` | `runtime` (the default) or `step`; `step` for `builtin` only |
 | Runner | `serviceAccount` | `{name}` of the ServiceAccount, in the Runner's own namespace, that an in-cluster runner authenticates as. Without it the runner is outside the cluster and Cadre mints its token: exactly one of the two |
 | Runner | `labels` | required, at least one: the labels the runner's claims are matched with, set here and never taken from the runner's request; the `cadre.dev/` prefix is reserved |
 | Agent | `effort` | `low`, `medium`, `high` (the default), `xhigh` or `max`: how much thinking the builtin loop asks the model for. It is on the Agent, not the ModelProvider, because one model serves agents that need different depth |

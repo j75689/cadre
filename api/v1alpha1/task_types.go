@@ -154,12 +154,45 @@ type Run struct {
 	// +optional
 	RunnerName string `json:"runnerName,omitempty"`
 
+	// Attempt counts the workers that took the current step, in step mode:
+	// a worker that dies writes nothing, but its take is counted. It is
+	// reset when the step is committed.
+	// +kubebuilder:validation:Minimum=0
+	// +optional
+	Attempt int32 `json:"attempt,omitempty"`
+
 	// Step advances in step mode only.
 	// +kubebuilder:validation:Minimum=0
 	// +optional
 	Step int64 `json:"step,omitempty"`
 
-	// LeaseUntil is when the run may be reclaimed unless it is renewed.
+	// StepItems are the outbox items the current step recorded, in step
+	// mode: a step done again after its worker died records the same
+	// items, which are not recorded twice, even once applied. They are
+	// cleared when the step is committed.
+	// +listType=map
+	// +listMapKey=id
+	// +optional
+	StepItems []StepItem `json:"stepItems,omitempty"`
+
+	// StepFree is true, in step mode, while the current step waits for a
+	// worker: Runner and RunnerName are then empty. It is the only sign of
+	// a free step, as a run claimed without authentication has no Runner
+	// either.
+	// +optional
+	StepFree bool `json:"stepFree,omitempty"`
+
+	// LastRunner and LastRunnerName are the worker that held the last
+	// step taken, in step mode, kept while the step is free so a run that
+	// fails then records who ran it last.
+	// +optional
+	LastRunner string `json:"lastRunner,omitempty"`
+	// +optional
+	LastRunnerName string `json:"lastRunnerName,omitempty"`
+
+	// LeaseUntil is when the run may be reclaimed unless it is renewed. In
+	// step mode it is the held step's lease; for a free step it is the idle
+	// deadline, by which a worker must take the step or the run fails.
 	LeaseUntil metav1.Time `json:"leaseUntil"`
 
 	// MCPTokenHash is the hex SHA-256 of the run's per-run MCP token. The
@@ -168,6 +201,13 @@ type Run struct {
 	// +kubebuilder:validation:Pattern=`^[0-9a-f]{64}$`
 	// +optional
 	MCPTokenHash string `json:"mcpTokenHash,omitempty"`
+}
+
+// StepItem is an outbox item a step recorded, and where its entry is
+// looked for: the thread revision or file version it was recorded after.
+type StepItem struct {
+	ID    string `json:"id"`
+	After int64  `json:"after,omitempty"`
 }
 
 // OutboxKind is the kind of side effect an outbox item asks for.
@@ -273,6 +313,12 @@ type RunRecord struct {
 	// +kubebuilder:validation:Minimum=0
 	// +optional
 	Step int64 `json:"step,omitempty"`
+
+	// Attempt is how many workers took the step the run had reached, in
+	// step mode.
+	// +kubebuilder:validation:Minimum=0
+	// +optional
+	Attempt int32 `json:"attempt,omitempty"`
 
 	// Reason is why the run ended.
 	Reason RunEndReason `json:"reason"`

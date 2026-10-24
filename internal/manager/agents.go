@@ -32,10 +32,10 @@ func claimableBy(agent *v1alpha1.Agent, labels map[string]string) bool {
 	if agent == nil || !agent.Status.ReadyFor(agent.Generation) {
 		return false
 	}
-	switch agent.Spec.Runtime.Type {
-	case v1alpha1.RuntimeBuiltin, "":
+	switch {
+	case agent.Spec.Runtime.Builtin():
 		return labels[v1alpha1.LabelRuntime] == string(v1alpha1.RuntimeBuiltin)
-	case v1alpha1.RuntimeRunner:
+	case agent.Spec.Runtime.Type == v1alpha1.RuntimeRunner:
 		if len(agent.Spec.Runtime.Selector) == 0 {
 			return false
 		}

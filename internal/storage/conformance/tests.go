@@ -151,7 +151,7 @@ func testRedeliveredStepAdvancesOnce(t *testing.T, s *suite) {
 	if err := transition(s.ctx, a, s.key("steps"), task.Claim{RunID: run, Mode: v1alpha1.RunModeStep, Lease: time.Minute}); err != nil {
 		t.Fatalf("claim: %v", err)
 	}
-	step := task.Advance{RunID: run, Step: 0, Runner: "w", Lease: time.Minute, Outbox: []v1alpha1.OutboxItem{{
+	step := task.Advance{RunID: run, Step: 0, Attempt: 1, Runner: "w", Outbox: []v1alpha1.OutboxItem{{
 		ID: runID(100), Kind: v1alpha1.OutboxCreateSubtask, Spec: &v1alpha1.TaskSpec{Title: "child"},
 	}}}
 	readers := readBarrier(parties)

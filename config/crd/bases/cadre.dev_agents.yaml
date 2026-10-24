@@ -86,6 +86,16 @@ spec:
                   loop. The object default makes an Agent applied without a runtime
                   builtin too, not typeless.
                 properties:
+                  execution:
+                    default: runtime
+                    description: |-
+                      Execution is how a builtin agent's runs are driven: runtime, one
+                      worker for the whole run, or step, a step at a time by any worker.
+                      Other runtime types run in their runner's process, as runtime.
+                    enum:
+                    - runtime
+                    - step
+                    type: string
                   selector:
                     additionalProperties:
                       type: string
@@ -113,6 +123,9 @@ spec:
                     > 0)
                 - message: the cadre.dev/ label prefix is reserved
                   rule: '!has(self.selector) || self.selector.all(k, !k.startsWith(''cadre.dev/''))'
+                - message: step execution is for runtime type builtin
+                  rule: '!has(self.execution) || self.execution == ''runtime'' ||
+                    self.type == ''builtin'''
               toolRefs:
                 description: |-
                   ToolRefs are the names of ToolServers in the same namespace that the

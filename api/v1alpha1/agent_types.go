@@ -45,6 +45,7 @@ const (
 // +kubebuilder:validation:XValidation:rule="self.type == 'runner' || !has(self.selector)",message="selector is for runtime type runner"
 // +kubebuilder:validation:XValidation:rule="self.type != 'runner' || (has(self.selector) && size(self.selector) > 0)",message="runtime type runner needs a selector"
 // +kubebuilder:validation:XValidation:rule="!has(self.selector) || self.selector.all(k, !k.startsWith('cadre.dev/'))",message="the cadre.dev/ label prefix is reserved"
+// +kubebuilder:validation:XValidation:rule="!has(self.execution) || self.execution == 'runtime' || self.type == 'builtin'",message="step execution is for runtime type builtin"
 type AgentRuntime struct {
 	// Type is builtin (Cadre's loop) or runner (any runner whose labels
 	// match the selector).
@@ -57,6 +58,25 @@ type AgentRuntime struct {
 	// cadre.dev/runtime: builtin), so a selector may not use them.
 	// +optional
 	Selector map[string]string `json:"selector,omitempty"`
+
+	// Execution is how a builtin agent's runs are driven: runtime, one
+	// worker for the whole run, or step, a step at a time by any worker.
+	// Other runtime types run in their runner's process, as runtime.
+	// +kubebuilder:validation:Enum=runtime;step
+	// +kubebuilder:default=runtime
+	// +optional
+	Execution RunMode `json:"execution,omitempty"`
+}
+
+// Builtin reports whether the agent runs Cadre's own loop; an empty type
+// is the default, builtin.
+func (r AgentRuntime) Builtin() bool {
+	return r.Type == RuntimeBuiltin || r.Type == ""
+}
+
+// StepMode reports whether the agent's runs are driven a step at a time.
+func (r AgentRuntime) StepMode() bool {
+	return r.Builtin() && r.Execution == RunModeStep
 }
 
 // AgentSpec is an agent: what it is told, which model it uses and which

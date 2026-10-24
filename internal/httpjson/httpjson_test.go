@@ -26,6 +26,9 @@ func TestFail(t *testing.T) {
 	}{
 		task.ErrRunMismatch:        {409, httpjson.CodeRunMismatch},
 		task.ErrStepMismatch:       {409, httpjson.CodeStepMismatch},
+		task.ErrAttemptMismatch:    {409, httpjson.CodeAttemptMismatch},
+		task.ErrStepTaken:          {409, httpjson.CodeStepTaken},
+		task.ErrStepExhausted:      {409, httpjson.CodeStepExhausted},
 		task.ErrInvalidTransition:  {409, httpjson.CodeInvalidTransition},
 		storage.ErrAlreadyExists:   {409, httpjson.CodeAlreadyExists},
 		storage.ErrNotFound:        {404, httpjson.CodeNotFound},
