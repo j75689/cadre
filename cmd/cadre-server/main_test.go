@@ -169,6 +169,9 @@ func TestNewPolicy(t *testing.T) {
 	if p, err := newPolicy(auth.None{}, "", "", "email", log); p != nil || err != nil {
 		t.Errorf("without logins: %+v, %v", p, err)
 	}
+	if _, err := newPolicy(oidcAuth, "root@example.test lead@example.test", "", "email", log); err == nil || !strings.Contains(err.Error(), "commas") {
+		t.Errorf("space-separated admins: %v", err)
+	}
 	if _, err := newPolicy(auth.None{}, "root@example.test", "", "email", log); err == nil || !strings.Contains(err.Error(), "--auth=oidc") {
 		t.Errorf("admins without logins: %v", err)
 	}

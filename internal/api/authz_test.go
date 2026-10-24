@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync/atomic"
 	"testing"
 
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -58,8 +59,17 @@ func startRolesOn(t *testing.T, store storage.Driver, wrap func(storage.Driver) 
 		{Role: v1alpha1.RoleMember, Subjects: []v1alpha1.RoleSubject{{Kind: v1alpha1.SubjectGroup, Name: "backend"}}},
 		{Role: v1alpha1.RoleAdmin, Subjects: []v1alpha1.RoleSubject{{Kind: v1alpha1.SubjectUser, Name: "lead@example.test"}}},
 	}
+	// team-a as kubectl apply leaves it: the last spec applied, roles and
+	// all, in an annotation, and the fields' owners.
+	applied, _ := json.Marshal(map[string]any{"spec": map[string]any{"roles": roles}})
+	meta := map[string]metav1.ObjectMeta{
+		"team-a": {Namespace: "team-a", Name: v1alpha1.TeamName, Labels: map[string]string{"tier": "one"},
+			Annotations:   map[string]string{"kubectl.kubernetes.io/last-applied-configuration": string(applied)},
+			ManagedFields: []metav1.ManagedFieldsEntry{{Manager: "kubectl-client-side-apply", FieldsType: "FieldsV1", FieldsV1: &metav1.FieldsV1{Raw: []byte(`{"f:spec":{"f:roles":{}}}`)}}}},
+		"team-b": {Namespace: "team-b", Name: v1alpha1.TeamName},
+	}
 	for ns, spec := range map[string]v1alpha1.TeamSpec{"team-a": {Roles: roles}, "team-b": {}} {
-		if err := store.CreateTeam(ctx, &v1alpha1.Team{ObjectMeta: metav1.ObjectMeta{Namespace: ns, Name: v1alpha1.TeamName}, Spec: spec}); err != nil {
+		if err := store.CreateTeam(ctx, &v1alpha1.Team{ObjectMeta: meta[ns], Spec: spec}); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -212,6 +222,19 @@ func TestWritesReadTheTeamLive(t *testing.T) {
 
 func TestTeamsHideWhoHoldsRoles(t *testing.T) {
 	e := startRoles(t)
+	// Nowhere in what a member gets, metadata included.
+	_, body := e.do(e.as("dana@example.test", "backend"), "GET", "/teams", "")
+	for _, secret := range []string{"lead@example.test", "readers", "last-applied", "f:roles"} {
+		if strings.Contains(body, secret) {
+			t.Errorf("a member's /teams holds %q: %s", secret, body)
+		}
+	}
+	if !strings.Contains(body, `"tier":"one"`) {
+		t.Errorf("labels went too: %s", body)
+	}
+	if _, body := e.do(e.as("lead@example.test"), "GET", "/teams", ""); !strings.Contains(body, "last-applied") {
+		t.Errorf("the team's admin lost the annotations: %s", body)
+	}
 	roles := func(token string) (bool, bool) {
 		_, out := e.do(token, "GET", "/teams", "")
 		var list api.TeamList
@@ -248,4 +271,45 @@ func TestMeWithoutLogins(t *testing.T) {
 	if !strings.Contains(w.Body.String(), `"mode":"none"`) || !strings.Contains(w.Body.String(), `"admin":true`) {
 		t.Errorf("/me without logins: %s", w.Body.String())
 	}
+}
+
+// counting counts reads of the Team from the store.
+type counting struct {
+	storage.Driver
+	live *atomic.Int64
+}
+
+func (c counting) GetTeam(ctx context.Context, ns string) (*v1alpha1.Team, error) {
+	c.live.Add(1)
+	return c.Driver.GetTeam(ctx, ns)
+}
+
+// Someone the index refuses costs no store read; a write it allows is
+// confirmed on one.
+func TestRefusalsReadNoStore(t *testing.T) {
+	var live atomic.Int64
+	e := startRolesOn(t, memory.NewBackend().Open(), func(d storage.Driver) storage.Driver { return counting{Driver: d, live: &live} })
+	for range 20 {
+		if code, _ := e.do(e.as("mallory@example.test"), "POST", "/namespaces/team-a/tasks/x/comments", `{"body":"spam"}`); code != 403 {
+			t.Fatalf("a stranger's comment: %d", code)
+		}
+	}
+	if n := live.Load(); n != 0 {
+		t.Errorf("a stranger's refused writes read the store %d times", n)
+	}
+	if code, _ := e.do(e.as("dana@example.test", "backend"), "POST", "/namespaces/team-a/tasks/x/comments", `{"body":"hi"}`); code != 201 || live.Load() != 1 {
+		t.Errorf("a member's comment: %d, %d store reads", code, live.Load())
+	}
+	if code, _ := e.do(e.as("dana@example.test", "backend"), "GET", "/namespaces/team-a/tasks/x", ""); code != 200 || live.Load() != 1 {
+		t.Errorf("a read: %d, %d store reads", code, live.Load())
+	}
+}
+
+func TestLoginsNeedAPolicy(t *testing.T) {
+	defer func() {
+		if recover() == nil {
+			t.Error("WithAccess(oidc, nil) accepted")
+		}
+	}()
+	api.NewServer(manager.New(memory.NewBackend().Open(), manager.Config{}), slog.New(slog.NewTextHandler(io.Discard, nil)), api.WithAccess(auth.ModeOIDC, nil))
 }

@@ -102,7 +102,8 @@ type Policy struct {
 // sameUser compares a username from a role or a flag with an identity's.
 func (p *Policy) sameUser(name, username string) bool {
 	if p.FoldUsernames {
-		return strings.EqualFold(name, username)
+		// The same fold as the identity's username had.
+		return strings.ToLower(name) == strings.ToLower(username)
 	}
 	return name == username
 }

@@ -20,6 +20,7 @@ import (
 	"syscall"
 	"time"
 	_ "time/tzdata" // Schedules' time zones, in an image without zoneinfo
+	"unicode"
 
 	"github.com/go-logr/logr"
 	ctrl "sigs.k8s.io/controller-runtime/pkg/client/config"
@@ -258,6 +259,11 @@ func newPolicy(authn auth.Authenticator, users, groups, usernameClaim string, lo
 		return out
 	}
 	p := &authz.Policy{AdminUsers: split(users), AdminGroups: split(groups), FoldUsernames: usernameClaim == "email"}
+	for _, u := range p.AdminUsers {
+		if strings.ContainsFunc(u, unicode.IsSpace) {
+			return nil, fmt.Errorf("--admin-users %q: a username has no spaces; separate names with commas", u)
+		}
+	}
 	if authn.Info().Mode != auth.ModeOIDC {
 		if len(p.AdminUsers) > 0 || len(p.AdminGroups) > 0 {
 			return nil, errors.New("--admin-users and --admin-groups need --auth=oidc: without logins everyone is an admin")

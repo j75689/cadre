@@ -381,7 +381,7 @@ func (m *Manager) ListAgents(ctx context.Context, namespace string) ([]v1alpha1.
 	if err := validNamespace(namespace); err != nil {
 		return nil, err
 	}
-	if _, err := m.store.GetTeam(ctx, namespace); err != nil {
+	if _, err := m.Team(ctx, namespace); err != nil {
 		if errors.Is(err, storage.ErrNotFound) {
 			return nil, fmt.Errorf("namespace %s has no Team: %w", namespace, err)
 		}

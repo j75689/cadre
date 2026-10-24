@@ -1,6 +1,7 @@
 package api
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -44,6 +45,11 @@ func NewServer(m *manager.Manager, log *slog.Logger, opts ...Option) *Server {
 	for _, o := range opts {
 		o(s)
 	}
+	if s.mode == auth.ModeOIDC && s.policy == nil {
+		// With logins and no roles everyone would be an admin who has
+		// no name: a wiring mistake.
+		panic("api: WithAccess with logins needs a policy")
+	}
 	return s
 }
 
@@ -82,9 +88,12 @@ func (s *Server) Register(mux *http.ServeMux) {
 // guard lets a request through when the caller's role on the team of its
 // namespace allows action. A team the caller has no role on, or that does
 // not exist, is refused with 403, so its existence is not told; a bootstrap
-// admin passes, and the handler answers 404 for what is not there. A read
-// decides on the board index, seconds behind at worst; anything else on the
-// Team read from the store, so a role taken away fences the next write.
+// admin passes, and the handler answers 404 for what is not there. The
+// board index decides first, seconds behind the store at worst: a refusal
+// there is final, since a lagging index can grant too much, never too
+// little. A write the index allows is confirmed on the Team read from the
+// store, so a role taken away fences the next write, and only someone the
+// index already lets write costs a store read.
 func (s *Server) guard(action authz.Action, h http.HandlerFunc) http.HandlerFunc {
 	if s.policy == nil {
 		return h
@@ -96,22 +105,23 @@ func (s *Server) guard(action authz.Action, h http.HandlerFunc) http.HandlerFunc
 			return
 		}
 		ns := r.PathValue("ns")
-		read := s.m.LiveTeam
-		if action == authz.Read {
-			read = s.m.Team
+		reads := []func(context.Context, string) (*v1alpha1.Team, error){s.m.Team}
+		if action != authz.Read {
+			reads = append(reads, s.m.LiveTeam)
 		}
-		team, err := read(r.Context(), ns)
-		switch {
-		case errors.Is(err, storage.ErrNotFound):
-			team = nil
-		case err != nil:
-			httpjson.Fail(w, s.log, err)
-			return
-		}
-		role, _ := s.policy.Role(id, team)
-		if !authz.Allowed(role, action) {
-			httpjson.WriteError(w, http.StatusForbidden, httpjson.CodeNoRole, authz.Refusal(ns, role, action))
-			return
+		for _, read := range reads {
+			team, err := read(r.Context(), ns)
+			switch {
+			case errors.Is(err, storage.ErrNotFound):
+				team = nil
+			case err != nil:
+				httpjson.Fail(w, s.log, err)
+				return
+			}
+			if role, _ := s.policy.Role(id, team); !authz.Allowed(role, action) {
+				httpjson.WriteError(w, http.StatusForbidden, httpjson.CodeNoRole, authz.Refusal(ns, role, action))
+				return
+			}
 		}
 		h(w, r)
 	}
@@ -357,15 +367,21 @@ func (s *Server) listTeams(w http.ResponseWriter, r *http.Request) {
 	}
 	if s.policy != nil {
 		id, _ := auth.FromContext(r.Context())
-		items = slices.DeleteFunc(items, func(t v1alpha1.Team) bool {
-			_, ok := s.policy.Role(id, &t)
-			return !ok
-		})
-		for i := range items {
-			if role, _ := s.policy.Role(id, &items[i]); role < authz.Admin {
-				items[i].Spec.Roles, items[i].Status = nil, v1alpha1.TeamStatus{}
+		visible := items[:0]
+		for _, t := range items {
+			role, ok := s.policy.Role(id, &t)
+			if !ok {
+				continue
 			}
+			if role < authz.Admin {
+				// The roles show in the spec, in what kubectl apply
+				// keeps of the last spec, and in the fields' owners.
+				t.Spec.Roles, t.Status = nil, v1alpha1.TeamStatus{}
+				t.Annotations, t.ManagedFields = nil, nil
+			}
+			visible = append(visible, t)
 		}
+		items = visible
 	}
 	if items == nil {
 		items = []v1alpha1.Team{}

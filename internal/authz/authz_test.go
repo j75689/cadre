@@ -90,3 +90,21 @@ func TestRefusal(t *testing.T) {
 		t.Errorf("%q", got)
 	}
 }
+
+// Usernames fold as the login lower-cased them (strings.ToLower), and only
+// so: EqualFold would also take a long s for an s, which ToLower keeps
+// apart. The Kelvin sign lower-cases to k, on both sides alike.
+func TestFold(t *testing.T) {
+	p := &authz.Policy{AdminUsers: []string{"Root@Example.test", "ſam@example.test"}, FoldUsernames: true}
+	tm := team(role(v1alpha1.RoleMember, user("Dana@Example.test")), role(v1alpha1.RoleViewer, user("Kim@example.test")))
+	for username, want := range map[string]authz.Role{
+		"dana@example.test": authz.Member,
+		"root@example.test": authz.Admin,
+		"sam@example.test":  authz.NoRole,
+		"kim@example.test":  authz.Viewer,
+	} {
+		if got, _ := p.Role(&auth.Identity{Username: username}, tm); got != want {
+			t.Errorf("%s: %s, want %s", username, got, want)
+		}
+	}
+}
