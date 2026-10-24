@@ -1,6 +1,8 @@
 BIN      := bin
 CMDS     := cadre cadre-server cadre-runner
 GOFLAGS  ?=
+REGISTRY ?= ghcr.io/j75689
+TAG      ?= dev
 
 TOOLS                  := $(CURDIR)/$(BIN)/tools
 CONTROLLER_GEN_VERSION := v0.23.0
@@ -21,13 +23,20 @@ define go-install
 	mkdir -p $(TOOLS); mv $$tmp/$$(basename $(2)) $(1); rm -rf $$tmp
 endef
 
-.PHONY: all build test smoke chaos fmt vet lint check tidy clean generate manifests verify-generated verify-tidy tools
+.PHONY: all build test smoke chaos fmt vet lint check tidy clean generate manifests verify-generated verify-tidy tools image images
 
 all: build
 
 build: ## Build all binaries into bin/
 	@mkdir -p $(BIN)
 	@for c in $(CMDS); do echo "building $$c"; go build $(GOFLAGS) -o $(BIN)/$$c ./cmd/$$c; done
+
+image: ## Build one command's image: make image CMD=cadre-server [TAG=dev]
+	@test -n "$(CMD)" || { echo "set CMD to one of: $(CMDS)"; exit 1; }
+	docker build --build-arg CMD=$(CMD) --build-arg VERSION=$(TAG) -t $(REGISTRY)/$(CMD):$(TAG) .
+
+images: ## Build every command's image [TAG=dev]
+	@for c in $(CMDS); do $(MAKE) --no-print-directory image CMD=$$c TAG=$(TAG) || exit 1; done
 
 test: $(ENVTEST) ## Run all tests, the chaos test in its short form; downloads envtest binaries on first run
 	assets=$$($(ENVTEST) use $(ENVTEST_K8S_VERSION) --bin-dir $(TOOLS)/envtest -p path) && \

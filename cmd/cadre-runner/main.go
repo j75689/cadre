@@ -29,6 +29,9 @@ import (
 	"github.com/j75689/cadre/internal/runner"
 )
 
+// version is set at build time with -ldflags "-X main.version=...".
+var version = "dev"
+
 func main() {
 	if err := run(); err != nil {
 		fmt.Fprintln(os.Stderr, "cadre-runner:", err)
@@ -68,9 +71,14 @@ func run() error {
 		mode       = flag.String("mode", d.mode, "step: work the steps of builtin agents' runs, a step at a time; runtime: work whole runs of builtin agents set to execution: runtime; runtime in a Job")
 		parallel   = flag.Int("parallel", 1, "in step mode, how many steps to work at once")
 		stepTime   = flag.Duration("step-timeout", builtin.DefaultStepTimeout, "in step mode, the longest one step may take before it is given back")
+		showVer    = flag.Bool("version", false, "print the version and exit")
 		tokenFile  = flag.String("token-file", "", "the token to authenticate to cadre-server with, read before every request; by default the projected ServiceAccount token at "+cadreclient.DefaultTokenFile+" when it exists, else none")
 	)
 	flag.Parse()
+	if *showVer {
+		fmt.Println(version)
+		return nil
+	}
 	log := slog.New(slog.NewJSONHandler(os.Stderr, nil))
 	switch {
 	case *mode != "runtime" && *mode != "step":
