@@ -60,9 +60,11 @@ func (m *Manager) RunPost(ctx context.Context, key storage.Key, runID, body stri
 	if err != nil {
 		return nil, err
 	}
-	if _, err := m.transition(ctx, key, task.Record{RunID: runID, Outbox: []v1alpha1.OutboxItem{item}}); err != nil {
+	t, err = m.transition(ctx, key, record(runID, t, item))
+	if err != nil {
 		return nil, err
 	}
+	item.Thread.After = recordedAfter(t, item.ID, item.Thread.After)
 	return m.appliedEntry(ctx, key, item), nil
 }
 
@@ -81,8 +83,9 @@ func (m *Manager) RunAsk(ctx context.Context, key storage.Key, runID, question s
 	if err != nil {
 		return nil, err
 	}
+	step, attempt := stepFence(t)
 	if _, _, err := m.Finish(ctx, key, FinishRequest{
-		RunID: runID, Outcome: task.OutcomeWaiting, Reason: v1alpha1.WaitingQuestion,
+		RunID: runID, Step: step, Attempt: attempt, Outcome: task.OutcomeWaiting, Reason: v1alpha1.WaitingQuestion,
 		WaitingItem: item.ID, Outbox: []v1alpha1.OutboxItem{item},
 	}); err != nil {
 		return nil, err
@@ -147,8 +150,16 @@ func (m *Manager) RunCreateSubtask(ctx context.Context, key storage.Key, runID s
 		return nil, err
 	}
 	spec.ParentRef = nil // the dispatcher sets the parent
-	item := v1alpha1.OutboxItem{ID: m.newID(), Kind: v1alpha1.OutboxCreateSubtask, Spec: &spec}
-	if _, err := m.transition(ctx, key, task.Record{RunID: runID, Outbox: []v1alpha1.OutboxItem{item}}); err != nil {
+	t, err := m.activeRun(ctx, key, runID)
+	if err != nil {
+		return nil, err
+	}
+	id, err := m.itemID(ctx, key, t)
+	if err != nil {
+		return nil, err
+	}
+	item := v1alpha1.OutboxItem{ID: id, Kind: v1alpha1.OutboxCreateSubtask, Spec: &spec}
+	if _, err := m.transition(ctx, key, record(runID, t, item)); err != nil {
 		return nil, err
 	}
 	created := &SubtaskCreated{Name: task.SubtaskName(item)}
@@ -209,25 +220,31 @@ func (m *Manager) RunWriteFile(ctx context.Context, key storage.Key, runID, path
 	if err := validFile(path, &content); err != nil {
 		return nil, err
 	}
-	if _, err := m.activeRun(ctx, key, runID); err != nil {
+	t, err := m.activeRun(ctx, key, runID)
+	if err != nil {
 		return nil, err
 	}
 	after, err := m.latestFileVersion(ctx, key, path)
 	if err != nil {
 		return nil, err
 	}
-	item := v1alpha1.OutboxItem{ID: m.newID(), Kind: v1alpha1.OutboxWriteFile}
+	id, err := m.itemID(ctx, key, t)
+	if err != nil {
+		return nil, err
+	}
+	item := v1alpha1.OutboxItem{ID: id, Kind: v1alpha1.OutboxWriteFile}
 	blob := blobName(runID, item.ID)
 	if err := m.writeBlob(ctx, key, blob, []byte(content)); err != nil {
 		return nil, err
 	}
 	item.File = &v1alpha1.FileWrite{Blob: blob, Path: path, Size: int64(len(content)), After: after}
-	if _, err := m.transition(ctx, key, task.Record{RunID: runID, Outbox: []v1alpha1.OutboxItem{item}}); err != nil {
+	t, err = m.transition(ctx, key, record(runID, t, item))
+	if err != nil {
 		return nil, err
 	}
 	info := &FileInfo{Path: path, Size: len(content)}
 	m.applyNow(ctx, key)
-	if v, ok, err := m.findVersion(ctx, key, path, after, item.ID); err == nil && ok {
+	if v, ok, err := m.findVersion(ctx, key, path, recordedAfter(t, item.ID, after), item.ID); err == nil && ok {
 		info.Version = v.Version
 	}
 	return info, nil

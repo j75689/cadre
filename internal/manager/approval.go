@@ -124,8 +124,9 @@ func (m *Manager) RunToolCall(ctx context.Context, key storage.Key, runID string
 			return nil, err
 		}
 	}
+	step, attempt := stepFence(t)
 	if _, _, err := m.Finish(ctx, key, FinishRequest{
-		RunID: runID, Outcome: task.OutcomeWaiting, Reason: v1alpha1.WaitingToolApproval, ThreadSeq: entry.Seq,
+		RunID: runID, Step: step, Attempt: attempt, Outcome: task.OutcomeWaiting, Reason: v1alpha1.WaitingToolApproval, ThreadSeq: entry.Seq,
 	}); err != nil {
 		return entry, err
 	}

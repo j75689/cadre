@@ -31,6 +31,10 @@ type ClaimRequest struct {
 	// Scope, when set, limits the claim to its namespaces, each with its
 	// own labels in place of Labels.
 	Scope map[string]map[string]string
+	// Mode is runtime (the default) or step: a step-mode claim takes one
+	// step of a builtin agent's step-mode run, a runtime claim a whole run
+	// of any other.
+	Mode v1alpha1.RunMode
 }
 
 // Claimed is a task handed to a runner.
@@ -44,8 +48,15 @@ type Claimed struct {
 	Agent         *v1alpha1.Agent
 	ModelProvider *v1alpha1.ModelProvider
 	// MCPToken is the run's per-run MCP token. It exists only here: the
-	// task stores its hash.
+	// task stores its hash. In step mode it is the step's, and dies when
+	// the step is committed or released.
 	MCPToken string
+	// Step, Attempt and Kind, in step mode: the step taken, how many
+	// workers took it (this one included), and what it is, as the server
+	// reads it from the transcript.
+	Step    int64
+	Attempt int32
+	Kind    StepKind
 }
 
 // rotation spreads claims across namespaces, so one busy team cannot starve
@@ -63,12 +74,30 @@ func (m *Manager) Claim(ctx context.Context, req ClaimRequest) (*Claimed, error)
 	if req.Runner == "" {
 		return nil, fmt.Errorf("runner is required: %w", ErrInvalid)
 	}
-	namespaces, err := m.namespaces(ctx, req.Namespaces, true)
+	teams, err := m.store.ListTeams(ctx)
 	if err != nil {
 		return nil, err
 	}
-	if req.Scope != nil {
-		namespaces = slices.DeleteFunc(namespaces, func(ns string) bool { _, ok := req.Scope[ns]; return !ok })
+	scoped := func(ns string) bool {
+		if req.Scope == nil {
+			return true
+		}
+		_, ok := req.Scope[ns]
+		return ok
+	}
+	namespaces := slices.DeleteFunc(teamNamespaces(teams, req.Namespaces, true), func(ns string) bool { return !scoped(ns) })
+	if req.Mode == v1alpha1.RunModeStep {
+		// A step of a run already going comes before a new run: finish
+		// what was started. Those need no room in the Team.
+		going := slices.DeleteFunc(teamNamespaces(teams, req.Namespaces, false), func(ns string) bool { return !scoped(ns) })
+		if len(going) > 0 {
+			start := int(rotation.Add(1) % uint64(len(going)))
+			for i := range going {
+				if claimed, err := m.takeStepIn(ctx, going[(start+i)%len(going)], req); claimed != nil || err != nil {
+					return claimed, err
+				}
+			}
+		}
 	}
 	if len(namespaces) == 0 {
 		return nil, nil
@@ -84,15 +113,11 @@ func (m *Manager) Claim(ctx context.Context, req ClaimRequest) (*Claimed, error)
 	return nil, nil
 }
 
-// namespaces returns the requested namespaces that have a Team, or all of
-// them. With withRoom, namespaces whose Team the index shows full are left
+// teamNamespaces returns the requested namespaces that have a Team, or
+// all of them. With withRoom, namespaces whose Team the index shows full are left
 // out, so a full team costs no API reads; the conditional slot write still
 // decides.
-func (m *Manager) namespaces(ctx context.Context, want []string, withRoom bool) ([]string, error) {
-	teams, err := m.store.ListTeams(ctx)
-	if err != nil {
-		return nil, err
-	}
+func teamNamespaces(teams []v1alpha1.Team, want []string, withRoom bool) []string {
 	var out []string
 	for _, t := range teams {
 		if withRoom && len(t.Status.Slots) >= int(max(t.Spec.MaxConcurrentRuns, 1)) {
@@ -102,7 +127,7 @@ func (m *Manager) namespaces(ctx context.Context, want []string, withRoom bool) 
 			out = append(out, t.Namespace)
 		}
 	}
-	return out, nil
+	return out
 }
 
 func (m *Manager) claimIn(ctx context.Context, ns string, req ClaimRequest) (*Claimed, error) {
@@ -125,14 +150,14 @@ func (m *Manager) claimIn(ctx context.Context, ns string, req ClaimRequest) (*Cl
 		// The cache may say no; anything else it says (an error, such as
 		// a cache still syncing) is settled by the fresh read below.
 		cached, err := m.agents.CachedAgent(ctx, ns, cand.Spec.Assignee.Name)
-		if errors.Is(err, storage.ErrNotFound) || (err == nil && !claimableBy(cached, labels)) {
+		if errors.Is(err, storage.ErrNotFound) || (err == nil && (!claimableBy(cached, labels) || !inMode(cached, req.Mode))) {
 			continue
 		}
 		// The decision: fresh reads of the agent and its model. A missing
 		// or unready agent, one this runner may not run, or a missing
 		// model makes the task unclaimable for now; the claim moves on.
 		agent, err := m.agents.Agent(ctx, ns, cand.Spec.Assignee.Name)
-		if errors.Is(err, storage.ErrNotFound) || (err == nil && !claimableBy(agent, labels)) {
+		if errors.Is(err, storage.ErrNotFound) || (err == nil && (!claimableBy(agent, labels) || !inMode(agent, req.Mode))) {
 			continue
 		}
 		if err != nil {
@@ -163,14 +188,18 @@ func (m *Manager) claimIn(ctx context.Context, ns string, req ClaimRequest) (*Cl
 			return nil, err
 		}
 		t, err := m.transition(ctx, key, task.Claim{
-			RunID: runID, Mode: v1alpha1.RunModeRuntime, Runner: holder, RunnerName: req.Runner, Lease: m.cfg.Lease,
+			RunID: runID, Mode: runMode(req.Mode), Runner: holder, RunnerName: req.Runner, Lease: m.cfg.Lease,
 			Agent: agent.Name, MCPTokenHash: tokenHash,
 		})
 		if err == nil && t.Status.Run != nil && t.Status.Run.ID == runID {
-			return &Claimed{
-				Task: t, RunID: runID, Mode: v1alpha1.RunModeRuntime, LeaseUntil: t.Status.Run.LeaseUntil.Time,
+			c := &Claimed{
+				Task: t, RunID: runID, Mode: t.Status.Run.Mode, LeaseUntil: t.Status.Run.LeaseUntil.Time,
 				Agent: agent, ModelProvider: model, MCPToken: token,
-			}, nil
+			}
+			if c.Mode == v1alpha1.RunModeStep {
+				c.Attempt, c.Kind = t.Status.Run.Attempt, StepStart
+			}
+			return c, nil
 		}
 		if err == nil {
 			// The claim landed, but the run was ended (cancelled, say)
@@ -196,8 +225,37 @@ func (m *Manager) claimIn(ctx context.Context, ns string, req ClaimRequest) (*Cl
 	return nil, nil
 }
 
+// inMode reports whether agent's runs are driven in mode: a step-mode
+// claim takes builtin agents set to step execution only, a runtime claim
+// every other agent.
+func inMode(agent *v1alpha1.Agent, mode v1alpha1.RunMode) bool {
+	return agent.Spec.Runtime.StepMode() == (mode == v1alpha1.RunModeStep)
+}
+
+func runMode(mode v1alpha1.RunMode) v1alpha1.RunMode {
+	if mode == v1alpha1.RunModeStep {
+		return mode
+	}
+	return v1alpha1.RunModeRuntime
+}
+
 func isLostCandidate(err error) bool {
 	return errors.Is(err, task.ErrInvalidTransition) || errors.Is(err, task.ErrNotClaimable) || errors.Is(err, storage.ErrNotFound)
+}
+
+// subtaskItems are the outbox items creating subtasks.
+func (m *Manager) subtaskItems(subtasks []Subtask) ([]v1alpha1.OutboxItem, error) {
+	items := make([]v1alpha1.OutboxItem, 0, len(subtasks))
+	for _, st := range subtasks {
+		id := st.ID
+		if id == "" {
+			id = m.newID()
+		} else if _, err := ulid.ParseStrict(id); err != nil {
+			return nil, fmt.Errorf("subtask id %q: %w", id, ErrInvalid)
+		}
+		items = append(items, v1alpha1.OutboxItem{ID: id, Kind: v1alpha1.OutboxCreateSubtask, Spec: st.Spec.DeepCopy()})
+	}
+	return items, nil
 }
 
 // Subtask is a subtask a run asks for.
@@ -212,7 +270,8 @@ type FinishRequest struct {
 	// Runner is the authenticated identity sending the finish; empty on a
 	// server that does not authenticate runners.
 	Runner    string
-	Step      int64 // step mode only
+	Step      int64 // step mode only: the held step
+	Attempt   int32 // step mode only: the attempt at it
 	Outcome   task.Outcome
 	Reason    v1alpha1.WaitingReason
 	ThreadSeq int64
@@ -229,18 +288,12 @@ func (m *Manager) Finish(ctx context.Context, key storage.Key, req FinishRequest
 	if err := requireRunID(req.RunID); err != nil {
 		return "", false, err
 	}
-	items := make([]v1alpha1.OutboxItem, 0, len(req.Subtasks))
-	for _, st := range req.Subtasks {
-		id := st.ID
-		if id == "" {
-			id = m.newID()
-		} else if _, err := ulid.ParseStrict(id); err != nil {
-			return "", false, fmt.Errorf("subtask id %q: %w", id, ErrInvalid)
-		}
-		items = append(items, v1alpha1.OutboxItem{ID: id, Kind: v1alpha1.OutboxCreateSubtask, Spec: st.Spec.DeepCopy()})
+	items, err := m.subtaskItems(req.Subtasks)
+	if err != nil {
+		return "", false, err
 	}
 	t, err := m.transition(ctx, key, task.Finish{
-		RunID: req.RunID, Runner: req.Runner, Step: req.Step, Outcome: req.Outcome,
+		RunID: req.RunID, Runner: req.Runner, Step: req.Step, Attempt: req.Attempt, Outcome: req.Outcome,
 		Reason: req.Reason, ThreadSeq: req.ThreadSeq, WaitingItem: req.WaitingItem, Outbox: append(items, req.Outbox...),
 	})
 	if errors.Is(err, task.ErrRunMismatch) && t != nil {

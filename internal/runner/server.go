@@ -87,7 +87,7 @@ func (s *Server) heartbeat(w http.ResponseWriter, r *http.Request) {
 	if !httpjson.Decode(w, r, &req) || !validRef(w, req.Task, req.RunID) {
 		return
 	}
-	until, err := s.m.Heartbeat(r.Context(), key(req.Task), req.RunID, identityOf(r))
+	until, err := s.m.Heartbeat(r.Context(), key(req.Task), manager.StepRequest{RunID: req.RunID, Runner: identityOf(r)})
 	if err != nil {
 		httpjson.Fail(w, s.log, err)
 		return

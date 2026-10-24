@@ -100,7 +100,11 @@ func (m *Manager) threadItem(ctx context.Context, key storage.Key, t *v1alpha1.T
 	if err := validEntry(agentAuthor(t), kind, body); err != nil {
 		return v1alpha1.OutboxItem{}, err
 	}
-	item := v1alpha1.OutboxItem{ID: m.newID(), Kind: v1alpha1.OutboxAppendThread}
+	id, err := m.itemID(ctx, key, t)
+	if err != nil {
+		return v1alpha1.OutboxItem{}, err
+	}
+	item := v1alpha1.OutboxItem{ID: id, Kind: v1alpha1.OutboxAppendThread}
 	blob := blobName(runID, item.ID)
 	content, err := json.Marshal(threadBlob{Body: body})
 	if err != nil {
@@ -170,13 +174,35 @@ func (m *Manager) pendingItem(ctx context.Context, key storage.Key, id string) (
 	return t, outboxItem(t, id), nil
 }
 
-// entryAt reads the entry at seq of a stream keyed by SeqKey.
+// entryAt reads the entry at exactly SeqKey(seq) of a stream. Other keys
+// may sort between SeqKey(seq-1) and it (a transcript's attempt entries),
+// so it lists keys, which reads no entry, until it reaches or passes the
+// key, then reads that one entry.
 func (m *Manager) entryAt(ctx context.Context, stream string, seq int64) ([]byte, bool, error) {
-	entries, err := m.store.Read(ctx, stream, storage.SeqKey(seq-1), 1)
-	if err != nil || len(entries) == 0 || entries[0].Key != storage.SeqKey(seq) {
-		return nil, false, err
+	want := storage.SeqKey(seq)
+	prev := storage.SeqKey(seq - 1) // the last key listed before want
+	for {
+		keys, err := m.store.Keys(ctx, stream, prev, 64)
+		if err != nil || len(keys) == 0 {
+			return nil, false, err
+		}
+		for _, k := range keys {
+			if k.Key > want {
+				return nil, false, nil
+			}
+			if k.Key == want {
+				entries, err := m.store.Read(ctx, stream, prev, 1)
+				if err != nil {
+					return nil, false, err
+				}
+				if len(entries) == 0 || entries[0].Key != want {
+					return nil, false, fmt.Errorf("%s/%s is listed but not read: %w", stream, want, ErrBusy)
+				}
+				return entries[0].Data, true, nil
+			}
+			prev = k.Key
+		}
 	}
-	return entries[0].Data, true, nil
 }
 
 // placeItem writes an item's entry into stream at the item's reserved
@@ -273,6 +299,7 @@ func (m *Manager) applyThread(ctx context.Context, parent *v1alpha1.Task, it v1a
 	if advanced, err := m.transition(ctx, key, task.ThreadAdvanced{Seq: seq}); err == nil {
 		t = advanced
 	}
+	// Point the task's wait at the entry if the wait is on this item.
 	if w := t.Status.Waiting; w != nil && w.ItemID == it.ID && w.ThreadSeq == 0 {
 		if _, err := m.transition(ctx, key, task.WaitingAt{ItemID: it.ID, Seq: seq}); err != nil {
 			return err
