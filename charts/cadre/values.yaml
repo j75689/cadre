@@ -13,8 +13,10 @@ server:
   # endpoint. Default: the in-cluster Service.
   publicURL: ""
   # externalURL is where people's browsers reach it, and where logins
-  # return to. Default: the Ingress host when the Ingress is enabled;
-  # required otherwise with auth.mode oidc.
+  # return to. Default: the Ingress host when the Ingress is enabled (https
+  # with ingress.tlsSecret); required otherwise with auth.mode oidc. Set it
+  # also when TLS terminates before the Ingress (a cloud load balancer, a
+  # controller's default certificate): https://<host>.
   externalURL: ""
   # runnerAuth: required (runners authenticate with a ServiceAccount token
   # for the audience cadre) or none (tests and local development only).
@@ -86,6 +88,10 @@ workloads:
 
 runner:
   enabled: true
+  # serverURL is where this runner reaches cadre-server. Default:
+  # server.publicURL; set it to the Service when publicURL is an external
+  # address for runners elsewhere.
+  serverURL: ""
   replicas: 1
   # mode: step (work builtin agents' runs a step at a time) or runtime.
   mode: step

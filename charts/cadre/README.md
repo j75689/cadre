@@ -43,7 +43,8 @@ helm install cadre oci://ghcr.io/j75689/charts/cadre -n cadre-system --create-na
 | `storage.s3.bucket` | | required |
 | `storage.s3.credentialsSecret` | | a Secret with `access-key` and `secret-key`; without it the AWS default chain |
 | `ingress.enabled`, `ingress.host`, `ingress.tlsSecret` | off | the host becomes the external URL logins return to |
-| `server.externalURL` | the Ingress host | where browsers reach cadre-server; required with `oidc` and no Ingress |
+| `server.externalURL` | the Ingress host | where browsers reach cadre-server; required with `oidc` and no Ingress, and when TLS terminates before the Ingress (`https://<host>`) |
+| `runner.serverURL` | `server.publicURL` | where the chart's runner reaches cadre-server |
 | `server.publicURL` | the Service | where runners, the chart's included, reach cadre-server |
 | `workloads.clusterWide` | `false` | bind the workloads ClusterRole everywhere |
 
@@ -53,9 +54,10 @@ With `auth.mode: oidc`, cadre-server encrypts session cookies with a 32-byte
 key, the same on every replica. By default the chart creates the Secret
 `<release>-session-key` on first install and keeps it: on upgrades, and on
 uninstall (it is annotated `helm.sh/resource-policy: keep`), so that sessions
-survive both. cadre-server reads it at start, so to sign everyone out: delete
-the Secret, `helm upgrade` (which makes a new one), then
-`kubectl -n cadre-system rollout restart deployment/cadre-server`.
+survive both. To sign everyone out, delete the Secret and `helm upgrade`: that
+makes a new key, and the key's checksum on the server pods rolls them, since
+cadre-server reads it at start. (With `existingSecret`, the checksum follows
+that Secret too, at the next `helm upgrade`.)
 
 The chart reads the existing key with `lookup`, which sees no cluster under
 `helm template` and in GitOps tools that render with it: those would make a

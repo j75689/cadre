@@ -55,7 +55,7 @@ spec:
           image: {{ include "cadre.image" (dict "root" $ "name" "cadre-runner") }}
           imagePullPolicy: {{ include "cadre.pullPolicy" $ }}
           args:
-            - --server={{ include "cadre.publicURL" $ }}
+            - --server={{ include "cadre.runnerServerURL" $ }}
             # Every replica its own name, shown in status.run.runner.
             - --runner=$(POD_NAME)
             - --mode={{ .mode }}

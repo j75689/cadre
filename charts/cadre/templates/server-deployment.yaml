@@ -1,7 +1,7 @@
 {{- $oidc := eq .Values.auth.mode "oidc" -}}
 {{- $s3 := .Values.storage.s3 -}}
 {{- if and $oidc (not (include "cadre.externalURL" .)) }}
-{{- fail "auth.mode oidc needs the URL browsers reach cadre-server at, for logins to return to: set ingress.enabled with ingress.host, or server.externalURL" }}
+{{- fail "auth.mode oidc needs the URL browsers reach cadre-server at, for logins to return to: set ingress.enabled with ingress.host, or server.externalURL (also when TLS terminates before the Ingress, as https://<host>)" }}
 {{- end }}
 apiVersion: apps/v1
 kind: Deployment
@@ -21,9 +21,17 @@ spec:
       labels:
         {{- include "cadre.labels" . | nindent 8 }}
         app.kubernetes.io/name: cadre-server
-      {{- with .Values.server.podAnnotations }}
+      {{- $key := "" }}
+      {{- if $oidc }}{{ $key = include "cadre.sessionKey" . }}{{ end }}
+      {{- if or .Values.server.podAnnotations $key }}
       annotations:
+        {{- with .Values.server.podAnnotations }}
         {{- toYaml . | nindent 8 }}
+        {{- end }}
+        {{- with $key }}
+        # A new session key rolls the pods, which read it at start.
+        checksum/session-key: {{ sha256sum . }}
+        {{- end }}
       {{- end }}
     spec:
       serviceAccountName: {{ include "cadre.server" . }}

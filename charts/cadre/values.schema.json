@@ -262,6 +262,10 @@
         "enabled": {
           "type": "boolean"
         },
+        "serverURL": {
+          "type": "string",
+          "pattern": "^(https?://.+)?$"
+        },
         "replicas": {
           "type": "integer",
           "minimum": 0
@@ -310,9 +314,9 @@
   },
   "definitions": {
     "duration": {
-      "description": "A Go duration such as 30s or 1h30m; empty for the default.",
+      "description": "A Go duration (time.ParseDuration), such as 30s, 1h30m or .5s; empty for the default.",
       "type": "string",
-      "pattern": "^(([0-9]+(\\.[0-9]+)?(ns|us|µs|ms|s|m|h))+)?$"
+      "pattern": "^([-+]?(0|(([0-9]+(\\.[0-9]*)?|\\.[0-9]+)(ns|us|µs|μs|ms|s|m|h))+))?$"
     }
   }
 }

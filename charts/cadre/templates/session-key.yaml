@@ -2,7 +2,6 @@
 {{- $name := include "cadre.sessionKeySecret" . }}
 {{- /* Made once: an existing key is kept, so sessions survive upgrades.
        helm template sees no cluster and renders a fresh key. */}}
-{{- $existing := lookup "v1" "Secret" .Release.Namespace $name }}
 apiVersion: v1
 kind: Secret
 metadata:
@@ -14,10 +13,5 @@ metadata:
     helm.sh/resource-policy: keep
 type: Opaque
 data:
-  {{- if and $existing $existing.data (index $existing.data "key") }}
-  key: {{ index $existing.data "key" }}
-  {{- else }}
-  # 64 hex characters: a 32-byte key.
-  key: {{ randAlphaNum 64 | sha256sum | b64enc }}
-  {{- end }}
+  key: {{ include "cadre.sessionKey" . }}
 {{- end }}
