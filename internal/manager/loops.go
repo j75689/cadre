@@ -289,46 +289,92 @@ func (m *Manager) readdSlot(ctx context.Context, key storage.Key, runID string) 
 // A hint that does not fit is dropped: the next full scan handles its task.
 const hintQueue = 1024
 
-// followHints numbers a new task, or applies a task's outbox, as soon as
-// the store says the task changed, instead of at the next full scan. A
-// notification is only a hint: the task is read fresh before anything is
-// done, every write is conditional as always, and the full scan on the
-// ticker stays, for the hints that are dropped.
-func (m *Manager) followHints(ctx context.Context, log *slog.Logger) {
+// hintWorkers handle hints at once, each a different task.
+const hintWorkers = 4
+
+// busy marks key as being numbered or dispatched by a call of this Manager,
+// so the hints its own writes send are not followed meanwhile. It returns
+// the function that clears the mark. Marks nest: a key marked twice is
+// clear once both are cleared.
+func (m *Manager) busy(key storage.Key) func() {
+	m.busyMu.Lock()
+	m.busyKeys[key]++
+	m.busyMu.Unlock()
+	return func() {
+		m.busyMu.Lock()
+		if m.busyKeys[key]--; m.busyKeys[key] <= 0 {
+			delete(m.busyKeys, key)
+		}
+		m.busyMu.Unlock()
+	}
+}
+
+// claimHint marks key busy for a hint, unless something already is.
+func (m *Manager) claimHint(key storage.Key) (func(), bool) {
+	m.busyMu.Lock()
+	defer m.busyMu.Unlock()
+	if m.busyKeys[key] > 0 {
+		return nil, false
+	}
+	m.busyKeys[key] = 1
+	return func() {
+		m.busyMu.Lock()
+		if m.busyKeys[key]--; m.busyKeys[key] <= 0 {
+			delete(m.busyKeys, key)
+		}
+		m.busyMu.Unlock()
+	}, true
+}
+
+// FollowHints numbers a new task, or applies a task's outbox, as soon as
+// the store says the task changed, instead of at the next full scan, until
+// ctx is done. It returns once subscribed. A notification is only a hint:
+// the task is read fresh before anything is done, every write is
+// conditional as always, and the full scan on the ticker stays, for the
+// hints that are dropped. Run calls it.
+func (m *Manager) FollowHints(ctx context.Context, log *slog.Logger) {
 	n, ok := m.store.(storage.Notifier)
 	if !ok {
 		return
 	}
 	hints := make(chan storage.Key, hintQueue)
-	var pending sync.Map // keys queued and not yet taken, so a burst of
+	var queued sync.Map // keys queued and not yet taken, so a burst of
 	// changes to one task queues it once
 	n.NotifyTasks(func(t *v1alpha1.Task) {
 		if ctx.Err() != nil || (t.Status.Phase != "" && len(t.Status.Outbox) == 0) {
 			return
 		}
 		key := storage.Key{Namespace: t.Namespace, Name: t.Name}
-		if _, queued := pending.LoadOrStore(key, struct{}{}); queued {
+		if _, dup := queued.LoadOrStore(key, struct{}{}); dup {
 			return
 		}
 		select {
 		case hints <- key:
 		default:
-			pending.Delete(key)
+			queued.Delete(key)
 		}
 	})
-	go func() {
-		for {
-			select {
-			case <-ctx.Done():
-				return
-			case key := <-hints:
-				pending.Delete(key)
-				if err := m.handleHint(ctx, key); err != nil && ctx.Err() == nil && !isLostCandidate(err) {
-					log.Warn("handle a changed task", "task", key.String(), "err", err)
+	for range hintWorkers {
+		go func() {
+			for {
+				select {
+				case <-ctx.Done():
+					return
+				case key := <-hints:
+					queued.Delete(key)
+					done, ok := m.claimHint(key)
+					if !ok {
+						continue // being handled already, by a hint or a call
+					}
+					err := m.handleHint(ctx, key)
+					done()
+					if err != nil && ctx.Err() == nil && !isLostCandidate(err) {
+						log.Warn("handle a changed task", "task", key.String(), "err", err)
+					}
 				}
 			}
-		}
-	}()
+		}()
+	}
 }
 
 // handleHint numbers the task if it is new and applies its outbox if it has
@@ -376,7 +422,7 @@ func (m *Manager) Run(ctx context.Context, cfg LoopConfig, log *slog.Logger) {
 	if cfg.Dispatch <= 0 {
 		cfg.Dispatch = DefaultLoopConfig.Dispatch
 	}
-	m.followHints(ctx, log)
+	m.FollowHints(ctx, log)
 	reclaim := time.NewTicker(cfg.Reclaim)
 	dispatch := time.NewTicker(cfg.Dispatch)
 	defer reclaim.Stop()

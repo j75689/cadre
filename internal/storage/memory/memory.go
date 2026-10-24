@@ -57,7 +57,8 @@ func (b *Backend) EditSpec(key storage.Key, edit func(*v1alpha1.TaskSpec)) {
 // Open starts a Driver on the backend. Its index is rebuilt from a full list,
 // as a restarted process would rebuild it, then kept current by watch events.
 func (b *Backend) Open() *Driver {
-	d := &Driver{b: b, index: map[storage.Key]*v1alpha1.Task{}}
+	d := &Driver{b: b, index: map[storage.Key]*v1alpha1.Task{}, events: make(chan *v1alpha1.Task, 4096), stopped: make(chan struct{})}
+	go d.deliver()
 	b.mu.Lock()
 	defer b.mu.Unlock()
 	for k, t := range b.tasks {
@@ -74,6 +75,28 @@ type Driver struct {
 	mu    sync.RWMutex
 	index map[storage.Key]*v1alpha1.Task
 	subs  []func(*v1alpha1.Task)
+
+	// events carries changed Tasks to deliver, outside the backend's lock
+	// and in order; one that does not fit is dropped, as a hint may be.
+	events    chan *v1alpha1.Task
+	stopped   chan struct{}
+	closeOnce sync.Once
+}
+
+func (d *Driver) deliver() {
+	for {
+		select {
+		case <-d.stopped:
+			return
+		case t := <-d.events:
+			d.mu.RLock()
+			subs := d.subs
+			d.mu.RUnlock()
+			for _, fn := range subs {
+				fn(t.DeepCopy())
+			}
+		}
+	}
 }
 
 var _ storage.Notifier = (*Driver)(nil)
@@ -90,8 +113,9 @@ var _ storage.Driver = (*Driver)(nil)
 // Close stops the driver's watch.
 func (d *Driver) Close() error {
 	d.b.mu.Lock()
-	defer d.b.mu.Unlock()
 	delete(d.b.drivers, d)
+	d.b.mu.Unlock()
+	d.closeOnce.Do(func() { close(d.stopped) })
 	return nil
 }
 
@@ -107,10 +131,10 @@ func (b *Backend) notify(t *v1alpha1.Task) {
 	for d := range b.drivers {
 		d.mu.Lock()
 		d.index[storage.Key{Namespace: t.Namespace, Name: t.Name}] = t.DeepCopy()
-		subs := d.subs
 		d.mu.Unlock()
-		for _, fn := range subs {
-			fn(t.DeepCopy())
+		select {
+		case d.events <- t.DeepCopy():
+		default:
 		}
 	}
 }

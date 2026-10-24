@@ -143,4 +143,20 @@ func TestASharedCache(t *testing.T) {
 	if err := shared.Get(ctx, client.ObjectKey{Namespace: "default", Name: "shared"}, &got); err != nil {
 		t.Fatalf("the shared cache after the driver closed: %v", err)
 	}
+	// A closed driver hears of no more changes.
+	for len(seen) > 0 {
+		<-seen
+	}
+	other, err := client.New(cfg, client.Options{Scheme: scheme})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := other.Create(ctx, &v1alpha1.Task{ObjectMeta: metav1.ObjectMeta{Name: "after-close", Namespace: "default"}, Spec: v1alpha1.TaskSpec{Title: "t"}}); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case name := <-seen:
+		t.Fatalf("a closed driver was notified of %q", name)
+	case <-time.After(time.Second):
+	}
 }

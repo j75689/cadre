@@ -54,6 +54,11 @@ type Driver struct {
 
 	mu   sync.RWMutex
 	subs []func(*v1alpha1.Task)
+
+	// handler is the Task informer's handler, removed on Close when the
+	// cache outlives the driver.
+	tasks   cache.Informer
+	handler toolscache.ResourceEventHandlerRegistration
 }
 
 var (
@@ -106,13 +111,16 @@ func Open(ctx context.Context, cfg Config) (*Driver, error) {
 			return nil, fmt.Errorf("index cache: %w", err)
 		}
 	}
+	var synced []toolscache.InformerSynced
 	for _, obj := range []client.Object{&v1alpha1.Task{}, &v1alpha1.Team{}} {
 		inf, err := d.index.GetInformer(ctx, obj)
 		if err != nil {
 			return nil, fmt.Errorf("informer for %T: %w", obj, err)
 		}
+		synced = append(synced, inf.HasSynced)
 		if _, ok := obj.(*v1alpha1.Task); ok {
-			if _, err := inf.AddEventHandler(toolscache.ResourceEventHandlerFuncs{
+			d.tasks = inf
+			if d.handler, err = inf.AddEventHandler(toolscache.ResourceEventHandlerFuncs{
 				AddFunc:    func(o any) { d.notify(o) },
 				UpdateFunc: func(_, o any) { d.notify(o) },
 			}); err != nil {
@@ -125,7 +133,9 @@ func Open(ctx context.Context, cfg Config) (*Driver, error) {
 		d.stop, d.done = stop, make(chan error, 1)
 		go func() { d.done <- d.index.Start(runCtx) }()
 	}
-	if !d.index.WaitForCacheSync(ctx) {
+	// The driver's own informers only: a shared cache may hold others
+	// that sync later, or never.
+	if !toolscache.WaitForCacheSync(ctx.Done(), synced...) {
 		_ = d.Close()
 		return nil, errors.New("index did not sync")
 	}
@@ -139,6 +149,10 @@ func (d *Driver) Close() error {
 		if d.stop != nil {
 			d.stop()
 			d.closeErr = <-d.done
+			return
+		}
+		if d.handler != nil {
+			d.closeErr = d.tasks.RemoveEventHandler(d.handler)
 		}
 	})
 	return d.closeErr

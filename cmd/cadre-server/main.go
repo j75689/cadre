@@ -89,12 +89,23 @@ func run() error {
 	// One informer cache serves the controllers and the board index: the
 	// controller manager starts it, and the driver adds its informers to it
 	// and waits for them to sync.
+	// A manager that fails to start would leave the driver waiting for a
+	// cache that never syncs: its failure ends the wait, and the server.
 	controllers := make(chan error, 1)
-	go func() { controllers <- ctrls.Start(ctx) }()
-	store, err := kubernetes.Open(ctx, kubernetes.Config{REST: rest, S3: s3cfg, Cache: ctrls.GetCache()})
+	openCtx, opened := context.WithCancelCause(ctx)
+	go func() {
+		err := ctrls.Start(ctx)
+		opened(fmt.Errorf("controllers stopped: %w", err))
+		controllers <- err
+	}()
+	store, err := kubernetes.Open(openCtx, kubernetes.Config{REST: rest, S3: s3cfg, Cache: ctrls.GetCache()})
 	if err != nil {
+		if cause := context.Cause(openCtx); cause != nil && ctx.Err() == nil {
+			return cause
+		}
 		return err
 	}
+	opened(nil)
 	defer func() { _ = store.Close() }()
 
 	forwarder := mcp.NewForwarder(controller.ToolServerSources(ctrls), log)

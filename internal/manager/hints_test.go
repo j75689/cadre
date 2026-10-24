@@ -2,6 +2,7 @@ package manager
 
 import (
 	"context"
+	"fmt"
 	"io"
 	"log/slog"
 	"testing"
@@ -21,8 +22,7 @@ func TestHintsNumberAndDispatchAtOnce(t *testing.T) {
 	e := newEnv(t, 2)
 	runCtx, cancel := context.WithCancel(ctx)
 	defer cancel()
-	go e.m.Run(runCtx, LoopConfig{Reclaim: time.Hour, Dispatch: time.Hour}, slog.New(slog.NewTextHandler(io.Discard, nil)))
-	time.Sleep(50 * time.Millisecond) // let Run subscribe
+	e.m.FollowHints(runCtx, slog.New(slog.NewTextHandler(io.Discard, nil)))
 
 	key := storage.Key{Namespace: ns, Name: "applied"}
 	if err := e.store.CreateTask(ctx, &v1alpha1.Task{
@@ -59,4 +59,33 @@ func eventually(t *testing.T, what string, ok func() bool) {
 		}
 	}
 	t.Fatalf("%s: not within 3s, with the scans an hour away", what)
+}
+
+// A task the Manager creates and numbers itself, and a subtask a run
+// creates, take one number each: the hints their writes send are not
+// followed meanwhile.
+func TestOneNumberPerTask(t *testing.T) {
+	e := newEnv(t, 5)
+	runCtx, cancel := context.WithCancel(ctx)
+	defer cancel()
+	e.m.FollowHints(runCtx, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	for i := range 20 {
+		if _, err := e.m.CreateTask(ctx, ns, fmt.Sprintf("t%d", i), v1alpha1.TaskSpec{Title: "t", Assignee: &v1alpha1.Assignee{Kind: v1alpha1.AssigneeAgent, Name: "coder"}}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	c := e.claim(t)
+	for i := range 5 {
+		if _, err := e.m.RunCreateSubtask(ctx, storage.Key{Namespace: ns, Name: c.Task.Name}, c.RunID, subSpec(fmt.Sprintf("sub %d", i))); err != nil {
+			t.Fatal(err)
+		}
+	}
+	time.Sleep(200 * time.Millisecond) // let any stray hint land
+	team, err := e.store.GetTeam(ctx, ns)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := team.Status.NextNumber; got != 26 {
+		t.Fatalf("next number %d after 25 tasks, want 26: numbers were claimed twice", got)
+	}
 }
