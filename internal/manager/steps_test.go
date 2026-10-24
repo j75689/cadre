@@ -427,3 +427,27 @@ func TestAFinishCarriesItsComment(t *testing.T) {
 		}
 	}
 }
+
+// A stale worker's finish writes nothing: its comment cannot become the
+// one a later finish of the step commits.
+func TestAStaleFinishLeavesNoComment(t *testing.T) {
+	e, m := stepEnv(t)
+	key := e.stepTask(t, m, "steps", "stepper")
+	first := takeStep(t, m, "w1")
+	e.clock.add(time.Minute) // w1 stalls; its step is freed and taken again
+	if err := m.ReclaimExpired(ctx); err != nil {
+		t.Fatal(err)
+	}
+	second := takeStep(t, m, "w2")
+	stale := FinishRequest{RunID: first.RunID, Step: first.Step, Attempt: first.Attempt, Outcome: task.OutcomeFailed, Comment: "The reply was cut off."}
+	if _, _, err := m.Finish(ctx, key, stale); !errors.Is(err, task.ErrAttemptMismatch) {
+		t.Fatalf("a stale finish: %v, want ErrAttemptMismatch", err)
+	}
+	if _, _, err := m.Finish(ctx, key, FinishRequest{RunID: second.RunID, Step: second.Step, Attempt: second.Attempt, Outcome: task.OutcomeReview, Comment: "All done."}); err != nil {
+		t.Fatal(err)
+	}
+	thread, _ := m.ReadThread(ctx, key, 0, 0)
+	if len(thread) != 1 || thread[0].Body != "All done." {
+		t.Fatalf("thread %+v; want the second worker's comment only", thread)
+	}
+}

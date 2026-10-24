@@ -58,15 +58,20 @@ type outcome struct {
 	result  v1alpha1.RunOutcome
 	comment string
 	release string // why the step is given back
+	// backOff waits before the next claim: the step was given back for an
+	// MCP endpoint that does not answer, which the next step may share.
+	backOff bool
 }
+
+// endTimeout bounds the writes that end a step, after its own time.
+const endTimeout = time.Minute
 
 func finishStep(result v1alpha1.RunOutcome, comment string) outcome {
 	return outcome{finish: true, result: result, comment: comment}
 }
 
 // work does the claimed step. It reports whether to wait before claiming
-// again: when the step was given back for a fault of the worker's
-// surroundings, not the task's.
+// again.
 func (s *step) work(ctx context.Context, claimSent time.Time) (backOff bool) {
 	log := s.o.Log.With("task", s.task.Namespace+"/"+s.task.Name, "run", s.claim.RunID, "step", s.ref.Step, "attempt", s.ref.Attempt)
 	log.Info("took a step", "kind", s.claim.StepKind)
@@ -78,16 +83,21 @@ func (s *step) work(ctx context.Context, claimSent time.Time) (backOff bool) {
 	go func() { defer close(beating); s.heartbeat(stepCtx, cancel, claimSent) }()
 	defer func() { cancel(nil); <-beating }()
 
-	end := s.do(stepCtx, log)
+	end := s.do(stepCtx)
 	if errors.Is(context.Cause(stepCtx), errStepTimeout) {
 		end = outcome{release: fmt.Sprintf("the step timed out after %s", s.o.StepTimeout)}
 	} else if stepCtx.Err() != nil {
 		log.Info("step stopped", "why", context.Cause(stepCtx))
 		return false
 	}
-	// What ends the step is written even when the step's own time is up:
-	// the next worker depends on it.
-	endCtx := context.WithoutCancel(ctx)
+	// What ends the step is written even when the step's own time is up
+	// (the next worker depends on it), within a bound of its own, so a
+	// server that does not answer cannot hold the worker for ever.
+	endCtx, done := context.WithTimeout(context.WithoutCancel(ctx), endTimeout)
+	defer done()
+	if end.entry != nil {
+		end = s.commit(endCtx, end.entry)
+	}
 	switch {
 	case end.release != "":
 		log.Warn("giving the step back", "why", end.release)
@@ -96,56 +106,93 @@ func (s *step) work(ctx context.Context, claimSent time.Time) (backOff bool) {
 		}); err != nil && !lostStep(err) {
 			log.Warn("give the step back", "err", err)
 		}
-		return true
+		return end.backOff
 	case end.finish:
-		fin, err := s.finish(endCtx, end)
+		fin, err := finishRun(endCtx, s.c, runner.FinishRequest{
+			Task: s.task, RunID: s.claim.RunID, Step: s.ref.Step, Attempt: s.ref.Attempt, Outcome: end.result, Comment: end.comment,
+		})
 		if err != nil {
 			log.Warn("finish", "outcome", end.result, "err", err)
 			return false
 		}
 		log.Info("finished", "outcome", end.result, "phase", fin.Phase)
-	case end.entry != nil:
-		s.commit(stepCtx, log, end.entry)
 	}
 	return false
 }
 
 // commit appends the step's entry and commits the step; an entry another
-// worker wrote first is committed instead.
-func (s *step) commit(ctx context.Context, log interface{ Warn(string, ...any) }, e *manager.TranscriptEntry) {
+// worker wrote first is committed instead. An entry the server refuses
+// (too large, of the wrong kind) would be refused from every worker: the
+// run fails, saying so. A commit that does not get through gives the step
+// back, so its next worker commits the entry.
+func (s *step) commit(ctx context.Context, e *manager.TranscriptEntry) outcome {
 	data, err := json.Marshal(e)
 	if err != nil {
-		log.Warn("encode the step's entry", "err", err)
-		return
+		return finishStep(v1alpha1.RunOutcomeFailed, fmt.Sprintf("This run failed: step %d's entry could not be recorded.", s.ref.Step))
 	}
 	var app *runner.StepAppendResponse
-	if err := retryShort(ctx, func() (err error) {
+	err = retryUnlessRefused(ctx, func() (err error) {
 		app, err = s.c.StepAppend(ctx, runner.StepAppendRequest{StepRef: s.ref, Entry: data})
 		return err
-	}); err != nil {
-		log.Warn("append the step's entry", "err", err)
-		return
+	})
+	switch {
+	case lostStep(err):
+		return outcome{}
+	case refused(err):
+		s.o.Log.Error("the step's entry was refused", "task", s.task.Namespace+"/"+s.task.Name, "run", s.claim.RunID, "step", s.ref.Step, "err", err)
+		return finishStep(v1alpha1.RunOutcomeFailed, fmt.Sprintf("This run failed: cadre-server refused step %d's entry (%s). cadre-runner's log has the details for run %s.", s.ref.Step, errCode(err), s.claim.RunID))
+	case err != nil:
+		return outcome{release: "the step's entry could not be written"}
 	}
 	if app.Adopted {
-		log.Warn("the step was written by an earlier worker; committing that")
+		s.o.Log.Warn("the step was written by an earlier worker; committing that", "run", s.claim.RunID, "step", s.ref.Step)
 	}
-	if s.o.StepDone != nil && !s.o.StepDone(s.ref.Step, string(e.Kind)) {
-		return
-	}
-	s.advance(ctx, log)
+	return s.advance(ctx)
 }
 
-func (s *step) advance(ctx context.Context, log interface{ Warn(string, ...any) }) {
-	if err := retryShort(ctx, func() error {
+// advance commits the step whose entry is written.
+func (s *step) advance(ctx context.Context) outcome {
+	err := retryUnlessRefused(ctx, func() error {
 		_, err := s.c.StepAdvance(ctx, runner.StepAdvanceRequest{StepRef: s.ref})
 		return err
-	}); err != nil {
-		log.Warn("commit the step", "err", err)
+	})
+	switch {
+	case err == nil, lostStep(err):
+		return outcome{}
+	default:
+		return outcome{release: "the step could not be committed"}
 	}
+}
+
+// retryUnlessRefused is retryShort for a request the server may refuse:
+// a refusal is not retried.
+func retryUnlessRefused(ctx context.Context, f func() error) error {
+	var refusal error
+	err := retryShort(ctx, func() error {
+		err := f()
+		if refused(err) {
+			refusal = err
+			return nil
+		}
+		return err
+	})
+	if refusal != nil {
+		return refusal
+	}
+	return err
+}
+
+// errCode is a refusal's code, for a comment.
+func errCode(err error) string {
+	var cerr *client.Error
+	if errors.As(err, &cerr) {
+		return cerr.Code
+	}
+	return "error"
 }
 
 // do does the step and says how it ends.
-func (s *step) do(ctx context.Context, log interface{ Warn(string, ...any) }) outcome {
+func (s *step) do(ctx context.Context) outcome {
 	var tr *runner.StepTranscript
 	if err := retryShort(ctx, func() (err error) { tr, err = s.c.StepTranscript(ctx, s.ref); return err }); err != nil {
 		if lostStep(err) {
@@ -159,26 +206,21 @@ func (s *step) do(ctx context.Context, log interface{ Warn(string, ...any) }) ou
 			return finishStep(v1alpha1.RunOutcomeFailed, fmt.Sprintf("This run failed: its transcript's step %d could not be read.", i))
 		}
 	}
-	if int64(len(entries)) > s.ref.Step {
+	switch n := int64(len(entries)); {
+	case n > s.ref.Step:
 		// A worker that died after writing the step's entry: the step is
 		// done, only its commit is missing.
-		s.advance(ctx, log)
-		return outcome{}
+		return outcome{entry: &entries[s.ref.Step]}
+	case n < s.ref.Step:
+		// A read behind the commits that made this step current. From
+		// here on every step past start has the entry before it.
+		return outcome{release: "the run's transcript was read incomplete"}
 	}
-	p, credential, failure := model(ctx, s.o, s.task.Namespace, s.claim.Agent)
-	if failure != "" {
-		return finishStep(v1alpha1.RunOutcomeFailed, failure)
-	}
-	sp, ok := p.(StepProvider)
-	if !ok {
-		return finishStep(v1alpha1.RunOutcomeFailed, fmt.Sprintf("This run could not start: cadre-runner does not run ModelProvider type %q a step at a time.", s.claim.Agent.Model.Type))
-	}
-	setup := Setup{Model: *s.claim.Agent.Model, Effort: s.claim.Agent.Effort, Credential: credential}
 	switch manager.StepKind(s.claim.StepKind) {
 	case manager.StepStart:
-		return s.start(ctx, sp, setup)
+		return s.start(ctx)
 	case manager.StepLLMTurn:
-		return s.turn(ctx, sp, setup, entries)
+		return s.turn(ctx, entries)
 	case manager.StepExecTools:
 		return s.tools(ctx, entries[len(entries)-1])
 	case manager.StepFinish:
@@ -191,11 +233,31 @@ func (s *step) do(ctx context.Context, log interface{ Warn(string, ...any) }) ou
 	return finishStep(v1alpha1.RunOutcomeFailed, fmt.Sprintf("This run failed: cadre-runner does not know steps of kind %q.", s.claim.StepKind))
 }
 
+// provider is the agent's step provider and the setup it is called with,
+// or how the run ends when there is none.
+func (s *step) provider(ctx context.Context) (StepProvider, Setup, *outcome) {
+	p, credential, failure := model(ctx, s.o, s.task.Namespace, s.claim.Agent)
+	if failure != "" {
+		end := finishStep(v1alpha1.RunOutcomeFailed, failure)
+		return nil, Setup{}, &end
+	}
+	sp, ok := p.(StepProvider)
+	if !ok {
+		end := finishStep(v1alpha1.RunOutcomeFailed, fmt.Sprintf("This run could not start: cadre-runner does not run ModelProvider type %q a step at a time.", s.claim.Agent.Model.Type))
+		return nil, Setup{}, &end
+	}
+	return sp, Setup{Model: *s.claim.Agent.Model, Effort: s.claim.Agent.Effort, Credential: credential}, nil
+}
+
 // start describes the model and records the conversation's opening.
-func (s *step) start(ctx context.Context, p StepProvider, setup Setup) outcome {
+func (s *step) start(ctx context.Context) outcome {
+	p, setup, end := s.provider(ctx)
+	if end != nil {
+		return *end
+	}
 	sess, err := connect(ctx, s.claim.MCP, s.o.Transport, s.o.CallTimeout)
 	if err != nil {
-		return outcome{release: "the run's MCP endpoint could not be reached"}
+		return outcome{release: "the run's MCP endpoint could not be reached", backOff: true}
 	}
 	defer func() { _ = sess.Close() }()
 	agent := s.claim.Agent
@@ -220,7 +282,7 @@ func (s *step) start(ctx context.Context, p StepProvider, setup Setup) outcome {
 	case ctx.Err() != nil, errors.Is(err, errRunGone):
 		return outcome{}
 	case err != nil:
-		return outcome{release: "the run's MCP endpoint could not serve the task"}
+		return outcome{release: "the run's MCP endpoint could not serve the task", backOff: true}
 	}
 	var o *Opening
 	if err := s.retry(ctx, func() (err error) { o, err = p.Begin(ctx, setup); return err }); err != nil {
@@ -237,7 +299,7 @@ func (s *step) start(ctx context.Context, p StepProvider, setup Setup) outcome {
 
 // turn makes one model call on the conversation rebuilt from the
 // transcript.
-func (s *step) turn(ctx context.Context, p StepProvider, setup Setup, entries []manager.TranscriptEntry) outcome {
+func (s *step) turn(ctx context.Context, entries []manager.TranscriptEntry) outcome {
 	var o Opening
 	if err := json.Unmarshal(entries[0].Request, &o); err != nil {
 		return finishStep(v1alpha1.RunOutcomeFailed, "This run failed: its transcript's opening could not be read.")
@@ -270,6 +332,10 @@ func (s *step) turn(ctx context.Context, p StepProvider, setup Setup, entries []
 	}
 	if limit := o.Settings.ContextLimit; last != nil && limit > 0 && float64(last.ContextTokens) >= contextCeiling*float64(limit) {
 		return finishStep(v1alpha1.RunOutcomeReview, fmt.Sprintf("This run stopped at %d of the model's %d context tokens, before running out. A new run starts again from the thread.", last.ContextTokens, limit))
+	}
+	p, setup, end := s.provider(ctx)
+	if end != nil {
+		return *end
 	}
 	conv, err := p.Resume(ctx, setup, &o, steps)
 	if err != nil {
@@ -314,7 +380,7 @@ func (s *step) turn(ctx context.Context, p StepProvider, setup Setup, entries []
 func (s *step) tools(ctx context.Context, turn manager.TranscriptEntry) outcome {
 	sess, err := connect(ctx, s.claim.MCP, s.o.Transport, s.o.CallTimeout)
 	if err != nil {
-		return outcome{release: "the run's MCP endpoint could not be reached"}
+		return outcome{release: "the run's MCP endpoint could not be reached", backOff: true}
 	}
 	defer func() { _ = sess.Close() }()
 	sess.callIDs = true
@@ -326,7 +392,7 @@ func (s *step) tools(ctx context.Context, turn manager.TranscriptEntry) outcome 
 			// The call may have taken effect with only its answer lost;
 			// the next worker makes the step's calls again, which the core
 			// tools record once.
-			return outcome{release: "a tool call got no answer from the run's MCP endpoint"}
+			return outcome{release: "a tool call got no answer from the run's MCP endpoint", backOff: true}
 		case err != nil, res.runEnded:
 			return outcome{}
 		}
@@ -352,24 +418,12 @@ func (s *step) failed(ctx context.Context, what string, err error) outcome {
 	return finishStep(v1alpha1.RunOutcomeFailed, fmt.Sprintf("%s; check the agent's ModelProvider and its credential. cadre-runner's log has the details for run %s.", what, s.claim.RunID))
 }
 
-// retry is run.retry for a step.
-func (s *step) retry(ctx context.Context, f func() error) error {
-	return (&run{o: s.o}).retry(ctx, f)
-}
+func (s *step) retry(ctx context.Context, f func() error) error { return retryFor(ctx, s.o, f) }
 
 // event reports one model response; the step number keeps events of
 // different workers apart. It is best effort.
 func (s *step) event(ctx context.Context, reply *Reply, turn int) {
-	r := &run{o: s.o, c: s.c, claim: s.claim, ref: s.task, seq: s.ref.Step}
-	r.event(ctx, reply, turn)
-}
-
-// finish ends the run at the step, with its comment in the same write.
-func (s *step) finish(ctx context.Context, end outcome) (*runner.FinishResponse, error) {
-	r := &run{o: s.o, c: s.c, claim: s.claim, ref: s.task}
-	return r.finish(ctx, runner.FinishRequest{
-		Task: s.task, RunID: s.claim.RunID, Step: s.ref.Step, Attempt: s.ref.Attempt, Outcome: end.result, Comment: end.comment,
-	})
+	report(ctx, s.c, s.o, s.task, s.claim.RunID, s.ref.Step+1, reply, turn)
 }
 
 // heartbeat renews the step's lease until ctx ends. The worker may act only

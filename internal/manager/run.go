@@ -285,9 +285,12 @@ type FinishRequest struct {
 	Outbox      []v1alpha1.OutboxItem
 }
 
-// finishComment is the outbox item of a finish's comment. In step mode its
-// id derives from the run and the step, so a finish retried by the step's
-// next worker writes the same one.
+// finishComment is the outbox item of a finish's comment. Its blob is
+// written only once the finish is known to be its run's (in step mode, its
+// step's and attempt's): a stale worker's finish, which the Finish below
+// refuses, writes nothing. In step mode the id derives from the run, the
+// step and the attempt, so the attempt's retried finish writes the same
+// one.
 func (m *Manager) finishComment(ctx context.Context, key storage.Key, req FinishRequest) (v1alpha1.OutboxItem, error) {
 	t, err := m.activeRun(ctx, key, req.RunID)
 	if err != nil {
@@ -295,7 +298,10 @@ func (m *Manager) finishComment(ctx context.Context, key storage.Key, req Finish
 	}
 	id := m.newID()
 	if r := t.Status.Run; r.Mode == v1alpha1.RunModeStep {
-		id = derivedID(r.ID, r.Step, "cadre.dev/finish", 0)
+		if err := m.heldStep(ctx, key, StepRequest{RunID: req.RunID, Step: req.Step, Attempt: req.Attempt, Runner: req.Runner}); err != nil {
+			return v1alpha1.OutboxItem{}, err
+		}
+		id = derivedID(r.ID, r.Step, "cadre.dev/finish", int(r.Attempt))
 	}
 	return m.entryItem(ctx, key, t, req.RunID, id, EntryComment, req.Comment, nil)
 }

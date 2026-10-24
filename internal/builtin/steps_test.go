@@ -1,9 +1,12 @@
 package builtin_test
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
+	"io"
+	"net/http"
 	"strings"
 	"sync"
 	"testing"
@@ -11,7 +14,9 @@ import (
 
 	v1alpha1 "github.com/j75689/cadre/api/v1alpha1"
 	"github.com/j75689/cadre/internal/builtin"
+	"github.com/j75689/cadre/internal/client"
 	"github.com/j75689/cadre/internal/manager"
+	"github.com/j75689/cadre/internal/runner"
 )
 
 // stepScripted is a StepProvider whose model follows a script; a resumed
@@ -83,6 +88,12 @@ func (p *stepScripted) modelCalls() int {
 // until the run is over or n steps were taken.
 func (e *env) steps(t *testing.T, p builtin.Provider, o builtin.Options, n int) {
 	t.Helper()
+	e.stepsWith(t, e.c, p, o, n)
+}
+
+// stepsWith is steps, the workers talking to the server through c.
+func (e *env) stepsWith(t *testing.T, c *client.Client, p builtin.Provider, o builtin.Options, n int) {
+	t.Helper()
 	o.Once, o.Poll = true, 10*time.Millisecond
 	o.Providers = map[v1alpha1.ProviderType]builtin.Provider{v1alpha1.ProviderAnthropic: p}
 	if o.RetryFor == 0 {
@@ -94,7 +105,7 @@ func (e *env) steps(t *testing.T, p builtin.Provider, o builtin.Options, n int) 
 		}
 		o.Runner = "worker-" + string(rune('a'+i%26))
 		stepCtx, cancel := context.WithTimeout(ctx, 20*time.Second)
-		err := builtin.RunSteps(stepCtx, e.c, o)
+		err := builtin.RunSteps(stepCtx, c, o)
 		cancel()
 		if err != nil {
 			t.Fatal(err)
@@ -146,29 +157,50 @@ func TestARunDoneStepByStep(t *testing.T) {
 	}
 }
 
+// dying is a worker's connection to cadre-server that goes dead once the
+// worker has written a turn's entry: the step is neither committed nor
+// given back, as when the worker dies there.
+type dying struct {
+	mu          sync.Mutex
+	armed, died bool
+}
+
+func (d *dying) RoundTrip(r *http.Request) (*http.Response, error) {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	switch {
+	case r.URL.Path == runner.PathStepAppend && r.Body != nil:
+		body, _ := io.ReadAll(r.Body)
+		r.Body = io.NopCloser(bytes.NewReader(body))
+		d.armed = d.armed || bytes.Contains(body, []byte(`"kind":"llm_turn"`))
+	case d.armed && (r.URL.Path == runner.PathStepAdvance || r.URL.Path == runner.PathStepRelease):
+		// The worker is gone: it hears nothing back, and sends nothing on.
+		d.died = true
+		return &http.Response{StatusCode: http.StatusConflict, Header: http.Header{"Content-Type": {"application/json"}},
+			Body: io.NopCloser(strings.NewReader(`{"error":{"code":"attempt_mismatch","message":"gone"}}`)), Request: r}, nil
+	}
+	return http.DefaultTransport.RoundTrip(r)
+}
+
 // A worker that dies after writing its step's entry, before committing it,
 // leaves the step to the next worker, which commits that entry without
 // calling the model again.
 func TestADeadWorkersStepIsAdopted(t *testing.T) {
 	e := startIn(t, 2*time.Second, v1alpha1.RunModeStep)
 	p := &stepScripted{steps: []step{say("Done.")}}
-	died := false
-	o := builtin.Options{StepDone: func(_ int64, kind string) bool {
-		if kind == string(manager.StepLLMTurn) && !died {
-			died = true
-			return false
-		}
-		return true
-	}}
-	e.steps(t, p, o, 2) // start, then the turn whose worker dies
-	if !died || p.modelCalls() != 1 {
-		t.Fatalf("died %v, %d model calls", died, p.modelCalls())
+	d := &dying{}
+	e.stepsWith(t, client.New(e.url, &http.Client{Transport: d}), p, builtin.Options{}, 2) // start, then the turn whose worker dies
+	if !d.died || p.modelCalls() != 1 {
+		t.Fatalf("died %v, %d model calls", d.died, p.modelCalls())
+	}
+	if r := e.task(t).Status.Run; r == nil || r.StepFree || r.Step != 1 {
+		t.Fatalf("run %+v; want step 1 still held by the dead worker", r)
 	}
 	time.Sleep(3500 * time.Millisecond) // the dead worker's lease and grace run out
 	if err := e.m.ReclaimExpired(ctx); err != nil {
 		t.Fatal(err)
 	}
-	e.steps(t, p, o, 3)
+	e.steps(t, p, builtin.Options{}, 3)
 	if tk := e.task(t); tk.Status.Phase != v1alpha1.PhaseReview || last(e.thread(t)).Body != "Done." {
 		t.Fatalf("phase %s, thread %+v", tk.Status.Phase, e.thread(t))
 	}
@@ -207,5 +239,44 @@ func TestTheTurnLimitInStepMode(t *testing.T) {
 	e.steps(t, p, builtin.Options{MaxTurns: 1}, 10)
 	if tk := e.task(t); tk.Status.Phase != v1alpha1.PhaseReview || !strings.Contains(last(e.thread(t)).Body, "after 1 model turns") || p.modelCalls() != 1 {
 		t.Fatalf("phase %s, %d model calls, thread %+v", tk.Status.Phase, p.modelCalls(), e.thread(t))
+	}
+}
+
+// answering answers the requests to path itself, with status and body.
+type answering struct {
+	path   string
+	status int
+	body   string
+}
+
+func (a answering) RoundTrip(r *http.Request) (*http.Response, error) {
+	if r.URL.Path != a.path {
+		return http.DefaultTransport.RoundTrip(r)
+	}
+	return &http.Response{StatusCode: a.status, Header: http.Header{"Content-Type": {"application/json"}},
+		Body: io.NopCloser(strings.NewReader(a.body)), Request: r}, nil
+}
+
+// An entry the server refuses would be refused from every worker: the run
+// fails at once, saying so, rather than after three silent attempts.
+func TestARefusedEntryFailsTheRun(t *testing.T) {
+	e := startIn(t, 2*time.Second, v1alpha1.RunModeStep)
+	refusing := client.New(e.url, &http.Client{Transport: answering{runner.PathStepAppend, http.StatusRequestEntityTooLarge, `{"error":{"code":"invalid","message":"request body too large"}}`}})
+	e.stepsWith(t, refusing, &stepScripted{}, builtin.Options{}, 1)
+	if tk := e.task(t); tk.Status.Phase != v1alpha1.PhaseFailed || !strings.Contains(last(e.thread(t)).Body, "refused step 0's entry") {
+		t.Fatalf("phase %s, thread %+v", tk.Status.Phase, e.thread(t))
+	}
+}
+
+// A transcript read short of the step (a store replica behind) gives the
+// step back instead of reading past its end.
+func TestAShortTranscriptGivesTheStepBack(t *testing.T) {
+	e := startIn(t, 2*time.Second, v1alpha1.RunModeStep)
+	p := &stepScripted{steps: []step{say("Done.")}}
+	e.steps(t, p, builtin.Options{}, 1) // start
+	short := client.New(e.url, &http.Client{Transport: answering{runner.PathStepTranscript, http.StatusOK, `{"entries":[]}`}})
+	e.stepsWith(t, short, p, builtin.Options{}, 1)
+	if r := e.task(t).Status.Run; r == nil || !r.StepFree || r.Step != 1 || r.Attempt != 1 || p.modelCalls() != 0 {
+		t.Fatalf("run %+v, %d model calls; want step 1 given back unmade", r, p.modelCalls())
 	}
 }

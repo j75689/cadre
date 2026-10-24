@@ -3,6 +3,7 @@
 package anthropic_test
 
 import (
+	"bytes"
 	"context"
 	"io"
 	"log/slog"
@@ -185,6 +186,37 @@ func (c *messages) count() int {
 	return c.n
 }
 
+// dying is a worker's connection to cadre-server that goes dead once the
+// worker has written a turn's entry: the step is neither committed nor
+// given back, as when the worker dies there.
+type dying struct {
+	next        http.RoundTripper
+	mu          sync.Mutex
+	armed, died bool
+}
+
+func (d *dying) RoundTrip(r *http.Request) (*http.Response, error) {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	switch {
+	case r.URL.Path == runner.PathStepAppend && r.Body != nil:
+		body, _ := io.ReadAll(r.Body)
+		r.Body = io.NopCloser(bytes.NewReader(body))
+		d.armed = d.armed || bytes.Contains(body, []byte(`"kind":"llm_turn"`))
+	case d.armed && (r.URL.Path == runner.PathStepAdvance || r.URL.Path == runner.PathStepRelease):
+		d.died = true
+		return &http.Response{StatusCode: http.StatusConflict, Header: http.Header{"Content-Type": {"application/json"}},
+			Body: io.NopCloser(strings.NewReader(`{"error":{"code":"attempt_mismatch","message":"gone"}}`)), Request: r}, nil
+	}
+	return d.next.RoundTrip(r)
+}
+
+func (d *dying) gone() bool {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	return d.died
+}
+
 // TestSmokeStepMode runs a step-mode run against the real Anthropic API,
 // each step on the next of two workers, one of which dies after writing a
 // turn's entry: the other commits that entry without calling the model
@@ -209,19 +241,13 @@ func TestSmokeStepMode(t *testing.T) {
 	api := &messages{}
 	hc, _ := cadreclient.RunnerHTTP(tokenFile)
 	c := cadreclient.New(url, hc)
-	died := false
+	// The worker of the first turn dies once its entry is written.
+	d := &dying{next: hc.Transport}
+	dead := cadreclient.New(url, &http.Client{Transport: d})
 	o := builtin.Options{
 		Once: true, Poll: 10 * time.Millisecond, Secrets: envSecret(apiKey), Log: log, MaxTurns: 6,
 		Providers: map[v1alpha1.ProviderType]builtin.Provider{
 			v1alpha1.ProviderAnthropic: &anthropic.Provider{Log: log, Endpoint: "https://api.anthropic.com", HTTPClient: &http.Client{Transport: api}},
-		},
-		// The worker of the first turn dies once its entry is written.
-		StepDone: func(_ int64, kind string) bool {
-			if kind == string(manager.StepLLMTurn) && !died {
-				died = true
-				return false
-			}
-			return true
 		},
 	}
 	workers := map[string]bool{}
@@ -233,7 +259,7 @@ func TestSmokeStepMode(t *testing.T) {
 		if i > 0 && tk.Status.Phase != v1alpha1.PhaseRunning {
 			break
 		}
-		if r := tk.Status.Run; r != nil && !r.StepFree && died {
+		if r := tk.Status.Run; r != nil && !r.StepFree && d.gone() {
 			// The dead worker's step: wait out its lease and grace.
 			time.Sleep(4500 * time.Millisecond)
 			if err := m.ReclaimExpired(ctx); err != nil {
@@ -243,7 +269,11 @@ func TestSmokeStepMode(t *testing.T) {
 		o.Runner = []string{"smoke-a", "smoke-b"}[i%2]
 		workers[o.Runner] = true
 		stepCtx, cancel := context.WithTimeout(ctx, 3*time.Minute)
-		err = builtin.RunSteps(stepCtx, c, o)
+		worker := c
+		if !d.gone() {
+			worker = dead
+		}
+		err = builtin.RunSteps(stepCtx, worker, o)
 		cancel()
 		if err != nil {
 			t.Fatal(err)
@@ -258,8 +288,8 @@ func TestSmokeStepMode(t *testing.T) {
 	for _, e := range thread {
 		t.Logf("thread %d %s %s: %s", e.Seq, e.Kind, e.Author.Name, e.Body)
 	}
-	if tk.Status.Phase != v1alpha1.PhaseReview || !died || len(workers) != 2 {
-		t.Fatalf("phase %s, died %v, workers %v; want Review after a death, on two workers", tk.Status.Phase, died, workers)
+	if tk.Status.Phase != v1alpha1.PhaseReview || !d.gone() || len(workers) != 2 {
+		t.Fatalf("phase %s, died %v, workers %v; want Review after a death, on two workers", tk.Status.Phase, d.gone(), workers)
 	}
 	entries, err := m.Transcript(ctx, key, tk.Status.Runs.LastID)
 	if err != nil {

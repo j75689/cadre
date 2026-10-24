@@ -59,10 +59,6 @@ type Options struct {
 
 	// StepTimeout bounds one step in step mode; default 10 minutes.
 	StepTimeout time.Duration
-	// StepDone, if set, is called in step mode after a step's entry is
-	// appended, before the step is committed; returning false stops the
-	// worker there, as if it died. It is for tests.
-	StepDone func(step int64, kind string) bool
 }
 
 // Defaults.
@@ -402,8 +398,10 @@ func (r *run) failed(ctx context.Context, what string, err error) ending {
 
 // retry retries f with backoff, for at most RetryFor, unless its error is
 // Permanent or the run is over.
-func (r *run) retry(ctx context.Context, f func() error) error {
-	deadline := time.Now().Add(r.o.RetryFor)
+func (r *run) retry(ctx context.Context, f func() error) error { return retryFor(ctx, r.o, f) }
+
+func retryFor(ctx context.Context, o Options, f func() error) error {
+	deadline := time.Now().Add(o.RetryFor)
 	wait := time.Second
 	for {
 		err := f()
@@ -421,6 +419,13 @@ func (r *run) retry(ctx context.Context, f func() error) error {
 
 // event reports one model response. It is best effort.
 func (r *run) event(ctx context.Context, reply *Reply, turn int) {
+	r.seq++
+	report(ctx, r.c, r.o, r.ref, r.claim.RunID, r.seq, reply, turn)
+}
+
+// report reports one model response as event seq of the run. It is best
+// effort.
+func report(ctx context.Context, c *client.Client, o Options, task runner.TaskRef, runID string, seq int64, reply *Reply, turn int) {
 	names := make([]string, 0, len(reply.Calls))
 	for _, c := range reply.Calls {
 		names = append(names, c.Name)
@@ -429,12 +434,11 @@ func (r *run) event(ctx context.Context, reply *Reply, turn int) {
 	if len(names) > 0 {
 		progress = fmt.Sprintf("turn %d: %s", turn, strings.Join(names, ", "))
 	}
-	r.seq++
-	err := r.c.Event(ctx, runner.EventsRequest{
-		Task: r.ref, RunID: r.claim.RunID, Seq: r.seq, Usage: reply.Usage, ContextTokens: reply.ContextTokens, Progress: progress,
+	err := c.Event(ctx, runner.EventsRequest{
+		Task: task, RunID: runID, Seq: seq, Usage: reply.Usage, ContextTokens: reply.ContextTokens, Progress: progress,
 	})
 	if err != nil && ctx.Err() == nil {
-		r.o.Log.Warn("report progress", "err", err)
+		o.Log.Warn("report progress", "err", err)
 	}
 }
 
@@ -483,6 +487,13 @@ func lostTask(err error) bool {
 		client.IsCode(err, httpjson.CodeForbidden) || client.IsCode(err, httpjson.CodeUnauthenticated)
 }
 
+// refused reports whether err is the server refusing a request, which
+// sending it again does not change.
+func refused(err error) bool {
+	var cerr *client.Error
+	return errors.As(err, &cerr) && cerr.Status < 500
+}
+
 // retryShort retries f a few times over a few seconds, for the writes that
 // end a run.
 func retryShort(ctx context.Context, f func() error) error {
@@ -503,12 +514,15 @@ func retryShort(ctx context.Context, f func() error) error {
 // finish retries transient failures; a retry of a finish that landed is
 // answered AlreadyFinished, so retrying is safe.
 func (r *run) finish(ctx context.Context, req runner.FinishRequest) (*runner.FinishResponse, error) {
+	return finishRun(ctx, r.c, req)
+}
+
+func finishRun(ctx context.Context, c *client.Client, req runner.FinishRequest) (*runner.FinishResponse, error) {
 	var err error
 	for attempt := range 8 {
 		var fin *runner.FinishResponse
-		fin, err = r.c.Finish(ctx, req)
-		var cerr *client.Error
-		if err == nil || (errors.As(err, &cerr) && cerr.Status < 500) {
+		fin, err = c.Finish(ctx, req)
+		if err == nil || refused(err) {
 			return fin, err
 		}
 		select {
