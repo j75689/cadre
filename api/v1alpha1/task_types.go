@@ -175,10 +175,24 @@ type Run struct {
 	// +optional
 	StepItems []StepItem `json:"stepItems,omitempty"`
 
+	// StepFree is true, in step mode, while the current step waits for a
+	// worker: Runner and RunnerName are then empty. It is the only sign of
+	// a free step, as a run claimed without authentication has no Runner
+	// either.
+	// +optional
+	StepFree bool `json:"stepFree,omitempty"`
+
+	// LastRunner and LastRunnerName are the worker that held the last
+	// step taken, in step mode, kept while the step is free so a run that
+	// fails then records who ran it last.
+	// +optional
+	LastRunner string `json:"lastRunner,omitempty"`
+	// +optional
+	LastRunnerName string `json:"lastRunnerName,omitempty"`
+
 	// LeaseUntil is when the run may be reclaimed unless it is renewed. In
-	// step mode it is the current step's lease; a free step (no Runner)
-	// keeps the time it was freed, as the field is required, and a free
-	// step is told by its empty Runner, never by this time.
+	// step mode it is the held step's lease; for a free step it is the idle
+	// deadline, by which a worker must take the step or the run fails.
 	LeaseUntil metav1.Time `json:"leaseUntil"`
 
 	// MCPTokenHash is the hex SHA-256 of the run's per-run MCP token. The
@@ -299,6 +313,12 @@ type RunRecord struct {
 	// +kubebuilder:validation:Minimum=0
 	// +optional
 	Step int64 `json:"step,omitempty"`
+
+	// Attempt is how many workers took the step the run had reached, in
+	// step mode.
+	// +kubebuilder:validation:Minimum=0
+	// +optional
+	Attempt int32 `json:"attempt,omitempty"`
 
 	// Reason is why the run ended.
 	Reason RunEndReason `json:"reason"`

@@ -22,6 +22,9 @@ const (
 	CodeAlreadyExists     = "already_exists"     // 409: the object exists already
 	CodeRunMismatch       = "run_mismatch"       // 409: the run lost its task; stop
 	CodeStepMismatch      = "step_mismatch"      // 409: step mode; drop this result
+	CodeAttemptMismatch   = "attempt_mismatch"   // 409: step mode; the attempt is over, stop
+	CodeStepTaken         = "step_taken"         // 409: step mode; another worker holds the step
+	CodeStepExhausted     = "step_exhausted"     // 409: step mode; no worker may take the step again
 	CodeInvalidTransition = "invalid_transition" // 409: not allowed from the task's phase
 	CodeInProgress        = "in_progress"        // 409: being done by another request
 	CodeEntryPending      = "entry_pending"      // 409: the entry waited on is not in the thread yet
@@ -88,6 +91,12 @@ func Classify(err error) string {
 		return CodeRunMismatch
 	case errors.Is(err, task.ErrStepMismatch):
 		return CodeStepMismatch
+	case errors.Is(err, task.ErrAttemptMismatch):
+		return CodeAttemptMismatch
+	case errors.Is(err, task.ErrStepTaken):
+		return CodeStepTaken
+	case errors.Is(err, task.ErrStepExhausted):
+		return CodeStepExhausted
 	case errors.Is(err, task.ErrInvalidTransition):
 		return CodeInvalidTransition
 	case errors.Is(err, manager.ErrInProgress):
@@ -117,6 +126,12 @@ func Fail(w http.ResponseWriter, log *slog.Logger, err error) {
 		WriteError(w, http.StatusConflict, code, task.ErrRunMismatch.Error())
 	case CodeStepMismatch:
 		WriteError(w, http.StatusConflict, code, task.ErrStepMismatch.Error())
+	case CodeAttemptMismatch:
+		WriteError(w, http.StatusConflict, code, task.ErrAttemptMismatch.Error())
+	case CodeStepTaken:
+		WriteError(w, http.StatusConflict, code, task.ErrStepTaken.Error())
+	case CodeStepExhausted:
+		WriteError(w, http.StatusConflict, code, task.ErrStepExhausted.Error())
 	case CodeInvalidTransition:
 		WriteError(w, http.StatusConflict, code, task.ErrInvalidTransition.Error())
 	case CodeInvalid:

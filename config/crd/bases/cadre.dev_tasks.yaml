@@ -239,6 +239,13 @@ spec:
                     run:
                       description: Run is the ended run to record, for kind RunEnded.
                       properties:
+                        attempt:
+                          description: |-
+                            Attempt is how many workers took the step the run had reached, in
+                            step mode.
+                          format: int32
+                          minimum: 0
+                          type: integer
                         endedAt:
                           description: EndedAt is when the run ended.
                           format: date-time
@@ -432,12 +439,19 @@ spec:
                       to it.
                     pattern: ^[0-9A-HJKMNP-TV-Z]{26}$
                     type: string
+                  lastRunner:
+                    description: |-
+                      LastRunner and LastRunnerName are the worker that held the last
+                      step taken, in step mode, kept while the step is free so a run that
+                      fails then records who ran it last.
+                    type: string
+                  lastRunnerName:
+                    type: string
                   leaseUntil:
                     description: |-
                       LeaseUntil is when the run may be reclaimed unless it is renewed. In
-                      step mode it is the current step's lease; a free step (no Runner)
-                      keeps the time it was freed, as the field is required, and a free
-                      step is told by its empty Runner, never by this time.
+                      step mode it is the held step's lease; for a free step it is the idle
+                      deadline, by which a worker must take the step or the run fails.
                     format: date-time
                     type: string
                   mcpTokenHash:
@@ -470,6 +484,13 @@ spec:
                     format: int64
                     minimum: 0
                     type: integer
+                  stepFree:
+                    description: |-
+                      StepFree is true, in step mode, while the current step waits for a
+                      worker: Runner and RunnerName are then empty. It is the only sign of
+                      a free step, as a run claimed without authentication has no Runner
+                      either.
+                    type: boolean
                   stepItems:
                     description: |-
                       StepItems are the outbox items the current step recorded, in step

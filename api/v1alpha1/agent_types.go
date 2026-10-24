@@ -68,9 +68,15 @@ type AgentRuntime struct {
 	Execution RunMode `json:"execution,omitempty"`
 }
 
+// Builtin reports whether the agent runs Cadre's own loop; an empty type
+// is the default, builtin.
+func (r AgentRuntime) Builtin() bool {
+	return r.Type == RuntimeBuiltin || r.Type == ""
+}
+
 // StepMode reports whether the agent's runs are driven a step at a time.
 func (r AgentRuntime) StepMode() bool {
-	return r.Type == RuntimeBuiltin && r.Execution == RunModeStep
+	return r.Builtin() && r.Execution == RunModeStep
 }
 
 // AgentSpec is an agent: what it is told, which model it uses and which

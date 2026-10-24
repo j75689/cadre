@@ -83,7 +83,8 @@ status:
     runner: system:serviceaccount:cadre-system:cadre-runner   # who holds the run: the runner's authenticated identity
     runnerName: cadre-runner-7f3a   # the name it gave itself, for display
     step: 7                   # advances in step mode only
-    attempt: 1                # step mode: workers that took the current step
+    attempt: 1                # step mode: workers that took the current step; fences the worker's events
+    stepFree: false           # step mode: the step waits for a worker
     stepItems: [{ id: 01JB..., after: 41 }]   # step mode: outbox items the current step recorded
     leaseUntil: ...
   outbox:                     # written with the state change; applied idempotently, then cleared
@@ -112,7 +113,8 @@ status:
 | `status.run.mode` | `runtime` or `step` |
 | `status.run.runner` | who holds the run: the runner's authenticated identity (`system:serviceaccount:<ns>:<name>` for an in-cluster runner); only requests from it may renew or finish the run. It is empty for a run claimed with `--runner-auth=none`, and such a run is not fenced on its sender |
 | `status.run.runnerName` | the name the runner gave itself, for display |
-| `status.run.attempt` | step mode: how many workers took the current step, reset when it is committed; the run fails when the third one dies |
+| `status.run.attempt` | step mode: how many workers took the current step, reset when it is committed. A worker's heartbeats, records, commits, releases and finish carry the attempt it was given and are refused (`attempt_mismatch`) once the step was freed or taken again. The run fails when the third one dies or gives up |
+| `status.run.stepFree` | step mode: the step waits for a worker; `runner` and `runnerName` are empty, `lastRunner` and `lastRunnerName` keep the last worker, and `leaseUntil` is the idle deadline (1 hour by default), past which the run fails |
 | `status.run.stepItems` | step mode: the outbox items the current step recorded, and where their entries are looked for; a step done again records each once. Cleared when the step is committed |
 | `status.outbox[].kind` | `CreateSubtask`, whose `spec` is the subtask's `TaskSpec`; `RunEnded`, whose `run` is the ended run (id, mode, runner, step, reason `Finished`, `Interrupted` or `Cancelled`, outcome, end time); `Notify` is added once its payload is defined |
 
