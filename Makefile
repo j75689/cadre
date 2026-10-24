@@ -9,12 +9,16 @@ CONTROLLER_GEN_VERSION := v0.23.0
 GOLANGCI_LINT_VERSION  := v2.15.0
 ENVTEST_VERSION        := v0.25.2
 ENVTEST_K8S_VERSION    := 1.37.0
+HELM_VERSION           := v4.3.1
+KUBECONFORM_VERSION    := v0.8.0
 
 # Tool binaries carry their version, so bumping a version installs a new binary
 # instead of silently reusing a stale one.
 CONTROLLER_GEN := $(TOOLS)/controller-gen-$(CONTROLLER_GEN_VERSION)
 GOLANGCI_LINT  := $(TOOLS)/golangci-lint-$(GOLANGCI_LINT_VERSION)
 ENVTEST        := $(TOOLS)/setup-envtest-$(ENVTEST_VERSION)
+HELM           := $(TOOLS)/helm-$(HELM_VERSION)
+KUBECONFORM    := $(TOOLS)/kubeconform-$(KUBECONFORM_VERSION)
 
 # go-install installs package $(2) at version $(3) as the binary $(1).
 define go-install
@@ -23,7 +27,7 @@ define go-install
 	mkdir -p $(TOOLS); mv $$tmp/$$(basename $(2)) $(1); rm -rf $$tmp
 endef
 
-.PHONY: all build test smoke chaos fmt vet lint check tidy clean generate manifests verify-generated verify-tidy tools image images ui ui-check
+.PHONY: all build test smoke chaos fmt vet lint check tidy clean generate manifests verify-generated verify-tidy tools image images ui ui-check chart-files chart-lint
 
 all: build
 
@@ -74,12 +78,33 @@ lint: $(GOLANGCI_LINT) ## Run golangci-lint
 generate: $(CONTROLLER_GEN) ## Generate deepcopy code for the API types
 	$(CONTROLLER_GEN) object:headerFile=hack/boilerplate.go.txt paths=./api/...
 
-manifests: $(CONTROLLER_GEN) ## Generate CRD manifests into config/crd/bases and cadre-server's RBAC into config/rbac
+manifests: $(CONTROLLER_GEN) ## Generate CRD manifests into config/crd/bases and cadre-server's RBAC into config/rbac, and copy them into the chart
 	$(CONTROLLER_GEN) crd paths=./api/... output:crd:artifacts:config=config/crd/bases
 	$(CONTROLLER_GEN) rbac:roleName=cadre-server paths=./internal/... output:rbac:artifacts:config=config/rbac
+	@$(MAKE) --no-print-directory chart-files
+
+# The chart carries the CRDs and the RBAC rules as they are generated: the
+# chart's templates read the rules from files/, so they cannot drift.
+chart-files: ## Copy the CRDs and RBAC into charts/cadre
+	@rm -f charts/cadre/crds/*.yaml && cp config/crd/bases/*.yaml charts/cadre/crds/
+	@cp config/rbac/role.yaml charts/cadre/files/server-role.yaml
+	@cp config/rbac/workloads.yaml charts/cadre/files/server-workloads.yaml
+	@cp config/runner/rbac.yaml charts/cadre/files/runner-role.yaml
+
+# chart-lint lints the chart and validates what it renders, CRDs included,
+# against Kubernetes' schemas, for each values file under ci/.
+# The CRDs are left out of kubeconform, which has no schema for them; envtest
+# loads them in every test run.
+chart-lint: $(HELM) $(KUBECONFORM) ## Lint the Helm chart and validate its output
+	@set -e; for f in charts/cadre/ci/*.yaml; do \
+		echo "chart: $$f"; \
+		$(HELM) lint --strict charts/cadre -f $$f; \
+		$(HELM) template cadre charts/cadre -n cadre-system -f $$f | \
+			$(KUBECONFORM) -strict -summary -kubernetes-version $(ENVTEST_K8S_VERSION) -; \
+	done
 
 verify-generated: generate manifests ## Fail if generated files are out of date
-	@test -z "$$(git status --porcelain -- api/*/zz_generated.deepcopy.go config/crd config/rbac)" || { git status --short -- api/*/zz_generated.deepcopy.go config/crd config/rbac; echo "generated files are stale: run make generate manifests and commit"; exit 1; }
+	@test -z "$$(git status --porcelain -- api/*/zz_generated.deepcopy.go config/crd config/rbac charts/cadre/crds charts/cadre/files)" || { git status --short -- api/*/zz_generated.deepcopy.go config/crd config/rbac charts/cadre/crds charts/cadre/files; echo "generated files are stale: run make generate manifests and commit"; exit 1; }
 
 tidy:
 	go mod tidy
@@ -87,9 +112,9 @@ tidy:
 verify-tidy: ## Fail if go.mod or go.sum is not tidy
 	go mod tidy && git diff --exit-code go.mod go.sum
 
-check: verify-tidy fmt vet lint verify-generated ui-check test ## Everything CI runs
+check: verify-tidy fmt vet lint verify-generated chart-lint ui-check test ## Everything CI runs
 
-tools: $(CONTROLLER_GEN) $(GOLANGCI_LINT) $(ENVTEST) ## Install pinned tools into bin/tools
+tools: $(CONTROLLER_GEN) $(GOLANGCI_LINT) $(ENVTEST) $(HELM) $(KUBECONFORM) ## Install pinned tools into bin/tools
 
 $(CONTROLLER_GEN):
 	$(call go-install,$@,sigs.k8s.io/controller-tools/cmd/controller-gen,$(CONTROLLER_GEN_VERSION))
@@ -99,6 +124,12 @@ $(GOLANGCI_LINT):
 
 $(ENVTEST):
 	$(call go-install,$@,sigs.k8s.io/controller-runtime/tools/setup-envtest,$(ENVTEST_VERSION))
+
+$(HELM):
+	$(call go-install,$@,helm.sh/helm/v4/cmd/helm,$(HELM_VERSION))
+
+$(KUBECONFORM):
+	$(call go-install,$@,github.com/yannh/kubeconform/cmd/kubeconform,$(KUBECONFORM_VERSION))
 
 clean:
 	rm -rf $(BIN)

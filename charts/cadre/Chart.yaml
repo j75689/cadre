@@ -1,0 +1,11 @@
+apiVersion: v2
+name: cadre
+description: Cadre, a crew of AI agents on a Kubernetes-native task board
+type: application
+# version is the chart's own; a release sets both from its tag.
+version: 0.0.0-main
+# appVersion is the image tag the chart runs by default (image.tag).
+appVersion: main
+home: https://github.com/j75689/cadre
+sources:
+  - https://github.com/j75689/cadre

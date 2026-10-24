@@ -1,0 +1,102 @@
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: cadre-server
+rules:
+- apiGroups:
+  - ""
+  resources:
+  - secrets
+  verbs:
+  - create
+  - delete
+  - get
+- apiGroups:
+  - apps
+  resources:
+  - deployments
+  verbs:
+  - get
+  - list
+  - watch
+- apiGroups:
+  - authentication.k8s.io
+  resources:
+  - tokenreviews
+  verbs:
+  - create
+- apiGroups:
+  - batch
+  resources:
+  - jobs
+  verbs:
+  - get
+  - list
+  - watch
+- apiGroups:
+  - cadre.dev
+  resources:
+  - agents
+  - modelproviders
+  - notifiers
+  - runners
+  - schedules
+  - toolservers
+  verbs:
+  - get
+  - list
+  - watch
+- apiGroups:
+  - cadre.dev
+  resources:
+  - agents/status
+  - modelproviders/status
+  - runners/status
+  - schedules/status
+  - tasks/status
+  - teams/status
+  - toolservers/status
+  verbs:
+  - get
+  - update
+- apiGroups:
+  - cadre.dev
+  resources:
+  - notifiers/status
+  verbs:
+  - get
+  - patch
+  - update
+- apiGroups:
+  - cadre.dev
+  resources:
+  - runners/finalizers
+  - toolservers/finalizers
+  verbs:
+  - update
+- apiGroups:
+  - cadre.dev
+  resources:
+  - tasks
+  - teams
+  verbs:
+  - create
+  - get
+  - list
+  - watch
+- apiGroups:
+  - coordination.k8s.io
+  resources:
+  - leases
+  verbs:
+  - create
+  - get
+  - update
+- apiGroups:
+  - events.k8s.io
+  resources:
+  - events
+  verbs:
+  - create
+  - patch

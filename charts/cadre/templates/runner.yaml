@@ -1,0 +1,113 @@
+{{- if .Values.runner.enabled }}
+{{- with .Values.runner }}
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: {{ include "cadre.runner" $ }}
+  labels:
+    {{- include "cadre.labels" $ | nindent 4 }}
+---
+# Reading each run's model credential: config/runner/rbac.yaml. It grants
+# nothing until bound in a Team namespace, as the chart's README shows.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: {{ include "cadre.runner" $ }}
+  labels:
+    {{- include "cadre.labels" $ | nindent 4 }}
+rules:
+  {{- include "cadre.rules" (dict "root" $ "file" "files/runner-role.yaml") | nindent 2 }}
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "cadre.runner" $ }}
+  labels:
+    {{- include "cadre.labels" $ | nindent 4 }}
+    app.kubernetes.io/name: cadre-runner
+spec:
+  replicas: {{ .replicas }}
+  selector:
+    matchLabels:
+      app.kubernetes.io/instance: {{ $.Release.Name }}
+      app.kubernetes.io/name: cadre-runner
+  template:
+    metadata:
+      labels:
+        {{- include "cadre.labels" $ | nindent 8 }}
+        app.kubernetes.io/name: cadre-runner
+      {{- with .podAnnotations }}
+      annotations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+    spec:
+      serviceAccountName: {{ include "cadre.runner" $ }}
+      {{- with $.Values.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      securityContext:
+        runAsNonRoot: true
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: cadre-runner
+          image: {{ include "cadre.image" (dict "root" $ "name" "cadre-runner") }}
+          imagePullPolicy: {{ $.Values.image.pullPolicy }}
+          args:
+            - --server=http://{{ include "cadre.server" $ }}.{{ $.Release.Namespace }}.svc:{{ $.Values.server.service.port }}
+            # Every replica its own name, shown in status.run.runner.
+            - --runner=$(POD_NAME)
+            - --mode={{ .mode }}
+            - --parallel={{ .parallel }}
+            {{- with .namespaces }}
+            - --namespaces={{ join "," . }}
+            {{- end }}
+            {{- with .maxTurns }}
+            - --max-turns={{ . }}
+            {{- end }}
+            {{- with .stepTimeout }}
+            - --step-timeout={{ . }}
+            {{- end }}
+          env:
+            - name: POD_NAME
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.name
+          # The token cadre-runner authenticates with, for the audience
+          # cadre only, read before every request as the kubelet rotates it.
+          volumeMounts:
+            - name: cadre-token
+              mountPath: /var/run/secrets/cadre
+              readOnly: true
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
+          {{- with .resources }}
+          resources:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+      volumes:
+        - name: cadre-token
+          projected:
+            sources:
+              - serviceAccountToken:
+                  audience: cadre
+                  expirationSeconds: 600
+                  path: token
+      {{- with .nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .affinity }}
+      affinity:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+{{- end }}
+{{- end }}

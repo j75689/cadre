@@ -1,0 +1,653 @@
+---
+apiVersion: apiextensions.k8s.io/v1
+kind: CustomResourceDefinition
+metadata:
+  annotations:
+    controller-gen.kubebuilder.io/version: v0.23.0
+  name: tasks.cadre.dev
+spec:
+  group: cadre.dev
+  names:
+    kind: Task
+    listKind: TaskList
+    plural: tasks
+    singular: task
+  scope: Namespaced
+  versions:
+  - additionalPrinterColumns:
+    - jsonPath: .status.number
+      name: Number
+      type: integer
+    - jsonPath: .status.phase
+      name: Phase
+      type: string
+    - jsonPath: .spec.assignee.name
+      name: Assignee
+      type: string
+    - jsonPath: .metadata.creationTimestamp
+      name: Age
+      type: date
+    name: v1alpha1
+    schema:
+      openAPIV3Schema:
+        description: Task is a work item on the board.
+        properties:
+          apiVersion:
+            description: |-
+              APIVersion defines the versioned schema of this representation of an object.
+              Servers should convert recognized schemas to the latest internal value, and
+              may reject unrecognized values.
+              More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#resources
+            type: string
+          kind:
+            description: |-
+              Kind is a string value representing the REST resource this object represents.
+              Servers may infer this from the endpoint the client submits requests to.
+              Cannot be updated.
+              In CamelCase.
+              More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#types-kinds
+            type: string
+          metadata:
+            type: object
+          spec:
+            description: |-
+              TaskSpec is the human intent of a task. Humans and GitOps write it; the
+              Task Manager never does.
+            properties:
+              assignee:
+                description: Assignee is who works on the task. An unassigned task
+                  is never claimed.
+                properties:
+                  kind:
+                    description: Kind is Agent or User.
+                    enum:
+                    - Agent
+                    - User
+                    type: string
+                  name:
+                    description: Name is the Agent's name in the task's namespace,
+                      or the user's name.
+                    minLength: 1
+                    type: string
+                required:
+                - kind
+                - name
+                type: object
+              description:
+                description: Description is the full statement of the work.
+                type: string
+              labels:
+                description: Labels are free-form tags for filtering the board.
+                items:
+                  type: string
+                type: array
+                x-kubernetes-list-type: set
+              parentRef:
+                description: ParentRef makes this task a subtask of another task.
+                properties:
+                  name:
+                    description: Name is the referenced Task's metadata.name.
+                    minLength: 1
+                    type: string
+                required:
+                - name
+                type: object
+              priority:
+                default: medium
+                description: Priority orders the task on the board.
+                enum:
+                - low
+                - medium
+                - high
+                - urgent
+                type: string
+              title:
+                description: Title is the one-line summary shown on the board.
+                minLength: 1
+                type: string
+            required:
+            - title
+            type: object
+          status:
+            description: |-
+              TaskStatus is the control state of a task. Only the Task Manager writes it,
+              through the status subresource. It holds control state and pointers only.
+            properties:
+              conditions:
+                description: Conditions are the standard Kubernetes conditions.
+                items:
+                  description: Condition contains details for one aspect of the current
+                    state of this API Resource.
+                  properties:
+                    lastTransitionTime:
+                      description: |-
+                        lastTransitionTime is the last time the condition transitioned from one status to another.
+                        This should be when the underlying condition changed.  If that is not known, then using the time when the API field changed is acceptable.
+                      format: date-time
+                      type: string
+                    message:
+                      description: |-
+                        message is a human readable message indicating details about the transition.
+                        This may be an empty string.
+                      maxLength: 32768
+                      type: string
+                    observedGeneration:
+                      description: |-
+                        observedGeneration represents the .metadata.generation that the condition was set based upon.
+                        For instance, if .metadata.generation is currently 12, but the .status.conditions[x].observedGeneration is 9, the condition is out of date
+                        with respect to the current state of the instance.
+                      format: int64
+                      minimum: 0
+                      type: integer
+                    reason:
+                      description: |-
+                        reason contains a programmatic identifier indicating the reason for the condition's last transition.
+                        Producers of specific condition types may define expected values and meanings for this field,
+                        and whether the values are considered a guaranteed API.
+                        The value should be a CamelCase string.
+                        This field may not be empty.
+                      maxLength: 1024
+                      minLength: 1
+                      pattern: ^[A-Za-z]([A-Za-z0-9_,:]*[A-Za-z0-9_])?$
+                      type: string
+                    status:
+                      description: status of the condition, one of True, False, Unknown.
+                      enum:
+                      - "True"
+                      - "False"
+                      - Unknown
+                      type: string
+                    type:
+                      description: type of condition in CamelCase or in foo.example.com/CamelCase.
+                      maxLength: 316
+                      pattern: ^([a-z0-9]([-a-z0-9]*[a-z0-9])?(\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)*/)?(([A-Za-z0-9][-A-Za-z0-9_.]*)?[A-Za-z0-9])$
+                      type: string
+                  required:
+                  - lastTransitionTime
+                  - message
+                  - reason
+                  - status
+                  - type
+                  type: object
+                type: array
+                x-kubernetes-list-map-keys:
+                - type
+                x-kubernetes-list-type: map
+              number:
+                description: Number is the human-facing number, claimed from the Team's
+                  counter.
+                format: int64
+                type: integer
+              outbox:
+                description: Outbox holds side effects not yet applied.
+                items:
+                  description: |-
+                    OutboxItem is a side effect written in the same conditional write as the
+                    state change that caused it. The dispatcher applies it idempotently and then
+                    clears it with another conditional write.
+                  properties:
+                    file:
+                      description: File is the version to write, for kind WriteFile.
+                      properties:
+                        after:
+                          description: |-
+                            After is the file's latest version when the item was committed: the
+                            version, if an earlier apply wrote it, is after it.
+                          format: int64
+                          minimum: 0
+                          type: integer
+                        blob:
+                          description: Blob is the key of the content in the task's
+                            blob stream.
+                          minLength: 1
+                          type: string
+                        path:
+                          description: Path is the file's path.
+                          minLength: 1
+                          type: string
+                        size:
+                          description: Size is the content's size in bytes.
+                          format: int64
+                          minimum: 0
+                          type: integer
+                      required:
+                      - blob
+                      - path
+                      - size
+                      type: object
+                    id:
+                      description: |-
+                        ID is a ULID and the item's idempotency key.
+
+                        For CreateSubtask it is minted when the item is written, and the
+                        subtask's metadata.name is derived from it deterministically (the
+                        lowercase ULID, a valid DNS-1123 label), so re-applying the item is a
+                        create that already exists and leaves no trace.
+
+                        For RunEnded it is the ended run's id: a run ends once, and the
+                        dispatcher appends the record to the run history keyed on it.
+                      pattern: ^[0-9A-HJKMNP-TV-Z]{26}$
+                      type: string
+                    kind:
+                      description: Kind is the side effect asked for.
+                      enum:
+                      - CreateSubtask
+                      - RunEnded
+                      - AppendThread
+                      - WriteFile
+                      - Notify
+                      type: string
+                    notify:
+                      description: Notify is the notification, for kind Notify.
+                      properties:
+                        at:
+                          description: At is when it happened.
+                          format: date-time
+                          type: string
+                        delivered:
+                          description: |-
+                            Delivered names the Notifiers that took it, so a pass that finds
+                            one still failing does not send it to the others again.
+                          items:
+                            type: string
+                          type: array
+                          x-kubernetes-list-type: set
+                        event:
+                          description: Event is what happened.
+                          enum:
+                          - Question
+                          - ToolApproval
+                          - Review
+                          - Done
+                          - Failed
+                          - Cancelled
+                          type: string
+                        sendingBy:
+                          description: |-
+                            SendingBy and SendingUntil are the server sending it now, and until
+                            when it may: no other server sends it meanwhile.
+                          type: string
+                        sendingUntil:
+                          format: date-time
+                          type: string
+                        threadSeq:
+                          description: ThreadSeq is the thread entry the task waits
+                            on, if known yet.
+                          format: int64
+                          type: integer
+                        to:
+                          description: |-
+                            To names the Notifiers listening when it happened: the only ones it
+                            goes to.
+                          items:
+                            type: string
+                          type: array
+                          x-kubernetes-list-type: set
+                        waitingItem:
+                          description: |-
+                            WaitingItem is the outbox item of the entry the task waits on, when
+                            the entry was not in the thread yet: its sequence is filled in from
+                            the task's wait only while the task still waits on that item.
+                          type: string
+                      required:
+                      - at
+                      - event
+                      type: object
+                    run:
+                      description: Run is the ended run to record, for kind RunEnded.
+                      properties:
+                        attempt:
+                          description: |-
+                            Attempt is how many workers took the step the run had reached, in
+                            step mode.
+                          format: int32
+                          minimum: 0
+                          type: integer
+                        endedAt:
+                          description: EndedAt is when the run ended.
+                          format: date-time
+                          type: string
+                        id:
+                          description: ID is the run's ULID.
+                          pattern: ^[0-9A-HJKMNP-TV-Z]{26}$
+                          type: string
+                        mode:
+                          description: Mode is runtime or step.
+                          enum:
+                          - runtime
+                          - step
+                          type: string
+                        outcome:
+                          description: Outcome is set when Reason is Finished.
+                          enum:
+                          - Done
+                          - Review
+                          - Waiting
+                          - Failed
+                          type: string
+                        reason:
+                          description: Reason is why the run ended.
+                          enum:
+                          - Finished
+                          - Interrupted
+                          - Cancelled
+                          type: string
+                        runner:
+                          description: |-
+                            Runner is the runner, or the worker of the last step, that held the
+                            run: its authenticated identity, as on Run.
+                          type: string
+                        runnerName:
+                          description: RunnerName is the name the runner gave itself,
+                            for display.
+                          type: string
+                        step:
+                          description: Step is the step the run had reached.
+                          format: int64
+                          minimum: 0
+                          type: integer
+                      required:
+                      - endedAt
+                      - id
+                      - mode
+                      - reason
+                      type: object
+                    seq:
+                      description: |-
+                        Seq is where an AppendThread or WriteFile item writes, its thread
+                        sequence or file version, reserved here before it is written so
+                        every dispatcher applying the item writes the same key.
+                      format: int64
+                      minimum: 0
+                      type: integer
+                    spec:
+                      description: Spec is the subtask to create, for kind CreateSubtask.
+                      properties:
+                        assignee:
+                          description: Assignee is who works on the task. An unassigned
+                            task is never claimed.
+                          properties:
+                            kind:
+                              description: Kind is Agent or User.
+                              enum:
+                              - Agent
+                              - User
+                              type: string
+                            name:
+                              description: Name is the Agent's name in the task's
+                                namespace, or the user's name.
+                              minLength: 1
+                              type: string
+                          required:
+                          - kind
+                          - name
+                          type: object
+                        description:
+                          description: Description is the full statement of the work.
+                          type: string
+                        labels:
+                          description: Labels are free-form tags for filtering the
+                            board.
+                          items:
+                            type: string
+                          type: array
+                          x-kubernetes-list-type: set
+                        parentRef:
+                          description: ParentRef makes this task a subtask of another
+                            task.
+                          properties:
+                            name:
+                              description: Name is the referenced Task's metadata.name.
+                              minLength: 1
+                              type: string
+                          required:
+                          - name
+                          type: object
+                        priority:
+                          default: medium
+                          description: Priority orders the task on the board.
+                          enum:
+                          - low
+                          - medium
+                          - high
+                          - urgent
+                          type: string
+                        title:
+                          description: Title is the one-line summary shown on the
+                            board.
+                          minLength: 1
+                          type: string
+                      required:
+                      - title
+                      type: object
+                    thread:
+                      description: Thread is the entry to append, for kind AppendThread.
+                      properties:
+                        after:
+                          description: |-
+                            After is the thread revision when the item was committed: the entry,
+                            if an earlier apply wrote it, is after it.
+                          format: int64
+                          minimum: 0
+                          type: integer
+                        author:
+                          description: Author is the agent writing it.
+                          minLength: 1
+                          type: string
+                        blob:
+                          description: Blob is the key of the body in the task's blob
+                            stream.
+                          minLength: 1
+                          type: string
+                        kind:
+                          description: 'Kind is the entry kind: Comment, Question
+                            or ToolCall.'
+                          minLength: 1
+                          type: string
+                        runId:
+                          description: RunID is the run that wrote it.
+                          type: string
+                      required:
+                      - author
+                      - blob
+                      - kind
+                      - runId
+                      type: object
+                  required:
+                  - id
+                  - kind
+                  type: object
+                  x-kubernetes-validations:
+                  - message: a CreateSubtask item needs spec
+                    rule: self.kind != 'CreateSubtask' || has(self.spec)
+                  - message: a RunEnded item needs run
+                    rule: self.kind != 'RunEnded' || has(self.run)
+                  - message: an AppendThread item needs thread
+                    rule: self.kind != 'AppendThread' || has(self.thread)
+                  - message: a WriteFile item needs file
+                    rule: self.kind != 'WriteFile' || has(self.file)
+                  - message: a Notify item needs notify
+                    rule: self.kind != 'Notify' || has(self.notify)
+                type: array
+                x-kubernetes-list-map-keys:
+                - id
+                x-kubernetes-list-type: map
+              phase:
+                description: Phase is where the task is in its life.
+                enum:
+                - Todo
+                - Running
+                - Waiting
+                - Review
+                - Done
+                - Cancelled
+                - Failed
+                type: string
+              run:
+                description: Run is set only while the phase is Running.
+                properties:
+                  attempt:
+                    description: |-
+                      Attempt counts the workers that took the current step, in step mode:
+                      a worker that dies writes nothing, but its take is counted. It is
+                      reset when the step is committed.
+                    format: int32
+                    minimum: 0
+                    type: integer
+                  id:
+                    description: ID is the run's ULID; the per-run MCP token maps
+                      to it.
+                    pattern: ^[0-9A-HJKMNP-TV-Z]{26}$
+                    type: string
+                  lastRunner:
+                    description: |-
+                      LastRunner and LastRunnerName are the worker that held the last
+                      step taken, in step mode, kept while the step is free so a run that
+                      fails then records who ran it last.
+                    type: string
+                  lastRunnerName:
+                    type: string
+                  leaseUntil:
+                    description: |-
+                      LeaseUntil is when the run may be reclaimed unless it is renewed. In
+                      step mode it is the held step's lease; for a free step it is the idle
+                      deadline, by which a worker must take the step or the run fails.
+                    format: date-time
+                    type: string
+                  mcpTokenHash:
+                    description: |-
+                      MCPTokenHash is the hex SHA-256 of the run's per-run MCP token. The
+                      token itself is handed to the runner once, at claim, and never
+                      stored; it is bound to this run and stops working when the run ends.
+                    pattern: ^[0-9a-f]{64}$
+                    type: string
+                  mode:
+                    description: Mode is runtime or step.
+                    enum:
+                    - runtime
+                    - step
+                    type: string
+                  runner:
+                    description: |-
+                      Runner is who holds the run: the authenticated identity of the runner
+                      in runtime mode, or of the worker holding the current step in step
+                      mode. Only requests from it may renew or finish the run. It is empty
+                      for a run claimed on a server that does not authenticate runners;
+                      such a run is not fenced on its sender.
+                    type: string
+                  runnerName:
+                    description: RunnerName is the name the runner gave itself, for
+                      display.
+                    type: string
+                  step:
+                    description: Step advances in step mode only.
+                    format: int64
+                    minimum: 0
+                    type: integer
+                  stepFree:
+                    description: |-
+                      StepFree is true, in step mode, while the current step waits for a
+                      worker: Runner and RunnerName are then empty. It is the only sign of
+                      a free step, as a run claimed without authentication has no Runner
+                      either.
+                    type: boolean
+                  stepItems:
+                    description: |-
+                      StepItems are the outbox items the current step recorded, in step
+                      mode: a step done again after its worker died records the same
+                      items, which are not recorded twice, even once applied. They are
+                      cleared when the step is committed.
+                    items:
+                      description: |-
+                        StepItem is an outbox item a step recorded, and where its entry is
+                        looked for: the thread revision or file version it was recorded after.
+                      properties:
+                        after:
+                          format: int64
+                          type: integer
+                        id:
+                          type: string
+                      required:
+                      - id
+                      type: object
+                    type: array
+                    x-kubernetes-list-map-keys:
+                    - id
+                    x-kubernetes-list-type: map
+                required:
+                - id
+                - leaseUntil
+                - mode
+                type: object
+              runs:
+                description: Runs points at the task's run history.
+                properties:
+                  count:
+                    description: Count is the number of runs started so far.
+                    format: int64
+                    minimum: 0
+                    type: integer
+                  lastId:
+                    description: LastID is the ULID of the most recent run.
+                    type: string
+                  store:
+                    description: Store is the URI of the run history in object storage.
+                    type: string
+                type: object
+              thread:
+                description: Thread points at the task's thread.
+                properties:
+                  revision:
+                    description: |-
+                      Revision advances with every append, so watching the Task is enough to
+                      learn the thread changed.
+                    format: int64
+                    minimum: 0
+                    type: integer
+                  store:
+                    description: Store is the URI of the thread in object storage.
+                    type: string
+                type: object
+              waiting:
+                description: Waiting is set only while the phase is Waiting.
+                properties:
+                  itemId:
+                    description: |-
+                      ItemID is the outbox item that writes the entry asking for the
+                      human, when the run ended before it was written; ThreadSeq is set
+                      once it is.
+                    type: string
+                  reason:
+                    description: Reason is what the task waits for.
+                    enum:
+                    - Question
+                    - ToolApproval
+                    - Review
+                    type: string
+                  since:
+                    description: Since is when the task started waiting.
+                    format: date-time
+                    type: string
+                  threadSeq:
+                    description: |-
+                      ThreadSeq is the thread entry that asked for the human, if any. Thread
+                      sequences start at 1, so an unset ThreadSeq means none, or one not
+                      written yet: see ItemID.
+                    format: int64
+                    minimum: 1
+                    type: integer
+                required:
+                - reason
+                - since
+                type: object
+            type: object
+        required:
+        - spec
+        type: object
+        x-kubernetes-validations:
+        - message: a Task cannot be its own parent
+          rule: '!has(self.spec.parentRef) || self.spec.parentRef.name != self.metadata.name'
+    served: true
+    storage: true
+    subresources:
+      status: {}

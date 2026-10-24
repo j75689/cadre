@@ -1,0 +1,9 @@
+auth:
+  mode: none
+server:
+  runnerAuth: none
+storage:
+  s3:
+    bucket: cadre
+runner:
+  enabled: false
