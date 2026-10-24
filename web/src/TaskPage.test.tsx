@@ -103,4 +103,23 @@ describe("TaskPage", () => {
     await act(() => vi.advanceTimersByTimeAsync(5000));
     await vi.waitFor(() => expect(runReads()).toBe(2));
   });
+
+  it("reads the runs again when a run started and ended between reads", async () => {
+    let status: Record<string, unknown> = { phase: "Todo", runs: { count: 1 } };
+    const calls: string[] = [];
+    vi.stubGlobal("fetch", (url: string) => {
+      calls.push(url);
+      if (url.includes("/thread")) return json({ items: [] });
+      if (url.endsWith("/runs")) return json({ items: [] });
+      return json({ metadata: { name: "x", namespace: "a" }, spec: { title: "Task x" }, status });
+    });
+    renderTask();
+    await screen.findByText("Task x");
+    const runReads = () => calls.filter((c) => c.endsWith("/runs")).length;
+    await vi.waitFor(() => expect(runReads()).toBe(1));
+    // Back in Todo with no run, as before, but one more run behind it.
+    status = { phase: "Todo", runs: { count: 2 } };
+    await act(() => vi.advanceTimersByTimeAsync(5000));
+    await vi.waitFor(() => expect(runReads()).toBe(2));
+  });
 });

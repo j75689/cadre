@@ -11,7 +11,7 @@ function renderActions(t: ReturnType<typeof task>, name = "dana") {
   if (name) localStorage.setItem("cadre.identity", name);
   render(
     <IdentityProvider>
-      <Actions task={t} onTask={() => {}} onEntries={() => {}} onConflict={() => {}} />
+      <Actions task={t} onTask={() => {}} onRefresh={() => {}} />
     </IdentityProvider>,
   );
 }

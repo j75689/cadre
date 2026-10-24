@@ -1,5 +1,5 @@
 import { useState, type ReactNode } from "react";
-import { APIError, approve, cancel, comment, reply, terminalPhases, type Task, type ThreadEntry } from "./api";
+import { APIError, approve, cancel, comment, reply, terminalPhases, type Task } from "./api";
 import { useIdentity } from "./Identity";
 
 // What a task in this state lets a human do, as the API decides it: reply
@@ -20,12 +20,14 @@ export function allowed(task: Task) {
 interface Props {
   task: Task;
   onTask: (task: Task) => void;
-  onEntries: (entries: ThreadEntry[]) => void;
-  // onConflict asks for a fresh read: the task moved on.
-  onConflict: () => void;
+  // onRefresh asks for the task and the thread to be read again at once:
+  // after an action, which wrote to the thread, or a conflict, when the
+  // task moved on. The thread is only ever read in order, so what others
+  // wrote meanwhile is not skipped.
+  onRefresh: () => void;
 }
 
-export function Actions({ task, onTask, onEntries, onConflict }: Props) {
+export function Actions({ task, onTask, onRefresh }: Props) {
   const can = allowed(task);
   const { namespace: ns, name } = task.metadata;
   const author = useIdentity();
@@ -33,9 +35,10 @@ export function Actions({ task, onTask, onEntries, onConflict }: Props) {
   const run = async <T,>(call: () => Promise<T>, done: (r: T) => void): Promise<string> => {
     try {
       done(await call());
+      onRefresh();
       return "";
     } catch (e) {
-      if (e instanceof APIError && e.status === 409) onConflict();
+      if (e instanceof APIError && e.status === 409) onRefresh();
       return (e as Error).message;
     }
   };
@@ -50,20 +53,14 @@ export function Actions({ task, onTask, onEntries, onConflict }: Props) {
           onSubmit={(body) =>
             run(
               () => reply(ns, name, author, body),
-              (r) => {
-                onTask(r.task);
-                onEntries([r.entry]);
-              },
+              (r) => onTask(r.task),
             )
           }
         />
       )}
-      {can.approve && <Approval disabled={author === ""} onDecide={(ok, note) => run(() => approve(ns, name, author, ok, note), (r) => {
-        onTask(r.task);
-        onEntries(r.result ? [r.decision, r.result] : [r.decision]);
-      })} />}
+      {can.approve && <Approval disabled={author === ""} onDecide={(ok, note) => run(() => approve(ns, name, author, ok, note), (r) => onTask(r.task))} />}
       {can.comment && (
-        <TextAction label="Comment" placeholder="Add to the thread" disabled={author === ""} onSubmit={(body) => run(() => comment(ns, name, author, body), (e) => onEntries([e]))} />
+        <TextAction label="Comment" placeholder="Add to the thread" disabled={author === ""} onSubmit={(body) => run(() => comment(ns, name, author, body), () => {})} />
       )}
       {can.cancel && <Cancel disabled={author === ""} onCancel={() => run(() => cancel(ns, name), onTask)} />}
     </section>

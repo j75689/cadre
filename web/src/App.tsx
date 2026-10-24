@@ -12,7 +12,13 @@ function TeamBoard() {
   return <Board key={ns} />;
 }
 
-// Likewise a task page belongs to one task.
+// Likewise a create form belongs to one team,
+function TeamNewTask() {
+  const { ns = "" } = useParams();
+  return <NewTask key={ns} />;
+}
+
+// and a task page to one task.
 function OneTask() {
   const { ns = "", name = "" } = useParams();
   return <TaskPage key={`${ns}/${name}`} />;
@@ -40,7 +46,7 @@ export function App() {
         <Route element={<Layout />}>
           <Route index element={<Teams />} />
           <Route path="t/:ns" element={<TeamBoard />} />
-          <Route path="t/:ns/new" element={<NewTask />} />
+          <Route path="t/:ns/new" element={<TeamNewTask />} />
           <Route path="t/:ns/tasks/:name" element={<OneTask />} />
           <Route path="*" element={<main><p>Not found. <Link to="/">Teams</Link></p></main>} />
         </Route>

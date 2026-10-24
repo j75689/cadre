@@ -21,16 +21,10 @@ export function TaskPage() {
   // refresh restarts polling at once, after a conflict.
   const [refresh, setRefresh] = useState(0);
 
-  // append adds entries that follow the last one held. Entries read from
-  // the thread always do; an action's own entry may not, if others wrote in
-  // between: then the cursor stays and the thread is read again from it.
+  // append adds what a read past the last entry held returned.
   const append = (more: ThreadEntry[]) => {
     const fresh = more.filter((e) => e.seq > lastSeq.current).sort((a, b) => a.seq - b.seq);
     if (fresh.length === 0) return;
-    if (fresh[0].seq !== lastSeq.current + 1) {
-      setRefresh((n) => n + 1);
-      return;
-    }
     lastSeq.current = fresh[fresh.length - 1].seq;
     setEntries((old) => [...old, ...fresh]);
   };
@@ -83,14 +77,14 @@ export function TaskPage() {
               <Actions
                 task={task}
                 onTask={setTask}
-                onEntries={append}
-                onConflict={() => setRefresh((n) => n + 1)}
+                onRefresh={() => setRefresh((n) => n + 1)}
               />
             </section>
             <aside className="task-side">
               <Details task={task} />
-              {/* A run ends when the current run goes away or is replaced. */}
-              <Runs ns={ns} name={name} current={`${task.status?.run?.id ?? ""}/${task.status?.phase ?? ""}`} />
+              {/* A run ends when the current run goes away or is replaced; the
+                  count catches one that started and ended between reads. */}
+              <Runs ns={ns} name={name} current={`${task.status?.run?.id ?? ""}/${task.status?.phase ?? ""}/${task.status?.runs?.count ?? 0}`} />
             </aside>
           </div>
         </>

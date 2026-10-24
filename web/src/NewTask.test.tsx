@@ -1,5 +1,6 @@
-import { cleanup, fireEvent, render, screen } from "@testing-library/react";
-import { MemoryRouter } from "react-router";
+import { act, cleanup, fireEvent, render, screen } from "@testing-library/react";
+import { useEffect } from "react";
+import { MemoryRouter, useNavigate } from "react-router";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { App } from "./App";
 import { toSpec, validate, type Draft } from "./NewTask";
@@ -84,5 +85,26 @@ describe("NewTask", () => {
     fireEvent.click(screen.getByRole("button", { name: "Retry" }));
     expect(await screen.findByRole("option", { name: "writer" })).toBeTruthy();
     expect(reads).toBe(2);
+  });
+
+  it("starts fresh for another team", async () => {
+    vi.stubGlobal("fetch", () => json({ items: [] }));
+    const nav: { go: (to: string) => void } = { go: () => {} };
+    function Navigator() {
+      const navigate = useNavigate();
+      useEffect(() => {
+        nav.go = (to) => void navigate(to);
+      }, [navigate]);
+      return null;
+    }
+    render(
+      <MemoryRouter initialEntries={["/t/a/new"]}>
+        <Navigator />
+        <App />
+      </MemoryRouter>,
+    );
+    fireEvent.change(screen.getByLabelText("Title"), { target: { value: "For team a" } });
+    act(() => nav.go("/t/b/new"));
+    expect((screen.getByLabelText("Title") as HTMLInputElement).value).toBe("");
   });
 });
