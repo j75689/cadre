@@ -66,16 +66,7 @@ func exposedName(server, tool string) string {
 // list every tool is allowed; with one, the tool's own entry, else "*",
 // else deny.
 func permissionFor(perms map[string]v1alpha1.Permission, tool string) v1alpha1.Permission {
-	if len(perms) == 0 {
-		return v1alpha1.PermissionAllow
-	}
-	if p, ok := perms[tool]; ok {
-		return p
-	}
-	if p, ok := perms["*"]; ok {
-		return p
-	}
-	return v1alpha1.PermissionDeny
+	return (&v1alpha1.ToolServer{Spec: v1alpha1.ToolServerSpec{Permissions: perms}}).PermissionFor(tool)
 }
 
 // discovery caches each ToolServer's tool list for a minute, and a failure

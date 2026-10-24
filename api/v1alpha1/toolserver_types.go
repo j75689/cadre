@@ -123,6 +123,22 @@ type ToolServerStatus struct {
 	URL string `json:"url,omitempty"`
 }
 
+// PermissionFor is what the server's permissions say of calling tool: the
+// tool's own entry, else "*", else deny; without permissions, allow.
+func (t *ToolServer) PermissionFor(tool string) Permission {
+	perms := t.Spec.Permissions
+	if len(perms) == 0 {
+		return PermissionAllow
+	}
+	if p, ok := perms[tool]; ok {
+		return p
+	}
+	if p, ok := perms["*"]; ok {
+		return p
+	}
+	return PermissionDeny
+}
+
 // Endpoint is where the server is reached: its url, or for a managed one
 // the URL Cadre gave it.
 func (t *ToolServer) Endpoint() string {

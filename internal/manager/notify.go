@@ -409,7 +409,13 @@ func (m *Manager) deliver(ctx context.Context, nf *v1alpha1.Notifier, id string,
 	}
 	ctx, cancel := context.WithTimeout(ctx, notifyTimeout)
 	defer cancel()
+	if nf.Spec.ToolServer != nil {
+		return m.notifyTool(ctx, nf, body)
+	}
 	wh := nf.Spec.Webhook
+	if wh == nil {
+		return errors.New("the Notifier has no channel")
+	}
 	shown := redact(wh.URL)
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, wh.URL, bytes.NewReader(body))
 	if err != nil {
@@ -444,6 +450,32 @@ func (m *Manager) deliver(ctx context.Context, nf *v1alpha1.Notifier, id string,
 	}()
 	if res.StatusCode < 200 || res.StatusCode > 299 {
 		return fmt.Errorf("%s answered %s", shown, res.Status)
+	}
+	return nil
+}
+
+// notifyTool calls nf's tool through the same forwarder approved calls take,
+// with the notification under the argument notification and nf's static
+// arguments beside it. A call that fails or answers with an error is not a
+// delivery; the error names the ToolServer and the tool, never the
+// arguments nor what the tool answered.
+func (m *Manager) notifyTool(ctx context.Context, nf *v1alpha1.Notifier, body []byte) error {
+	ts := nf.Spec.ToolServer
+	if m.cfg.Tools == nil {
+		return errors.New("this server calls no ToolServers")
+	}
+	args := map[string]any{}
+	for k, v := range ts.Arguments {
+		args[k] = v
+	}
+	args["notification"] = json.RawMessage(body)
+	raw, err := json.Marshal(args)
+	if err != nil {
+		return err
+	}
+	res := m.cfg.Tools.CallTool(ctx, nf.Namespace, ToolCall{ToolServer: ts.Name, Tool: ts.Tool, Arguments: raw})
+	if res.IsError {
+		return fmt.Errorf("tool %s on ToolServer %s answered with an error", ts.Tool, ts.Name)
 	}
 	return nil
 }
