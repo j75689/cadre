@@ -68,6 +68,7 @@ rules:
   - cadre.dev
   resources:
   - runners/finalizers
+  - toolservers/finalizers
   verbs:
   - update
 - apiGroups:

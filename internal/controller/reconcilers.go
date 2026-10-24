@@ -110,14 +110,22 @@ func (r *toolServerReconciler) Reconcile(ctx context.Context, req reconcile.Requ
 	if ts.Spec.Managed != nil {
 		return r.reconcileManaged(ctx, &ts)
 	}
+	// Once managed (it has a URL of Cadre's), now external: what Cadre ran
+	// for it goes, and the URL with it.
+	var changed bool
+	var err error
+	if ts.Status.URL != "" {
+		if changed, err = r.unmanage(ctx, &ts); err != nil {
+			return reconcile.Result{}, err
+		}
+	}
 	ready, reason, msg := true, "External", ""
 	if ts.Spec.Auth != nil {
-		var err error
 		if ready, reason, msg, err = r.secretHasKey(ctx, ts.Namespace, ts.Spec.Auth.SecretRef); err != nil {
 			return reconcile.Result{}, err
 		}
 	}
-	return reconcile.Result{RequeueAfter: r.resync}, r.setReady(ctx, &ts, &ts.Status.ConfigStatus, ready, reason, msg)
+	return reconcile.Result{RequeueAfter: r.resync}, r.writeStatus(ctx, &ts, &ts.Status.ConfigStatus, ready, reason, msg, changed)
 }
 
 type agentReconciler struct{ base }

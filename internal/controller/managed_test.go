@@ -7,6 +7,7 @@ import (
 
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/client-go/util/retry"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -15,9 +16,19 @@ import (
 	"github.com/j75689/cadre/internal/controller"
 )
 
-// makeAvailable marks a Deployment Available for its current spec, as the
-// Deployment controller does once its pods are ready; envtest runs none.
+// makeAvailable marks a Deployment's rollout of its current spec complete,
+// as the Deployment controller does once its pods are ready; envtest runs
+// none.
 func (e *env) makeAvailable(ns, name string) {
+	e.t.Helper()
+	e.deploymentStatus(ns, name, func(dep *appsv1.Deployment) appsv1.DeploymentStatus {
+		return appsv1.DeploymentStatus{ObservedGeneration: dep.Generation, Replicas: 1, ReadyReplicas: 1, AvailableReplicas: 1, UpdatedReplicas: 1,
+			Conditions: []appsv1.DeploymentCondition{{Type: appsv1.DeploymentAvailable, Status: corev1.ConditionTrue, Reason: "MinimumReplicasAvailable"}}}
+	})
+}
+
+// deploymentStatus writes the status status gives for a Deployment.
+func (e *env) deploymentStatus(ns, name string, status func(*appsv1.Deployment) appsv1.DeploymentStatus) {
 	e.t.Helper()
 	key := client.ObjectKey{Namespace: ns, Name: name}
 	var dep appsv1.Deployment
@@ -28,13 +39,19 @@ func (e *env) makeAvailable(ns, name string) {
 		if err := e.c.Get(context.Background(), key, &dep); err != nil {
 			return err
 		}
-		dep.Status = appsv1.DeploymentStatus{ObservedGeneration: dep.Generation, Replicas: 1, ReadyReplicas: 1, AvailableReplicas: 1, UpdatedReplicas: 1,
-			Conditions: []appsv1.DeploymentCondition{{Type: appsv1.DeploymentAvailable, Status: corev1.ConditionTrue, Reason: "MinimumReplicasAvailable"}}}
+		dep.Status = status(&dep)
 		return e.c.Status().Update(context.Background(), &dep)
 	})
 	if err != nil {
 		e.t.Fatal(err)
 	}
+}
+
+// stays fails unless obj's Ready condition keeps reason for a while.
+func (e *env) stays(obj client.Object, status metav1.ConditionStatus, reason string) {
+	e.t.Helper()
+	time.Sleep(time.Second) // several resyncs
+	e.ready(obj, status, reason)
 }
 
 // A managed ToolServer runs as a Deployment and a Service named after it
@@ -105,6 +122,82 @@ func TestAManagedToolServer(t *testing.T) {
 	if ts.Status.URL != "http://search.team-managed.svc:8080/rpc" {
 		t.Errorf("status.url %q after the path changed", ts.Status.URL)
 	}
+	// Mid-rollout: the new spec seen, the old pod still serving and
+	// Available. Nothing runs the new image yet.
+	e.deploymentStatus(ns, "search", func(dep *appsv1.Deployment) appsv1.DeploymentStatus {
+		return appsv1.DeploymentStatus{ObservedGeneration: dep.Generation, Replicas: 1, ReadyReplicas: 1, AvailableReplicas: 1, UpdatedReplicas: 0,
+			Conditions: []appsv1.DeploymentCondition{{Type: appsv1.DeploymentAvailable, Status: corev1.ConditionTrue, Reason: "MinimumReplicasAvailable"}}}
+	})
+	e.stays(ts, metav1.ConditionFalse, "Deploying")
 	e.makeAvailable(ns, "search")
 	e.ready(ts, metav1.ConditionTrue, "Available")
+
+	// A rollout that cannot finish says so.
+	e.deploymentStatus(ns, "search", func(dep *appsv1.Deployment) appsv1.DeploymentStatus {
+		return appsv1.DeploymentStatus{ObservedGeneration: dep.Generation, Replicas: 1, ReadyReplicas: 1, AvailableReplicas: 1, UpdatedReplicas: 1, Conditions: []appsv1.DeploymentCondition{
+			{Type: appsv1.DeploymentAvailable, Status: corev1.ConditionTrue, Reason: "MinimumReplicasAvailable"},
+			{Type: appsv1.DeploymentProgressing, Status: corev1.ConditionFalse, Reason: "ProgressDeadlineExceeded", Message: "ReplicaSet has timed out progressing"},
+		}}
+	})
+	e.ready(ts, metav1.ConditionFalse, "RolloutFailed")
+	e.makeAvailable(ns, "search")
+	e.ready(ts, metav1.ConditionTrue, "Available")
+
+	// Made external, it loses what Cadre ran for it.
+	if err := retry.RetryOnConflict(retry.DefaultRetry, func() error {
+		if err := e.c.Get(ctx, client.ObjectKeyFromObject(ts), ts); err != nil {
+			return err
+		}
+		ts.Spec.Managed, ts.Spec.URL = nil, "https://search.example.test/mcp"
+		return e.c.Update(ctx, ts)
+	}); err != nil {
+		t.Fatal(err)
+	}
+	e.ready(ts, metav1.ConditionTrue, "External")
+	eventually(t, 10*time.Second, func() (bool, string) {
+		depErr := e.c.Get(ctx, client.ObjectKey{Namespace: ns, Name: "search"}, &appsv1.Deployment{})
+		svcErr := e.c.Get(ctx, client.ObjectKey{Namespace: ns, Name: "search"}, &corev1.Service{})
+		return apierrors.IsNotFound(depErr) && apierrors.IsNotFound(svcErr), "the Deployment or the Service is still there"
+	})
+	if ts.Status.URL != "" {
+		t.Errorf("status.url %q once external", ts.Status.URL)
+	}
+}
+
+// A Deployment or Service of a managed ToolServer's name that is not its
+// own, labelled like Cadre's or not, is left alone, and the ToolServer is not
+// Ready.
+func TestAManagedToolServersNameTaken(t *testing.T) {
+	e := start(t)
+	const ns = "team-taken"
+	labels := func(name string) map[string]string { return map[string]string{controller.LabelToolServer: name} }
+	replicas := int32(1)
+	foreign := &appsv1.Deployment{ObjectMeta: metav1.ObjectMeta{Namespace: ns, Name: "labelled", Labels: labels("labelled")}, Spec: appsv1.DeploymentSpec{
+		Replicas: &replicas, Selector: &metav1.LabelSelector{MatchLabels: labels("labelled")},
+		Template: corev1.PodTemplateSpec{ObjectMeta: metav1.ObjectMeta{Labels: labels("labelled")}, Spec: corev1.PodSpec{Containers: []corev1.Container{{Name: "other", Image: "example.test/other:1"}}}},
+	}}
+	service := &corev1.Service{ObjectMeta: meta2(ns, "service"), Spec: corev1.ServiceSpec{
+		Selector: map[string]string{"app": "other"}, Ports: []corev1.ServicePort{{Port: 9000}},
+	}}
+	e.create(
+		&corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: ns}},
+		&v1alpha1.Team{ObjectMeta: meta2(ns, v1alpha1.TeamName)},
+		foreign, service,
+	)
+	for _, name := range []string{"labelled", "service"} {
+		ts := &v1alpha1.ToolServer{ObjectMeta: meta2(ns, name), Spec: v1alpha1.ToolServerSpec{
+			Managed: &v1alpha1.ManagedServer{Image: "example.test/search:1.0", Port: 8080},
+		}}
+		e.create(ts)
+		e.ready(ts, metav1.ConditionFalse, "NameTaken")
+	}
+	ctx := context.Background()
+	var dep appsv1.Deployment
+	var svc corev1.Service
+	if err := e.c.Get(ctx, client.ObjectKeyFromObject(foreign), &dep); err != nil || dep.Spec.Template.Spec.Containers[0].Image != "example.test/other:1" || len(dep.OwnerReferences) != 0 {
+		t.Errorf("the foreign Deployment was touched: %+v, %v", dep.Spec.Template.Spec.Containers, err)
+	}
+	if err := e.c.Get(ctx, client.ObjectKeyFromObject(service), &svc); err != nil || svc.Spec.Ports[0].Port != 9000 || svc.Spec.Selector["app"] != "other" || len(svc.OwnerReferences) != 0 {
+		t.Errorf("the foreign Service was touched: %+v, %v", svc.Spec, err)
+	}
 }
