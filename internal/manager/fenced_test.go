@@ -234,8 +234,8 @@ func TestAReplyWaitsForTheQuestion(t *testing.T) {
 		WaitingItem: item.ID, Outbox: []v1alpha1.OutboxItem{item}}); err != nil {
 		t.Fatal(err)
 	}
-	if _, _, err := e.m.Answer(ctx, key, alice, "staging"); !errors.Is(err, ErrQuestionPending) {
-		t.Fatalf("an answer before the question: %v, want ErrQuestionPending", err)
+	if _, _, err := e.m.Answer(ctx, key, alice, "staging"); !errors.Is(err, ErrEntryPending) {
+		t.Fatalf("an answer before the question: %v, want ErrEntryPending", err)
 	}
 	if err := e.m.Dispatch(ctx); err != nil {
 		t.Fatal(err)

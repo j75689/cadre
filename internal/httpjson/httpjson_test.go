@@ -35,7 +35,7 @@ func TestFail(t *testing.T) {
 		manager.ErrBusy:            {503, httpjson.CodeUnavailable},
 		manager.ErrInProgress:      {409, httpjson.CodeInProgress},
 		task.ErrForbidden:          {403, httpjson.CodeForbidden},
-		manager.ErrQuestionPending: {409, httpjson.CodeQuestionPending},
+		manager.ErrEntryPending:    {409, httpjson.CodeEntryPending},
 		fmt.Errorf("etcd timeout"): {503, httpjson.CodeUnavailable},
 	} {
 		rec := httptest.NewRecorder()

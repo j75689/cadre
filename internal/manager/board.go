@@ -293,7 +293,7 @@ func (m *Manager) Answer(ctx context.Context, key storage.Key, author Author, bo
 	if w.ItemID != "" && w.ThreadSeq == 0 {
 		// The Question is committed but not in the thread yet: an answer
 		// now would come before it.
-		return nil, nil, ErrQuestionPending
+		return nil, nil, ErrEntryPending
 	}
 	since, err := m.ReadThread(ctx, key, w.ThreadSeq, 0)
 	if err != nil {

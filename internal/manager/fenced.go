@@ -19,7 +19,8 @@ import (
 // run that lost its task cannot land one:
 //
 //  1. The content is written as a blob, a stream of its own under
-//     <ns>/<task>/blobs/, named <runId>.<itemId>, where nothing reads it.
+//     <ns>/<task>/blobs/, named <runId>.<itemId>, where nothing reads it:
+//     a file's content as it is, a thread entry's as JSON (threadBlob).
 //  2. A pointer to it is committed as an outbox item (AppendThread,
 //     WriteFile) in a run-fenced conditional write on the Task: the commit
 //     point.
@@ -36,6 +37,12 @@ import (
 // version of every path into <ns>/<task>/files-snapshots, keyed by the index
 // position it covers, so listing reads the newest snapshot and what came
 // after it.
+
+// threadBlob is a thread entry's content in its blob.
+type threadBlob struct {
+	Body string    `json:"body"`
+	Call *ToolCall `json:"call,omitempty"`
+}
 
 // fileVersion is one version of a file, in its version stream.
 type fileVersion struct {
@@ -95,7 +102,11 @@ func (m *Manager) threadItem(ctx context.Context, key storage.Key, t *v1alpha1.T
 	}
 	item := v1alpha1.OutboxItem{ID: m.newID(), Kind: v1alpha1.OutboxAppendThread}
 	blob := blobName(runID, item.ID)
-	if err := m.writeBlob(ctx, key, blob, []byte(body)); err != nil {
+	content, err := json.Marshal(threadBlob{Body: body})
+	if err != nil {
+		return v1alpha1.OutboxItem{}, err
+	}
+	if err := m.writeBlob(ctx, key, blob, content); err != nil {
 		return v1alpha1.OutboxItem{}, err
 	}
 	var after int64
@@ -219,9 +230,13 @@ func (m *Manager) placeItem(ctx context.Context, key storage.Key, id, stream str
 func (m *Manager) applyThread(ctx context.Context, parent *v1alpha1.Task, it v1alpha1.OutboxItem) error {
 	key := storage.Key{Namespace: parent.Namespace, Name: parent.Name}
 	th := it.Thread
-	body, err := m.readBlob(ctx, key, th.Blob)
+	raw, err := m.readBlob(ctx, key, th.Blob)
 	if err != nil {
 		return err
+	}
+	var content threadBlob
+	if err := json.Unmarshal(raw, &content); err != nil {
+		return fmt.Errorf("blob %s: %w", th.Blob, err)
 	}
 	var from int64
 	if parent.Status.Thread != nil {
@@ -232,7 +247,7 @@ func (m *Manager) applyThread(ctx context.Context, parent *v1alpha1.Task, it v1a
 		func(seq int64) ([]byte, error) {
 			return json.Marshal(ThreadEntry{
 				Seq: seq, Author: Author{Kind: AuthorAgent, Name: th.Author}, Kind: EntryKind(th.Kind),
-				Body: string(body), At: at, RunID: th.RunID, ItemID: it.ID,
+				Body: content.Body, Call: content.Call, At: at, RunID: th.RunID, ItemID: it.ID,
 			})
 		},
 		func(data []byte) bool {
