@@ -43,7 +43,7 @@ func run() error {
 		namespaces = flag.String("namespaces", "", "comma-separated Team namespaces to take work from; empty for every one")
 		maxTurns   = flag.Int("max-turns", builtin.DefaultMaxTurns, "model responses per run before it hands the task to a human")
 		once       = flag.Bool("once", false, "stop after one run, or one step in step mode")
-		mode       = flag.String("mode", "runtime", "runtime: work builtin agents' runs whole; step: work steps of the runs of builtin agents set to execution: step")
+		mode       = flag.String("mode", "step", "step: work the steps of builtin agents' runs, a step at a time; runtime: work whole runs of builtin agents set to execution: runtime")
 		parallel   = flag.Int("parallel", 1, "in step mode, how many steps to work at once")
 		stepTime   = flag.Duration("step-timeout", builtin.DefaultStepTimeout, "in step mode, the longest one step may take before it is given back")
 		tokenFile  = flag.String("token-file", "", "the token to authenticate to cadre-server with, read before every request; by default the projected ServiceAccount token at "+cadreclient.DefaultTokenFile+" when it exists, else none")

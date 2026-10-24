@@ -102,6 +102,9 @@ func TestSmoke(t *testing.T) {
 	}
 	const ns = "smoke"
 	agents := manager.ReadyBuiltin(ns, "greeter", "claude")
+	// Run whole, so runtime mode stays covered live now that step is the
+	// default.
+	agents.Agents[ns+"/greeter"].Spec.Runtime.Execution = v1alpha1.RunModeRuntime
 	agents.Agents[ns+"/greeter"].Spec.Instructions = "Call thread_post exactly once with a one-line greeting. Then call thread_ask exactly once, asking whether to continue. Do nothing else."
 	m, url, tokenFile, log := smokeServer(t, ns, agents, manager.Config{})
 	ctx := context.Background()

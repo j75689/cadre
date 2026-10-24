@@ -59,11 +59,12 @@ type AgentRuntime struct {
 	// +optional
 	Selector map[string]string `json:"selector,omitempty"`
 
-	// Execution is how a builtin agent's runs are driven: runtime, one
-	// worker for the whole run, or step, a step at a time by any worker.
-	// Other runtime types run in their runner's process, as runtime.
+	// Execution is how a builtin agent's runs are driven: step, a step at
+	// a time by any worker (the default), or runtime, one worker for the
+	// whole run. Other runtime types run in their runner's process, as
+	// runtime. It has no schema default, as the default depends on the
+	// type: empty is step for builtin and runtime for the others.
 	// +kubebuilder:validation:Enum=runtime;step
-	// +kubebuilder:default=runtime
 	// +optional
 	Execution RunMode `json:"execution,omitempty"`
 }
@@ -76,7 +77,7 @@ func (r AgentRuntime) Builtin() bool {
 
 // StepMode reports whether the agent's runs are driven a step at a time.
 func (r AgentRuntime) StepMode() bool {
-	return r.Builtin() && r.Execution == RunModeStep
+	return r.Builtin() && r.Execution != RunModeRuntime
 }
 
 // AgentSpec is an agent: what it is told, which model it uses and which
