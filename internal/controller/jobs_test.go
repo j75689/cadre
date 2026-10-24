@@ -41,12 +41,19 @@ type jobEnv struct {
 	url     string
 	cfg     *rest.Config
 	lease   time.Duration
+	resync  time.Duration
 	stopped func() // stops the running controllers
 }
 
 const jobsNS = "team-jobs"
 
 func startJobs(t *testing.T) *jobEnv {
+	t.Helper()
+	return startJobsEvery(t, 200*time.Millisecond)
+}
+
+// startJobsEvery is startJobs with the controllers' resync.
+func startJobsEvery(t *testing.T, resync time.Duration) *jobEnv {
 	t.Helper()
 	cfg := testenv.APIServer(t)
 	serving, err := controller.NewManager(cfg)
@@ -76,7 +83,7 @@ func startJobs(t *testing.T) *jobEnv {
 	if err != nil {
 		t.Fatal(err)
 	}
-	e := &jobEnv{env: &env{t: t, c: c}, m: m, url: srv.URL, cfg: cfg, lease: lease}
+	e := &jobEnv{env: &env{t: t, c: c}, m: m, url: srv.URL, cfg: cfg, lease: lease, resync: resync}
 	e.restart()
 	t.Cleanup(func() {
 		e.stopped()
@@ -112,7 +119,7 @@ func (e *jobEnv) restart() {
 	if err != nil {
 		e.t.Fatal(err)
 	}
-	if err := controller.Setup(mgr, controller.Options{Resync: 200 * time.Millisecond, ServerURL: e.url, Lease: e.lease}, controller.SkipNameValidation()); err != nil {
+	if err := controller.Setup(mgr, controller.Options{Resync: e.resync, ServerURL: e.url, Lease: e.lease}, controller.SkipNameValidation()); err != nil {
 		e.t.Fatal(err)
 	}
 	ctx, cancel := context.WithCancel(context.Background())
@@ -180,8 +187,10 @@ type kubelet struct {
 	// pending leaves every pod Pending, as one waiting for a node or its
 	// image: active, never ready, never running its runner.
 	pending bool
-	mu      sync.Mutex
-	seen    map[string]bool
+	// exit is how long a pod takes to exit after its runner is done.
+	exit time.Duration
+	mu   sync.Mutex
+	seen map[string]bool
 }
 
 func (k *kubelet) run(ctx context.Context, t *testing.T, agent string) {
@@ -225,6 +234,7 @@ func (k *kubelet) pod(ctx context.Context, t *testing.T, j batchv1.Job) {
 		t.Errorf("pod of %s: %v", j.Name, err)
 		return
 	}
+	sleep(ctx, k.exit)
 	// The controller may have annotated the Job meanwhile: complete the
 	// latest, as the Job controller does.
 	err = retry.RetryOnConflict(retry.DefaultRetry, func() error {
@@ -365,6 +375,40 @@ func TestFrozenPodIsDeleted(t *testing.T) {
 	})
 }
 
+// A Job whose run just ended is given a lease to exit on its own, however
+// long ago the controller last looked at it: it completes, logs and all,
+// rather than being deleted as its pod exits.
+func TestAFinishedRunsJobIsLeftToExit(t *testing.T) {
+	e := startJobsEvery(t, 10*time.Second) // a resync longer than the lease
+	agent := jobAgent("coder", 1)
+	e.create(agent)
+	e.ready(agent, metav1.ConditionTrue, "Resolved")
+	e.task(t, "longer than a lease", "coder")
+	ctx, stop := context.WithCancel(context.Background())
+	defer stop()
+	k := &kubelet{e: e, plan: fakerunner.Plan{Work: 3 * e.lease, Outcome: v1alpha1.RunOutcomeDone}, exit: e.lease / 2, seen: map[string]bool{}}
+	go k.run(ctx, t, "coder")
+	eventually(t, 30*time.Second, func() (bool, string) {
+		jobs := e.jobs(t, "coder")
+		if len(jobs) != 1 {
+			return false, fmt.Sprintf("jobs %v", names(jobs))
+		}
+		if jobs[0].DeletionTimestamp != nil {
+			t.Fatalf("Job %s was deleted as its pod exited", jobs[0].Name)
+		}
+		return finishedJob(jobs[0]), "the Job has not completed"
+	})
+}
+
+func finishedJob(j batchv1.Job) bool {
+	for _, c := range j.Status.Conditions {
+		if c.Type == batchv1.JobComplete && c.Status == corev1.ConditionTrue {
+			return true
+		}
+	}
+	return false
+}
+
 // A pod still Pending (waiting for a node, pulling its image) is not
 // stuck, however long that takes: its clock starts when it runs.
 func TestAPendingPodIsLeftToStart(t *testing.T) {
@@ -492,4 +536,11 @@ func TestAJobsRunnerMustFit(t *testing.T) {
 	wrong.Spec.Runtime.Selector = map[string]string{"pool": "other"}
 	e.create(wrong)
 	e.ready(wrong, metav1.ConditionFalse, "RunnerLabelsMismatch")
+}
+
+func sleep(ctx context.Context, d time.Duration) {
+	select {
+	case <-ctx.Done():
+	case <-time.After(d):
+	}
 }

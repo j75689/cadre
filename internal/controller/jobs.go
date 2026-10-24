@@ -75,11 +75,12 @@ type jobReconciler struct {
 	created map[types.NamespacedName]map[string]time.Time
 }
 
-// claim is a Job seen running a run: its agent, and when it was last seen
-// so.
+// claim is a Job seen running a run: its agent, and, once it no longer
+// runs one, when that was first seen. The Job is given a lease from then
+// to exit on its own.
 type claim struct {
 	agent string
-	at    time.Time
+	gone  time.Time
 }
 
 // createdFor is how long a created Job the cache does not show yet still
@@ -90,6 +91,9 @@ func (r *jobReconciler) setup(mgr ctrl.Manager) error {
 	return ctrl.NewControllerManagedBy(mgr).For(&v1alpha1.Agent{}).Named("agent-jobs").WithOptions(r.options()).
 		Owns(&batchv1.Job{}).
 		Watches(&v1alpha1.Task{}, handler.EnqueueRequestsFromMapFunc(assignee), builder.WithPredicates(jobRelevant)).
+		// A run's end frees its Team slot after the Task's write: the
+		// agents with Jobs may start another then.
+		Watches(&v1alpha1.Team{}, handler.EnqueueRequestsFromMapFunc(r.jobAgents)).
 		Complete(r)
 }
 
@@ -105,6 +109,21 @@ func runnerOf(t *v1alpha1.Task) string {
 		return ""
 	}
 	return t.Status.Run.RunnerName
+}
+
+// jobAgents maps a Team to its namespace's agents that have a job.
+func (r *jobReconciler) jobAgents(ctx context.Context, o client.Object) []reconcile.Request {
+	var agents v1alpha1.AgentList
+	if err := r.client.List(ctx, &agents, client.InNamespace(o.GetNamespace())); err != nil {
+		return nil
+	}
+	var reqs []reconcile.Request
+	for _, a := range agents.Items {
+		if a.Spec.Runtime.Job != nil {
+			reqs = append(reqs, reconcile.Request{NamespacedName: types.NamespacedName{Namespace: a.Namespace, Name: a.Name}})
+		}
+	}
+	return reqs
 }
 
 // assignee maps a task to the agent it is assigned to.
@@ -123,6 +142,11 @@ func (r *jobReconciler) Reconcile(ctx context.Context, req reconcile.Request) (r
 			// A deleted agent's Jobs go with it: it owns them.
 			r.mu.Lock()
 			delete(r.created, req.NamespacedName)
+			for key, c := range r.claimed {
+				if key.Namespace == req.Namespace && c.agent == req.Name {
+					delete(r.claimed, key)
+				}
+			}
 			r.mu.Unlock()
 		}
 		return reconcile.Result{}, client.IgnoreNotFound(err)
@@ -167,6 +191,7 @@ func (r *jobReconciler) Reconcile(ctx context.Context, req reconcile.Request) (r
 
 	now := time.Now()
 	pending := 0
+	exiting := false // a Job given a lease to exit: look again then
 	listed := map[string]bool{}
 	for _, j := range jobs.Items {
 		listed[j.Name] = true
@@ -196,18 +221,23 @@ func (r *jobReconciler) Reconcile(ctx context.Context, req reconcile.Request) (r
 		}
 		r.mu.Lock()
 		c, wasClaimed := r.claimed[key]
-		seen := c.at
-		if running[j.Name] {
-			r.claimed[key] = claim{agent: agent.Name, at: now}
+		switch {
+		case running[j.Name]:
+			r.claimed[key] = claim{agent: agent.Name}
 			r.mu.Unlock()
 			continue
+		case wasClaimed && c.gone.IsZero():
+			// Its run just ended: a lease for its pod to exit.
+			c.gone = now
+			r.claimed[key] = c
 		}
 		r.mu.Unlock()
 		switch {
-		case wasClaimed && now.Sub(seen) > r.lease:
+		case wasClaimed && now.Sub(c.gone) > r.lease:
 			// Its run is over or went to another runner, yet it runs on:
-			// past a lease it is not coming back.
+			// a lease later it is not coming back.
 		case wasClaimed:
+			exiting = true
 			continue
 		case stuck(j, now, r.lease):
 			// The same, known without memory, so after a restart too: a
@@ -257,6 +287,9 @@ func (r *jobReconciler) Reconcile(ctx context.Context, req reconcile.Request) (r
 			r.created[req.NamespacedName][j.Name] = now
 			r.mu.Unlock()
 		}
+	}
+	if exiting {
+		return reconcile.Result{RequeueAfter: min(r.lease, r.resync)}, nil
 	}
 	return reconcile.Result{RequeueAfter: r.resync}, nil
 }
