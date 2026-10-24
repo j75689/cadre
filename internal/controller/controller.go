@@ -1,7 +1,7 @@
 // Package controller holds the reconcilers that turn Agent, ModelProvider,
 // ToolServer and Runner resources into something the Task Manager can use:
 // each gets a Ready condition saying whether it can be used, and a Runner
-// outside the cluster gets a minted token.
+// outside the cluster gets a minted token. A Schedule creates tasks.
 //
 // The reconcilers only act in namespaces that have a Team. They read Secrets
 // one at a time, directly from the API server, and never watch or cache
@@ -60,6 +60,8 @@ type Options struct {
 	// Lease is the run lease: a Job still running a lease after its run
 	// ended is deleted. Default 30 seconds.
 	Lease time.Duration
+	// Now is the clock Schedules fire by; default time.Now.
+	Now func() time.Time
 }
 
 // SetupOption adjusts Setup.

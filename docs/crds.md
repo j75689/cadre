@@ -240,8 +240,37 @@ spec:
   cron: "0 9 * * *"
   timezone: Asia/Taipei
   jitter: 60s                   # avoid everyone firing on the hour
-  task: { assignee: writer, title: "Today's AI trends thread" }
+  task:                         # a TaskSpec, without parentRef
+    title: "Today's AI trends thread"
+    assignee: { kind: Agent, name: writer }
+    labels: [thread]
+status:
+  lastScheduleTime: "2026-10-24T01:00:00Z"
+  lastTask: daily-thread-202610240100
+  nextScheduleTime: "2026-10-25T01:00:41Z"
+  activeSince: "2026-10-01T03:12:09Z"
+  conditions: [{ type: Ready, status: "True", reason: Scheduled }]
 ```
+
+| Field | |
+|---|---|
+| `cron` | required; a standard five-field cron expression, or a descriptor such as `@daily` |
+| `timezone` | the IANA zone `cron` is read in; default UTC |
+| `jitter` | delays each tick's task by up to this long, by an amount fixed by the Schedule's UID and the tick; keep it shorter than the interval between ticks |
+| `suspend` | no task is created while it is true |
+| `task` | the spec of every task created; `parentRef` is refused, since a scheduled task has no parent |
+
+The name is at most 50 characters, so that its tasks' names fit 63.
+
+Ready is False with reason `InvalidSchedule` when the cron or the zone does not parse, or the store refuses the task (the message says which), and `NoTeam` when the namespace has no Team. Otherwise it is True with reason `Scheduled`, or `Suspended`.
+
+**Naming and idempotency.** A tick is a time `cron` fires in `timezone`. Its task is named `<schedule>-<tick in UTC as YYYYMMDDhhmm>`, labelled `cadre.dev/schedule: <schedule>` and annotated `cadre.dev/scheduled-at` with the tick in RFC 3339. It is created through the storage driver, so it works under any driver, and a second create of the same name fails as already existing: that is what makes a tick fire once across restarts and overlapping leaders. The reconciler keeps no other memory. A task has no owner reference: tasks are history, and deleting a Schedule leaves them.
+
+**Missed ticks.** A tick fires once its fire time (the tick plus its jitter) has come. When several have come since the last one fired (cadre-server was down, or no leader was elected), only the latest fires; the others are skipped, and an Event says how many. A daily Schedule three days behind creates one task, not three. Ticks before the Schedule's creation never fire.
+
+**Suspend.** A tick that passes while the Schedule is suspended never fires, even once resumed; the first to fire is the first after the resume is seen. The same holds while it cannot run (`InvalidSchedule`, `NoTeam`). `status.activeSince` records when it last became able to fire, and is cleared while it cannot.
+
+There is no concurrency policy: a tick's task is created whether or not the previous one is finished.
 
 `Notifier` names a channel (an MCP ToolServer or a webhook) and when to use it: a question for a human, a tool approval, a review.
 

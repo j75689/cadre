@@ -7,18 +7,19 @@ rules:
 - apiGroups:
   - ""
   resources:
-  - events
-  verbs:
-  - create
-  - patch
-- apiGroups:
-  - ""
-  resources:
   - secrets
   verbs:
   - create
   - delete
   - get
+- apiGroups:
+  - ""
+  - events.k8s.io
+  resources:
+  - events
+  verbs:
+  - create
+  - patch
 - apiGroups:
   - apps
   resources:
@@ -47,6 +48,7 @@ rules:
   - agents
   - modelproviders
   - runners
+  - schedules
   - toolservers
   verbs:
   - get
@@ -58,6 +60,7 @@ rules:
   - agents/status
   - modelproviders/status
   - runners/status
+  - schedules/status
   - tasks/status
   - teams/status
   - toolservers/status
