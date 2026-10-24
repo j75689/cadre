@@ -4,6 +4,7 @@
 package runner
 
 import (
+	"encoding/json"
 	"time"
 
 	v1alpha1 "github.com/j75689/cadre/api/v1alpha1"
@@ -16,6 +17,12 @@ const (
 	PathHeartbeat = "/runner/v1/heartbeat"
 	PathEvents    = "/runner/v1/events"
 	PathFinish    = "/runner/v1/finish"
+	// Step mode: a step's transcript entry, committing or giving back the
+	// step, and reading the run's transcript.
+	PathStepAppend     = "/runner/v1/steps/append"
+	PathStepAdvance    = "/runner/v1/steps/advance"
+	PathStepRelease    = "/runner/v1/steps/release"
+	PathStepTranscript = "/runner/v1/steps/transcript"
 )
 
 // TaskRef names a task. Every call after claim carries one, so the server
@@ -34,6 +41,10 @@ type ClaimRequest struct {
 	Runner     string            `json:"runner"`
 	Namespaces []string          `json:"namespaces,omitempty"`
 	Labels     map[string]string `json:"labels,omitempty"`
+	// Mode step claims one step of a builtin agent's step-mode run; only
+	// cadre-runner's identity may. The default, runtime, claims a whole
+	// run of any other agent: neither mode sees the other's tasks.
+	Mode v1alpha1.RunMode `json:"mode,omitempty"`
 }
 
 // ClaimedTask is the task a claim hands out.
@@ -104,12 +115,74 @@ type ClaimResponse struct {
 	HeartbeatSeconds int              `json:"heartbeatSeconds"`
 	Agent            *ClaimedAgent    `json:"agent,omitempty"`
 	MCP              *ClaimedMCP      `json:"mcp,omitempty"`
+	// In step mode: the step taken, how many workers took it (this one
+	// included, of MaxAttempts), and what it is: start, llm_turn,
+	// exec_tools or finish, as the server reads it from the transcript.
+	Step        int64  `json:"step,omitempty"`
+	Attempt     int32  `json:"attempt,omitempty"`
+	MaxAttempts int32  `json:"maxAttempts,omitempty"`
+	StepKind    string `json:"stepKind,omitempty"`
 }
 
 // HeartbeatRequest renews a run's lease.
 type HeartbeatRequest struct {
 	Task  TaskRef `json:"task"`
 	RunID string  `json:"runId"`
+	// Step and Attempt are the step held and the attempt at it, in step
+	// mode.
+	Step    int64 `json:"step,omitempty"`
+	Attempt int32 `json:"attempt,omitempty"`
+}
+
+// StepRef names a step of a step-mode run and the worker's attempt at it,
+// as the claim gave them. Every step endpoint is for cadre-runner only, and
+// refuses a step the sender does not hold at that attempt.
+type StepRef struct {
+	Task    TaskRef `json:"task"`
+	RunID   string  `json:"runId"`
+	Step    int64   `json:"step"`
+	Attempt int32   `json:"attempt"`
+}
+
+// MaxStepAppend caps a step append's body: an exec_tools entry carries every
+// result of the batch, so it is larger than other requests. The entry itself
+// is limited to 8 MiB as stored.
+const MaxStepAppend = 8<<20 + 64<<10
+
+// StepAppendRequest appends the step's transcript entry. Its step and kind
+// are the server's: an entry of another kind than the claim said is
+// refused. The response is
+// the step's entry: this one, or, when another worker wrote it first, that
+// one, with adopted true; the worker then commits that entry instead of
+// its own.
+type StepAppendRequest struct {
+	StepRef
+	Entry json.RawMessage `json:"entry"`
+}
+
+// StepAppendResponse is the step's entry as it is in the transcript.
+type StepAppendResponse struct {
+	Entry   json.RawMessage `json:"entry"`
+	Adopted bool            `json:"adopted"`
+}
+
+// StepAdvanceRequest commits a step whose entry is written, and releases
+// it for the next worker; subtasks are created as with finish.
+type StepAdvanceRequest struct {
+	StepRef
+	Subtasks []Subtask `json:"subtasks,omitempty"`
+}
+
+// StepReleaseRequest gives a step back after a failed attempt; Error says
+// why, for the transcript.
+type StepReleaseRequest struct {
+	StepRef
+	Error string `json:"error"`
+}
+
+// StepTranscript is a run's committed steps, in order.
+type StepTranscript struct {
+	Entries []json.RawMessage `json:"entries"`
 }
 
 // HeartbeatResponse is the 200 body of a heartbeat.
@@ -151,12 +224,14 @@ type Subtask struct {
 	Spec v1alpha1.TaskSpec `json:"spec"`
 }
 
-// FinishRequest ends a run. Step is required in step mode and ignored in
-// runtime mode; Waiting is required exactly when Outcome is Waiting.
+// FinishRequest ends a run. Step and Attempt are required in step mode and
+// ignored in runtime mode; Waiting is required exactly when Outcome is
+// Waiting.
 type FinishRequest struct {
 	Task     TaskRef             `json:"task"`
 	RunID    string              `json:"runId"`
 	Step     int64               `json:"step,omitempty"`
+	Attempt  int32               `json:"attempt,omitempty"`
 	Outcome  v1alpha1.RunOutcome `json:"outcome"`
 	Waiting  *Waiting            `json:"waiting,omitempty"`
 	Subtasks []Subtask           `json:"subtasks,omitempty"`
@@ -170,12 +245,18 @@ type FinishResponse struct {
 }
 
 // Error codes /runner/v1 returns. A runner that gets run_mismatch, or
-// not_found for its task, stops working on that task at once.
+// not_found for its task, stops working on that task at once; a step-mode
+// worker that gets step_mismatch or attempt_mismatch stops working on the
+// step. step_taken and step_exhausted answer a claim's take of a step that
+// another worker holds, or that no worker may take again.
 const (
 	CodeInvalid           = httpjson.CodeInvalid
 	CodeNotFound          = httpjson.CodeNotFound
 	CodeRunMismatch       = httpjson.CodeRunMismatch
 	CodeStepMismatch      = httpjson.CodeStepMismatch
+	CodeAttemptMismatch   = httpjson.CodeAttemptMismatch
+	CodeStepTaken         = httpjson.CodeStepTaken
+	CodeStepExhausted     = httpjson.CodeStepExhausted
 	CodeInvalidTransition = httpjson.CodeInvalidTransition
 	CodeUnavailable       = httpjson.CodeUnavailable
 	CodeUnauthenticated   = httpjson.CodeUnauthenticated

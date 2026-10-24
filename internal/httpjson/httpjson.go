@@ -52,7 +52,12 @@ const MaxBody = 1 << 20
 // servers. On failure it writes 413 for an oversized body or 400 otherwise,
 // and returns false.
 func Decode(w http.ResponseWriter, r *http.Request, v any) bool {
-	dec := json.NewDecoder(http.MaxBytesReader(w, r.Body, MaxBody))
+	return DecodeLimit(w, r, v, MaxBody)
+}
+
+// DecodeLimit is Decode for a body of up to limit bytes.
+func DecodeLimit(w http.ResponseWriter, r *http.Request, v any, limit int64) bool {
+	dec := json.NewDecoder(http.MaxBytesReader(w, r.Body, limit))
 	err := dec.Decode(v)
 	if err == nil && dec.More() {
 		err = errors.New("more than one JSON value")
@@ -60,7 +65,7 @@ func Decode(w http.ResponseWriter, r *http.Request, v any) bool {
 	var tooLarge *http.MaxBytesError
 	switch {
 	case errors.As(err, &tooLarge):
-		WriteError(w, http.StatusRequestEntityTooLarge, CodeInvalid, fmt.Sprintf("request body over %d bytes", MaxBody))
+		WriteError(w, http.StatusRequestEntityTooLarge, CodeInvalid, fmt.Sprintf("request body over %d bytes", limit))
 		return false
 	case err != nil:
 		WriteError(w, http.StatusBadRequest, CodeInvalid, fmt.Sprintf("decode request: %v", err))
@@ -74,6 +79,16 @@ func Write(w http.ResponseWriter, status int, v any) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(status)
 	_ = json.NewEncoder(w).Encode(v)
+}
+
+// WriteVerbatim is Write without escaping HTML characters, for a body that
+// carries stored JSON back exactly as it was stored.
+func WriteVerbatim(w http.ResponseWriter, status int, v any) {
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(status)
+	enc := json.NewEncoder(w)
+	enc.SetEscapeHTML(false)
+	_ = enc.Encode(v)
 }
 
 // WriteError writes the error envelope.

@@ -43,6 +43,41 @@ llm_turn → choice (did the output contain tool_calls?)
 
 Granularity: one LLM turn is one step. One batch of tool calls is one step, executed concurrently inside it, which matches how providers return several tool calls that must all be answered in one message. An external side-effecting tool without an idempotency key gets a step of its own (see below).
 
+### Step mode on the Task
+
+In M2 the Task is the queue: there is no message broker. A builtin Agent with `runtime.execution: step` runs this way; `runtime` (the default) keeps it in runtime mode.
+
+- **The transcript.** Each run has a log stream, `<namespace>/<task>/transcript/<runId>`, with one entry per committed step, keyed by the step number. Step 0 (`start`) records the provider, the model, the SDK module version and the first request (system prompt, tools, first message); an `llm_turn` entry records the model's reply and its tool calls; an `exec_tools` entry records their results. Messages are the provider's own request JSON, stored and sent back as they came, never re-encoded. An entry is at most 8 MiB. Which kind step N is follows from entry N-1: after `start` and `exec_tools` comes `llm_turn`; after an `llm_turn` with tool calls comes `exec_tools`, and without them `finish`.
+- **Claiming a step.** A worker claims with `mode: step` on `/runner/v1/claim`. It first takes the oldest free step of a running step-mode run, rotating between namespaces, and else claims a new run, whose step 0 it then holds. The response says the step, its kind, the attempt and the most attempts there are, and carries a fresh MCP token for this step only. A runtime-mode claim never takes a step-mode run, and a step claim never takes a runtime-mode one. The Team slot is held for the whole run, not per step.
+- **Only `cadre-runner` works on steps.** On a server that authenticates runners, a step claim and every step endpoint from any other identity get `403 forbidden`, whatever the step's state.
+- **The attempt is the step's fence**, as the run id is the run's. Every step call (the step endpoints, heartbeat, finish, and the run tools on the step's MCP token) carries the step and the attempt the claim gave, and is refused with `409 attempt_mismatch` once the step was freed or taken again; the worker then stops working on the step. A free step is marked `status.run.stepFree`, never by an empty `runner`, which a run claimed without authentication has too.
+- **One step.** The worker reads the transcript, does the step, appends entry N (create-only), then commits. The entry's step and kind are the server's: an entry of another kind than the claim said is refused. If entry N is already there, a worker that died wrote it: the append returns that entry, marked adopted, and the worker commits it without calling the model again. Entry N is present only when the key of step N itself is found; the attempt entries described below sort after it and are never taken for it.
+
+Each of these is one conditional write on the Task:
+
+| Transition | Condition | Effect |
+| --- | --- | --- |
+| TakeStep | the run is the same, step N is free, or held by a worker whose lease ran out | the worker holds step N with a lease and a new MCP token; `attempt` + 1. The holder taking it again (its answer was lost) renews the lease and the token, with the same attempt |
+| Advance | the worker holds step N at its attempt, entry N exists | `step` = N+1, free (no holder or token), `attempt` = 0, `stepItems` cleared; its subtasks go to the outbox |
+| ReleaseStep | the worker holds step N at its attempt | step N is free again, `attempt` kept; the reason is written first as the attempt entry `<N>-attempt-<k>` |
+| Reclaim | step N's lease ran out, or the free step's idle deadline passed | step N is free again; the run fails instead when the step was taken three times or no worker took it in time |
+
+- **Attempts.** A step is taken three times at most. A worker that gives a step up or dies still counts. When the third one dies or gives up, the next reclaim ends the run `Failed`.
+- **Idle steps.** A free step's `leaseUntil` is its idle deadline, `--step-idle` (1 hour) after it was freed: a run whose step no worker takes by then (the workers are down, say) fails rather than hold its Team slot. A failed step-mode run gets a System comment saying which step failed and why, from its RunEnded record, and that a new run starts again from the thread.
+- **Heartbeats** name the step and the attempt and renew its lease: 30 seconds, renewed every 10. The worker bounds each step at 10 minutes and gives it up when that runs out.
+- **Tool calls.** In step mode `thread_post`, `thread_ask`, `task_create_subtask` and `file_write` are fenced on the run, the step and the attempt, and their outbox item ids derive from `(runId, step, call id, n)`. The worker sends the provider's tool call id as `_meta: {"cadre.dev/callId": ...}`; it is required, and must be one of the calls the step's model turn asked for. `n` counts the items one call records. A step done again after its worker died makes the same calls with the same ids; the Task remembers what the current step recorded (`status.run.stepItems`), so each lands once, and the second worker is told where. These core tools are exactly once. A forwarded `allow` tool called in `exec_tools` is at least once across a worker death: the step is done again, and the call with it.
+
+The protocol's step endpoints, for `cadre-runner` only and fenced on run id, step and attempt:
+
+```
+POST /runner/v1/steps/append      run_id, step, attempt, entry → the step's entry as stored; adopted when another worker wrote it first (body up to 8 MiB + 64 KiB)
+POST /runner/v1/steps/advance     run_id, step, attempt, subtasks → commits the step; 400 before its entry exists
+POST /runner/v1/steps/release     run_id, step, attempt, error → gives the step up for another worker
+POST /runner/v1/steps/transcript  run_id, step, attempt → the run's committed entries as stored, for the step's holder
+```
+
+A call on a step the run has moved past gets `409 step_mismatch`, and on an attempt that is over, `409 attempt_mismatch`.
+
 ### Runtime mode
 
 The loop lives in someone else's process: an ACP agent such as Claude Code, a kagent agent, a custom container. Cadre cannot cut it into steps, so:

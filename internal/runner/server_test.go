@@ -45,10 +45,56 @@ type env struct {
 	srv   *httptest.Server
 	store storage.Driver
 	m     *manager.Manager
+	token string // sent as a bearer token, if set
 }
 
-func newEnv(t *testing.T) *env {
+// envConfig is what newEnv serves: one task, assigned to agent.
+type envConfig struct {
+	agents manager.StaticAgents
+	agent  string
+	opts   []Option
+}
+
+type envOption func(*envConfig)
+
+// withSteps assigns the task to stepper, a builtin agent run a step at a
+// time.
+func withSteps(c *envConfig) {
+	c.agents = manager.StaticAgents{
+		Agents: map[string]*v1alpha1.Agent{ns + "/stepper": manager.ReadyAgent(ns, "stepper", "claude",
+			v1alpha1.AgentRuntime{Type: v1alpha1.RuntimeBuiltin, Execution: v1alpha1.RunModeStep})},
+		ModelProviders: agents.ModelProviders,
+	}
+	c.agent = "stepper"
+}
+
+// tokens authenticates a fixed set of fake tokens.
+type tokens map[string]Identity
+
+func (ts tokens) Authenticate(_ context.Context, token string) (Identity, error) {
+	if id, ok := ts[token]; ok {
+		return id, nil
+	}
+	return Identity{}, ErrUnauthenticated
+}
+
+const builtinIdentity = "system:serviceaccount:cadre-system:cadre-runner"
+
+// withAuth authenticates runners: token "builtin" is cadre-runner, "other"
+// another runner.
+func withAuth(c *envConfig) {
+	c.opts = append(c.opts, WithAuth(tokens{
+		"builtin": {Name: builtinIdentity},
+		"other":   {Name: "system:serviceaccount:team-a:my-runner"},
+	}, builtinIdentity))
+}
+
+func newEnv(t *testing.T, opts ...envOption) *env {
 	t.Helper()
+	cfg := envConfig{agents: agents, agent: "coder"}
+	for _, o := range opts {
+		o(&cfg)
+	}
 	store := memory.NewBackend().Open()
 	ctx := context.Background()
 	if err := store.CreateTeam(ctx, &v1alpha1.Team{ObjectMeta: metav1.ObjectMeta{Name: v1alpha1.TeamName, Namespace: ns}, Spec: v1alpha1.TeamSpec{MaxConcurrentRuns: 1}}); err != nil {
@@ -56,19 +102,26 @@ func newEnv(t *testing.T) *env {
 	}
 	if err := store.CreateTask(ctx, &v1alpha1.Task{
 		ObjectMeta: metav1.ObjectMeta{Name: "fix-login", Namespace: ns},
-		Spec:       v1alpha1.TaskSpec{Title: "Fix login", Assignee: &v1alpha1.Assignee{Kind: v1alpha1.AssigneeAgent, Name: "coder"}},
+		Spec:       v1alpha1.TaskSpec{Title: "Fix login", Assignee: &v1alpha1.Assignee{Kind: v1alpha1.AssigneeAgent, Name: cfg.agent}},
 	}); err != nil {
 		t.Fatal(err)
 	}
-	m := manager.New(store, manager.Config{Agents: agents})
+	m := manager.New(store, manager.Config{Agents: cfg.agents})
 	if err := m.NumberNew(ctx); err != nil {
 		t.Fatal(err)
 	}
 	mux := http.NewServeMux()
-	NewServer(m, slog.New(slog.NewTextHandler(io.Discard, nil)), "https://cadre.test/").Register(mux)
+	NewServer(m, slog.New(slog.NewTextHandler(io.Discard, nil)), "https://cadre.test/", cfg.opts...).Register(mux)
 	srv := httptest.NewServer(mux)
 	t.Cleanup(srv.Close)
 	return &env{srv: srv, store: store, m: m}
+}
+
+// as is e, sending token.
+func (e *env) as(token string) *env {
+	c := *e
+	c.token = token
+	return &c
 }
 
 // post sends body and decodes a 2xx JSON response into out, or an error body.
@@ -83,7 +136,15 @@ func (e *env) post(t *testing.T, path string, body any, out any) (int, ErrorBody
 			t.Fatal(err)
 		}
 	}
-	resp, err := http.Post(e.srv.URL+path, "application/json", &buf)
+	req, err := http.NewRequest(http.MethodPost, e.srv.URL+path, &buf)
+	if err != nil {
+		t.Fatal(err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+	if e.token != "" {
+		req.Header.Set("Authorization", "Bearer "+e.token)
+	}
+	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
 		t.Fatal(err)
 	}
