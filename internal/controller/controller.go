@@ -22,13 +22,17 @@ import (
 	"context"
 	"time"
 
+	batchv1 "k8s.io/api/batch/v1"
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/labels"
 	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/apimachinery/pkg/types"
 	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
 	"k8s.io/client-go/rest"
+	"sigs.k8s.io/controller-runtime/pkg/cache"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/controller"
 	ctrl "sigs.k8s.io/controller-runtime/pkg/manager"
@@ -45,6 +49,12 @@ const DefaultResync = time.Minute
 type Options struct {
 	// Resync is how often Secret-dependent resources are re-checked.
 	Resync time.Duration
+	// ServerURL is where the pods of runner agents' Jobs reach cadre-server;
+	// without it no Job is started.
+	ServerURL string
+	// Lease is the run lease: a Job still running a lease after its run
+	// ended is deleted. Default 30 seconds.
+	Lease time.Duration
 }
 
 // SetupOption adjusts Setup.
@@ -81,6 +91,16 @@ func Setup(mgr ctrl.Manager, o Options, opts ...SetupOption) error {
 	}
 	if err := (&toolServerReconciler{b}).setup(mgr); err != nil {
 		return err
+	}
+	if o.ServerURL != "" {
+		if o.Lease <= 0 {
+			o.Lease = 30 * time.Second
+		}
+		jr := &jobReconciler{base: b, serverURL: o.ServerURL, lease: o.Lease,
+			claimed: map[types.NamespacedName]time.Time{}, created: map[types.NamespacedName]map[string]time.Time{}}
+		if err := jr.setup(mgr); err != nil {
+			return err
+		}
 	}
 	return (&agentReconciler{b}).setup(mgr)
 }
@@ -168,8 +188,15 @@ func NewManager(cfg *rest.Config) (ctrl.Manager, error) {
 	if err := v1alpha1.AddToScheme(scheme); err != nil {
 		return nil, err
 	}
+	// The Job informer holds runner agents' Jobs only: cadre-server may
+	// list every Job, but keeps none of the others.
+	jobs, err := labels.Parse(LabelAgent)
+	if err != nil {
+		return nil, err
+	}
 	return ctrl.New(cfg, ctrl.Options{
 		Scheme:                 scheme,
+		Cache:                  cache.Options{ByObject: map[client.Object]cache.ByObject{&batchv1.Job{}: {Label: jobs}}},
 		Metrics:                metricsserver.Options{BindAddress: "0"},
 		HealthProbeBindAddress: "0",
 		Client:                 client.Options{Cache: &client.CacheOptions{DisableFor: []client.Object{&corev1.Secret{}}}},

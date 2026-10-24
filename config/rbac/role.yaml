@@ -19,6 +19,14 @@ rules:
   verbs:
   - create
 - apiGroups:
+  - batch
+  resources:
+  - jobs
+  verbs:
+  - get
+  - list
+  - watch
+- apiGroups:
   - cadre.dev
   resources:
   - agents

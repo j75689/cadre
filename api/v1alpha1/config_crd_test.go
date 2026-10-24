@@ -91,7 +91,9 @@ func TestConfigCRDs(t *testing.T) {
 		"runner in steps":       {v1alpha1.AgentSpec{ModelRef: "claude", Runtime: v1alpha1.AgentRuntime{Type: v1alpha1.RuntimeRunner, Selector: map[string]string{"a": "b"}, Execution: v1alpha1.RunModeStep}}, false},
 		// No schema default: a default of step would make every runner
 		// agent invalid.
-		"runner by default": {v1alpha1.AgentSpec{ModelRef: "claude", Runtime: v1alpha1.AgentRuntime{Type: v1alpha1.RuntimeRunner, Selector: map[string]string{"a": "b"}}}, true},
+		"runner by default":  {v1alpha1.AgentSpec{ModelRef: "claude", Runtime: v1alpha1.AgentRuntime{Type: v1alpha1.RuntimeRunner, Selector: map[string]string{"a": "b"}}}, true},
+		"builtin with a job": {v1alpha1.AgentSpec{ModelRef: "claude", Runtime: v1alpha1.AgentRuntime{Type: v1alpha1.RuntimeBuiltin, Job: &v1alpha1.AgentJob{RunnerRef: "r"}}}, false},
+		"runner with a job":  {v1alpha1.AgentSpec{ModelRef: "claude", Runtime: v1alpha1.AgentRuntime{Type: v1alpha1.RuntimeRunner, Selector: map[string]string{"a": "b"}, Job: &v1alpha1.AgentJob{RunnerRef: "r"}}}, true},
 	} {
 		expect(t, c, "Agent "+name, &v1alpha1.Agent{ObjectMeta: meta(), Spec: tc.spec}, tc.valid)
 	}

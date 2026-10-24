@@ -188,6 +188,7 @@ spec:
 | Agent | `toolRefs` | ToolServers in the same namespace, a set |
 | Agent | `runtime.type` | `builtin` (the default) or `runner` |
 | Agent | `runtime.selector` | required, with at least one label, for `runner`; forbidden for `builtin` |
+| Agent | `runtime.job` | for `runner` only: `runnerRef` (a Runner in the namespace with a `serviceAccount`, whose labels include the selector, or the Agent is not Ready), `template` (a PodTemplateSpec, checked by the API server when a Job is created), `activeDeadline` (default 1h), `maxPending` (default 2) |
 | Agent | `runtime.execution` | `step` or `runtime`; `step` for `builtin` only. Left out, it is `step` for `builtin` and `runtime` for `runner`; there is no schema default, so an Agent stored with `runtime` before step became the default stays runtime |
 | Runner | `serviceAccount` | `{name}` of the ServiceAccount, in the Runner's own namespace, that an in-cluster runner authenticates as. Without it the runner is outside the cluster and Cadre mints its token: exactly one of the two |
 | Runner | `labels` | required, at least one: the labels the runner's claims are matched with, set here and never taken from the runner's request; the `cadre.dev/` prefix is reserved |

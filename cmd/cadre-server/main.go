@@ -84,7 +84,11 @@ func run() error {
 	if err != nil {
 		return fmt.Errorf("controllers: %w", err)
 	}
-	if err := controller.Setup(ctrls, controller.Options{}); err != nil {
+	if *publicURL, err = resolvePublicURL(*publicURL, *listen, os.Getenv("KUBERNETES_SERVICE_HOST") != ""); err != nil {
+		return err
+	}
+	// Runner agents' Jobs reach cadre-server where every runner does.
+	if err := controller.Setup(ctrls, controller.Options{ServerURL: *publicURL, Lease: *lease}); err != nil {
 		return fmt.Errorf("controllers: %w", err)
 	}
 	// One informer cache serves the controllers and the board index: the
@@ -112,9 +116,6 @@ func run() error {
 	forwarder := mcp.NewForwarder(controller.ToolServerSources(ctrls), log)
 	m := manager.New(store, manager.Config{Lease: *lease, Heartbeat: *heartbeat, StepIdle: *stepIdle, Agents: controller.Agents(ctrls), Tools: forwarder})
 	mux := http.NewServeMux()
-	if *publicURL, err = resolvePublicURL(*publicURL, *listen, os.Getenv("KUBERNETES_SERVICE_HOST") != ""); err != nil {
-		return err
-	}
 	var runnerOpts []runner.Option
 	if *auth == "required" {
 		reviews := runner.Cached(controller.TokenReviews(ctrls.GetClient()))

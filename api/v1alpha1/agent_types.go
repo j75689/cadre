@@ -1,6 +1,7 @@
 package v1alpha1
 
 import (
+	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
 
@@ -46,6 +47,7 @@ const (
 // +kubebuilder:validation:XValidation:rule="self.type != 'runner' || (has(self.selector) && size(self.selector) > 0)",message="runtime type runner needs a selector"
 // +kubebuilder:validation:XValidation:rule="!has(self.selector) || self.selector.all(k, !k.startsWith('cadre.dev/'))",message="the cadre.dev/ label prefix is reserved"
 // +kubebuilder:validation:XValidation:rule="!has(self.execution) || self.execution == 'runtime' || self.type == 'builtin'",message="step execution is for runtime type builtin"
+// +kubebuilder:validation:XValidation:rule="!has(self.job) || self.type == 'runner'",message="job is for runtime type runner"
 type AgentRuntime struct {
 	// Type is builtin (Cadre's loop) or runner (any runner whose labels
 	// match the selector).
@@ -67,6 +69,43 @@ type AgentRuntime struct {
 	// +kubebuilder:validation:Enum=runtime;step
 	// +optional
 	Execution RunMode `json:"execution,omitempty"`
+
+	// Job, for runtime type runner, has cadre-server start a Kubernetes
+	// Job for the agent's work: each Job's pod is a runner that claims one
+	// run, works it and exits. Runners already running may claim the
+	// agent's tasks too.
+	// +optional
+	Job *AgentJob `json:"job,omitempty"`
+}
+
+// AgentJob is how cadre-server starts runners for an agent's work.
+type AgentJob struct {
+	// RunnerRef names a Runner in the agent's namespace that has a
+	// serviceAccount and whose labels include the agent's selector: the
+	// Jobs' pods run as that ServiceAccount, whatever the template says,
+	// and claim with the Runner's labels.
+	// +kubebuilder:validation:MinLength=1
+	RunnerRef string `json:"runnerRef"`
+
+	// Template is the pod a Job runs: the team's runner. Its runner reads
+	// CADRE_SERVER, CADRE_NAMESPACE and CADRE_RUNNER (its name, the Job's)
+	// and the token at /var/run/secrets/cadre/token, which cadre-server
+	// adds, claims once, works the run and exits. The API server checks the
+	// template when a Job is created; the schema here does not.
+	// +kubebuilder:validation:Schemaless
+	// +kubebuilder:pruning:PreserveUnknownFields
+	// +kubebuilder:validation:Type=object
+	Template corev1.PodTemplateSpec `json:"template"`
+
+	// ActiveDeadline bounds a Job's run time; default one hour.
+	// +optional
+	ActiveDeadline *metav1.Duration `json:"activeDeadline,omitempty"`
+
+	// MaxPending is how many of the agent's Jobs may wait for work at once;
+	// default 2.
+	// +kubebuilder:validation:Minimum=1
+	// +optional
+	MaxPending int32 `json:"maxPending,omitempty"`
 }
 
 // Builtin reports whether the agent runs Cadre's own loop; an empty type

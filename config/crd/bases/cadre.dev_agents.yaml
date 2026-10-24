@@ -97,6 +97,45 @@ spec:
                     - runtime
                     - step
                     type: string
+                  job:
+                    description: |-
+                      Job, for runtime type runner, has cadre-server start a Kubernetes
+                      Job for the agent's work: each Job's pod is a runner that claims one
+                      run, works it and exits. Runners already running may claim the
+                      agent's tasks too.
+                    properties:
+                      activeDeadline:
+                        description: ActiveDeadline bounds a Job's run time; default
+                          one hour.
+                        type: string
+                      maxPending:
+                        description: |-
+                          MaxPending is how many of the agent's Jobs may wait for work at once;
+                          default 2.
+                        format: int32
+                        minimum: 1
+                        type: integer
+                      runnerRef:
+                        description: |-
+                          RunnerRef names a Runner in the agent's namespace that has a
+                          serviceAccount and whose labels include the agent's selector: the
+                          Jobs' pods run as that ServiceAccount, whatever the template says,
+                          and claim with the Runner's labels.
+                        minLength: 1
+                        type: string
+                      template:
+                        description: |-
+                          Template is the pod a Job runs: the team's runner. Its runner reads
+                          CADRE_SERVER, CADRE_NAMESPACE and CADRE_RUNNER (its name, the Job's)
+                          and the token at /var/run/secrets/cadre/token, which cadre-server
+                          adds, claims once, works the run and exits. The API server checks the
+                          template when a Job is created; the schema here does not.
+                        type: object
+                        x-kubernetes-preserve-unknown-fields: true
+                    required:
+                    - runnerRef
+                    - template
+                    type: object
                   selector:
                     additionalProperties:
                       type: string
@@ -127,6 +166,8 @@ spec:
                 - message: step execution is for runtime type builtin
                   rule: '!has(self.execution) || self.execution == ''runtime'' ||
                     self.type == ''builtin'''
+                - message: job is for runtime type runner
+                  rule: '!has(self.job) || self.type == ''runner'''
               toolRefs:
                 description: |-
                   ToolRefs are the names of ToolServers in the same namespace that the
