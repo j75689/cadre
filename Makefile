@@ -33,7 +33,7 @@ build: ## Build all binaries into bin/
 
 image: ## Build one command's image: make image CMD=cadre-server [TAG=dev]
 	@test -n "$(CMD)" || { echo "set CMD to one of: $(CMDS)"; exit 1; }
-	docker build --build-arg CMD=$(CMD) --build-arg VERSION=$(TAG) -t $(REGISTRY)/$(CMD):$(TAG) .
+	DOCKER_BUILDKIT=1 docker build --build-arg CMD=$(CMD) --build-arg VERSION=$(TAG) -t $(REGISTRY)/$(CMD):$(TAG) .
 
 images: ## Build every command's image [TAG=dev]
 	@for c in $(CMDS); do $(MAKE) --no-print-directory image CMD=$$c TAG=$(TAG) || exit 1; done

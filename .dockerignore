@@ -1,4 +1,11 @@
-bin/
-.git/
-.github/
-*.test
+# An allowlist: the build sees only what compiles into a binary, so a local
+# secret never reaches the build context and a docs-only change keeps the
+# build cached. A new build input must be added here.
+*
+!go.mod
+!go.sum
+!api/
+!cmd/
+!internal/
+**/*_test.go
+**/testdata/
