@@ -14,6 +14,8 @@ import (
 	"sync/atomic"
 	"time"
 
+	ctrl "sigs.k8s.io/controller-runtime/pkg/manager"
+
 	v1alpha1 "github.com/j75689/cadre/api/v1alpha1"
 	"github.com/j75689/cadre/internal/api"
 	"github.com/j75689/cadre/internal/controller"
@@ -117,7 +119,10 @@ func startServer(name string, cfg kubernetes.Config, rnd *lockedRand, publicURL 
 	// mark the Agent Ready, and claims read it.
 	// The controllers elect a leader, as cadre-server's replicas do, with
 	// a short Lease so a killed server's place is taken within the chaos.
-	ctrls, err := controller.NewManager(cfg.REST, controller.LeaderElection(leaderNS), controller.LeaderLease(leaderLease))
+	// A killed server does not hand its Lease over: it expires, as a
+	// crashed pod's does.
+	ctrls, err := controller.NewManager(cfg.REST, controller.LeaderElection(leaderNS), controller.LeaderLease(leaderLease),
+		func(o *ctrl.Options) { o.LeaderElectionReleaseOnCancel = false })
 	if err != nil {
 		cancel()
 		_ = drv.Close()

@@ -247,7 +247,7 @@ func TestChaos(t *testing.T) {
 
 	check(t, admin, cfg, rec)
 	checkSteps(t, cfg, steps)
-	checkJobs(t, admin, jrec)
+	checkJobs(t, jrec)
 }
 
 // runnerSlot keeps one runner alive, killing and replacing it at random
@@ -410,6 +410,9 @@ func settledProblems(admin ctrlclient.Client) []string {
 		if team.Status.Running != 0 {
 			problems = append(problems, fmt.Sprintf("team %s running %d", ns, team.Status.Running))
 		}
+		// jobber's work is done by Jobs, which kubelet still runs: none
+		// may be waiting or running any more.
+		problems = append(problems, jobProblems(admin, ns, list.Items)...)
 	}
 	return problems
 }

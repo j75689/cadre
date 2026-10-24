@@ -39,7 +39,7 @@ const (
 	// to exit and a resync for the controller to look, then, when the
 	// leader died meanwhile, a leader Lease for another to take over and a
 	// resync more, and slack for a loaded machine.
-	jobGone = 3*time.Second + 2*jobResync + leaderLease + 4*time.Second
+	jobGone = 3*time.Second + 2*jobResync + leaderLease + 3*time.Second
 )
 
 // jobObjects are what a Team namespace needs for jobber.
@@ -68,6 +68,7 @@ type jobRecorder struct {
 	killed  int
 	pending int
 	frozen  int
+	broken  int
 	errs    []string
 	// over is the first sample of each episode with more active Jobs than
 	// maxPending plus the agent's runs.
@@ -147,12 +148,30 @@ func pod(ctx context.Context, admin ctrlclient.Client, rnd *lockedRand, rec *rec
 		jrec.mu.Unlock()
 		sleep(ctx, rnd.between(time.Second, 3*managerConfig.Lease))
 	}
-	if gone() || !setStatus(func(s *batchv1.JobStatus) { s.Ready = &one }) {
+	if gone() {
+		// Nothing deletes a Job whose pod never ran: it is not stuck.
+		if ctx.Err() == nil {
+			jrec.errorf("Job %s/%s was deleted while its pod was Pending", j.Namespace, j.Name)
+		}
+		return
+	}
+	if !setStatus(func(s *batchv1.JobStatus) { s.Ready = &one }) {
 		return
 	}
 	jrec.mu.Lock()
 	jrec.started++
 	jrec.mu.Unlock()
+	if rnd.Float64() < 0.05 {
+		// A broken runner: the pod runs but never claims, until the
+		// controller deletes its Job, knowing it from no memory.
+		jrec.mu.Lock()
+		jrec.broken++
+		jrec.mu.Unlock()
+		for ctx.Err() == nil && !gone() {
+			sleep(ctx, 200*time.Millisecond)
+		}
+		return
+	}
 
 	env := map[string]string{}
 	for _, v := range j.Spec.Template.Spec.Containers[0].Env {
@@ -165,8 +184,9 @@ func pod(ctx context.Context, admin ctrlclient.Client, rnd *lockedRand, rec *rec
 		// cost the pod its Job while the run is its own.
 		plan.Work = rnd.between(2*managerConfig.Lease+time.Second, 3*managerConfig.Lease+time.Second)
 	case r < 0.4:
-		// A pod that freezes: its run is reclaimed, and its Job must go.
-		plan.Work, plan.Stall, plan.StallAfter = 30*time.Second, 2*managerConfig.Lease+2*time.Second, rnd.IntN(2)
+		// A pod that freezes for good: its run is reclaimed, and only the
+		// controller deleting its Job ends it.
+		plan.Work, plan.Stall, plan.StallAfter = time.Hour, time.Hour, rnd.IntN(2)
 		jrec.mu.Lock()
 		jrec.frozen++
 		jrec.mu.Unlock()
@@ -177,6 +197,7 @@ func pod(ctx context.Context, admin ctrlclient.Client, rnd *lockedRand, rec *rec
 	killed := rnd.Float64() < 0.15
 	killAfter := rnd.between(50*time.Millisecond, plan.Work)
 	var claim fakerunner.Observation
+	var finished time.Time // when the run's finish succeeded
 	var mu sync.Mutex
 	done := make(chan struct{})
 	go func() {
@@ -196,34 +217,39 @@ func pod(ctx context.Context, admin ctrlclient.Client, rnd *lockedRand, rec *rec
 					jrec.runs[j.Name] = o.RunID
 					jrec.mu.Unlock()
 				}
+				if o.Kind == fakerunner.Finished {
+					mu.Lock()
+					finished = o.At
+					mu.Unlock()
+				}
 				rec.observe(o)
 			},
 		})
 	}()
-	// The Job deleted under a running pod: fine if its run is no longer
-	// its own, a bug if it still is.
+	// The Job deleted under a running pod: its pod gets a moment, as a
+	// deleted pod does before it is killed. Its run may then finish only if
+	// the run is still its own, which deleting the Job must not allow.
+	var goneAt time.Time
 	for running := true; running; {
 		select {
 		case <-done:
 			running = false
 		case <-time.After(200 * time.Millisecond):
-			if !gone() {
-				continue
+			if goneAt.IsZero() && gone() {
+				goneAt = time.Now()
+				time.AfterFunc(time.Second, kill)
 			}
-			mu.Lock()
-			c := claim
-			mu.Unlock()
-			if c.RunID != "" {
-				var t v1alpha1.Task
-				if err := admin.Get(context.Background(), ctrlclient.ObjectKey{Namespace: c.Task.Namespace, Name: c.Task.Name}, &t); err == nil &&
-					t.Status.Phase == v1alpha1.PhaseRunning && t.Status.Run != nil && t.Status.Run.ID == c.RunID {
-					jrec.errorf("Job %s was deleted while its pod was running run %s, still the task's", j.Name, c.RunID)
-				}
-			}
-			kill()
-			<-done
-			return
 		}
+	}
+	if !goneAt.IsZero() {
+		mu.Lock()
+		c, f := claim, finished
+		mu.Unlock()
+		if !f.IsZero() && f.After(goneAt) {
+			jrec.errorf("Job %s was deleted at %s while its pod still had run %s, which finished as the task's at %s",
+				j.Name, goneAt.Format(time.RFC3339Nano), c.RunID, f.Format(time.RFC3339Nano))
+		}
+		return
 	}
 	if killed && life.Err() != nil {
 		jrec.mu.Lock()
@@ -293,6 +319,7 @@ func monitorJobs(ctx context.Context, admin ctrlclient.Client, jrec *jobRecorder
 				run, claimed := jrec.runs[j.Name]
 				switch {
 				case !claimed || runs[run]:
+					delete(jrec.ended, j.Name) // its claim may have landed after the tasks were listed
 				case jrec.ended[j.Name].IsZero():
 					jrec.ended[j.Name] = now
 					exiting++
@@ -318,33 +345,33 @@ func monitorJobs(ctx context.Context, admin ctrlclient.Client, jrec *jobRecorder
 	}
 }
 
-// checkJobs verifies the Job backend's invariants once the system has
-// quiesced: no Job is left waiting for ever, and what the pods and the
-// monitor saw held.
-func checkJobs(t *testing.T, admin ctrlclient.Client, jrec *jobRecorder) {
-	// Every Job finishes, its pod exiting after a claim that found no work
-	// at worst.
-	deadline := time.Now().Add(30 * time.Second)
-	for {
-		var jobs batchv1.JobList
-		if err := admin.List(context.Background(), &jobs, ctrlclient.HasLabels{controller.LabelAgent}); err != nil {
-			t.Fatal(err)
+// jobProblems is what keeps a namespace from having quiesced for jobber: a
+// task of its still Todo, or a Job still active.
+func jobProblems(admin ctrlclient.Client, ns string, tasks []v1alpha1.Task) []string {
+	var problems []string
+	for _, t := range tasks {
+		if t.Status.Phase == v1alpha1.PhaseTodo && t.Spec.Assignee != nil && t.Spec.Assignee.Name == jobAgentName {
+			problems = append(problems, ns+"/"+t.Name+" Todo for jobber")
 		}
-		var left []string
-		for _, j := range jobs.Items {
-			if active(j) {
-				left = append(left, j.Namespace+"/"+j.Name)
-			}
-		}
-		if len(left) == 0 {
-			break
-		}
-		if time.Now().After(deadline) {
-			t.Errorf("Jobs still active after the chaos: %v", left)
-			break
-		}
-		time.Sleep(200 * time.Millisecond)
 	}
+	var jobs batchv1.JobList
+	if err := admin.List(context.Background(), &jobs, ctrlclient.InNamespace(ns), ctrlclient.HasLabels{controller.LabelAgent}); err != nil {
+		return []string{err.Error()}
+	}
+	for _, j := range jobs.Items {
+		if active(j) {
+			problems = append(problems, ns+"/"+j.Name+" active")
+		}
+	}
+	return problems
+}
+
+// checkJobs verifies the Job backend's invariants once the system has
+// quiesced: what the pods and the monitor saw held.
+func checkJobs(t *testing.T, jrec *jobRecorder) {
+	// The quiescence waited for every Job to finish (jobProblems), its pod
+	// exiting after a claim that found no work at worst: none waits for
+	// ever.
 	jrec.mu.Lock()
 	defer jrec.mu.Unlock()
 	for _, e := range jrec.errs {
@@ -353,8 +380,8 @@ func checkJobs(t *testing.T, admin ctrlclient.Client, jrec *jobRecorder) {
 	for _, o := range jrec.over {
 		t.Errorf("too many Jobs: %s", o)
 	}
-	t.Logf("jobs: %d pods started, %d left Pending a while, %d killed mid-run, %d frozen, %d claimed a run, peak %d active Jobs in a namespace, a Job outlived its run by %s at most (bound %s)",
-		jrec.started, jrec.pending, jrec.killed, jrec.frozen, len(jrec.runs), jrec.peakJobs, jrec.outlived.Round(100*time.Millisecond), jobGone)
+	t.Logf("jobs: %d pods started, %d left Pending a while, %d killed mid-run, %d frozen, %d broken, %d claimed a run, peak %d active Jobs in a namespace, a Job outlived its run by %s at most (bound %s)",
+		jrec.started, jrec.pending, jrec.killed, jrec.frozen, jrec.broken, len(jrec.runs), jrec.peakJobs, jrec.outlived.Round(100*time.Millisecond), jobGone)
 	if jrec.started == 0 || len(jrec.runs) == 0 {
 		t.Error("no Job's pod ran; the chaos test exercised nothing of the Job backend")
 	}
