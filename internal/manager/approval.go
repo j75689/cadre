@@ -47,6 +47,10 @@ const (
 	NotMadeNotForNotifications = "the ToolServer does not take notifications"
 	NotMadeNoCredential        = "the ToolServer's credential cannot be read"
 	NotMadeUnreachable         = "the ToolServer could not be reached"
+	// NotMadeFailed is a call that did not come back with an answer: it
+	// timed out, or the connection broke after it was sent. The tool may or
+	// may not have acted.
+	NotMadeFailed = "the call to the ToolServer failed without an answer"
 )
 
 // ToolCaller makes a call a human approved on its ToolServer, which it

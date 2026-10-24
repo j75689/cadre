@@ -62,10 +62,6 @@ func exposedName(server, tool string) string {
 	return unsafeChars.ReplaceAllString(server, "_") + "__" + unsafeChars.ReplaceAllString(tool, "_")
 }
 
-// permissionFor applies a ToolServer's permissions to one tool: without a
-// list every tool is allowed; with one, the tool's own entry, else "*",
-// else deny.
-
 // discovery caches each ToolServer's tool list for a minute, and a failure
 // to list for failureTTL, so a stateless endpoint does not list a server's
 // tools on every request. An entry holds for one generation of the
@@ -256,7 +252,7 @@ func (f *Forwarder) connect(ctx context.Context, ts *v1alpha1.ToolServer) (*sdk.
 	if a := ts.Spec.Auth; a != nil {
 		value, err := f.sources.SecretValue(ctx, ts.Namespace, a.SecretRef)
 		if err != nil {
-			return nil, fmt.Errorf("read the ToolServer's credential: %w: %w", errNoCredential, err)
+			return nil, fmt.Errorf("%w: %w", errNoCredential, err)
 		}
 		header, prefix := "Authorization", "Bearer "
 		if a.Header != "" {
@@ -378,7 +374,7 @@ func (s *Server) addForwarded(server *sdk.Server, t *v1alpha1.Task, tools map[st
 				}
 				return runEnded(msgApprovalEnded), nil
 			}
-			res, _ := s.fwd.forward(ctx, ts, fw.remote.Name, req.Params.Arguments)
+			res, _, _ := s.fwd.forward(ctx, ts, fw.remote.Name, req.Params.Arguments)
 			return res, nil
 		}
 		func() {
@@ -436,23 +432,25 @@ func (f *Forwarder) CallTool(ctx context.Context, namespace string, call manager
 // approves a notification, so ask is refused here, whatever the Notifier's
 // Ready said when it was last looked at.
 func (f *Forwarder) CallForNotification(ctx context.Context, namespace string, call manager.ToolCall) manager.ToolResult {
-	ts, perm, why, notMade := f.callable(ctx, namespace, call.ToolServer, call.Tool)
-	switch {
-	case ts == nil:
+	ts, _, why, notMade := f.callable(ctx, namespace, call.ToolServer, call.Tool)
+	if ts == nil {
 		return manager.ToolResult{Body: "The call was not made. " + why, IsError: true, NotMade: notMade}
-	case !ts.Spec.Notifications:
-		return manager.ToolResult{Body: "The call was not made.", IsError: true, NotMade: manager.NotMadeNotForNotifications}
-	case perm != v1alpha1.PermissionAllow:
-		return manager.ToolResult{Body: "The call was not made.", IsError: true, NotMade: manager.NotMadeDenied}
+	}
+	if ok, reason, _ := ts.ForNotification(call.Tool); !ok {
+		notMade := manager.NotMadeDenied
+		if reason == "ToolServerNotForNotifications" {
+			notMade = manager.NotMadeNotForNotifications
+		}
+		return manager.ToolResult{Body: "The call was not made.", IsError: true, NotMade: notMade}
 	}
 	return f.call(ctx, ts, call)
 }
 
 // call forwards an allowed call and shapes its result as text.
 func (f *Forwarder) call(ctx context.Context, ts *v1alpha1.ToolServer, call manager.ToolCall) manager.ToolResult {
-	res, notMade := f.forward(ctx, ts, call.Tool, call.Arguments)
+	res, msg, notMade := f.forward(ctx, ts, call.Tool, call.Arguments)
 	if notMade != "" {
-		return manager.ToolResult{Body: res.Content[0].(*sdk.TextContent).Text, IsError: true, NotMade: notMade}
+		return manager.ToolResult{Body: msg, IsError: true, NotMade: notMade}
 	}
 	var b strings.Builder
 	for _, c := range res.Content {
@@ -472,21 +470,23 @@ func (f *Forwarder) call(ctx context.Context, ts *v1alpha1.ToolServer, call mana
 }
 
 // errNoCredential is a ToolServer whose credential cannot be read.
-var errNoCredential = errors.New("the ToolServer's credential cannot be read")
+var errNoCredential = errors.New("read the ToolServer's credential")
 
 // forward makes the call on the ToolServer and shapes its result for the
 // model: text and structured content up to 1 MiB; images and other media
 // are dropped with a note in M1.
-func (f *Forwarder) forward(ctx context.Context, ts *v1alpha1.ToolServer, tool string, args json.RawMessage) (*sdk.CallToolResult, string) {
+// A result is made only when the tool answered; otherwise forward returns
+// the message for the agent and why the call has no answer.
+func (f *Forwarder) forward(ctx context.Context, ts *v1alpha1.ToolServer, tool string, args json.RawMessage) (*sdk.CallToolResult, string, string) {
 	ctx, cancel := context.WithTimeout(ctx, forwardTimeout)
 	defer cancel()
 	session, err := f.connect(ctx, ts)
 	if err != nil {
 		f.log.Warn("forward call: connect", "toolServer", ts.Name, "err", err)
 		if errors.Is(err, errNoCredential) {
-			return toolError(msgUnreachable), manager.NotMadeNoCredential
+			return toolError(msgUnreachable), msgUnreachable, manager.NotMadeNoCredential
 		}
-		return toolError(msgUnreachable), manager.NotMadeUnreachable
+		return toolError(msgUnreachable), msgUnreachable, manager.NotMadeUnreachable
 	}
 	defer func() { _ = session.Close() }()
 	var arguments any = map[string]any{}
@@ -496,9 +496,10 @@ func (f *Forwarder) forward(ctx context.Context, ts *v1alpha1.ToolServer, tool s
 	res, err := session.CallTool(ctx, &sdk.CallToolParams{Name: tool, Arguments: arguments})
 	if err != nil {
 		f.log.Warn("forward call", "toolServer", ts.Name, "tool", tool, "err", err)
-		return toolError("The tool call failed: " + err.Error()), ""
+		msg := "The tool call failed: " + err.Error()
+		return toolError(msg), msg, manager.NotMadeFailed
 	}
-	return shapeResult(res), ""
+	return shapeResult(res), "", ""
 }
 
 const msgUnreachable = "The tool's server could not be reached; try again later."

@@ -3,7 +3,6 @@ package controller
 import (
 	"context"
 	"encoding/json"
-	"fmt"
 	"net/url"
 	"time"
 
@@ -104,12 +103,8 @@ func (r *notifierReconciler) decide(ctx context.Context, n *v1alpha1.Notifier) (
 		case !ts.Status.ReadyFor(ts.Generation):
 			return false, "ToolServerNotReady", "ToolServer " + tool.Name + " is not Ready", nil
 		}
-		if !ts.Spec.Notifications {
-			return false, "ToolServerNotForNotifications", "ToolServer " + tool.Name + " does not take notifications: its spec.notifications is not set", nil
-		}
-		// A notification cannot wait for a human to approve the call.
-		if p := ts.PermissionFor(tool.Tool); p != v1alpha1.PermissionAllow {
-			return false, "ToolNotAllowed", fmt.Sprintf("ToolServer %s's permissions say %s for %s: a notification needs allow", tool.Name, p, tool.Tool), nil
+		if ok, reason, msg := ts.ForNotification(tool.Tool); !ok {
+			return false, reason, msg, nil
 		}
 		return true, "Ready", "", nil
 	}

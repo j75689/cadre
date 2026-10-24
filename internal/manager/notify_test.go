@@ -717,3 +717,22 @@ func TestNotifyWithoutTools(t *testing.T) {
 		t.Errorf("%d writes, recorded %v", writes, *recorded)
 	}
 }
+
+// A notification dropped without ever being tried says so.
+func TestNotifyDropUntried(t *testing.T) {
+	nf := notifier("chat", "", nil, v1alpha1.NotifyQuestion)
+	nf.Spec.Webhook, nf.Spec.ToolServer = nil, &v1alpha1.NotifierToolServer{Name: "chat", Tool: "post"}
+	e, recorded := notifyEnv(t, nf)
+	key := e.addTask(t, "x", v1alpha1.AssigneeAgent)
+	e.question(t, key)
+	e.clock.add(NotifyTTL + time.Minute)
+	if err := e.m.DeliverNotifications(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if len(notifyItems(e.get(t, key))) != 0 {
+		t.Fatal("not dropped")
+	}
+	if last := (*recorded)[len(*recorded)-1]; !strings.Contains(last, "without being tried: chat") {
+		t.Errorf("recorded %q", last)
+	}
+}

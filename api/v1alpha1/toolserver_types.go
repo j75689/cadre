@@ -146,6 +146,20 @@ func (t *ToolServer) PermissionFor(tool string) Permission {
 	return PermissionDeny
 }
 
+// ForNotification says whether a Notifier may call tool on the server: it
+// takes notifications, and its permissions allow the tool outright, since
+// nobody approves a notification. If not, reason is the Notifier's Ready
+// reason and message what to tell.
+func (t *ToolServer) ForNotification(tool string) (ok bool, reason, message string) {
+	if !t.Spec.Notifications {
+		return false, "ToolServerNotForNotifications", "ToolServer " + t.Name + " does not take notifications: its spec.notifications is not set"
+	}
+	if p := t.PermissionFor(tool); p != PermissionAllow {
+		return false, "ToolNotAllowed", "ToolServer " + t.Name + "'s permissions say " + string(p) + " for " + tool + ": a notification needs allow"
+	}
+	return true, "", ""
+}
+
 // Endpoint is where the server is reached: its url, or for a managed one
 // the URL Cadre gave it.
 func (t *ToolServer) Endpoint() string {
