@@ -370,6 +370,7 @@ func (s *Server) addForwarded(server *sdk.Server, t *v1alpha1.Task, tools map[st
 			description = strings.TrimSpace(description + "\n\n" + askNote)
 		}
 		var handler sdk.ToolHandler = func(ctx context.Context, req *sdk.CallToolRequest) (*sdk.CallToolResult, error) {
+			ctx = callContext(ctx, req)
 			if err := s.m.CheckRun(ctx, key, runID); err != nil {
 				return s.fail(err), nil
 			}

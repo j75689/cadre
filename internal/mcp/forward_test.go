@@ -145,6 +145,11 @@ func (readCloser) Close() error { return nil }
 
 func forwardingEnv(t *testing.T) (*env, *upstream, *sources) {
 	t.Helper()
+	return forwardingEnvIn(t, v1alpha1.RunModeRuntime)
+}
+
+func forwardingEnvIn(t *testing.T, mode v1alpha1.RunMode) (*env, *upstream, *sources) {
+	t.Helper()
 	up := newUpstream(t)
 	dead := httptest.NewServer(http.NotFoundHandler())
 	dead.Close() // a ToolServer nobody answers at
@@ -163,7 +168,7 @@ func forwardingEnv(t *testing.T) (*env, *upstream, *sources) {
 		secrets: map[string]string{"github/token": "not-a-real-key\n"}, // as a Secret written from a file
 	}
 	src.agent.Spec.ToolRefs = []string{"github", "offline", "missing"}
-	return startWith(t, memory.NewBackend().Open(), mcp.NewForwarder(src, slog.New(slog.NewTextHandler(io.Discard, nil)))), up, src
+	return startWith(t, memory.NewBackend().Open(), mcp.NewForwarder(src, slog.New(slog.NewTextHandler(io.Discard, nil))), mode), up, src
 }
 
 func TestForwardedTools(t *testing.T) {
@@ -433,6 +438,50 @@ func TestAskApproveAndDeny(t *testing.T) {
 	}
 	if up.lastArg.Load() != "fix login" {
 		t.Fatalf("the upstream saw %v; only the first, approved call may reach it", up.lastArg.Load())
+	}
+}
+
+// In step mode an ask tool's call is fenced on the step like the core
+// tools': it needs the model's call id in _meta, from which the ToolCall's
+// id derives.
+func TestAskInStepMode(t *testing.T) {
+	e, _, _ := forwardingEnvIn(t, v1alpha1.RunModeStep)
+	key := storage.Key{Namespace: ns, Name: "t"}
+	take := func() *manager.Claimed {
+		t.Helper()
+		c, err := e.m.Claim(ctx, manager.ClaimRequest{Runner: "w", Labels: builtin, Mode: v1alpha1.RunModeStep})
+		if err != nil || c == nil {
+			t.Fatalf("step claim: %+v, %v", c, err)
+		}
+		return c
+	}
+	for _, entry := range []manager.TranscriptEntry{
+		{Kind: manager.StepStart},
+		{Kind: manager.StepLLMTurn, Calls: []manager.StepCall{{ID: "tu_1", Name: "github__create_pull_request"}}},
+	} {
+		c := take()
+		ref := manager.StepRequest{RunID: c.RunID, Step: c.Step, Attempt: c.Attempt}
+		if _, _, err := e.m.AppendStep(ctx, key, ref, entry); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := e.m.Advance(ctx, key, ref, nil); err != nil {
+			t.Fatal(err)
+		}
+	}
+	c := take()
+	s := e.session(t, c.MCPToken)
+	params := &sdk.CallToolParams{Name: "github__create_pull_request", Arguments: map[string]any{"query": "fix login"}}
+	res, err := s.CallTool(ctx, params)
+	if err != nil || !res.IsError || !strings.Contains(res.Content[0].(*sdk.TextContent).Text, "call id") {
+		t.Fatalf("an ask without its call id: %+v, %v", res, err)
+	}
+	params.Meta = sdk.Meta{mcp.MetaCallID: "tu_1"}
+	if res, err = s.CallTool(ctx, params); err != nil || res.IsError || res.Meta[mcp.MetaRunEnded] != true {
+		t.Fatalf("ask: %+v, %v", res, err)
+	}
+	got, err := e.m.GetTask(ctx, key)
+	if err != nil || got.Status.Phase != v1alpha1.PhaseWaiting || got.Status.Waiting.Reason != v1alpha1.WaitingToolApproval || got.Status.Waiting.ThreadSeq != 1 {
+		t.Fatalf("after an ask: %+v, %v", got.Status, err)
 	}
 }
 

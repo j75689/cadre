@@ -675,7 +675,7 @@ func appendOutbox(s *v1alpha1.TaskStatus, items []v1alpha1.OutboxItem) error {
 				return fmt.Errorf("outbox item %q: %w", it.ID, err)
 			}
 		case it.Kind == v1alpha1.OutboxAppendThread && it.Thread != nil && it.Thread.Blob != "" && it.Thread.Author != "" &&
-			(it.Thread.Kind == "Comment" || it.Thread.Kind == "Question"):
+			(it.Thread.Kind == "Comment" || it.Thread.Kind == "Question" || it.Thread.Kind == "ToolCall"):
 		case it.Kind == v1alpha1.OutboxWriteFile && it.File != nil && it.File.Blob != "" && it.File.Path != "" && it.File.Size >= 0:
 		default:
 			return fmt.Errorf("outbox item %q of kind %q: %w", it.ID, it.Kind, ErrInvalidEvent)

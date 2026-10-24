@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"io"
 	"log/slog"
 	"net/http"
@@ -181,4 +182,48 @@ func TestApproveAndDenyFromTheCLI(t *testing.T) {
 	ask(`{}`)
 	mustContain(t, cadre(t, srv.URL, "task", "deny", "#1", "-m", "not today"), "#1 is Todo")
 	mustContain(t, cadre(t, srv.URL, "task", "get", "#1"), "alice (Denied): not today")
+}
+
+// failSecondStatusWrite fails the second task status write, without effect.
+type failSecondStatusWrite struct {
+	storage.Driver
+	n int
+}
+
+func (f *failSecondStatusWrite) UpdateTaskStatus(c context.Context, t *v1alpha1.Task) error {
+	if f.n++; f.n == 2 {
+		return errors.New("timeout")
+	}
+	return f.Driver.UpdateTaskStatus(c, t)
+}
+
+// Approving a call that is committed but not in the thread yet says to try
+// again, as replying to a question does.
+func TestApproveWhileTheCallIsRecorded(t *testing.T) {
+	store := memory.NewBackend().Open()
+	cfg := manager.Config{Agents: manager.ReadyBuiltin("team-a", "coder", "claude"), Tools: approver{}}
+	m := manager.New(store, cfg)
+	mux := http.NewServeMux()
+	api.NewServer(m, slog.New(slog.NewTextHandler(io.Discard, nil))).Register(mux)
+	srv := httptest.NewServer(mux)
+	defer srv.Close()
+	ctx := context.Background()
+	cadre(t, srv.URL, "team", "init")
+	cadre(t, srv.URL, "task", "create", "Open a PR", "--name", "open-pr", "--agent", "coder")
+	c, err := m.Claim(ctx, manager.ClaimRequest{Runner: "r", Labels: map[string]string{v1alpha1.LabelRuntime: string(v1alpha1.RuntimeBuiltin)}})
+	if err != nil || c == nil {
+		t.Fatalf("claim: %+v, %v", c, err)
+	}
+	// The Finish lands; writing the ToolCall entry does not, yet.
+	call := manager.ToolCall{Name: "github__create_pull_request", ToolServer: "github", Tool: "create_pull_request", Arguments: []byte(`{}`)}
+	if _, err := manager.New(&failSecondStatusWrite{Driver: store}, cfg).RunToolCall(ctx, storage.Key{Namespace: "team-a", Name: "open-pr"}, c.RunID, call); err != nil {
+		t.Fatal(err)
+	}
+	if err := cadreFails(t, srv.URL, "task", "approve", "open-pr"); !strings.Contains(err.Error(), "still being recorded") {
+		t.Fatalf("approve a call still being recorded: %v", err)
+	}
+	if err := m.Dispatch(ctx); err != nil {
+		t.Fatal(err)
+	}
+	mustContain(t, cadre(t, srv.URL, "task", "approve", "open-pr"), "The call returned: opened {}")
 }

@@ -282,6 +282,8 @@ func newTaskDecide(g *globals, approve bool) *cobra.Command {
 			switch {
 			case client.IsCode(err, httpjson.CodeInvalidTransition):
 				return fmt.Errorf("%s is not waiting for a tool approval, or its call was already decided otherwise", name)
+			case client.IsCode(err, httpjson.CodeEntryPending):
+				return fmt.Errorf("%s: the agent's tool call is still being recorded; try again in a moment", name)
 			case err != nil:
 				return err
 			}

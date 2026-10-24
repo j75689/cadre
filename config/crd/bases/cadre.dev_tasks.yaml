@@ -383,7 +383,8 @@ spec:
                           minLength: 1
                           type: string
                         kind:
-                          description: Kind is the entry kind, Comment or Question.
+                          description: 'Kind is the entry kind: Comment, Question
+                            or ToolCall.'
                           minLength: 1
                           type: string
                         runId:

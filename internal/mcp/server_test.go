@@ -55,10 +55,16 @@ func startOn(t *testing.T, store storage.Driver) *env {
 
 // startWith runs the endpoint on store, forwarding ToolServers through fwd
 // when it is not nil.
-func startWith(t *testing.T, store storage.Driver, fwd *mcp.Forwarder) *env {
+// startWith serves a task assigned to coder, a builtin agent run in mode
+// (runtime when not given).
+func startWith(t *testing.T, store storage.Driver, fwd *mcp.Forwarder, mode ...v1alpha1.RunMode) *env {
 	t.Helper()
 	clk := &clock{t: time.Date(2026, 10, 24, 9, 0, 0, 0, time.UTC)}
-	cfg := manager.Config{Agents: manager.ReadyBuiltin(ns, "coder", "claude")}
+	agents := manager.ReadyBuiltin(ns, "coder", "claude")
+	if len(mode) > 0 {
+		agents.Agents[ns+"/coder"].Spec.Runtime.Execution = mode[0]
+	}
+	cfg := manager.Config{Agents: agents}
 	var opts []mcp.Option
 	if fwd != nil {
 		cfg.Tools = fwd

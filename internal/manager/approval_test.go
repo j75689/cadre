@@ -46,28 +46,102 @@ func (e *env) asked(t *testing.T, m *Manager, key storage.Key) *ThreadEntry {
 	return entry
 }
 
-// A call whose ending of the run failed is retried: the thread keeps one
-// ToolCall, and the retry ends the run.
+// The ToolCall and the end of the run are one fenced write: a call whose
+// write failed records nothing, its retry records the one ToolCall, and a
+// call by the ended run records none.
 func TestRunToolCallWritesOneCall(t *testing.T) {
 	e := newEnv(t, 1)
 	key := e.addTask(t, "t", v1alpha1.AssigneeAgent)
 	c := e.claim(t)
-	if _, err := e.manager(&failSecondWrite{Driver: e.store}).RunToolCall(ctx, key, c.RunID, prCall); err == nil {
+	if _, err := e.manager(&failNthWrite{Driver: e.store, nth: 1}).RunToolCall(ctx, key, c.RunID, prCall); err == nil {
 		t.Fatal("first call: want the injected failure")
 	}
+	if thread, _ := e.m.ReadThread(ctx, key, 0, 0); len(thread) != 0 {
+		t.Fatalf("a call whose write failed left %+v", thread)
+	}
 	entry, err := e.m.RunToolCall(ctx, key, c.RunID, prCall)
-	if err != nil || entry.Seq != 1 || entry.Call.ID == "" || entry.Kind != EntryToolCall {
+	if err != nil || entry.Seq != 1 || entry.Call.ID == "" || entry.Call.ID != entry.ItemID || entry.Kind != EntryToolCall || entry.RunID != c.RunID {
 		t.Fatalf("retried call: %+v, %v", entry, err)
 	}
 	if thread, _ := e.m.ReadThread(ctx, key, 0, 0); len(thread) != 1 {
 		t.Fatalf("%d entries, want one ToolCall: %+v", len(thread), thread)
 	}
 	w := e.get(t, key).Status.Waiting
-	if w == nil || w.Reason != v1alpha1.WaitingToolApproval || w.ThreadSeq != 1 {
+	if w == nil || w.Reason != v1alpha1.WaitingToolApproval || w.ThreadSeq != 1 || w.ItemID != entry.ItemID {
 		t.Fatalf("waiting %+v, want ToolApproval on entry 1", w)
 	}
 	if _, err := e.m.RunToolCall(ctx, key, c.RunID, prCall); !errors.Is(err, task.ErrRunMismatch) {
 		t.Fatalf("a call by the ended run: %v, want ErrRunMismatch", err)
+	}
+	if thread, _ := e.m.ReadThread(ctx, key, 0, 0); len(thread) != 1 {
+		t.Fatalf("a call by the ended run was recorded: %+v", thread)
+	}
+}
+
+// beforeBlob runs hook once, just before the first blob is written.
+type beforeBlob struct {
+	storage.Driver
+	once sync.Once
+	hook func()
+}
+
+func (b *beforeBlob) Append(c context.Context, stream, key string, data []byte) error {
+	if strings.Contains(stream, "/blobs/") {
+		b.once.Do(b.hook)
+	}
+	return b.Driver.Append(c, stream, key, data)
+}
+
+// A retry that raced its first attempt (both read the run as active, the
+// first one's Finish landed first) commits nothing of its own: it returns
+// the first attempt's ToolCall, and the thread has that one only.
+func TestARetryRacingItsFirstCallReturnsThatCall(t *testing.T) {
+	e := newEnv(t, 1)
+	key := e.addTask(t, "t", v1alpha1.AssigneeAgent)
+	c := e.claim(t)
+	var first *ThreadEntry
+	retry := e.manager(&beforeBlob{Driver: e.store, hook: func() {
+		var err error
+		if first, err = e.m.RunToolCall(ctx, key, c.RunID, prCall); err != nil {
+			t.Error(err)
+		}
+	}})
+	got, err := retry.RunToolCall(ctx, key, c.RunID, prCall)
+	if err != nil || first == nil || got.ItemID != first.ItemID || got.Seq != 1 || got.Call == nil || got.Call.ID != first.Call.ID {
+		t.Fatalf("retry: %+v, %v; first %+v", got, err, first)
+	}
+	thread, _ := e.m.ReadThread(ctx, key, 0, 0)
+	if len(thread) != 1 {
+		t.Fatalf("thread %+v; want the first attempt's one ToolCall", thread)
+	}
+	// The retry's own entry, its blob written, is never in the thread.
+	entry, err := e.m.RunToolCall(ctx, key, c.RunID, prCall)
+	if !errors.Is(err, task.ErrRunMismatch) || entry != nil {
+		t.Fatalf("a call after the run ended: %+v, %v", entry, err)
+	}
+}
+
+// Until the ToolCall a run asked for is in the thread, an approval is
+// refused: it would come before the call.
+func TestApproveWaitsForTheCall(t *testing.T) {
+	e := newEnv(t, 1)
+	tools := &caller{}
+	key := e.addTask(t, "t", v1alpha1.AssigneeAgent)
+	c := e.claim(t)
+	// The Finish lands; writing the entry (its reservation) fails.
+	entry, err := e.manager(&failNthWrite{Driver: e.store, nth: 2}).RunToolCall(ctx, key, c.RunID, prCall)
+	if err != nil || entry.Seq != 0 {
+		t.Fatalf("call: %+v, %v; want it pending", entry, err)
+	}
+	m := e.withTools(e.store, tools)
+	if _, err := m.Approve(ctx, key, alice, true, ""); !errors.Is(err, ErrEntryPending) {
+		t.Fatalf("an approval before the call is written: %v, want ErrEntryPending", err)
+	}
+	if err := m.Dispatch(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if a, err := m.Approve(ctx, key, alice, true, ""); err != nil || a.Result == nil || tools.calls.Load() != 1 {
+		t.Fatalf("approval once written: %+v, %v, %d calls", a, err, tools.calls.Load())
 	}
 }
 
@@ -196,27 +270,23 @@ func TestApproveWithoutTools(t *testing.T) {
 	}
 }
 
-// A retried call whose arguments come back spaced or with HTML characters
-// is still the one call.
-func TestRunToolCallComparesCanonicalArguments(t *testing.T) {
+// A call's arguments are recorded compacted, and arguments that are not
+// JSON are refused.
+func TestRunToolCallArguments(t *testing.T) {
 	e := newEnv(t, 1)
 	key := e.addTask(t, "t", v1alpha1.AssigneeAgent)
 	c := e.claim(t)
-	call := prCall
-	call.Arguments = []byte(`{"body": "a < b && c > d"}`)
-	if _, err := e.manager(&failSecondWrite{Driver: e.store}).RunToolCall(ctx, key, c.RunID, call); err == nil {
-		t.Fatal("first call: want the injected failure")
-	}
-	if _, err := e.m.RunToolCall(ctx, key, c.RunID, call); err != nil {
-		t.Fatal(err)
-	}
-	if thread, _ := e.m.ReadThread(ctx, key, 0, 0); len(thread) != 1 {
-		t.Fatalf("%d entries, want one ToolCall: %+v", len(thread), thread)
-	}
 	bad := prCall
 	bad.Arguments = []byte(`{not json`)
 	if _, err := e.m.RunToolCall(ctx, key, c.RunID, bad); !errors.Is(err, ErrInvalid) {
 		t.Fatalf("arguments that are not JSON: %v, want ErrInvalid", err)
+	}
+	call := prCall
+	call.Arguments = []byte(`{"body": "a b"}`)
+	call.IsError = true // no ToolCall entry says how its call went
+	entry, err := e.m.RunToolCall(ctx, key, c.RunID, call)
+	if err != nil || string(entry.Call.Arguments) != `{"body":"a b"}` || entry.Call.IsError {
+		t.Fatalf("call: %+v, %v", entry, err)
 	}
 }
 

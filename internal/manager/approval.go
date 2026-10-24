@@ -92,9 +92,12 @@ var systemAuthor = Author{Kind: AuthorSystem, Name: "cadre"}
 const msgUnknownOutcome = "The outcome of this call is unknown: it was approved, but no result was recorded, so it may or may not have happened. It was not repeated. Check whether it took effect before calling it again."
 
 // RunToolCall records a call that must ask a human first and ends the run
-// as Waiting{ToolApproval}. As with RunAsk, the run is over when it returns
-// without error, and a retry whose ToolCall entry is already the thread's
-// latest reuses it.
+// as Waiting{ToolApproval}, in one fenced write, as RunAsk does: the Finish
+// carries the ToolCall entry's outbox item, and the wait names it until the
+// dispatcher has written it. When it returns without error the run is
+// over; a retry after the Finish landed fails as the run is gone, and the
+// one ToolCall entry is the first attempt's. A run that lost its task can
+// land no entry.
 func (m *Manager) RunToolCall(ctx context.Context, key storage.Key, runID string, call ToolCall) (*ThreadEntry, error) {
 	switch {
 	case call.Name == "" || call.ToolServer == "" || call.Tool == "":
@@ -111,31 +114,19 @@ func (m *Manager) RunToolCall(ctx context.Context, key storage.Key, runID string
 	if err != nil {
 		return nil, err
 	}
-	entry, err := m.lastEntry(ctx, key)
+	item, err := m.callItem(ctx, key, t, runID, EntryToolCall, "Calls "+call.Name, &call)
 	if err != nil {
 		return nil, err
 	}
-	if entry == nil || entry.Kind != EntryToolCall || entry.RunID != runID || !sameCall(entry.Call, call) {
-		call.ID, call.IsError = m.newID(), false
-		entry, err = m.appendEntry(ctx, key, &ThreadEntry{
-			Author: agentAuthor(t), Kind: EntryToolCall, Body: "Calls " + call.Name, RunID: runID, Call: &call,
-		})
-		if err != nil {
-			return nil, err
-		}
-	}
 	step, attempt := stepFence(t)
-	if _, _, err := m.Finish(ctx, key, FinishRequest{
-		RunID: runID, Step: step, Attempt: attempt, Outcome: task.OutcomeWaiting, Reason: v1alpha1.WaitingToolApproval, ThreadSeq: entry.Seq,
-	}); err != nil {
-		return entry, err
-	}
-	return entry, nil
+	return m.finishWaitingOn(ctx, key, item, FinishRequest{
+		RunID: runID, Step: step, Attempt: attempt, Outcome: task.OutcomeWaiting, Reason: v1alpha1.WaitingToolApproval,
+		WaitingItem: item.ID, Outbox: []v1alpha1.OutboxItem{item},
+	})
 }
 
-// canonical is arguments as the thread stores them: json.Marshal compacts
-// a raw message and escapes HTML characters, so a retried call compares
-// equal to its recorded entry whatever its spacing.
+// canonical is arguments as the thread stores them: checked to be JSON and
+// compacted.
 func canonical(args json.RawMessage) (json.RawMessage, error) {
 	if len(args) == 0 {
 		return nil, nil
@@ -144,13 +135,6 @@ func canonical(args json.RawMessage) (json.RawMessage, error) {
 		return nil, fmt.Errorf("arguments are not JSON: %w", ErrInvalid)
 	}
 	return json.Marshal(args)
-}
-
-// sameCall compares a recorded call, whose arguments the thread holds in
-// canonical form, with one in canonical form.
-func sameCall(recorded *ToolCall, call ToolCall) bool {
-	return recorded != nil && recorded.Name == call.Name && recorded.ToolServer == call.ToolServer &&
-		recorded.Tool == call.Tool && string(recorded.Arguments) == string(call.Arguments)
 }
 
 // Approval is the outcome of approving or denying a call.
@@ -191,6 +175,10 @@ func (m *Manager) Approve(ctx context.Context, key storage.Key, author Author, a
 	w := t.Status.Waiting
 	if t.Status.Phase != v1alpha1.PhaseWaiting || w == nil || w.Reason != v1alpha1.WaitingToolApproval {
 		return nil, fmt.Errorf("approve a task that is not waiting for a tool approval: %w", task.ErrInvalidTransition)
+	}
+	if w.ItemID != "" && w.ThreadSeq == 0 {
+		// The ToolCall is committed but not in the thread yet.
+		return nil, ErrEntryPending
 	}
 	since, err := m.callEntries(ctx, key, w.ThreadSeq)
 	if err != nil {

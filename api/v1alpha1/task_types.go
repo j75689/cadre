@@ -234,7 +234,7 @@ type ThreadAppend struct {
 	// Blob is the key of the body in the task's blob stream.
 	// +kubebuilder:validation:MinLength=1
 	Blob string `json:"blob"`
-	// Kind is the entry kind, Comment or Question.
+	// Kind is the entry kind: Comment, Question or ToolCall.
 	// +kubebuilder:validation:MinLength=1
 	Kind string `json:"kind"`
 	// Author is the agent writing it.
