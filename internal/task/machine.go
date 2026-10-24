@@ -20,9 +20,12 @@ var (
 	ErrInvalidTransition = errors.New("transition not allowed in this phase")
 	ErrRunMismatch       = errors.New("run id does not match the task's run")
 	ErrStepMismatch      = errors.New("step does not match the run's current step")
-	ErrLeaseNotExpired   = errors.New("lease has not expired")
-	ErrNotClaimable      = errors.New("task is not assigned to an agent")
-	ErrInvalidEvent      = errors.New("invalid event")
+	// ErrForbidden means the request came from a runner other than the one
+	// holding the run.
+	ErrForbidden       = errors.New("the run is held by another runner")
+	ErrLeaseNotExpired = errors.New("lease has not expired")
+	ErrNotClaimable    = errors.New("task is not assigned to an agent")
+	ErrInvalidEvent    = errors.New("invalid event")
 )
 
 // Kind names an event.
@@ -78,6 +81,11 @@ func KindOf(ev Event) Kind { return ev.kind() }
 // ErrRunMismatch, whatever phase the task has moved to.
 type fenced interface{ runID() string }
 
+// sent is an event that names the authenticated runner sending it. After
+// the run id, the runner must be the one holding the run; an empty runner
+// (a server that does not authenticate runners) is not checked.
+type sent interface{ sender() string }
+
 // Create numbers a new task and puts it in Todo.
 type Create struct {
 	Number int64 // claimed from the Team's counter
@@ -87,10 +95,13 @@ type Create struct {
 // decided here, on the fresh read, never from the index. The caller must
 // already hold a Team slot.
 type Claim struct {
-	RunID  string
-	Mode   v1alpha1.RunMode
-	Runner string
-	Lease  time.Duration
+	RunID string
+	Mode  v1alpha1.RunMode
+	// Runner is the claiming runner's identity, RunnerName the name it
+	// gave itself.
+	Runner     string
+	RunnerName string
+	Lease      time.Duration
 	// Agent, if set, is the agent the claim was decided for; the claim is
 	// refused if the fresh task is assigned to anyone else.
 	Agent string
@@ -101,8 +112,9 @@ type Claim struct {
 
 // Heartbeat renews the run's lease.
 type Heartbeat struct {
-	RunID string
-	Lease time.Duration
+	RunID  string
+	Runner string // the sending runner's identity
+	Lease  time.Duration
 }
 
 // Advance commits step Step of a step-mode run: the step becomes Step+1,
@@ -140,6 +152,7 @@ const (
 // In step mode Step must be the run's current step, as for Advance.
 type Finish struct {
 	RunID     string
+	Runner    string // the sending runner's identity
 	Step      int64
 	Outcome   Outcome
 	Reason    v1alpha1.WaitingReason // required for OutcomeWaiting
@@ -195,10 +208,12 @@ func (Reclaim) kind() Kind   { return KindReclaim }
 func (Cancel) kind() Kind    { return KindCancel }
 func (AckOutbox) kind() Kind { return KindAckOutbox }
 
-func (e Heartbeat) runID() string { return e.RunID }
-func (e Advance) runID() string   { return e.RunID }
-func (e Record) runID() string    { return e.RunID }
-func (e Finish) runID() string    { return e.RunID }
+func (e Heartbeat) runID() string  { return e.RunID }
+func (e Heartbeat) sender() string { return e.Runner }
+func (e Finish) sender() string    { return e.Runner }
+func (e Advance) runID() string    { return e.RunID }
+func (e Record) runID() string     { return e.RunID }
+func (e Finish) runID() string     { return e.RunID }
 
 // Result is the outcome of a transition.
 type Result struct {
@@ -216,6 +231,9 @@ func Apply(t *v1alpha1.Task, ev Event, now time.Time) (Result, error) {
 		if err := checkRun(&t.Status, f.runID()); err != nil {
 			return Result{}, err
 		}
+	}
+	if sv, ok := ev.(sent); ok && sv.sender() != "" && t.Status.Run.Runner != sv.sender() {
+		return Result{}, ErrForbidden
 	}
 	cur := t.Status.Phase
 	if !slices.Contains(From[ev.kind()], cur) {
@@ -243,7 +261,7 @@ func Apply(t *v1alpha1.Task, ev Event, now time.Time) (Result, error) {
 			return Result{}, fmt.Errorf("run mode %q: %w", ev.Mode, ErrInvalidEvent)
 		}
 		s.Phase = v1alpha1.PhaseRunning
-		s.Run = &v1alpha1.Run{ID: ev.RunID, Mode: ev.Mode, Runner: ev.Runner, LeaseUntil: leaseUntil(now, ev.Lease), MCPTokenHash: ev.MCPTokenHash}
+		s.Run = &v1alpha1.Run{ID: ev.RunID, Mode: ev.Mode, Runner: ev.Runner, RunnerName: ev.RunnerName, LeaseUntil: leaseUntil(now, ev.Lease), MCPTokenHash: ev.MCPTokenHash}
 		if s.Runs == nil {
 			s.Runs = &v1alpha1.RunsStatus{}
 		}
@@ -386,7 +404,7 @@ func endRun(res *Result, reason v1alpha1.RunEndReason, outcome Outcome, now time
 		ID:   run.ID,
 		Kind: v1alpha1.OutboxRunEnded,
 		Run: &v1alpha1.RunRecord{
-			ID: run.ID, Mode: run.Mode, Runner: run.Runner, Step: run.Step,
+			ID: run.ID, Mode: run.Mode, Runner: run.Runner, RunnerName: run.RunnerName, Step: run.Step,
 			Reason: reason, Outcome: outcome, EndedAt: metaTime(now),
 		},
 	})

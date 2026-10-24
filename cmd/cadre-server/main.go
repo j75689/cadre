@@ -46,6 +46,8 @@ func run() error {
 		heartbeat = flag.Duration("heartbeat", manager.DefaultConfig.Heartbeat, "how often runners renew; also the reclaim grace")
 		reclaim   = flag.Duration("reclaim-interval", manager.DefaultLoopConfig.Reclaim, "how often expired leases are reclaimed")
 		dispatch  = flag.Duration("dispatch-interval", manager.DefaultLoopConfig.Dispatch, "how often the outbox is dispatched and new tasks numbered")
+		auth      = flag.String("runner-auth", "required", "required: runners authenticate with a ServiceAccount token for audience cadre; none: no runner authentication, for tests and local development only")
+		builtin   = flag.String("builtin-runner", "system:serviceaccount:cadre-system:cadre-runner", "the identity of cadre-runner, the only runner that may claim builtin agents' tasks")
 		s3cfg     kubernetes.S3Config
 	)
 	flag.StringVar(&s3cfg.Endpoint, "s3-endpoint", "", "S3-compatible endpoint; empty for AWS S3")
@@ -54,6 +56,9 @@ func run() error {
 	flag.StringVar(&s3cfg.Prefix, "s3-prefix", "cadre/", "prefix for every object key")
 	flag.BoolVar(&s3cfg.PathStyle, "s3-path-style", false, "use path-style addressing (most self-hosted stores)")
 	flag.Parse()
+	if *auth != "required" && *auth != "none" {
+		return fmt.Errorf("--runner-auth %q: must be required or none", *auth)
+	}
 	// Keys come from the environment, never flags, so they stay out of
 	// process listings. Without them the AWS default chain is used.
 	s3cfg.AccessKey = os.Getenv("CADRE_S3_ACCESS_KEY")
@@ -93,7 +98,13 @@ func run() error {
 	if *publicURL, err = resolvePublicURL(*publicURL, *listen, os.Getenv("KUBERNETES_SERVICE_HOST") != ""); err != nil {
 		return err
 	}
-	runner.NewServer(m, log, *publicURL).Register(mux)
+	var runnerOpts []runner.Option
+	if *auth == "required" {
+		runnerOpts = append(runnerOpts, runner.WithAuth(runner.Cached(controller.TokenReviews(ctrls.GetClient())), *builtin))
+	} else {
+		log.Warn("runners are not authenticated (--runner-auth=none): any client may claim and finish runs")
+	}
+	runner.NewServer(m, log, *publicURL, runnerOpts...).Register(mux)
 	mcp.NewServer(m, log, mcp.WithForwarder(forwarder)).Register(mux)
 	api.NewServer(m, log).Register(mux)
 	mux.HandleFunc("GET /healthz", func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(http.StatusOK) })

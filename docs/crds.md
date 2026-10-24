@@ -80,7 +80,8 @@ status:
   run:                        # only while Running
     id: 01JB...               # ULID; the run the per-run MCP token maps to
     mode: runtime             # runtime | step
-    runner: runner-7f3a       # runtime mode: the one runner; step mode: the worker holding this step
+    runner: system:serviceaccount:cadre-system:cadre-runner   # who holds the run: the runner's authenticated identity
+    runnerName: cadre-runner-7f3a   # the name it gave itself, for display
     step: 7                   # advances in step mode only
     leaseUntil: ...
   outbox:                     # written with the state change; applied idempotently, then cleared
@@ -107,6 +108,8 @@ status:
 | `status.waiting.threadSeq` | a thread sequence; sequences start at 1 |
 | `status.run.id`, `status.outbox[].id` | ULIDs |
 | `status.run.mode` | `runtime` or `step` |
+| `status.run.runner` | who holds the run: the runner's authenticated identity (`system:serviceaccount:<ns>:<name>` for an in-cluster runner); only requests from it may renew or finish the run. A server run with `--runner-auth=none` records the runner's own name instead |
+| `status.run.runnerName` | the name the runner gave itself, for display |
 | `status.outbox[].kind` | `CreateSubtask`, whose `spec` is the subtask's `TaskSpec`; `RunEnded`, whose `run` is the ended run (id, mode, runner, step, reason `Finished`, `Interrupted` or `Cancelled`, outcome, end time); `Notify` is added once its payload is defined |
 
 A `CreateSubtask` item names the subtask after its own id, lowercased (a valid DNS-1123 label). Re-applying the item is then a create of an object that already exists, which is what makes the dispatcher idempotent.

@@ -8,6 +8,9 @@ import (
 // +kubebuilder:validation:Enum=builtin;runner
 type RuntimeType string
 
+// ReservedLabelPrefix is the label prefix Cadre keeps for itself.
+const ReservedLabelPrefix = "cadre.dev/"
+
 // LabelRuntime is the claim label that lets a runner claim builtin agents.
 // cadre-runner always sends it. Any runner sending it may claim them until
 // runners are authenticated; then the label is bound to cadre-runner's

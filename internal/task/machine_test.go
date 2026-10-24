@@ -438,3 +438,21 @@ func TestTeam(t *testing.T) {
 		t.Fatalf("second slot with the default of 1: got %v", err)
 	}
 }
+
+// Only the runner holding a run may renew or finish it; a server that does
+// not authenticate runners (an empty sender) is not checked.
+func TestOnlyTheHolderMayActOnTheRun(t *testing.T) {
+	running := taskIn(v1alpha1.PhaseRunning, runtime)
+	running.Status.Run.Runner = "sa:holder"
+	wantErr(t, running, Heartbeat{RunID: runA, Runner: "sa:other", Lease: time.Minute}, ErrForbidden)
+	wantErr(t, running, Finish{RunID: runA, Runner: "sa:other", Outcome: OutcomeDone}, ErrForbidden)
+	wantErr(t, running, Heartbeat{RunID: "01JB0000000000000000000009", Runner: "sa:other", Lease: time.Minute}, ErrRunMismatch)
+	apply(t, running, Heartbeat{RunID: runA, Runner: "sa:holder", Lease: time.Minute})
+	apply(t, running, Heartbeat{RunID: runA, Lease: time.Minute})
+
+	todo := taskIn(v1alpha1.PhaseTodo, runtime)
+	run := apply(t, todo, Claim{RunID: runA, Mode: runtime, Runner: "sa:holder", RunnerName: "pod-1", Lease: time.Minute}).Status.Run
+	if run.Runner != "sa:holder" || run.RunnerName != "pod-1" {
+		t.Fatalf("claimed run: %+v", run)
+	}
+}

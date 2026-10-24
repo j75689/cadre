@@ -9,6 +9,7 @@ import (
 	"flag"
 	"fmt"
 	"log/slog"
+	"net/http"
 	"os"
 	"os/signal"
 	"strings"
@@ -40,6 +41,7 @@ func run() error {
 		namespaces = flag.String("namespaces", "", "comma-separated Team namespaces to take work from; empty for every one")
 		maxTurns   = flag.Int("max-turns", builtin.DefaultMaxTurns, "model responses per run before it hands the task to a human")
 		once       = flag.Bool("once", false, "stop after one run")
+		tokenFile  = flag.String("token-file", "/var/run/secrets/cadre/token", "the projected ServiceAccount token (audience cadre) to authenticate to cadre-server with, read before every request; empty sends none")
 	)
 	flag.Parse()
 	log := slog.New(slog.NewJSONHandler(os.Stderr, nil))
@@ -77,7 +79,11 @@ func run() error {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 	log.Info("cadre-runner started", "server", *server, "runner", *name, "namespaces", o.Namespaces)
-	return builtin.Run(ctx, cadreclient.New(*server, nil), o)
+	var hc *http.Client
+	if *tokenFile != "" {
+		hc = &http.Client{Transport: cadreclient.TokenFile(*tokenFile, nil)}
+	}
+	return builtin.Run(ctx, cadreclient.New(*server, hc), o)
 }
 
 // secrets reads one Secret key from the API server for each run. The value
