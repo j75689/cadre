@@ -20,6 +20,9 @@ type globals struct {
 	as        string
 }
 
+// version is set at build time with -ldflags "-X main.version=...".
+var version = "dev"
+
 func main() {
 	if err := newRoot().Execute(); err != nil {
 		fmt.Fprintln(os.Stderr, "cadre:", err)
@@ -32,13 +35,20 @@ func newRoot() *cobra.Command {
 	root := &cobra.Command{
 		Use:           "cadre",
 		Short:         "Work with a Cadre board",
+		Version:       version,
 		SilenceUsage:  true,
 		SilenceErrors: true,
 	}
 	root.PersistentFlags().StringVar(&g.server, "server", envOr("CADRE_SERVER", "http://localhost:8080"), "cadre-server URL (env CADRE_SERVER)")
 	root.PersistentFlags().StringVarP(&g.namespace, "namespace", "n", envOr("CADRE_NAMESPACE", "default"), "the team's namespace (env CADRE_NAMESPACE)")
 	root.PersistentFlags().StringVar(&g.as, "as", currentUser(), "who you are on the board")
-	root.AddCommand(newTaskCmd(g), newTeamCmd(g), newRunnerCmd(g))
+	root.SetVersionTemplate("{{.Version}}\n")
+	root.AddCommand(newTaskCmd(g), newTeamCmd(g), newRunnerCmd(g), &cobra.Command{
+		Use:   "version",
+		Short: "Print the version",
+		Args:  cobra.NoArgs,
+		Run:   func(cmd *cobra.Command, _ []string) { outln(cmd.OutOrStdout(), version) },
+	})
 	return root
 }
 

@@ -1,6 +1,6 @@
-# An example cadre-runner Deployment. There is no published image yet:
-# build one from cmd/cadre-runner and set it below. --server is
-# cadre-server's in-cluster URL.
+# An example cadre-runner Deployment. The image is published from main as
+# :main; pin a release tag (vX.Y.Z) instead. --server is cadre-server's
+# in-cluster URL.
 ---
 apiVersion: apps/v1
 kind: Deployment
@@ -20,7 +20,7 @@ spec:
       serviceAccountName: cadre-runner
       containers:
       - name: cadre-runner
-        image: cadre-runner:dev
+        image: ghcr.io/j75689/cadre-runner:main
         args:
         - --server=http://cadre-server.cadre-system.svc:8080
         # Give every replica its own name, shown in status.run.runner.

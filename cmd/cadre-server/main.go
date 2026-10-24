@@ -33,6 +33,9 @@ import (
 	"github.com/j75689/cadre/internal/storage/kubernetes"
 )
 
+// version is set at build time with -ldflags "-X main.version=...".
+var version = "dev"
+
 func main() {
 	if err := run(); err != nil {
 		fmt.Fprintln(os.Stderr, "cadre-server:", err)
@@ -53,6 +56,7 @@ func run() error {
 		builtin   = flag.String("builtin-runner", "system:serviceaccount:cadre-system:cadre-runner", "the identity of cadre-runner, the only runner that may claim builtin agents' tasks")
 		elect     = flag.Bool("leader-elect", true, "run the controllers on one replica at a time, elected with a Lease; the API, the runner protocol and the MCP endpoint serve on every replica")
 		electNS   = flag.String("leader-elect-namespace", "", "the namespace of the leader election Lease; by default the pod's own in a cluster (outside one, leader election needs it, or is off)")
+		showVer   = flag.Bool("version", false, "print the version and exit")
 		s3cfg     kubernetes.S3Config
 	)
 	flag.StringVar(&s3cfg.Endpoint, "s3-endpoint", "", "S3-compatible endpoint; empty for AWS S3")
@@ -61,6 +65,10 @@ func run() error {
 	flag.StringVar(&s3cfg.Prefix, "s3-prefix", "cadre/", "prefix for every object key")
 	flag.BoolVar(&s3cfg.PathStyle, "s3-path-style", false, "use path-style addressing (most self-hosted stores)")
 	flag.Parse()
+	if *showVer {
+		fmt.Println(version)
+		return nil
+	}
 	if *auth != "required" && *auth != "none" {
 		return fmt.Errorf("--runner-auth %q: must be required or none", *auth)
 	}
