@@ -433,3 +433,89 @@ func TestRedact(t *testing.T) {
 		t.Errorf("redact: %q", got)
 	}
 }
+
+// A server whose read is stale sends nothing another one already sent.
+func TestNotifyAfterAnotherServer(t *testing.T) {
+	a, b := newReceiver(t), newReceiver(t)
+	e, _ := notifyEnv(t, notifier("a", a.URL, nil, v1alpha1.NotifyQuestion), notifier("b", b.URL, nil, v1alpha1.NotifyQuestion))
+	key := e.addTask(t, "x", v1alpha1.AssigneeAgent)
+	e.question(t, key)
+	stale := notifyItems(e.get(t, key))[0]
+	nfs, _ := e.m.cfg.Notifiers.ListNotifiers(ctx, ns)
+	byName := map[string]*v1alpha1.Notifier{}
+	for i := range nfs {
+		byName[nfs[i].Name] = &nfs[i]
+	}
+	// Another server sent it to a.
+	if _, err := e.m.transition(ctx, key, task.NotifyDelivered{ID: stale.ID, To: []string{"a"}}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := e.m.notifyItem(ctx, key, stale, byName); err != nil {
+		t.Fatal(err)
+	}
+	if na, nb := len(a.deliveries()), len(b.deliveries()); na != 0 || nb != 1 {
+		t.Errorf("a %d, b %d deliveries; want what was left, b only", na, nb)
+	}
+	// Then finished it.
+	if _, err := e.m.transition(ctx, key, task.AckOutbox{IDs: []string{stale.ID}}); err != nil {
+		t.Fatal(err)
+	}
+	if done, err := e.m.notifyItem(ctx, key, stale, byName); err != nil || done {
+		t.Errorf("a gone item: done %v, %v", done, err)
+	}
+	if na, nb := len(a.deliveries()), len(b.deliveries()); na != 0 || nb != 1 {
+		t.Errorf("a gone item was sent again: a %d, b %d", na, nb)
+	}
+}
+
+func TestNotifyTurnCoversTheDeliveries(t *testing.T) {
+	for n, want := range map[int]time.Duration{1: 20 * time.Second, 4: 20 * time.Second, 5: 30 * time.Second, 13: 50 * time.Second} {
+		if got := notifyTurn(n); got != want {
+			t.Errorf("notifyTurn(%d) = %s, want %s", n, got, want)
+		}
+	}
+}
+
+// failAcks fails a status write that takes items out of the outbox.
+type failAcks struct{ storage.Driver }
+
+func (f failAcks) UpdateTaskStatus(ctx context.Context, t *v1alpha1.Task) error {
+	cur, err := f.GetTask(ctx, storage.Key{Namespace: t.Namespace, Name: t.Name})
+	if err == nil && len(t.Status.Outbox) < len(cur.Status.Outbox) {
+		return errors.New("the ack is lost")
+	}
+	return f.Driver.UpdateTaskStatus(ctx, t)
+}
+
+// Who took it is written before the ack, so an ack that fails resends to
+// nobody.
+func TestNotifyRecordsBeforeTheAck(t *testing.T) {
+	rec := newReceiver(t)
+	e, _ := notifyEnv(t, notifier("hook", rec.URL, nil, v1alpha1.NotifyQuestion))
+	key := e.addTask(t, "x", v1alpha1.AssigneeAgent)
+	e.question(t, key)
+	e.m.store = failAcks{e.store}
+	_ = e.m.DeliverNotifications(ctx)
+	_ = e.m.DeliverNotifications(ctx)
+	if n := len(rec.deliveries()); n != 1 {
+		t.Errorf("%d deliveries with the acks lost, want 1", n)
+	}
+	if items := notifyItems(e.get(t, key)); len(items) != 1 || strings.Join(items[0].Notify.Delivered, ",") != "hook" {
+		t.Errorf("items %+v", items)
+	}
+}
+
+// A server with no Notifiers has nobody to tell: it acks what it finds.
+func TestNotifyWithoutNotifiers(t *testing.T) {
+	rec := newReceiver(t)
+	e, _ := notifyEnv(t, notifier("hook", rec.URL, nil, v1alpha1.NotifyQuestion))
+	key := e.addTask(t, "x", v1alpha1.AssigneeAgent)
+	e.question(t, key)
+	e.m.cfg.Notifiers = nil
+	if err := e.m.DeliverNotifications(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if items := notifyItems(e.get(t, key)); len(items) != 0 || len(rec.deliveries()) != 0 {
+		t.Errorf("items %+v, deliveries %d", items, len(rec.deliveries()))
+	}
+}

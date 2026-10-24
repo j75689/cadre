@@ -52,7 +52,6 @@ rules:
   resources:
   - agents/status
   - modelproviders/status
-  - notifiers/status
   - runners/status
   - schedules/status
   - tasks/status
@@ -60,6 +59,14 @@ rules:
   - toolservers/status
   verbs:
   - get
+  - update
+- apiGroups:
+  - cadre.dev
+  resources:
+  - notifiers/status
+  verbs:
+  - get
+  - patch
   - update
 - apiGroups:
   - cadre.dev

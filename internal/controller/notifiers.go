@@ -25,7 +25,7 @@ import (
 // whether a Notifier can be delivered to.
 //
 // +kubebuilder:rbac:groups=cadre.dev,resources=notifiers,verbs=get;list;watch
-// +kubebuilder:rbac:groups=cadre.dev,resources=notifiers/status,verbs=get;update
+// +kubebuilder:rbac:groups=cadre.dev,resources=notifiers/status,verbs=get;update;patch
 
 type notifierReconciler struct{ base }
 

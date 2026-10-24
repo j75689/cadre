@@ -39,6 +39,9 @@ var (
 	ErrInvalidEvent    = errors.New("invalid event")
 	// ErrNotifySending means another server is sending the notification.
 	ErrNotifySending = errors.New("the notification is being sent by another server")
+	// ErrNotifyGone means the notification is no longer in the outbox:
+	// another server finished it.
+	ErrNotifyGone = errors.New("the notification is no longer in the outbox")
 )
 
 // Kind names an event.
@@ -598,6 +601,7 @@ func Apply(t *v1alpha1.Task, ev Event, now time.Time) (Result, error) {
 		if ev.By == "" || !ev.Until.After(now) {
 			return Result{}, fmt.Errorf("claim notification %q by %q until %s: %w", ev.ID, ev.By, ev.Until, ErrInvalidEvent)
 		}
+		found := false
 		for i := range s.Outbox {
 			n := s.Outbox[i].Notify
 			if s.Outbox[i].ID != ev.ID || n == nil {
@@ -608,6 +612,10 @@ func Apply(t *v1alpha1.Task, ev Event, now time.Time) (Result, error) {
 			}
 			until := metav1.NewTime(ev.Until)
 			n.SendingBy, n.SendingUntil = ev.By, &until
+			found = true
+		}
+		if !found {
+			return Result{}, ErrNotifyGone
 		}
 
 	case WaitingAt:

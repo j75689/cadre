@@ -76,7 +76,15 @@ var validEvents = []struct {
 	{WaitingAt{ItemID: "01JB0000000000000000000001", Seq: 1}, step},
 	{ReserveItem{ID: "01JB0000000000000000000001", To: 1}, step},
 	{NotifyDelivered{ID: "01JB0000000000000000000001", To: []string{"hook"}}, step},
-	{NotifyClaim{ID: "01JB0000000000000000000001", By: "s1", Until: time.Now().Add(time.Hour)}, step},
+	{NotifyClaim{ID: "01JB0000000000000000000003", By: "s1", Until: time.Now().Add(time.Hour)}, step},
+}
+
+// setups give a task what an event of a kind acts on, where the task of
+// every phase does not have it.
+var setups = map[Kind]func(*v1alpha1.Task){
+	KindSending: func(t *v1alpha1.Task) {
+		t.Status.Outbox = append(t.Status.Outbox, v1alpha1.OutboxItem{ID: "01JB0000000000000000000003", Kind: v1alpha1.OutboxNotify, Notify: &v1alpha1.Notification{Event: v1alpha1.NotifyDone}})
+	},
 }
 
 func TestTableIsExhaustive(t *testing.T) {
@@ -94,6 +102,9 @@ func TestEveryPhaseAndEvent(t *testing.T) {
 	for _, p := range append([]v1alpha1.Phase{unborn}, allPhases...) {
 		for _, v := range validEvents {
 			before := taskIn(p, v.mode)
+			if setup := setups[KindOf(v.ev)]; setup != nil {
+				setup(before)
+			}
 			snapshot := before.DeepCopy()
 			_, err := Apply(before, v.ev, now)
 			allowed := slices.Contains(From[KindOf(v.ev)], p)
@@ -691,5 +702,12 @@ func TestNotifyClaim(t *testing.T) {
 	res, err := Apply(tk, NotifyDelivered{ID: id, To: []string{"a"}, By: "s2"}, now.Add(time.Minute))
 	if err != nil || res.Status.Outbox[0].Notify.SendingBy != "" {
 		t.Errorf("a record of deliveries keeps the turn: %+v %v", res.Status.Outbox[0].Notify, err)
+	}
+}
+
+func TestNotifyClaimOnAGoneItem(t *testing.T) {
+	tk := taskIn(v1alpha1.PhaseDone, step)
+	if _, err := Apply(tk, NotifyClaim{ID: "01JB0000000000000000000009", By: "s1", Until: time.Now().Add(time.Minute)}, time.Now()); !errors.Is(err, ErrNotifyGone) {
+		t.Errorf("a claim on an item another server finished: %v", err)
 	}
 }

@@ -145,12 +145,14 @@ func (m *Manager) addNotify(ctx context.Context, t *v1alpha1.Task, next *v1alpha
 // dead webhook does not pin a task's outbox.
 const NotifyTTL = 24 * time.Hour
 
-// notifyTimeout bounds one delivery; notifyTurn is how long a server has
-// a notification to itself, comfortably more.
-const (
-	notifyTimeout = 10 * time.Second
-	notifyTurn    = 3 * notifyTimeout
-)
+// notifyTimeout bounds one delivery.
+const notifyTimeout = 10 * time.Second
+
+// notifyTurn is how long a server has a notification for n Notifiers to
+// itself: as many rounds of deliveries as they take, plus one.
+func notifyTurn(n int) time.Duration {
+	return time.Duration((n+notifyDelivers-1)/notifyDelivers+1) * notifyTimeout
+}
 
 // How many tasks' notifications are sent at once, and how many deliveries
 // of one notification.
@@ -184,9 +186,6 @@ type PayloadTask struct {
 // not answer delays nothing else: tasks are worked a few at a time, and a
 // notification's deliveries at once.
 func (m *Manager) DeliverNotifications(ctx context.Context) error {
-	if m.cfg.Notifiers == nil {
-		return nil
-	}
 	return m.forEachTeam(ctx, func(ns string) error {
 		tasks, err := m.store.ListTasks(ctx, storage.Query{Namespace: ns})
 		if err != nil {
@@ -217,12 +216,23 @@ func (m *Manager) DeliverNotifications(ctx context.Context) error {
 }
 
 // notifyTask sends a task's pending notifications and acks the ones done.
+// A server without Notifiers has nobody to tell: it acks them.
 func (m *Manager) notifyTask(ctx context.Context, key storage.Key) error {
 	t, err := m.store.GetTask(ctx, key)
 	if errors.Is(err, storage.ErrNotFound) {
 		return nil
 	}
 	if err != nil {
+		return err
+	}
+	if m.cfg.Notifiers == nil {
+		var ids []string
+		for _, it := range t.Status.Outbox {
+			if it.Kind == v1alpha1.OutboxNotify {
+				ids = append(ids, it.ID)
+			}
+		}
+		_, err := m.transition(ctx, key, task.AckOutbox{IDs: ids})
 		return err
 	}
 	all, err := m.cfg.Notifiers.ListNotifiers(ctx, key.Namespace)
@@ -260,13 +270,28 @@ func (m *Manager) notifyTask(ctx context.Context, key storage.Key) error {
 // it. It reports whether the item is done: all took it, or it outlived
 // NotifyTTL.
 func (m *Manager) notifyItem(ctx context.Context, key storage.Key, it v1alpha1.OutboxItem, byName map[string]*v1alpha1.Notifier) (bool, error) {
-	n := it.Notify
-	var pending []*v1alpha1.Notifier
-	for _, name := range n.To {
-		if nf, ok := byName[name]; ok && !slices.Contains(n.Delivered, name) {
-			pending = append(pending, nf)
-		}
+	if len(pendingOf(it.Notify, byName)) == 0 {
+		return true, nil
 	}
+	// One server at a time: the claim is a conditional write on the Task,
+	// for as long as delivering to every pending Notifier can take. What is
+	// pending, and how old the item is, are read again from the task the
+	// claim returns: another server may have finished it, or part of it,
+	// since the read that found it.
+	t, err := m.transition(ctx, key, task.NotifyClaim{ID: it.ID, By: m.id, Until: m.now().Add(notifyTurn(len(it.Notify.To)))})
+	switch {
+	case errors.Is(err, task.ErrNotifySending), errors.Is(err, task.ErrNotifyGone):
+		return false, nil
+	case err != nil:
+		return false, err
+	}
+	idx := slices.IndexFunc(t.Status.Outbox, func(o v1alpha1.OutboxItem) bool { return o.ID == it.ID })
+	if idx < 0 || t.Status.Outbox[idx].Notify == nil {
+		return false, nil
+	}
+	it = t.Status.Outbox[idx]
+	n := it.Notify
+	pending := pendingOf(n, byName)
 	if len(pending) == 0 {
 		return true, nil
 	}
@@ -275,22 +300,8 @@ func (m *Manager) notifyItem(ctx context.Context, key storage.Key, it v1alpha1.O
 		for i := range pending {
 			names[i] = pending[i].Name
 		}
-		t, err := m.store.GetTask(ctx, key)
-		if err != nil {
-			return false, err
-		}
 		m.cfg.Notifiers.Warn(ctx, t, "NotificationDropped", fmt.Sprintf("the %s notification %s was not taken within %s by: %s", n.Event, it.ID, NotifyTTL, strings.Join(names, ", ")))
 		return true, nil
-	}
-	// One server at a time: the claim is a conditional write on the Task,
-	// and the task it returns is what the payload is built from, so an
-	// entry placed by the dispatcher this same pass is in it.
-	t, err := m.transition(ctx, key, task.NotifyClaim{ID: it.ID, By: m.id, Until: m.now().Add(notifyTurn)})
-	if errors.Is(err, task.ErrNotifySending) {
-		return false, nil
-	}
-	if err != nil {
-		return false, err
 	}
 	body, err := json.Marshal(m.payload(t, it))
 	if err != nil {
@@ -319,14 +330,23 @@ func (m *Manager) notifyItem(ctx context.Context, key storage.Key, it v1alpha1.O
 		})
 	}
 	wg.Wait()
-	if len(took) == len(pending) {
-		return true, nil
-	}
-	// Record who took it, and end this server's turn.
+	// Record who took it, and end this server's turn, before any ack: an
+	// ack that fails then resends to nobody who has it.
 	if _, err := m.transition(ctx, key, task.NotifyDelivered{ID: it.ID, To: took, By: m.id}); err != nil {
-		errs = append(errs, err)
+		return false, errors.Join(append(errs, err)...)
 	}
-	return false, errors.Join(errs...)
+	return len(took) == len(pending), errors.Join(errs...)
+}
+
+// pendingOf is the Notifiers of n that exist and have not taken it.
+func pendingOf(n *v1alpha1.Notification, byName map[string]*v1alpha1.Notifier) []*v1alpha1.Notifier {
+	var out []*v1alpha1.Notifier
+	for _, name := range n.To {
+		if nf, ok := byName[name]; ok && !slices.Contains(n.Delivered, name) {
+			out = append(out, nf)
+		}
+	}
+	return out
 }
 
 func (m *Manager) payload(t *v1alpha1.Task, it v1alpha1.OutboxItem) Payload {

@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"slices"
 	"sync"
 	"time"
 
@@ -76,6 +77,12 @@ func (m *Manager) numberTask(ctx context.Context, key storage.Key) (*v1alpha1.Ta
 	return m.transition(ctx, key, task.Create{Number: n})
 }
 
+// hasDispatchable reports whether t's outbox holds something the dispatcher
+// applies: anything but notifications, which have their own loop.
+func hasDispatchable(t *v1alpha1.Task) bool {
+	return slices.ContainsFunc(t.Status.Outbox, func(it v1alpha1.OutboxItem) bool { return it.Kind != v1alpha1.OutboxNotify })
+}
+
 // Dispatch applies every pending outbox item and acks the applied ones.
 // Items are idempotent, so an item applied by an instance that died before
 // acking is applied again without effect.
@@ -87,7 +94,7 @@ func (m *Manager) Dispatch(ctx context.Context) error {
 		}
 		var errs []error
 		for _, t := range tasks {
-			if len(t.Status.Outbox) == 0 {
+			if !hasDispatchable(&t) {
 				continue
 			}
 			if err := m.dispatchTask(ctx, storage.Key{Namespace: ns, Name: t.Name}); err != nil {
@@ -410,7 +417,7 @@ func (m *Manager) FollowHints(ctx context.Context, log *slog.Logger) {
 	var queued sync.Map // keys queued and not yet taken, so a burst of
 	// changes to one task queues it once
 	n.NotifyTasks(func(t *v1alpha1.Task) {
-		if ctx.Err() != nil || (t.Status.Phase != "" && len(t.Status.Outbox) == 0) {
+		if ctx.Err() != nil || (t.Status.Phase != "" && !hasDispatchable(t)) {
 			return
 		}
 		key := storage.Key{Namespace: t.Namespace, Name: t.Name}
@@ -464,7 +471,7 @@ func (m *Manager) handleHint(ctx context.Context, key storage.Key) error {
 			return err
 		}
 	}
-	if len(t.Status.Outbox) > 0 {
+	if hasDispatchable(t) {
 		return m.dispatchTask(ctx, key)
 	}
 	return nil
