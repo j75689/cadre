@@ -95,15 +95,17 @@ type Policy struct {
 	// team, and allowed to create teams.
 	AdminUsers, AdminGroups []string
 	// FoldUsernames compares usernames without case, as email addresses
-	// are: identities then carry them lower-cased.
+	// are: identities then carry them lower-cased with strings.ToLower,
+	// and names from roles and flags are lower-cased the same way.
 	FoldUsernames bool
 }
 
 // sameUser compares a username from a role or a flag with an identity's.
 func (p *Policy) sameUser(name, username string) bool {
 	if p.FoldUsernames {
-		// The same fold as the identity's username had.
-		return strings.ToLower(name) == strings.ToLower(username)
+		// The same fold as the identity's username had, not EqualFold,
+		// which also takes a long s for an s.
+		return strings.ToLower(name) == username
 	}
 	return name == username
 }

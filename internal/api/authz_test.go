@@ -65,7 +65,7 @@ func startRolesOn(t *testing.T, store storage.Driver, wrap func(storage.Driver) 
 	meta := map[string]metav1.ObjectMeta{
 		"team-a": {Namespace: "team-a", Name: v1alpha1.TeamName, Labels: map[string]string{"tier": "one"},
 			Annotations:   map[string]string{"kubectl.kubernetes.io/last-applied-configuration": string(applied)},
-			ManagedFields: []metav1.ManagedFieldsEntry{{Manager: "kubectl-client-side-apply", FieldsType: "FieldsV1", FieldsV1: &metav1.FieldsV1{Raw: []byte(`{"f:spec":{"f:roles":{}}}`)}}}},
+			ManagedFields: []metav1.ManagedFieldsEntry{{Manager: "kubectl-client-side-apply", FieldsType: "FieldsV1", FieldsV1: metav1.NewFieldsV1(`{"f:spec":{"f:roles":{}}}`)}}},
 		"team-b": {Namespace: "team-b", Name: v1alpha1.TeamName},
 	}
 	for ns, spec := range map[string]v1alpha1.TeamSpec{"team-a": {Roles: roles}, "team-b": {}} {

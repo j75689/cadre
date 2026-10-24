@@ -98,7 +98,7 @@ func TestFold(t *testing.T) {
 	p := &authz.Policy{AdminUsers: []string{"Root@Example.test", "ſam@example.test"}, FoldUsernames: true}
 	tm := team(role(v1alpha1.RoleMember, user("Dana@Example.test")), role(v1alpha1.RoleViewer, user("Kim@example.test")))
 	for username, want := range map[string]authz.Role{
-		"dana@example.test": authz.Member,
+		"dana@example.test": authz.Member, // usernames come lower-cased
 		"root@example.test": authz.Admin,
 		"sam@example.test":  authz.NoRole,
 		"kim@example.test":  authz.Viewer,
