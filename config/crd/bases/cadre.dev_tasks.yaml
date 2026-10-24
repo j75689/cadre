@@ -419,6 +419,14 @@ spec:
               run:
                 description: Run is set only while the phase is Running.
                 properties:
+                  attempt:
+                    description: |-
+                      Attempt counts the workers that took the current step, in step mode:
+                      a worker that dies writes nothing, but its take is counted. It is
+                      reset when the step is committed.
+                    format: int32
+                    minimum: 0
+                    type: integer
                   id:
                     description: ID is the run's ULID; the per-run MCP token maps
                       to it.
@@ -459,6 +467,29 @@ spec:
                     format: int64
                     minimum: 0
                     type: integer
+                  stepItems:
+                    description: |-
+                      StepItems are the outbox items the current step recorded, in step
+                      mode: a step done again after its worker died records the same
+                      items, which are not recorded twice, even once applied. They are
+                      cleared when the step is committed.
+                    items:
+                      description: |-
+                        StepItem is an outbox item a step recorded, and where its entry is
+                        looked for: the thread revision or file version it was recorded after.
+                      properties:
+                        after:
+                          format: int64
+                          type: integer
+                        id:
+                          type: string
+                      required:
+                      - id
+                      type: object
+                    type: array
+                    x-kubernetes-list-map-keys:
+                    - id
+                    x-kubernetes-list-type: map
                 required:
                 - id
                 - leaseUntil

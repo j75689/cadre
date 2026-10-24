@@ -25,7 +25,10 @@ var (
 	ErrForbidden       = errors.New("the run is held by another runner")
 	ErrLeaseNotExpired = errors.New("lease has not expired")
 	ErrNotClaimable    = errors.New("task is not assigned to an agent")
-	ErrInvalidEvent    = errors.New("invalid event")
+	// ErrStepTaken means a step-mode run's current step is held by a worker
+	// whose lease has not run out.
+	ErrStepTaken    = errors.New("the step is taken")
+	ErrInvalidEvent = errors.New("invalid event")
 )
 
 // Kind names an event.
@@ -38,6 +41,8 @@ const (
 	KindClaim     Kind = "Claim"
 	KindHeartbeat Kind = "Heartbeat"
 	KindAdvance   Kind = "Advance"
+	KindTakeStep  Kind = "TakeStep"
+	KindRelease   Kind = "ReleaseStep"
 	KindRecord    Kind = "Record"
 	KindFinish    Kind = "Finish"
 	KindReply     Kind = "Reply"
@@ -63,6 +68,8 @@ var From = map[Kind][]v1alpha1.Phase{
 	KindClaim:     {v1alpha1.PhaseTodo},
 	KindHeartbeat: {v1alpha1.PhaseRunning},
 	KindAdvance:   {v1alpha1.PhaseRunning},
+	KindTakeStep:  {v1alpha1.PhaseRunning},
+	KindRelease:   {v1alpha1.PhaseRunning},
 	KindRecord:    {v1alpha1.PhaseRunning},
 	KindFinish:    {v1alpha1.PhaseRunning},
 	KindReply:     {v1alpha1.PhaseWaiting},
@@ -118,26 +125,60 @@ type Claim struct {
 type Heartbeat struct {
 	RunID  string
 	Runner string // the sending runner's identity
+	Step   int64  // in step mode, the step held
 	Lease  time.Duration
 }
 
+// MaxAttempts is how many workers may take one step of a step-mode run;
+// after that the run fails.
+const MaxAttempts = 3
+
+// TakeStep hands the current step of a step-mode run to a worker: Step
+// must be the run's step, free (no worker, or one whose lease passed by
+// more than Grace), and not taken MaxAttempts times. The worker gets a
+// lease and the run a fresh MCP token hash, and the take is counted.
+type TakeStep struct {
+	RunID        string
+	Step         int64
+	Runner       string // the worker's identity
+	RunnerName   string
+	Lease        time.Duration
+	Grace        time.Duration
+	MCPTokenHash string
+}
+
 // Advance commits step Step of a step-mode run: the step becomes Step+1,
-// Outbox is written, and the run is handed to Runner, the worker taking the
-// next step, with a fresh lease, all in the same write. Re-delivering the same
-// step fails with ErrStepMismatch, so the step's effects land exactly once.
+// Outbox is written, and the step is released (no worker, no lease, no
+// MCP token: the step's token dies), all in the same write, so any worker
+// can take the next. Re-delivering the same step fails with
+// ErrStepMismatch, so the step's effects land exactly once. Runner is the
+// committing worker's identity.
 type Advance struct {
 	RunID  string
 	Step   int64
 	Runner string
-	Lease  time.Duration
 	Outbox []v1alpha1.OutboxItem
+}
+
+// ReleaseStep gives a step back without committing it, after a failed
+// attempt: the step is free for the next worker, and its attempts stay
+// counted.
+type ReleaseStep struct {
+	RunID  string
+	Step   int64
+	Runner string
 }
 
 // Record writes outbox items for a runtime-mode run without touching its
 // phase. It is fenced on the run id only, because a runtime run has no step;
 // a step-mode run commits its outbox with Advance instead.
+//
+// In step mode it writes them for the current step, Step; an item whose id
+// is in the outbox already (a re-executed step recording it again) is
+// skipped.
 type Record struct {
 	RunID  string
+	Step   int64
 	Outbox []v1alpha1.OutboxItem
 }
 
@@ -241,12 +282,18 @@ func (Reclaim) kind() Kind   { return KindReclaim }
 func (Cancel) kind() Kind    { return KindCancel }
 func (AckOutbox) kind() Kind { return KindAckOutbox }
 
-func (e Heartbeat) runID() string  { return e.RunID }
-func (e Heartbeat) sender() string { return e.Runner }
-func (e Finish) sender() string    { return e.Runner }
-func (e Advance) runID() string    { return e.RunID }
-func (e Record) runID() string     { return e.RunID }
-func (e Finish) runID() string     { return e.RunID }
+func (e Heartbeat) runID() string    { return e.RunID }
+func (e Heartbeat) sender() string   { return e.Runner }
+func (e Finish) sender() string      { return e.Runner }
+func (e Advance) runID() string      { return e.RunID }
+func (e Advance) sender() string     { return e.Runner }
+func (e TakeStep) runID() string     { return e.RunID }
+func (e ReleaseStep) runID() string  { return e.RunID }
+func (e ReleaseStep) sender() string { return e.Runner }
+func (TakeStep) kind() Kind          { return KindTakeStep }
+func (ReleaseStep) kind() Kind       { return KindRelease }
+func (e Record) runID() string       { return e.RunID }
+func (e Finish) runID() string       { return e.RunID }
 
 // Result is the outcome of a transition.
 type Result struct {
@@ -296,6 +343,9 @@ func Apply(t *v1alpha1.Task, ev Event, now time.Time) (Result, error) {
 		}
 		s.Phase = v1alpha1.PhaseRunning
 		s.Run = &v1alpha1.Run{ID: ev.RunID, Mode: ev.Mode, Runner: ev.Runner, RunnerName: ev.RunnerName, LeaseUntil: leaseUntil(now, ev.Lease), MCPTokenHash: ev.MCPTokenHash}
+		if ev.Mode == v1alpha1.RunModeStep {
+			s.Run.Attempt = 1 // the claim takes step 0
+		}
 		if s.Runs == nil {
 			s.Runs = &v1alpha1.RunsStatus{}
 		}
@@ -306,7 +356,42 @@ func Apply(t *v1alpha1.Task, ev Event, now time.Time) (Result, error) {
 		if ev.Lease <= 0 {
 			return Result{}, fmt.Errorf("heartbeat needs a positive lease: %w", ErrInvalidEvent)
 		}
+		if s.Run.Mode == v1alpha1.RunModeStep {
+			if err := checkStep(s.Run, ev.Step); err != nil {
+				return Result{}, err
+			}
+		}
 		s.Run.LeaseUntil = leaseUntil(now, ev.Lease)
+
+	case TakeStep:
+		if s.Run.Mode != v1alpha1.RunModeStep {
+			return Result{}, fmt.Errorf("take a step in %s mode: %w", s.Run.Mode, ErrInvalidTransition)
+		}
+		if err := checkStep(s.Run, ev.Step); err != nil {
+			return Result{}, err
+		}
+		if ev.Lease <= 0 || ev.Runner == "" {
+			return Result{}, fmt.Errorf("a step needs a positive lease and a worker: %w", ErrInvalidEvent)
+		}
+		if stepHeld(s.Run, now, ev.Grace) {
+			return Result{}, ErrStepTaken
+		}
+		if s.Run.Attempt >= MaxAttempts {
+			return Result{}, fmt.Errorf("step %d was taken %d times: %w", ev.Step, s.Run.Attempt, ErrNotClaimable)
+		}
+		s.Run.Attempt++
+		s.Run.Runner, s.Run.RunnerName = ev.Runner, ev.RunnerName
+		s.Run.LeaseUntil = leaseUntil(now, ev.Lease)
+		s.Run.MCPTokenHash = ev.MCPTokenHash
+
+	case ReleaseStep:
+		if s.Run.Mode != v1alpha1.RunModeStep {
+			return Result{}, fmt.Errorf("release a step in %s mode: %w", s.Run.Mode, ErrInvalidTransition)
+		}
+		if err := checkStep(s.Run, ev.Step); err != nil {
+			return Result{}, err
+		}
+		releaseStep(s.Run, now)
 
 	case Advance:
 		if s.Run.Mode != v1alpha1.RunModeStep {
@@ -315,19 +400,19 @@ func Apply(t *v1alpha1.Task, ev Event, now time.Time) (Result, error) {
 		if err := checkStep(s.Run, ev.Step); err != nil {
 			return Result{}, err
 		}
-		if ev.Lease <= 0 {
-			return Result{}, fmt.Errorf("advance needs a positive lease: %w", ErrInvalidEvent)
-		}
 		if err := appendOutbox(s, ev.Outbox); err != nil {
 			return Result{}, err
 		}
 		s.Run.Step++
-		s.Run.Runner = ev.Runner
-		s.Run.LeaseUntil = leaseUntil(now, ev.Lease)
+		releaseStep(s.Run, now)
+		s.Run.Attempt = 0
+		s.Run.StepItems = nil
 
 	case Record:
-		if s.Run.Mode != v1alpha1.RunModeRuntime {
-			return Result{}, fmt.Errorf("record in %s mode, use advance: %w", s.Run.Mode, ErrInvalidTransition)
+		if s.Run.Mode == v1alpha1.RunModeStep {
+			if err := checkStep(s.Run, ev.Step); err != nil {
+				return Result{}, err
+			}
 		}
 		if err := appendOutbox(s, ev.Outbox); err != nil {
 			return Result{}, err
@@ -378,6 +463,24 @@ func Apply(t *v1alpha1.Task, ev Event, now time.Time) (Result, error) {
 	case Reclaim:
 		if s.Run == nil {
 			return Result{}, fmt.Errorf("running task has no run: %w", ErrInvalidTransition)
+		}
+		if s.Run.Mode == v1alpha1.RunModeStep {
+			// A step-mode run outlives its workers: an expired step is
+			// freed for the next one, until the step's attempts run out.
+			switch {
+			case stepHeld(s.Run, now, ev.Grace):
+				return Result{}, ErrLeaseNotExpired
+			case s.Run.Attempt < MaxAttempts && s.Run.Runner == "":
+				return Result{}, ErrLeaseNotExpired // free already, waiting for a worker
+			case s.Run.Attempt < MaxAttempts:
+				releaseStep(s.Run, now)
+				return res, nil
+			}
+			// The step's last attempt died or gave up: no worker may take
+			// it again.
+			s.Phase = v1alpha1.PhaseFailed
+			endRun(&res, v1alpha1.RunInterrupted, OutcomeFailed, now)
+			break
 		}
 		if !now.After(s.Run.LeaseUntil.Add(ev.Grace)) {
 			return Result{}, ErrLeaseNotExpired
@@ -461,6 +564,19 @@ func HeldBy(runner, runnerName, sender string) bool {
 	return sender == "" || runner == "" || runnerName == "" || runner == sender
 }
 
+// stepHeld reports whether a worker holds the run's step: one is set and
+// its lease has not passed by more than grace.
+func stepHeld(run *v1alpha1.Run, now time.Time, grace time.Duration) bool {
+	return run.Runner != "" && !now.After(run.LeaseUntil.Add(grace))
+}
+
+// releaseStep frees the run's step: no worker, no lease, no MCP token.
+func releaseStep(run *v1alpha1.Run, now time.Time) {
+	run.Runner, run.RunnerName = "", ""
+	run.LeaseUntil = leaseUntil(now, 0) // a free step's lease ended when it was freed
+	run.MCPTokenHash = ""
+}
+
 func checkStep(run *v1alpha1.Run, step int64) error {
 	if step != run.Step {
 		return fmt.Errorf("step %d, run is at %d: %w", step, run.Step, ErrStepMismatch)
@@ -502,12 +618,29 @@ func appendOutbox(s *v1alpha1.TaskStatus, items []v1alpha1.OutboxItem) error {
 		default:
 			return fmt.Errorf("outbox item %q of kind %q: %w", it.ID, it.Kind, ErrInvalidEvent)
 		}
+		if s.Run != nil && s.Run.Mode == v1alpha1.RunModeStep {
+			if slices.ContainsFunc(s.Run.StepItems, func(o v1alpha1.StepItem) bool { return o.ID == it.ID }) {
+				continue // a re-executed step records the same item again
+			}
+			s.Run.StepItems = append(s.Run.StepItems, v1alpha1.StepItem{ID: it.ID, After: itemAfter(it)})
+		}
 		if slices.ContainsFunc(s.Outbox, func(o v1alpha1.OutboxItem) bool { return o.ID == it.ID }) {
 			return fmt.Errorf("duplicate outbox item %q: %w", it.ID, ErrInvalidEvent)
 		}
 		s.Outbox = append(s.Outbox, *it.DeepCopy())
 	}
 	return nil
+}
+
+// itemAfter is where an item's entry is looked for once it is applied.
+func itemAfter(it v1alpha1.OutboxItem) int64 {
+	switch {
+	case it.Thread != nil:
+		return it.Thread.After
+	case it.File != nil:
+		return it.File.After
+	}
+	return 0
 }
 
 var (

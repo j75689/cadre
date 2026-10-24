@@ -3,6 +3,7 @@ package task
 import (
 	"errors"
 	"slices"
+	"strings"
 	"testing"
 	"time"
 
@@ -58,8 +59,10 @@ var validEvents = []struct {
 }{
 	{Create{Number: 1}, step},
 	{Claim{RunID: runB, Mode: runtime, Runner: "r", Lease: time.Minute}, step},
-	{Heartbeat{RunID: runA, Lease: time.Minute}, step},
-	{Advance{RunID: runA, Step: 3, Runner: "w2", Lease: time.Minute}, step},
+	{Heartbeat{RunID: runA, Step: 3, Lease: time.Minute}, step},
+	{Advance{RunID: runA, Step: 3}, step},
+	{TakeStep{RunID: runA, Step: 3, Runner: "w2", Lease: time.Minute}, step},
+	{ReleaseStep{RunID: runA, Step: 3}, step},
 	{Record{RunID: runA, Outbox: []v1alpha1.OutboxItem{item("01JB0000000000000000000001")}}, runtime},
 	{Finish{RunID: runA, Step: 3, Outcome: OutcomeDone}, step},
 	{Reply{}, step},
@@ -170,7 +173,9 @@ func TestCreateAndClaim(t *testing.T) {
 func TestFencing(t *testing.T) {
 	stale := []Event{
 		Heartbeat{RunID: runB, Lease: time.Minute},
-		Advance{RunID: runB, Step: 3, Lease: time.Minute},
+		Advance{RunID: runB, Step: 3},
+		TakeStep{RunID: runB, Step: 3, Runner: "w2", Lease: time.Minute},
+		ReleaseStep{RunID: runB, Step: 3},
 		Record{RunID: runB},
 		Finish{RunID: runB, Step: 3, Outcome: OutcomeDone},
 	}
@@ -203,27 +208,83 @@ func TestHeartbeatExtendsLease(t *testing.T) {
 	wantErr(t, taskIn(v1alpha1.PhaseRunning, runtime), Heartbeat{RunID: runA}, ErrInvalidEvent)
 }
 
+// Advance commits the step and releases it: no worker, its lease ended now,
+// no MCP token, attempts reset, so any worker takes the next one.
 func TestAdvance(t *testing.T) {
 	tk := taskIn(v1alpha1.PhaseRunning, step)
-	commit := Advance{RunID: runA, Step: 3, Runner: "w2", Lease: time.Minute, Outbox: []v1alpha1.OutboxItem{item("01JB0000000000000000000001")}}
+	tk.Status.Run.MCPTokenHash, tk.Status.Run.Attempt = strings.Repeat("a", 64), 2
+	commit := Advance{RunID: runA, Step: 3, Outbox: []v1alpha1.OutboxItem{item("01JB0000000000000000000001")}}
 	tk.Status = apply(t, tk, commit).Status
 	r := tk.Status.Run
-	if r.Step != 4 || r.Runner != "w2" || !r.LeaseUntil.Time.Equal(now.Add(time.Minute)) || len(tk.Status.Outbox) != 2 {
+	if r.Step != 4 || r.Runner != "" || !r.LeaseUntil.Time.Equal(now) || r.MCPTokenHash != "" || r.Attempt != 0 || len(tk.Status.Outbox) != 2 {
 		t.Fatalf("after advance: run %+v, outbox %d", r, len(tk.Status.Outbox))
 	}
 	wantErr(t, tk, commit, ErrStepMismatch)
-	wantErr(t, taskIn(v1alpha1.PhaseRunning, step), Advance{RunID: runA, Step: 3}, ErrInvalidEvent)
-	wantErr(t, taskIn(v1alpha1.PhaseRunning, runtime), Advance{RunID: runA, Step: 3, Lease: time.Minute}, ErrInvalidTransition)
+	wantErr(t, taskIn(v1alpha1.PhaseRunning, runtime), Advance{RunID: runA, Step: 3}, ErrInvalidTransition)
+}
+
+// TakeStep hands a free step to a worker, at most MaxAttempts times; a
+// held step is refused, and ReleaseStep frees it with its attempt counted.
+func TestTakeAndReleaseSteps(t *testing.T) {
+	tk := taskIn(v1alpha1.PhaseRunning, step)
+	tk.Status = apply(t, tk, Advance{RunID: runA, Step: 3}).Status // step 4, free
+	take := TakeStep{RunID: runA, Step: 4, Runner: "sa:w", RunnerName: "w-1", Lease: time.Minute, MCPTokenHash: strings.Repeat("b", 64)}
+	tk.Status = apply(t, tk, take).Status
+	r := tk.Status.Run
+	if r.Runner != "sa:w" || r.RunnerName != "w-1" || r.Attempt != 1 || r.MCPTokenHash != take.MCPTokenHash || !r.LeaseUntil.Time.Equal(now.Add(time.Minute)) {
+		t.Fatalf("taken: %+v", r)
+	}
+	wantErr(t, tk, take, ErrStepTaken)
+	wantErr(t, tk, TakeStep{RunID: runA, Step: 3, Runner: "sa:w", Lease: time.Minute}, ErrStepMismatch)
+	wantErr(t, tk, Heartbeat{RunID: runA, Step: 3, Lease: time.Minute}, ErrStepMismatch)
+	apply(t, tk, Heartbeat{RunID: runA, Step: 4, Runner: "sa:w", Lease: time.Minute})
+
+	wantErr(t, tk, ReleaseStep{RunID: runA, Step: 4, Runner: "sa:other"}, ErrForbidden)
+	for attempt := 2; attempt <= MaxAttempts; attempt++ {
+		tk.Status = apply(t, tk, ReleaseStep{RunID: runA, Step: 4, Runner: "sa:w"}).Status
+		if r := tk.Status.Run; r.Runner != "" || r.MCPTokenHash != "" || r.Attempt != int32(attempt-1) {
+			t.Fatalf("released: %+v", r)
+		}
+		tk.Status = apply(t, tk, take).Status
+	}
+	tk.Status = apply(t, tk, ReleaseStep{RunID: runA, Step: 4, Runner: "sa:w"}).Status
+	wantErr(t, tk, take, ErrNotClaimable)
+}
+
+// An expired step is freed by the reclaim, not sent back to Todo, until
+// its attempts run out; then the run fails.
+func TestReclaimInStepMode(t *testing.T) {
+	tk := taskIn(v1alpha1.PhaseRunning, step) // held by w1, lease a minute past
+	tk.Status.Run.Attempt = 1
+	s := apply(t, tk, Reclaim{}).Status
+	if s.Phase != v1alpha1.PhaseRunning || s.Run == nil || s.Run.Runner != "" || s.Run.Attempt != 1 {
+		t.Fatalf("after reclaiming an expired step: %+v", s)
+	}
+	free := &v1alpha1.Task{Spec: tk.Spec, Status: s}
+	wantErr(t, free, Reclaim{}, ErrLeaseNotExpired)
+
+	tk.Status.Run.Attempt = MaxAttempts
+	res := apply(t, tk, Reclaim{})
+	if res.Status.Phase != v1alpha1.PhaseFailed || res.Status.Run != nil || !res.ReleasesSlot {
+		t.Fatalf("after the last attempt expired: %+v", res.Status)
+	}
+	// The last attempt given up: no worker may take the step, so the
+	// reclaim fails the run too.
+	free.Status.Run.Attempt = MaxAttempts
+	wantErr(t, free, TakeStep{RunID: runA, Step: free.Status.Run.Step, Runner: "w2", Lease: time.Minute}, ErrNotClaimable)
+	if res := apply(t, free, Reclaim{}); res.Status.Phase != v1alpha1.PhaseFailed || !res.ReleasesSlot {
+		t.Fatalf("after the last attempt was given up: %+v", res.Status)
+	}
 }
 
 // W1 stalls at step 3; W2 redoes step 3 and advances to 4. W1's late finish
 // or record must not land.
 func TestSupersededStepIsDropped(t *testing.T) {
 	tk := taskIn(v1alpha1.PhaseRunning, step)
-	tk.Status = apply(t, tk, Advance{RunID: runA, Step: 3, Runner: "w2", Lease: time.Minute}).Status
+	tk.Status = apply(t, tk, Advance{RunID: runA, Step: 3}).Status
 
 	wantErr(t, tk, Finish{RunID: runA, Step: 3, Outcome: OutcomeDone}, ErrStepMismatch)
-	wantErr(t, tk, Record{RunID: runA, Outbox: []v1alpha1.OutboxItem{item("01JB0000000000000000000002")}}, ErrInvalidTransition)
+	wantErr(t, tk, Record{RunID: runA, Step: 3, Outbox: []v1alpha1.OutboxItem{item("01JB0000000000000000000002")}}, ErrStepMismatch)
 	if s := apply(t, tk, Finish{RunID: runA, Step: 4, Outcome: OutcomeDone}).Status; s.Phase != v1alpha1.PhaseDone {
 		t.Fatalf("finish at the current step: %+v", s)
 	}

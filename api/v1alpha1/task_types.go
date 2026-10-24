@@ -154,10 +154,26 @@ type Run struct {
 	// +optional
 	RunnerName string `json:"runnerName,omitempty"`
 
+	// Attempt counts the workers that took the current step, in step mode:
+	// a worker that dies writes nothing, but its take is counted. It is
+	// reset when the step is committed.
+	// +kubebuilder:validation:Minimum=0
+	// +optional
+	Attempt int32 `json:"attempt,omitempty"`
+
 	// Step advances in step mode only.
 	// +kubebuilder:validation:Minimum=0
 	// +optional
 	Step int64 `json:"step,omitempty"`
+
+	// StepItems are the outbox items the current step recorded, in step
+	// mode: a step done again after its worker died records the same
+	// items, which are not recorded twice, even once applied. They are
+	// cleared when the step is committed.
+	// +listType=map
+	// +listMapKey=id
+	// +optional
+	StepItems []StepItem `json:"stepItems,omitempty"`
 
 	// LeaseUntil is when the run may be reclaimed unless it is renewed.
 	LeaseUntil metav1.Time `json:"leaseUntil"`
@@ -168,6 +184,13 @@ type Run struct {
 	// +kubebuilder:validation:Pattern=`^[0-9a-f]{64}$`
 	// +optional
 	MCPTokenHash string `json:"mcpTokenHash,omitempty"`
+}
+
+// StepItem is an outbox item a step recorded, and where its entry is
+// looked for: the thread revision or file version it was recorded after.
+type StepItem struct {
+	ID    string `json:"id"`
+	After int64  `json:"after,omitempty"`
 }
 
 // OutboxKind is the kind of side effect an outbox item asks for.
