@@ -427,10 +427,6 @@ type ThreadStatus struct {
 	// +kubebuilder:validation:Minimum=0
 	// +optional
 	Revision int64 `json:"revision,omitempty"`
-
-	// Store is the URI of the thread in object storage.
-	// +optional
-	Store string `json:"store,omitempty"`
 }
 
 // RunsStatus points at the task's run history in the log.
@@ -443,10 +439,6 @@ type RunsStatus struct {
 	// LastID is the ULID of the most recent run.
 	// +optional
 	LastID string `json:"lastId,omitempty"`
-
-	// Store is the URI of the run history in object storage.
-	// +optional
-	Store string `json:"store,omitempty"`
 }
 
 // TaskStatus is the control state of a task. Only the Task Manager writes it,

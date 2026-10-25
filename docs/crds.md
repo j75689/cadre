@@ -103,8 +103,8 @@ status:
   outbox:                     # written with the state change; applied idempotently, then cleared
     - { id: 01JB..., kind: CreateSubtask, spec: {...} }
     - { id: 01JB..., kind: Notify, ... }
-  thread: { revision: 42, store: s3://cadre/team-a/fix-login-flake/thread/ }
-  runs: { count: 3, lastId: 01JB..., store: s3://.../runs/ }
+  thread: { revision: 42 }
+  runs: { count: 3, lastId: 01JB... }
   conditions: [...]
 ```
 
