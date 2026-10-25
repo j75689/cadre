@@ -156,6 +156,14 @@ func runEnded(s v1alpha1.TaskStatus) *v1alpha1.RunRecord {
 func TestCreateAndClaim(t *testing.T) {
 	tk := taskIn(unborn, step)
 	wantErr(t, tk, Create{}, ErrInvalidEvent)
+	for _, parent := range []string{"Not_A_Name", "#1", "-a"} {
+		if err := ValidateSpec(&v1alpha1.TaskSpec{Title: "x", ParentRef: &v1alpha1.TaskReference{Name: parent}}); !errors.Is(err, ErrInvalidEvent) {
+			t.Errorf("parentRef %q: %v", parent, err)
+		}
+	}
+	if err := ValidateSpec(&v1alpha1.TaskSpec{Title: "x", ParentRef: &v1alpha1.TaskReference{Name: "release.2026"}}); err != nil {
+		t.Errorf("a dotted parent: %v", err)
+	}
 	tk.Status = apply(t, tk, Create{Number: 123}).Status
 	if tk.Status.Phase != v1alpha1.PhaseTodo || tk.Status.Number != 123 {
 		t.Fatalf("after create: %+v", tk.Status)

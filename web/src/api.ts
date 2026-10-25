@@ -188,6 +188,12 @@ export function listTasks(ns: string, phase: Phase, offset: number, limit: numbe
   return get<TaskList>(`/namespaces/${encodeURIComponent(ns)}/tasks?${q}`, signal);
 }
 
+// listSubtasks reads a page of parent's subtasks, in every phase.
+export function listSubtasks(ns: string, parent: string, offset: number, limit: number, signal?: AbortSignal) {
+  const q = new URLSearchParams({ parent, offset: String(offset), limit: String(limit) });
+  return get<TaskList>(`/namespaces/${encodeURIComponent(ns)}/tasks?${q}`, signal);
+}
+
 export const getTask = (ns: string, name: string, signal?: AbortSignal) =>
   get<Task>(`/namespaces/${encodeURIComponent(ns)}/tasks/${encodeURIComponent(name)}`, signal);
 

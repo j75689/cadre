@@ -137,6 +137,7 @@ func SeqKey(seq int64) string { return fmt.Sprintf("%020d", seq) }
 type Query struct {
 	Namespace string           // required
 	Phases    []v1alpha1.Phase // any of these; empty means all
+	Parent    string           // subtasks of this task (spec.parentRef.name); empty means any
 	Offset    int              // not negative
 	Limit     int              // not negative; zero means no limit
 }

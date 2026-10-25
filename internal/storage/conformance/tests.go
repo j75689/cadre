@@ -389,8 +389,16 @@ func testIndexQuery(t *testing.T, s *suite) {
 	s.newTask(d, "medium-a", 3, v1alpha1.PriorityMedium)
 	s.newTask(d, "high", 4, v1alpha1.PriorityHigh)
 	s.newTask(d, "medium-b", 5, "")
-	if err := transition(s.ctx, d, s.key("high"), task.Cancel{}); err != nil {
-		t.Fatalf("cancel: %v", err)
+	// Subtasks of medium-a, and one of a task that does not exist.
+	s.newSubtask(d, "child-low", 6, v1alpha1.PriorityLow, "medium-a")
+	s.newSubtask(d, "child-c", 9, "", "medium-a")
+	s.newSubtask(d, "child-b", 7, "", "medium-a")
+	s.newSubtask(d, "child-urgent", 8, v1alpha1.PriorityUrgent, "medium-a")
+	s.newSubtask(d, "stray", 10, "", "gone")
+	for _, name := range []string{"high", "child-b"} {
+		if err := transition(s.ctx, d, s.key(name), task.Cancel{}); err != nil {
+			t.Fatalf("cancel %s: %v", name, err)
+		}
 	}
 
 	names := func(q storage.Query) ([]string, error) {
@@ -405,11 +413,20 @@ func testIndexQuery(t *testing.T, s *suite) {
 		q    storage.Query
 		want []string
 	}{
-		{storage.Query{Namespace: s.ns}, []string{"urgent", "high", "medium-a", "medium-b", "low"}},
-		{storage.Query{Namespace: s.ns, Phases: []v1alpha1.Phase{v1alpha1.PhaseCancelled}}, []string{"high"}},
-		{storage.Query{Namespace: s.ns, Offset: 1, Limit: 2}, []string{"high", "medium-a"}},
-		{storage.Query{Namespace: s.ns, Offset: 9}, []string{}},
+		{storage.Query{Namespace: s.ns}, []string{"urgent", "child-urgent", "high", "medium-a", "medium-b", "child-b", "child-c", "stray", "low", "child-low"}},
+		{storage.Query{Namespace: s.ns, Phases: []v1alpha1.Phase{v1alpha1.PhaseCancelled}}, []string{"high", "child-b"}},
+		{storage.Query{Namespace: s.ns, Offset: 1, Limit: 2}, []string{"child-urgent", "high"}},
+		{storage.Query{Namespace: s.ns, Offset: 99}, []string{}},
 		{storage.Query{Namespace: "elsewhere"}, []string{}},
+		// Subtasks: only a parent's own, in board order, with the other
+		// filters and paging applied to them.
+		{storage.Query{Namespace: s.ns, Parent: "medium-a"}, []string{"child-urgent", "child-b", "child-c", "child-low"}},
+		{storage.Query{Namespace: s.ns, Parent: "medium-a", Phases: []v1alpha1.Phase{v1alpha1.PhaseTodo}}, []string{"child-urgent", "child-c", "child-low"}},
+		{storage.Query{Namespace: s.ns, Parent: "medium-a", Offset: 1, Limit: 2}, []string{"child-b", "child-c"}},
+		{storage.Query{Namespace: s.ns, Parent: "medium-a", Offset: 4}, []string{}},
+		{storage.Query{Namespace: s.ns, Parent: "low"}, []string{}},
+		{storage.Query{Namespace: s.ns, Parent: "unknown"}, []string{}},
+		{storage.Query{Namespace: "elsewhere", Parent: "medium-a"}, []string{}},
 	} {
 		eventually(t, fmt.Sprintf("query %+v", tc.q), func() error {
 			got, err := names(tc.q)

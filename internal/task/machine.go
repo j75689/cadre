@@ -12,6 +12,7 @@ import (
 	"time"
 
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/util/validation"
 
 	v1alpha1 "github.com/j75689/cadre/api/v1alpha1"
 )
@@ -795,6 +796,9 @@ func ValidateSpec(spec *v1alpha1.TaskSpec) error {
 		return fmt.Errorf("assignee %+v: %w", *spec.Assignee, ErrInvalidEvent)
 	case spec.ParentRef != nil && spec.ParentRef.Name == "":
 		return fmt.Errorf("parentRef without a name: %w", ErrInvalidEvent)
+	case spec.ParentRef != nil && len(validation.IsDNS1123Subdomain(spec.ParentRef.Name)) > 0:
+		// A task name, or no task could be its parent, nor list it.
+		return fmt.Errorf("parentRef %q is not a task name: %w", spec.ParentRef.Name, ErrInvalidEvent)
 	}
 	return nil
 }

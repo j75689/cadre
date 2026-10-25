@@ -45,10 +45,15 @@ func newTaskCreate(g *globals) *cobra.Command {
 			case human != "":
 				spec.Assignee = &v1alpha1.Assignee{Kind: v1alpha1.AssigneeUser, Name: human}
 			}
+			c := g.client()
 			if parent != "" {
-				spec.ParentRef = &v1alpha1.TaskReference{Name: parent}
+				ref, err := resolve(cmd.Context(), c, g.namespace, parent)
+				if err != nil {
+					return err
+				}
+				spec.ParentRef = &v1alpha1.TaskReference{Name: ref}
 			}
-			t, err := g.client().CreateTask(cmd.Context(), g.namespace, name, spec)
+			t, err := c.CreateTask(cmd.Context(), g.namespace, name, spec)
 			if err != nil {
 				return err
 			}
@@ -62,13 +67,14 @@ func newTaskCreate(g *globals) *cobra.Command {
 	f.StringVar(&agent, "agent", "", "assign to this Agent")
 	f.StringVar(&human, "user", "", "assign to this user")
 	f.StringVarP(&priority, "priority", "p", "", "low, medium, high or urgent")
-	f.StringVar(&parent, "parent", "", "make it a subtask of this task")
+	f.StringVar(&parent, "parent", "", "make it a subtask of this task, by name or #number")
 	f.StringSliceVarP(&spec.Labels, "label", "l", nil, "a label; repeatable")
 	return cmd
 }
 
 func newTaskList(g *globals) *cobra.Command {
 	var phases []string
+	var parent string
 	var limit int
 	cmd := &cobra.Command{
 		Use:   "list",
@@ -79,7 +85,14 @@ func newTaskList(g *globals) *cobra.Command {
 			for _, p := range phases {
 				ps = append(ps, v1alpha1.Phase(p))
 			}
-			list, err := g.client().ListTasks(cmd.Context(), g.namespace, ps, 0, limit)
+			c := g.client()
+			if parent != "" {
+				var err error
+				if parent, err = resolve(cmd.Context(), c, g.namespace, parent); err != nil {
+					return err
+				}
+			}
+			list, err := c.ListTasks(cmd.Context(), g.namespace, client.TaskQuery{Phases: ps, Parent: parent, Limit: limit})
 			if err != nil {
 				return err
 			}
@@ -92,6 +105,7 @@ func newTaskList(g *globals) *cobra.Command {
 		},
 	}
 	cmd.Flags().StringSliceVar(&phases, "phase", nil, "only these phases; repeatable")
+	cmd.Flags().StringVar(&parent, "parent", "", "only the subtasks of this task, by name or #number")
 	cmd.Flags().IntVar(&limit, "limit", 100, "at most this many tasks")
 	return cmd
 }
@@ -337,7 +351,7 @@ func resolve(ctx context.Context, c *client.Client, ns, ref string) (string, err
 		return "", fmt.Errorf("%q is not a task number", ref)
 	}
 	for offset := 0; ; {
-		list, err := c.ListTasks(ctx, ns, nil, offset, 0)
+		list, err := c.ListTasks(ctx, ns, client.TaskQuery{Offset: offset})
 		if err != nil {
 			return "", err
 		}

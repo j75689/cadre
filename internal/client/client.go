@@ -104,17 +104,28 @@ func (c *Client) CreateTask(ctx context.Context, ns, name string, spec v1alpha1.
 	return &t, err
 }
 
+// TaskQuery selects a page of the board; the zero value is its first page.
+type TaskQuery struct {
+	Phases []v1alpha1.Phase // any of these; empty means all
+	Parent string           // subtasks of this task only
+	Offset int
+	Limit  int // zero means the server's default
+}
+
 // ListTasks lists a page of the board.
-func (c *Client) ListTasks(ctx context.Context, ns string, phases []v1alpha1.Phase, offset, limit int) (*api.TaskList, error) {
+func (c *Client) ListTasks(ctx context.Context, ns string, tq TaskQuery) (*api.TaskList, error) {
 	q := url.Values{}
-	for _, p := range phases {
+	for _, p := range tq.Phases {
 		q.Add("phase", string(p))
 	}
-	if offset > 0 {
-		q.Set("offset", strconv.Itoa(offset))
+	if tq.Parent != "" {
+		q.Set("parent", tq.Parent)
 	}
-	if limit > 0 {
-		q.Set("limit", strconv.Itoa(limit))
+	if tq.Offset > 0 {
+		q.Set("offset", strconv.Itoa(tq.Offset))
+	}
+	if tq.Limit > 0 {
+		q.Set("limit", strconv.Itoa(tq.Limit))
 	}
 	var list api.TaskList
 	_, err := c.do(ctx, http.MethodGet, nsPath(ns)+"/tasks?"+q.Encode(), nil, &list)

@@ -103,7 +103,7 @@ func TestLoginFromTheCLI(t *testing.T) {
 	if _, err := run("--server", srv.URL, "-n", "team-a", "task", "create", "Fix it"); err != nil {
 		t.Fatal(err)
 	}
-	list, err := client.New(srv.URL, &http.Client{Transport: client.Bearer(idp.IDToken(oidctest.CLIClientID, "", 0), nil)}).ListTasks(context.Background(), "team-a", nil, 0, 0)
+	list, err := client.New(srv.URL, &http.Client{Transport: client.Bearer(idp.IDToken(oidctest.CLIClientID, "", 0), nil)}).ListTasks(context.Background(), "team-a", client.TaskQuery{})
 	if err != nil || len(list.Items) != 1 {
 		t.Fatalf("tasks: %+v %v", list, err)
 	}

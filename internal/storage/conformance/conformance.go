@@ -121,12 +121,21 @@ var testNow = time.Date(2026, 10, 23, 12, 0, 0, 0, time.UTC)
 // newTask creates an assigned task and moves it to Todo.
 func (s *suite) newTask(d storage.Driver, name string, number int64, prio v1alpha1.Priority) {
 	s.t.Helper()
+	s.newSubtask(d, name, number, prio, "")
+}
+
+// newSubtask is newTask for a subtask of parent, or of none if empty.
+func (s *suite) newSubtask(d storage.Driver, name string, number int64, prio v1alpha1.Priority, parent string) {
+	s.t.Helper()
 	t := &v1alpha1.Task{
 		ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: s.ns},
 		Spec: v1alpha1.TaskSpec{
 			Title: name, Priority: prio,
 			Assignee: &v1alpha1.Assignee{Kind: v1alpha1.AssigneeAgent, Name: "coder"},
 		},
+	}
+	if parent != "" {
+		t.Spec.ParentRef = &v1alpha1.TaskReference{Name: parent}
 	}
 	if err := d.CreateTask(s.ctx, t); err != nil {
 		s.t.Fatalf("create %s: %v", name, err)

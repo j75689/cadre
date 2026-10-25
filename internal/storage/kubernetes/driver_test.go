@@ -132,6 +132,30 @@ func TestASharedCache(t *testing.T) {
 	if err := shared.Get(ctx, client.ObjectKey{Namespace: "default", Name: "shared"}, &got); err != nil {
 		t.Fatalf("the shared cache: %v", err)
 	}
+	// Subtasks are listed from a parent index on the cache, which a second
+	// driver on the same cache finds there and keeps.
+	child := &v1alpha1.Task{ObjectMeta: metav1.ObjectMeta{Name: "child", Namespace: "default"},
+		Spec: v1alpha1.TaskSpec{Title: "t", ParentRef: &v1alpha1.TaskReference{Name: "shared"}}}
+	if err := d.CreateTask(ctx, child); err != nil {
+		t.Fatal(err)
+	}
+	again, err := kubernetes.Open(ctx, kubernetes.Config{REST: cfg, S3: testenv.S3(t), Cache: shared})
+	if err != nil {
+		t.Fatalf("a second driver on the shared cache: %v", err)
+	}
+	if err := again.Close(); err != nil {
+		t.Fatal(err)
+	}
+	for deadline := time.Now().Add(5 * time.Second); ; time.Sleep(50 * time.Millisecond) {
+		var children v1alpha1.TaskList
+		err := shared.List(ctx, &children, client.InNamespace("default"), client.MatchingFields{"spec.parentRef.name": "shared"})
+		if err == nil && len(children.Items) == 1 && children.Items[0].Name == "child" {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("children of shared by the parent index: %v, %v", children.Items, err)
+		}
+	}
 	if err := d.Close(); err != nil {
 		t.Fatal(err)
 	}
