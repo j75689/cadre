@@ -7,16 +7,21 @@ import (
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"sync"
 	"testing"
 	"time"
 
+	admissionv1 "k8s.io/api/admissionregistration/v1"
 	batchv1 "k8s.io/api/batch/v1"
 	corev1 "k8s.io/api/core/v1"
+	eventsv1 "k8s.io/api/events/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
+	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/client-go/rest"
 	"k8s.io/client-go/util/retry"
+	"k8s.io/utils/ptr"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	v1alpha1 "github.com/j75689/cadre/api/v1alpha1"
@@ -543,4 +548,141 @@ func sleep(ctx context.Context, d time.Duration) {
 	case <-ctx.Done():
 	case <-time.After(d):
 	}
+}
+
+// A Job the API server refuses for a quota, not for authorization, leaves
+// the Agent Ready and says why on it in an Event; once the quota is gone the
+// Job is created.
+func TestAJobRefusedByAQuota(t *testing.T) {
+	e := startJobs(t)
+	ctx := context.Background()
+	// No Jobs at all. envtest runs no quota controller, so the quota's
+	// usage is written here, as that controller would.
+	quota := &corev1.ResourceQuota{ObjectMeta: meta2(jobsNS, "no-jobs"), Spec: corev1.ResourceQuotaSpec{
+		Hard: corev1.ResourceList{"count/jobs.batch": resource.MustParse("0")},
+	}}
+	e.create(quota)
+	quota.Status = corev1.ResourceQuotaStatus{
+		Hard: corev1.ResourceList{"count/jobs.batch": resource.MustParse("0")},
+		Used: corev1.ResourceList{"count/jobs.batch": resource.MustParse("0")},
+	}
+	if err := e.c.Status().Update(ctx, quota); err != nil {
+		t.Fatal(err)
+	}
+
+	agent := jobAgent("quoted", 1)
+	e.create(agent)
+	e.ready(agent, metav1.ConditionTrue, "Resolved")
+	e.task(t, "one", "quoted")
+	// One Event for the Agent's refused creates, its note the reason
+	// without the Job's name. (Its series count is client-go's to keep.)
+	eventually(t, 10*time.Second, func() (bool, string) {
+		refusals := e.refusals(t, "quoted")
+		if len(refusals) != 1 {
+			return false, fmt.Sprintf("%d JobRefused events", len(refusals))
+		}
+		ev := refusals[0]
+		switch {
+		case ev.Type != corev1.EventTypeWarning || ev.Action != "CreateJob" || !strings.Contains(ev.Note, "exceeded quota"):
+			return false, fmt.Sprintf("event %s %s %q", ev.Type, ev.Action, ev.Note)
+		case strings.Contains(ev.Note, `jobs.batch "`):
+			return false, "the note names the Job: " + ev.Note
+		}
+		return true, ""
+	})
+	time.Sleep(time.Second) // several refused creates
+	if n := len(e.refusals(t, "quoted")); n != 1 {
+		t.Fatalf("%d JobRefused events after several refusals, want one", n)
+	}
+	if n := len(e.jobs(t, "quoted")); n != 0 {
+		t.Fatalf("%d Jobs under a quota of none", n)
+	}
+	// Ready gates the creates: still Ready, so the next one is tried.
+	e.ready(agent, metav1.ConditionTrue, "Resolved")
+
+	if err := e.c.Delete(ctx, quota); err != nil {
+		t.Fatal(err)
+	}
+	eventually(t, 10*time.Second, func() (bool, string) {
+		n := len(e.jobs(t, "quoted"))
+		return n == 1, fmt.Sprintf("%d Jobs once the quota is gone", n)
+	})
+}
+
+// refusals are the JobRefused Events on an agent.
+func (e *jobEnv) refusals(t *testing.T, agent string) []eventsv1.Event {
+	t.Helper()
+	var list eventsv1.EventList
+	if err := e.c.List(context.Background(), &list, client.InNamespace(jobsNS)); err != nil {
+		t.Fatal(err)
+	}
+	var out []eventsv1.Event
+	for _, ev := range list.Items {
+		if ev.Regarding.Kind == "Agent" && ev.Regarding.Name == agent && ev.Reason == "JobRefused" {
+			out = append(out, ev)
+		}
+	}
+	return out
+}
+
+// A Job whose running-since mark an admission policy refuses says so on
+// its Agent: unmarked, a frozen pod would never be found stuck.
+func TestARefusedJobMark(t *testing.T) {
+	e := startJobs(t)
+	ctx := context.Background()
+	policy := &admissionv1.ValidatingAdmissionPolicy{ObjectMeta: metav1.ObjectMeta{Name: "no-job-patches"}, Spec: admissionv1.ValidatingAdmissionPolicySpec{
+		MatchConstraints: &admissionv1.MatchResources{ResourceRules: []admissionv1.NamedRuleWithOperations{{
+			RuleWithOperations: admissionv1.RuleWithOperations{
+				Operations: []admissionv1.OperationType{admissionv1.Update},
+				Rule:       admissionv1.Rule{APIGroups: []string{"batch"}, APIVersions: []string{"v1"}, Resources: []string{"jobs"}},
+			},
+		}}},
+		// The kubelet's status writes go to the subresource, which the rule
+		// does not match.
+		Validations: []admissionv1.Validation{{Expression: "false", Reason: ptr.To(metav1.StatusReasonForbidden), Message: "Jobs are not annotated here"}},
+	}}
+	binding := &admissionv1.ValidatingAdmissionPolicyBinding{ObjectMeta: metav1.ObjectMeta{Name: policy.Name}, Spec: admissionv1.ValidatingAdmissionPolicyBindingSpec{
+		PolicyName: policy.Name, ValidationActions: []admissionv1.ValidationAction{admissionv1.Deny},
+		MatchResources: &admissionv1.MatchResources{NamespaceSelector: &metav1.LabelSelector{
+			MatchLabels: map[string]string{corev1.LabelMetadataName: jobsNS},
+		}},
+	}}
+	e.create(policy, binding)
+	t.Cleanup(func() {
+		_ = e.c.Delete(ctx, binding)
+		_ = e.c.Delete(ctx, policy)
+	})
+	// The binding takes effect a moment after it is created: wait until a
+	// throwaway Job's update is refused, or the Agent's first Job could be
+	// marked before it does.
+	probe := &batchv1.Job{ObjectMeta: meta2(jobsNS, "probe"), Spec: batchv1.JobSpec{Template: corev1.PodTemplateSpec{Spec: corev1.PodSpec{
+		RestartPolicy: corev1.RestartPolicyNever, Containers: []corev1.Container{{Name: "c", Image: "example.test/probe:v1"}},
+	}}}}
+	e.create(probe)
+	eventually(t, 10*time.Second, func() (bool, string) {
+		patch := client.MergeFrom(probe.DeepCopy())
+		probe.Annotations = map[string]string{"probe": time.Now().Format(time.RFC3339Nano)}
+		err := e.c.Patch(ctx, probe, patch, client.DryRunAll)
+		return apierrors.IsForbidden(err), fmt.Sprintf("a probe update gave %v", err)
+	})
+	if err := e.c.Delete(ctx, probe); err != nil {
+		t.Fatal(err)
+	}
+
+	agent := jobAgent("marked", 1)
+	e.create(agent)
+	e.ready(agent, metav1.ConditionTrue, "Resolved")
+	e.task(t, "one", "marked")
+	k := &kubelet{e: e, seen: map[string]bool{}, plan: fakerunner.Plan{Work: time.Hour}}
+	runCtx, stop := context.WithCancel(ctx)
+	defer stop()
+	go k.run(runCtx, t, "marked")
+	eventually(t, 15*time.Second, func() (bool, string) {
+		for _, ev := range e.refusals(t, "marked") {
+			if ev.Action == "PatchJob" && strings.Contains(ev.Note, "Jobs are not annotated here") {
+				return true, ""
+			}
+		}
+		return false, "no PatchJob refusal"
+	})
 }

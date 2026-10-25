@@ -28,6 +28,7 @@ import (
 //
 // +kubebuilder:rbac:groups=cadre.dev,resources=notifiers,verbs=get;list;watch
 // +kubebuilder:rbac:groups=cadre.dev,resources=notifiers/status,verbs=get;update;patch
+// +kubebuilder:rbac:groups=events.k8s.io,resources=events,verbs=create;patch
 
 type notifierReconciler struct{ base }
 
