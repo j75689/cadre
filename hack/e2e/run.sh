@@ -5,19 +5,20 @@
 #
 #   hack/e2e/run.sh <image tag>
 #
-# The images $REGISTRY/{cadre-server,cadre-runner,cadre}:<tag>, REGISTRY by
-# default ghcr.io/j75689, must be in the local Docker. The cluster has its own kubeconfig, so the current
-# kubectl context is never touched. KEEP=1 keeps the cluster afterwards.
+# The images $REGISTRY/{cadre-server,cadre-runner}:<tag>, REGISTRY by default
+# ghcr.io/j75689, must be in the local Docker. The cluster has its own
+# kubeconfig, so the current kubectl context is never touched. KEEP=1 keeps
+# the cluster afterwards. kind's and kubectl's versions are the Makefile's
+# KIND_VERSION and KUBECTL_VERSION; their checksums are below.
 set -euo pipefail
 
-KIND_VERSION=v0.33.0
 KIND_NODE=kindest/node:v1.37.0@sha256:a1ed56cfb0e7b93589bdf97c8cd566405a265939e3620fc4f5de89adff580ae5
-KUBECTL_VERSION=v1.37.0
 REGISTRY=${REGISTRY:-ghcr.io/j75689}
 CLUSTER=cadre-e2e
 TIMEOUT=300s
 
-# The SHA-256 of each pinned download, by platform.
+# The SHA-256 of each pinned download, by platform: change them with the
+# versions.
 kind_sha256() {
   case $1 in
     linux-amd64) echo aee6151561422756b764a4ae28e7f44cda5af5a9eead3cc9985112b1de8d8e0d ;;
@@ -41,11 +42,47 @@ TAG=${1:?usage: hack/e2e/run.sh <image tag>}
 ROOT=$(cd "$(dirname "$0")/../.." && pwd)
 HERE=$ROOT/hack/e2e
 TOOLS=$ROOT/bin/tools
-WORK=$(mktemp -d)
-export KUBECONFIG=$WORK/kubeconfig
+versions=$(make -s -C "$ROOT" print-e2e-tools)
+read -r KIND_VERSION KUBECTL_VERSION <<<"$versions"
+KIND=$TOOLS/kind-$KIND_VERSION
+KUBECTL=$TOOLS/kubectl-$KUBECTL_VERSION
 
 log() { printf '\n== %s\n' "$*"; }
 fail() { printf 'FAIL: %s\n' "$*" >&2; exit 1; }
+k() { "$KUBECTL" "$@"; }
+
+WORK=$(mktemp -d)
+export KUBECONFIG=$WORK/kubeconfig
+pids=()
+passed=
+cleanup() {
+  local status=$?
+  # Only the last line passes: an exit before it, even one bash reports
+  # as 0 (an unbound variable, say), fails.
+  if [ -z "$passed" ] && [ "$status" -eq 0 ]; then status=1; fi
+  for pid in ${pids[@]+"${pids[@]}"}; do
+    kill "$pid" 2>/dev/null || true
+    wait "$pid" 2>/dev/null || true
+  done
+  if [ "$status" -ne 0 ] && [ -s "$KUBECONFIG" ]; then
+    log "failed: the cluster's state"
+    k get pods -A -o wide || true
+    k -n cadre-system logs deploy/cadre-server --tail=200 || true
+    k -n cadre-system logs deploy/cadre-runner --tail=50 || true
+  fi
+  if [ "${KEEP:-}" = 1 ]; then
+    echo "kept: KUBECONFIG=$KUBECONFIG; delete with: $KIND delete cluster --name $CLUSTER"
+  else
+    if [ -x "$KIND" ]; then "$KIND" delete cluster --name "$CLUSTER" >/dev/null 2>&1 || true; fi
+    rm -rf "$WORK"
+  fi
+  exit "$status"
+}
+trap cleanup EXIT
+
+for tool in curl jq docker; do
+  command -v "$tool" >/dev/null || fail "$tool is needed"
+done
 
 # fetch downloads url to dst, unless there, and checks its SHA-256.
 fetch() {
@@ -67,41 +104,11 @@ os=$(uname -s | tr '[:upper:]' '[:lower:]')
 arch=$(uname -m)
 case $arch in x86_64) arch=amd64 ;; aarch64) arch=arm64 ;; esac
 platform=$os-$arch
-KIND=$TOOLS/kind-$KIND_VERSION
-KUBECTL=$TOOLS/kubectl-$KUBECTL_VERSION
 kind_sum=$(kind_sha256 "$platform") || fail "no kind build for $platform"
 kubectl_sum=$(kubectl_sha256 "$platform") || fail "no kubectl build for $platform"
 fetch "https://github.com/kubernetes-sigs/kind/releases/download/$KIND_VERSION/kind-$platform" "$KIND" "$kind_sum"
 fetch "https://dl.k8s.io/release/$KUBECTL_VERSION/bin/$os/$arch/kubectl" "$KUBECTL" "$kubectl_sum"
 HELM=$(make -s -C "$ROOT" print-helm)
-k() { "$KUBECTL" "$@"; }
-
-pids=()
-passed=
-cleanup() {
-  local status=$?
-  # Only the last line passes: an exit before it, even one bash reports
-  # as 0 (an unbound variable, say), fails.
-  if [ -z "$passed" ] && [ "$status" -eq 0 ]; then status=1; fi
-  for pid in ${pids[@]+"${pids[@]}"}; do
-    kill "$pid" 2>/dev/null || true
-    wait "$pid" 2>/dev/null || true
-  done
-  if [ "$status" -ne 0 ]; then
-    log "failed: the cluster's state"
-    k get pods -A -o wide || true
-    k -n cadre-system logs deploy/cadre-server --tail=200 || true
-    k -n cadre-system logs deploy/cadre-runner --tail=50 || true
-  fi
-  if [ "${KEEP:-}" = 1 ]; then
-    echo "kept: KUBECONFIG=$KUBECONFIG; delete with: $KIND delete cluster --name $CLUSTER"
-  else
-    "$KIND" delete cluster --name "$CLUSTER" >/dev/null 2>&1 || true
-    rm -rf "$WORK"
-  fi
-  exit "$status"
-}
-trap cleanup EXIT
 
 # forward port-forwards a namespace's service port to a free local port,
 # in the background until the script exits, and sets the variable named
@@ -109,7 +116,10 @@ trap cleanup EXIT
 # the exit trap can stop the port-forward.
 forward() {
   local var=$1 ns=$2 svc=$3 remote=$4 out=$WORK/forward-$2-$3.log
-  k -n "$ns" port-forward "svc/$svc" ":$remote" >"$out" 2>&1 &
+  # The file is there before sed reads it; kubectl itself, not a shell
+  # function's subshell, is what $! names and the trap kills.
+  : >"$out"
+  "$KUBECTL" -n "$ns" port-forward "svc/$svc" ":$remote" >"$out" 2>&1 &
   pids+=($!)
   for _ in $(seq 1 30); do
     local got
@@ -134,8 +144,18 @@ wait_for() {
 log "kind cluster $CLUSTER"
 "$KIND" delete cluster --name "$CLUSTER" >/dev/null 2>&1 || true
 "$KIND" create cluster --name "$CLUSTER" --image "$KIND_NODE" --config "$HERE/kind.yaml" --wait 120s
-for img in cadre-server cadre-runner cadre; do
-  "$KIND" load docker-image --name "$CLUSTER" "$REGISTRY/$img:$TAG"
+# Every image is loaded from the host, the dependencies' too, so that no
+# pull from inside the node meets a registry's rate limit.
+# A pulled image is a multi-platform index with one platform's content,
+# which kind cannot load: it goes in as an archive of the node's platform.
+for img in "$REGISTRY/cadre-server:$TAG" "$REGISTRY/cadre-runner:$TAG"; do
+  "$KIND" load docker-image --name "$CLUSTER" "$img"
+done
+for img in $(sed -n 's/^ *image: *//p' "$HERE/seaweedfs.yaml" "$HERE/dex.yaml"); do
+  docker pull -q --platform "linux/$arch" "$img" >/dev/null
+  docker save --platform "linux/$arch" -o "$WORK/image.tar" "$img"
+  "$KIND" load image-archive --name "$CLUSTER" "$WORK/image.tar"
+  rm -f "$WORK/image.tar"
 done
 
 log "SeaweedFS and Dex"
