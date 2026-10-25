@@ -67,21 +67,21 @@ func (m *Manager) NumberNew(ctx context.Context) error {
 // Todo. It is the one numbering path, used by NumberNew and by CreateTask.
 // A counter that has not started, a new Team's or one made again in a
 // namespace whose tasks outlived the old Team, starts above the highest
-// number there, so a number is never given twice.
+// number there. A task numbered in the seconds before the Team was
+// deleted, or whose numbering was in flight across the deletion, can be
+// missed; its number is then shared, and #N is refused as ambiguous until
+// one is renamed.
 func (m *Manager) numberTask(ctx context.Context, key storage.Key) (*v1alpha1.Task, error) {
 	var n int64
 	high := int64(-1) // not read yet
 	if err := m.writeTeam(ctx, key.Namespace, func(team *v1alpha1.Team) (v1alpha1.TeamStatus, error) {
-		if team.Status.NextNumber < 1 {
-			if high < 0 {
-				var err error
-				if high, err = m.highestNumber(ctx, key.Namespace); err != nil {
-					return team.Status, err
-				}
+		if team.Status.NextNumber < 1 && high < 0 {
+			var err error
+			if high, err = m.highestNumber(ctx, key.Namespace); err != nil {
+				return team.Status, err
 			}
-			team.Status.NextNumber = high + 1
 		}
-		num, next := task.ClaimNumber(team)
+		num, next := task.ClaimNumber(team, high+1)
 		n = num
 		return next, nil
 	}); err != nil {
@@ -91,11 +91,9 @@ func (m *Manager) numberTask(ctx context.Context, key storage.Key) (*v1alpha1.Ta
 }
 
 // highestNumber is the highest number of a task in namespace, 0 if none
-// has one, from one read of the board index. The index is synced before
-// the store serves, and lags it by seconds at most after that: only a task
-// numbered in the last seconds before the old Team was deleted could be
-// missed, and a lookup of a number it then shares is refused as
-// ambiguous, never applied to the wrong task.
+// has one, from one read of the board index. The index lags the store, by
+// seconds while its watch is healthy, and a task whose number was claimed
+// but not yet written is in neither: see numberTask.
 func (m *Manager) highestNumber(ctx context.Context, namespace string) (int64, error) {
 	tasks, err := m.store.ListTasks(ctx, storage.Query{Namespace: namespace})
 	if err != nil {

@@ -299,7 +299,7 @@ func testTeamSemaphoreAndCounter(t *testing.T, s *suite) {
 	numbers := make([]int64, parties)
 	if _, errs := race(parties, []storage.Driver{a, b}, func(i int, d storage.Driver) error {
 		return s.writeTeam(d, func(cur *v1alpha1.Team) (v1alpha1.TeamStatus, error) {
-			n, next := task.ClaimNumber(cur)
+			n, next := task.ClaimNumber(cur, 1)
 			numbers[i] = n
 			return next, nil
 		})
