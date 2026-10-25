@@ -1,0 +1,100 @@
+# An agent outside Cadre, in team-a: AgentAccess bot holds ServiceAccount
+# bot, and a Job's pod calls the board MCP endpoint, /mcp, with a projected
+# token for the audience cadre. A second Job does the same as the
+# ServiceAccount of Runner ci, which holds no AgentAccess, and must be
+# refused. run.sh puts the task the agent comments on in for TASK.
+apiVersion: v1
+kind: ServiceAccount
+metadata: { name: bot, namespace: team-a }
+---
+apiVersion: cadre.dev/v1alpha1
+kind: AgentAccess
+metadata: { name: bot, namespace: team-a }
+spec:
+  role: member
+  serviceAccount: { name: bot }
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata: { name: ci, namespace: team-a }
+---
+apiVersion: cadre.dev/v1alpha1
+kind: Runner
+metadata: { name: ci, namespace: team-a }
+spec:
+  serviceAccount: { name: ci }
+  labels: { pool: e2e }
+---
+apiVersion: v1
+kind: ConfigMap
+metadata: { name: agent, namespace: team-a }
+data:
+  # call posts one MCP request to /mcp with the pod's token, and prints the
+  # answer, or wget's error: the endpoint is stateless, so a tools/call
+  # needs no initialize.
+  call.sh: |
+    set -u
+    call() {
+      wget -q -O - \
+        --header "Authorization: Bearer $(cat /var/run/secrets/cadre/token)" \
+        --header "Content-Type: application/json" \
+        --header "Accept: application/json, text/event-stream" \
+        --post-data "$1" http://cadre-server.cadre-system.svc:8080/mcp 2>&1
+      echo
+    }
+    call '{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"create_task","arguments":{"namespace":"team-a","title":"Filed by an agent"}}}'
+    call '{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"comment","arguments":{"namespace":"team-a","task":"TASK","body":"Seen by an agent"}}}'
+---
+apiVersion: batch/v1
+kind: Job
+metadata: { name: agent, namespace: team-a }
+spec:
+  backoffLimit: 0
+  template:
+    spec:
+      serviceAccountName: bot
+      automountServiceAccountToken: false
+      restartPolicy: Never
+      containers:
+        - name: agent
+          # Loaded into the cluster for SeaweedFS already; it has a shell
+          # and wget.
+          image: chrislusf/seaweedfs:4.48
+          imagePullPolicy: IfNotPresent
+          command: [sh, /agent/call.sh]
+          volumeMounts:
+            - { name: token, mountPath: /var/run/secrets/cadre, readOnly: true }
+            - { name: agent, mountPath: /agent, readOnly: true }
+      volumes:
+        - name: token
+          projected:
+            sources:
+              - serviceAccountToken: { audience: cadre, path: token, expirationSeconds: 3600 }
+        - name: agent
+          configMap: { name: agent }
+---
+apiVersion: batch/v1
+kind: Job
+metadata: { name: runner-as-agent, namespace: team-a }
+spec:
+  backoffLimit: 0
+  template:
+    spec:
+      serviceAccountName: ci
+      automountServiceAccountToken: false
+      restartPolicy: Never
+      containers:
+        - name: agent
+          image: chrislusf/seaweedfs:4.48
+          imagePullPolicy: IfNotPresent
+          command: [sh, /agent/call.sh]
+          volumeMounts:
+            - { name: token, mountPath: /var/run/secrets/cadre, readOnly: true }
+            - { name: agent, mountPath: /agent, readOnly: true }
+      volumes:
+        - name: token
+          projected:
+            sources:
+              - serviceAccountToken: { audience: cadre, path: token, expirationSeconds: 3600 }
+        - name: agent
+          configMap: { name: agent }

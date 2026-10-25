@@ -1,7 +1,9 @@
 #!/usr/bin/env bash
 # run.sh installs the chart into a fresh kind cluster, with Dex and SeaweedFS,
 # and checks that a logged-in admin can create a Team and a task through the
-# API and that the UI is served. `make e2e` builds the images and runs it.
+# API, that the UI is served, and that a pod of an AgentAccess's
+# ServiceAccount works on /mcp, and a Runner's is refused. `make e2e` builds
+# the images and runs it.
 #
 #   hack/e2e/run.sh <image tag>
 #
@@ -222,5 +224,28 @@ done
 status=$(curl -sS -o /dev/null -w '%{http_code}' $server/api/v1/namespaces/team-a/tasks)
 [ "$status" = 401 ] || fail "GET /tasks without a token: $status"
 
+log "an agent outside Cadre, by its ServiceAccount"
+# AgentAccess bot holds ServiceAccount bot: a pod with its projected token
+# for the audience cadre creates a task and comments through /mcp, as
+# agent:team-a/bot. Runner ci's ServiceAccount, with no AgentAccess, gets
+# a 401.
+sed "s/TASK/$name/" "$HERE/agent.yaml" | k apply -f -
+k -n team-a wait agentaccess/bot --for=condition=Ready --timeout="$TIMEOUT"
+k -n team-a wait job/agent job/runner-as-agent --for=condition=Complete --timeout="$TIMEOUT"
+agent_out=$(k -n team-a logs job/agent)
+refused_out=$(k -n team-a logs job/runner-as-agent)
+grep -q '"Filed by an agent"' <<<"$agent_out" || fail "create_task through /mcp: $agent_out"
+grep -q '"isError":true' <<<"$agent_out" && fail "a tool call through /mcp failed: $agent_out"
+grep -q 'agent:team-a/bot' <<<"$agent_out" || fail "the comment is not the agent's: $agent_out"
+filed() {
+  api $server/api/v1/namespaces/team-a/tasks | jq -e '.items[] | select(.spec.title == "Filed by an agent")'
+}
+wait_for "the agent's task on the board" filed
+thread=$(api $server/api/v1/namespaces/team-a/tasks/$name/thread)
+jq -e '.items[] | select(.body == "Seen by an agent" and .author.name == "agent:team-a/bot" and .author.kind == "User")' <<<"$thread" >/dev/null ||
+  fail "the thread has no comment by agent:team-a/bot: $thread"
+grep -q '401' <<<"$refused_out" || fail "Runner ci's ServiceAccount was not refused: $refused_out"
+grep -q 'Filed by an agent' <<<"$refused_out" && fail "Runner ci's ServiceAccount got through: $refused_out"
+
 passed=1
-log "ok: the chart installs, logs in, and serves the API and the UI"
+log "ok: the chart installs, logs in, serves the API and the UI, and takes an agent's ServiceAccount on /mcp"

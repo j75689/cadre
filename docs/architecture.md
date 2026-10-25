@@ -179,6 +179,7 @@ The browser and cadre-server then both reach the issuer at the same address. Dex
   - installs the chart in a kind cluster, with Dex (password grant on) and SeaweedFS;
   - checks that the admin, with an ID token and no browser, can create a Team and a task through the API, and that the task gets a number;
   - checks that the UI is served and that a request without a token is refused.
+  - checks an agent outside Cadre end to end (`hack/e2e/agent.yaml`): a pod of AgentAccess `bot`'s ServiceAccount, with a projected token for the audience `cadre`, creates a task and comments through `/mcp`, the comment authored `agent:team-a/bot`, through a real TokenReview; a pod of Runner `ci`'s ServiceAccount, which no AgentAccess names, gets a 401.
 
   CI runs it on every pull request and on main. The `cadre` CLI's `login` needs a browser and is covered by its tests against a fake provider instead.
 - Local development uses the Kubernetes built into Docker Desktop or OrbStack, with SeaweedFS as the object store. There is no single-machine mode outside Kubernetes.
