@@ -172,6 +172,13 @@ func TestNotifiers(t *testing.T) {
 		}
 		return false, "no NotificationDropped Event"
 	})
+
+	// A Notifier is gone only when the API server says so.
+	for name, want := range map[string]bool{"asks": false, "never-made": true} {
+		if gone, err := controller.Notifiers(mgr).NotifierGone(ctx, ns, name); err != nil || gone != want {
+			t.Errorf("%s gone: %v, %v", name, gone, err)
+		}
+	}
 }
 
 // claim claims the task the index has just seen.

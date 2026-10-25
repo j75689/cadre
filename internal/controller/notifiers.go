@@ -150,6 +150,20 @@ func (n notifiers) ListNotifiers(ctx context.Context, ns string) ([]v1alpha1.Not
 	return list.Items, nil
 }
 
+// NotifierGone reads the Notifier from the API server, not the cache: a
+// Notifier just made may not be in the cache yet.
+func (n notifiers) NotifierGone(ctx context.Context, ns, name string) (bool, error) {
+	// Bounded, as Delivered is: a slow API server must not hold the
+	// deliveries up.
+	ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
+	defer cancel()
+	err := n.fresh.Get(ctx, types.NamespacedName{Namespace: ns, Name: name}, &v1alpha1.Notifier{})
+	if apierrors.IsNotFound(err) {
+		return true, nil
+	}
+	return false, err
+}
+
 // Delivered writes lastSent or lastError as a merge patch of the status,
 // which cannot conflict with the reconciler's conditions; the same error
 // again is not written. It is a record, not a decision: a failure is given

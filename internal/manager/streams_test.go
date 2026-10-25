@@ -12,8 +12,9 @@ import (
 // namespace, task, run or path cannot make one that uses the segment
 // entries live under (storage.EntrySegment), even one named like it.
 func TestStreamsAreValidForAnyName(t *testing.T) {
-	if len(validation.IsDNS1123Label(storage.EntrySegment)) == 0 {
-		t.Fatalf("%q is a DNS label: a namespace or a task could be named it", storage.EntrySegment)
+	// Namespaces are labels; tasks are subdomains, a wider alphabet.
+	if len(validation.IsDNS1123Label(storage.EntrySegment)) == 0 || len(validation.IsDNS1123Subdomain(storage.EntrySegment)) == 0 {
+		t.Fatalf("%q is a DNS label or subdomain: a namespace or a task could be named it", storage.EntrySegment)
 	}
 	const runID = "01JB0000000000000000000001"
 	// "e" is a name a namespace or task may have: the segment's letter.
