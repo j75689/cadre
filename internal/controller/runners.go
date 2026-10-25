@@ -91,7 +91,7 @@ func (r *runnerReconciler) Reconcile(ctx context.Context, req reconcile.Request)
 
 // tokenOwner is the Runner's minted token.
 func (r *runnerReconciler) tokenOwner(rn *v1alpha1.Runner) tokenOwner {
-	return tokenOwner{obj: rn, kind: "Runner", secret: TokenSecretName(rn.Name), label: v1alpha1.LabelRunner, status: &rn.Status.MintedToken}
+	return tokenOwner{obj: rn, kind: "Runner", resource: "runners", secret: TokenSecretName(rn.Name), label: v1alpha1.LabelRunner, status: &rn.Status.MintedToken}
 }
 
 // MintedIdentity is the identity of a runner authenticated by a minted

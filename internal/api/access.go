@@ -9,6 +9,7 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
 	v1alpha1 "github.com/j75689/cadre/api/v1alpha1"
+	"github.com/j75689/cadre/internal/auth"
 	"github.com/j75689/cadre/internal/httpjson"
 	"github.com/j75689/cadre/internal/storage"
 )
@@ -27,6 +28,11 @@ type AgentAccessStore interface {
 	// UpdateAgentAccess writes the spec, conditionally on the version.
 	UpdateAgentAccess(ctx context.Context, aa *v1alpha1.AgentAccess) error
 	DeleteAgentAccess(ctx context.Context, namespace, name string) error
+	// RotateAgentAccessToken mints a new token for an AgentAccess without
+	// a ServiceAccount, replacing the one in its Secret, and returns it:
+	// the only time it is ever read. by is who asked, for its Event. One
+	// with a ServiceAccount, or whose Secret is not its own, is ErrInvalid.
+	RotateAgentAccessToken(ctx context.Context, namespace, name, by string) (string, error)
 }
 
 // ErrNotPermitted means cadre-server's own RBAC refuses what the store was
@@ -96,6 +102,28 @@ func (s *Server) putAgentAccess(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	httpjson.Write(w, http.StatusOK, viewAccess(cur))
+}
+
+// rotateAgentAccessToken replaces an AgentAccess's minted token and answers
+// with the new one: this answer is the only place it is ever shown, and
+// it is never logged. The old token stops at once.
+func (s *Server) rotateAgentAccessToken(w http.ResponseWriter, r *http.Request) {
+	ns, name := r.PathValue("ns"), r.PathValue("name")
+	by := "anonymous"
+	if id, ok := auth.FromContext(r.Context()); ok {
+		by = id.Username
+	}
+	tok, err := s.access.RotateAgentAccessToken(r.Context(), ns, name, by)
+	switch {
+	case errors.Is(err, storage.ErrConflict):
+		// Its own message says what changed meanwhile.
+		httpjson.WriteError(w, http.StatusConflict, httpjson.CodeConflict, err.Error())
+		return
+	case err != nil:
+		s.failAccess(w, name, err)
+		return
+	}
+	httpjson.Write(w, http.StatusOK, AgentAccessToken{Token: tok, TokenSecret: v1alpha1.AccessTokenSecretName(name)})
 }
 
 func (s *Server) deleteAgentAccess(w http.ResponseWriter, r *http.Request) {

@@ -132,6 +132,14 @@ type AgentAccessView struct {
 	MintedAt        *metav1.Time             `json:"mintedAt,omitempty"`
 }
 
+// AgentAccessToken is a token just minted for an AgentAccess, replacing its
+// last: shown in this one answer and never again, and kept in TokenSecret
+// for whoever may read Secrets there.
+type AgentAccessToken struct {
+	Token       string `json:"token"`
+	TokenSecret string `json:"tokenSecret"`
+}
+
 // TeamList lists every Team.
 type TeamList struct {
 	Items []v1alpha1.Team `json:"items"`

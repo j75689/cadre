@@ -355,6 +355,8 @@ func TestAgentAccessFromTheCLI(t *testing.T) {
 				return
 			}
 			httpjson.Write(w, http.StatusOK, v)
+		case r.Method == http.MethodPost && strings.HasSuffix(name, "/token"):
+			httpjson.Write(w, http.StatusOK, api.AgentAccessToken{Token: "dGVhbS1hL2JvdA.fresh", TokenSecret: "bot.access-token"})
 		case r.Method == http.MethodPut:
 			var req api.AgentAccessRequest
 			_ = json.NewDecoder(r.Body).Decode(&req)
@@ -382,6 +384,10 @@ func TestAgentAccessFromTheCLI(t *testing.T) {
 		t.Errorf("set listed the namespace %d times; it reads the one AgentAccess", lists)
 	}
 	mustContain(t, cadre(t, srv.URL, "agentaccess", "list"), "NAME", "TOKEN SECRET", "bot", "viewer", "ci")
+	// The token alone on stdout, to go straight where the agent reads it.
+	if out := cadre(t, srv.URL, "agentaccess", "token", "bot"); out != "dGVhbS1hL2JvdA.fresh\n" {
+		t.Errorf("token printed %q", out)
+	}
 	mustContain(t, cadre(t, srv.URL, "agentaccess", "delete", "bot"), "agentaccess bot deleted")
 	if len(existing) != 0 {
 		t.Errorf("left %v", existing)

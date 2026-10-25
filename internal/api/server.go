@@ -95,6 +95,7 @@ func (s *Server) Register(mux *http.ServeMux) {
 		mux.HandleFunc("GET "+accesses+"/{name}", s.guard(authz.ManageAccess, s.getAgentAccess))
 		mux.HandleFunc("PUT "+accesses+"/{name}", s.guard(authz.ManageAccess, s.putAgentAccess))
 		mux.HandleFunc("DELETE "+accesses+"/{name}", s.guard(authz.ManageAccess, s.deleteAgentAccess))
+		mux.HandleFunc("POST "+accesses+"/{name}/token", s.guard(authz.ManageAccess, s.rotateAgentAccessToken))
 	}
 	mux.HandleFunc("GET "+Base+"/teams", s.listTeams)
 	mux.HandleFunc("GET "+Base+"/me", s.me)

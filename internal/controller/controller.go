@@ -142,7 +142,12 @@ func (b base) options() controller.Options {
 
 // hasTeam reports whether ns is a Team namespace.
 func (b base) hasTeam(ctx context.Context, ns string) (bool, error) {
-	err := b.client.Get(ctx, client.ObjectKey{Namespace: ns, Name: v1alpha1.TeamName}, &v1alpha1.Team{})
+	return hasTeam(ctx, b.client, ns)
+}
+
+// hasTeam reports whether ns is a Team namespace, as r reads it.
+func hasTeam(ctx context.Context, r client.Reader, ns string) (bool, error) {
+	err := r.Get(ctx, client.ObjectKey{Namespace: ns, Name: v1alpha1.TeamName}, &v1alpha1.Team{})
 	if apierrors.IsNotFound(err) {
 		return false, nil
 	}
