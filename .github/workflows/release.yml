@@ -30,8 +30,22 @@ jobs:
   chart:
     uses: ./.github/workflows/chart.yml
 
+  # What the header promises: the tagged commit is on main, where the
+  # install in kind ran on it.
+  on-main:
+    name: The tag is on main
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+      - name: Check the commit is on main
+        run: |
+          git merge-base --is-ancestor "$GITHUB_SHA" origin/main ||
+            { echo "::error::$GITHUB_REF_NAME ($GITHUB_SHA) is not on main: tag a commit of main"; exit 1; }
+
   publish:
-    needs: [fmt, lint, test, web, chart]
+    needs: [on-main, fmt, lint, test, web, chart]
     uses: ./.github/workflows/publish.yml
     permissions:
       contents: read
@@ -45,10 +59,12 @@ jobs:
       contents: write
       packages: write
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-go@v5
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v7
         with:
           go-version-file: go.mod
+          # Go here only installs helm, and nothing once bin/tools is warm.
+          cache: false
       - uses: ./.github/actions/tools-cache
       - name: Package the chart and render install.yaml
         run: make chart-dist RELEASE="$GITHUB_REF_NAME"

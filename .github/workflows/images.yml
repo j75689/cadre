@@ -17,17 +17,14 @@ jobs:
   image:
     name: Build ${{ matrix.cmd }}
     runs-on: ubuntu-latest
-    concurrency:
-      group: images-${{ github.ref }}-${{ matrix.cmd }}
-      cancel-in-progress: true
     strategy:
       fail-fast: false
       matrix:
         cmd: [cadre-server, cadre-runner, cadre]
     steps:
-      - uses: actions/checkout@v4
-      - uses: docker/setup-buildx-action@v3
-      - uses: docker/build-push-action@v6
+      - uses: actions/checkout@v7
+      - uses: docker/setup-buildx-action@v4
+      - uses: docker/build-push-action@v7
         with:
           context: .
           platforms: linux/amd64,linux/arm64

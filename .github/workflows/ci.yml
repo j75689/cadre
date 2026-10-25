@@ -14,8 +14,10 @@ permissions:
   contents: read
 
 # A pull request's newer push replaces its running checks. Each push to main
-# is a group of its own, so none is queued behind another and dropped: each
-# publishes its commit.
+# is a group of its own, so none is cancelled here. publish.yml's push still
+# runs one at a time per command, so that an older build never moves :main
+# back: :main always ends at the newest commit, while an intermediate
+# commit's main-<sha> may be skipped when three land within one build.
 concurrency:
   group: ci-${{ github.event_name == 'pull_request' && github.ref || github.sha }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}

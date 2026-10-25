@@ -15,19 +15,22 @@ jobs:
     name: Install in kind
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-go@v5
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v7
         with:
           go-version-file: go.mod
+          # The images build in Docker; Go here only installs tools, and
+          # nothing once bin/tools is warm.
+          cache: false
       - uses: ./.github/actions/tools-cache
-      - uses: docker/setup-buildx-action@v3
+      - uses: docker/setup-buildx-action@v4
       - name: Registry
         id: registry
         env:
           OWNER: ${{ github.repository_owner }}
         run: echo "name=ghcr.io/${OWNER,,}" >> "$GITHUB_OUTPUT"
       - name: Build cadre-server
-        uses: docker/build-push-action@v6
+        uses: docker/build-push-action@v7
         with:
           context: .
           platforms: linux/amd64
@@ -38,7 +41,7 @@ jobs:
           load: true
           cache-from: type=gha,scope=cadre-server
       - name: Build cadre-runner
-        uses: docker/build-push-action@v6
+        uses: docker/build-push-action@v7
         with:
           context: .
           platforms: linux/amd64

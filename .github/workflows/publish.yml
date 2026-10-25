@@ -2,7 +2,8 @@
 # ghcr.io/<owner>/<command> for the caller's ref: vX.Y.Z, vX.Y and latest
 # for a v* tag (release.yml), main and main-<short sha> for main (ci.yml).
 # One push at a time per ref and command: an older build finishing last
-# would move a mutable tag back. The caller grants packages: write.
+# would move a mutable tag back. The caller grants packages: write. The
+# third-party actions, which run with it, are pinned to a commit.
 name: publish
 
 on:
@@ -24,9 +25,9 @@ jobs:
       matrix:
         cmd: [cadre-server, cadre-runner, cadre]
     steps:
-      - uses: actions/checkout@v4
-      - uses: docker/setup-buildx-action@v3
-      - uses: docker/login-action@v3
+      - uses: actions/checkout@v7
+      - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
+      - uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4.6.0
         with:
           registry: ghcr.io
           username: ${{ github.actor }}
@@ -37,7 +38,7 @@ jobs:
         run: |
           if [ "$GITHUB_REF_TYPE" = tag ]; then echo "version=$GITHUB_REF_NAME"; else echo "version=main-${GITHUB_SHA::7}"; fi >> "$GITHUB_OUTPUT"
       - id: meta
-        uses: docker/metadata-action@v5
+        uses: docker/metadata-action@dc802804100637a589fabce1cb79ff13a1411302 # v6.2.0
         with:
           images: ghcr.io/${{ github.repository_owner }}/${{ matrix.cmd }}
           # vX.Y.Z, vX.Y and latest on a tag; main and main-<short sha> on main.
@@ -46,7 +47,7 @@ jobs:
             type=semver,pattern=v{{major}}.{{minor}}
             type=raw,value=${{ steps.version.outputs.version }},enable={{is_default_branch}}
             type=raw,value=main,enable={{is_default_branch}}
-      - uses: docker/build-push-action@v6
+      - uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
         with:
           context: .
           platforms: linux/amd64,linux/arm64
