@@ -1,0 +1,30 @@
+# The chart's values in the end-to-end test. run.sh sets image.tag to the
+# images it built and loaded, and creates the Secrets named here.
+image:
+  # Loaded into the kind node; never pulled.
+  pullPolicy: Never
+server:
+  # One replica is enough to prove an install; two would only slow it.
+  replicas: 1
+  # Where the test's port-forward reaches it, and where logins return.
+  externalURL: http://localhost:8080
+auth:
+  mode: oidc
+  oidc:
+    issuer: http://dex.dex.svc:5556/dex
+    clientId: cadre
+    cliClientId: cadre-cli
+    clientSecret:
+      secretName: cadre-oidc
+  admins:
+    users: [dev@example.test]
+storage:
+  s3:
+    endpoint: http://seaweedfs.storage.svc:8333
+    bucket: cadre
+    pathStyle: true
+    credentialsSecret: cadre-s3
+workloads:
+  clusterWide: true
+runner:
+  enabled: true

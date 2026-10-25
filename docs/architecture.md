@@ -156,6 +156,12 @@ The browser and cadre-server then both reach the issuer at the same address. Dex
 - **`install.yaml`**, attached to each GitHub release: the chart rendered with its CRDs, `auth.mode=none` and the bucket `CHANGE-ME`, behind a header saying so. It has no logins, so everyone is an admin: a way to try Cadre, not to run it. `make chart-dist RELEASE=vX.Y.Z` makes it, and the chart package, into `dist/`.
 - **A `v*` tag publishes**, once `check` passes on it: the three images; then the chart, at version `X.Y.Z` with `appVersion` the tag (so its images default to that tag), to `oci://ghcr.io/j75689/charts/cadre`; then the GitHub release, with generated notes and `install.yaml`.
 - Images: `ghcr.io/j75689/cadre-server`, `ghcr.io/j75689/cadre-runner` and `ghcr.io/j75689/cadre` (the CLI), for linux/amd64 and linux/arm64, built from the one `Dockerfile` (`make image CMD=...` locally) on distroless/static as a non-root user. A `v*` tag publishes `vX.Y.Z`, `vX.Y` and `latest`; every push to main publishes `main` and `main-<short sha>`. Each binary prints its version with `--version`: `vX.Y.Z` for a release, `main-<short sha>` for a `main` image. The packages pushed by this repository's workflow have been public from their first push; if a pull is refused, set the package to public in its settings.
+- **Checking an install end to end.** `make e2e` builds the images at the current commit and runs `hack/e2e/run.sh`. The script:
+  - installs the chart in a kind cluster, with Dex (password grant on) and SeaweedFS;
+  - checks that the admin, with an ID token and no browser, can create a Team and a task through the API, and that the task gets a number;
+  - checks that the UI is served and that a request without a token is refused.
+
+  CI runs it on every pull request and on main. The `cadre` CLI's `login` needs a browser and is covered by its tests against a fake provider instead.
 - Local development uses the Kubernetes built into Docker Desktop or OrbStack, with SeaweedFS as the object store. There is no single-machine mode outside Kubernetes.
 - An operator and a top-level `Cadre` resource arrive together with the postgres driver, which needs managed databases and migrations.
 

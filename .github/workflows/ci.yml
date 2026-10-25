@@ -97,6 +97,67 @@ jobs:
           push: false
           cache-from: type=gha,scope=${{ matrix.cmd }}
 
+  # The chart from this commit's images, installed in kind with Dex and
+  # SeaweedFS and checked through the API and the UI (hack/e2e): the images
+  # are built for linux/amd64 into the runner's Docker, warm from the image
+  # jobs' cache.
+  e2e:
+    name: Install in kind
+    if: github.event_name == 'pull_request' || github.ref == 'refs/heads/main'
+    needs: check
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      - name: Tool versions
+        id: tools
+        run: echo "key=tools-${{ runner.os }}-$(grep -E '^[A-Z0-9_]+_VERSION +:=' Makefile | tr -d ' ' | sort | tr '\n' '-')" >> "$GITHUB_OUTPUT"
+      - name: Cache tools
+        uses: actions/cache@v4
+        with:
+          path: bin/tools
+          key: ${{ steps.tools.outputs.key }}
+      - uses: docker/setup-buildx-action@v3
+      - name: Build cadre-server
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          platforms: linux/amd64
+          build-args: |
+            CMD=cadre-server
+            VERSION=e2e
+          tags: ghcr.io/${{ github.repository_owner }}/cadre-server:e2e
+          load: true
+          cache-from: type=gha,scope=cadre-server
+      - name: Build cadre-runner
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          platforms: linux/amd64
+          build-args: |
+            CMD=cadre-runner
+            VERSION=e2e
+          tags: ghcr.io/${{ github.repository_owner }}/cadre-runner:e2e
+          load: true
+          cache-from: type=gha,scope=cadre-runner
+      - name: Build cadre
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          platforms: linux/amd64
+          build-args: |
+            CMD=cadre
+            VERSION=e2e
+          tags: ghcr.io/${{ github.repository_owner }}/cadre:e2e
+          load: true
+          cache-from: type=gha,scope=cadre
+      - name: Install and check
+        env:
+          REGISTRY: ghcr.io/${{ github.repository_owner }}
+        run: hack/e2e/run.sh e2e
+
   # main and v* tags publish to ghcr.io/<owner>/<command>, once check has
   # passed on the same commit. One push at a time per ref and command: an
   # older build finishing last would move the mutable main tag back.

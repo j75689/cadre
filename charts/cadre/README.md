@@ -111,6 +111,25 @@ subjects:
   namespace: cadre-system
 ```
 
+## Checking an install end to end
+
+`make e2e` builds the images at the current commit and runs
+`hack/e2e/run.sh`. The script:
+
+1. Creates a kind cluster with its own kubeconfig.
+2. Installs Dex and SeaweedFS into it.
+3. Installs this chart with `hack/e2e/values.yaml`: logins on, the
+   runner on, and Jobs bound cluster-wide.
+4. Checks, with an ID token from Dex's password grant:
+   - the admin is admin;
+   - a Team and a task can be created through the API;
+   - the task is listed with a number;
+   - the UI is served;
+   - a request without a token is refused.
+
+CI runs it on every pull request and on main. `KEEP=1` keeps the cluster for
+a look around.
+
 ## Upgrading the CRDs
 
 Helm installs `crds/` on first install only and never upgrades or deletes

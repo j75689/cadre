@@ -27,7 +27,7 @@ define go-install
 	mkdir -p $(TOOLS); mv $$tmp/$$(basename $(2)) $(1); rm -rf $$tmp
 endef
 
-.PHONY: all build test smoke chaos fmt vet lint check tidy clean generate manifests verify-generated verify-tidy tools image images ui ui-check chart-files chart-lint chart-dist print-chart-paths print-helm
+.PHONY: all build test smoke chaos fmt vet lint check tidy clean generate manifests verify-generated verify-tidy tools image images ui ui-check chart-files chart-lint chart-dist print-chart-paths print-helm e2e
 
 all: build
 
@@ -52,6 +52,14 @@ image: ## Build one command's image: make image CMD=cadre-server [TAG=dev]
 
 images: ## Build every command's image [TAG=dev]
 	@for c in $(CMDS); do $(MAKE) --no-print-directory image CMD=$$c TAG=$(TAG) || exit 1; done
+
+# e2e installs the chart from images built at this commit into a kind
+# cluster, with Dex and SeaweedFS, and checks it through the API and the UI.
+# It needs Docker; KEEP=1 keeps the cluster.
+E2E_TAG ?= e2e-$(shell git rev-parse --short HEAD)
+e2e: ## Check an install end to end in kind (hack/e2e) [KEEP=1]
+	@$(MAKE) --no-print-directory images TAG=$(E2E_TAG)
+	hack/e2e/run.sh $(E2E_TAG)
 
 test: $(ENVTEST) ## Run all tests, the chaos test in its short form; downloads envtest binaries on first run
 	assets=$$($(ENVTEST) use $(ENVTEST_K8S_VERSION) --bin-dir $(TOOLS)/envtest -p path) && \

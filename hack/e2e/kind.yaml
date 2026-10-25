@@ -1,0 +1,6 @@
+# The kind cluster hack/e2e/run.sh installs the chart into: one node. The
+# node image is pinned in run.sh.
+kind: Cluster
+apiVersion: kind.x-k8s.io/v1alpha4
+nodes:
+  - role: control-plane
