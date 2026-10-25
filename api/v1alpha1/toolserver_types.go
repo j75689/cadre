@@ -116,7 +116,7 @@ type ToolServerSpec struct {
 // +kubebuilder:object:root=true
 // +kubebuilder:subresource:status
 // +kubebuilder:resource:scope=Namespaced
-// +kubebuilder:validation:XValidation:rule="!has(self.spec.managed) || (size(self.metadata.name) <= 63 && !self.metadata.name.contains('.')) || (oldSelf.hasValue() && has(oldSelf.value().spec.managed))",message="a managed ToolServer's name is a DNS label (at most 63 characters, no dot): it names its Deployment and Service",optionalOldSelf=true
+// +kubebuilder:validation:XValidation:rule="!has(self.spec.managed) || (size(self.metadata.name) <= 63 && !self.metadata.name.contains('.') && self.metadata.name.matches('^[a-z]')) || (oldSelf.hasValue() && has(oldSelf.value().spec.managed))",message="a managed ToolServer's name is a DNS-1035 label (at most 63 characters, no dot, starting with a letter): it names its Deployment and Service",optionalOldSelf=true
 // +kubebuilder:printcolumn:name="URL",type=string,JSONPath=`.spec.url`
 // +kubebuilder:printcolumn:name="Managed",type=string,JSONPath=`.status.url`
 // +kubebuilder:printcolumn:name="Ready",type=string,JSONPath=`.status.conditions[?(@.type=="Ready")].status`

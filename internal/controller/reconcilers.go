@@ -119,14 +119,16 @@ func (r *toolServerReconciler) Reconcile(ctx context.Context, req reconcile.Requ
 		// it owns them.
 		return reconcile.Result{}, client.IgnoreNotFound(err)
 	}
+	// Before anything else: what runs for it is left as it is.
+	if ts.Spec.Managed != nil {
+		if msg := invalidServiceName(ts.Name); msg != "" {
+			return reconcile.Result{RequeueAfter: r.resync}, r.setReady(ctx, &ts, &ts.Status.ConfigStatus, false, "InvalidName", msg)
+		}
+	}
 	if ok, err := r.hasTeam(ctx, req.Namespace); err != nil || !ok {
 		return r.noTeam(ctx, &ts, &ts.Status.ConfigStatus, err)
 	}
 	if ts.Spec.Managed != nil {
-		// Before anything else: what runs for it is left as it is.
-		if msg := invalidName("managed ToolServer", ts.Name); msg != "" {
-			return reconcile.Result{RequeueAfter: r.resync}, r.setReady(ctx, &ts, &ts.Status.ConfigStatus, false, "InvalidName", msg)
-		}
 		return r.reconcileManaged(ctx, &ts)
 	}
 	// Once managed (it has a URL of Cadre's), now external: what Cadre ran

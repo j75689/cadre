@@ -401,11 +401,11 @@ spec:
         - spec
         type: object
         x-kubernetes-validations:
-        - message: 'a managed ToolServer''s name is a DNS label (at most 63 characters,
-            no dot): it names its Deployment and Service'
+        - message: 'a managed ToolServer''s name is a DNS-1035 label (at most 63 characters,
+            no dot, starting with a letter): it names its Deployment and Service'
           optionalOldSelf: true
-          rule: '!has(self.spec.managed) || (size(self.metadata.name) <= 63 && !self.metadata.name.contains(''.''))
-            || (oldSelf.hasValue() && has(oldSelf.value().spec.managed))'
+          rule: '!has(self.spec.managed) || (size(self.metadata.name) <= 63 && !self.metadata.name.contains(''.'')
+            && self.metadata.name.matches(''^[a-z]'')) || (oldSelf.hasValue() && has(oldSelf.value().spec.managed))'
     served: true
     storage: true
     subresources:

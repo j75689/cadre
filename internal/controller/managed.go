@@ -11,6 +11,7 @@ import (
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/util/intstr"
+	"k8s.io/apimachinery/pkg/util/validation"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
@@ -43,6 +44,16 @@ const defaultMCPPath = "/mcp"
 // or Service of its name that is not its own is left alone, and the
 // ToolServer is not Ready. It is looked at again every resync: its Service
 // is not watched.
+// invalidServiceName is why name cannot be a managed ToolServer's, or "":
+// it names its Service, so it is a DNS-1035 label. The CRD refuses another
+// at create; one made before that is told.
+func invalidServiceName(name string) string {
+	if len(validation.IsDNS1035Label(name)) == 0 {
+		return ""
+	}
+	return "a managed ToolServer's name is a DNS-1035 label (at most 63 characters, no dot, starting with a letter): it names its Deployment and Service. Make it external (set url instead of managed), which keeps the Agents naming it, or re-create it under another name"
+}
+
 func (r *toolServerReconciler) reconcileManaged(ctx context.Context, ts *v1alpha1.ToolServer) (reconcile.Result, error) {
 	m := ts.Spec.Managed
 	path := m.Path
@@ -69,8 +80,8 @@ func (r *toolServerReconciler) reconcileManaged(ctx context.Context, ts *v1alpha
 		return notReady("NameTaken", taken.Error())
 	case apierrors.IsInvalid(err):
 		// A spec the CRD admits from which the API server refuses the
-		// Deployment or the Service (a readinessProbe a Pod may not have, a
-		// name too long for a label). A new spec can fix it, but so can a
+		// Deployment or the Service (a readinessProbe a Pod may not have,
+		// say). A new spec can fix it, but so can a
 		// relaxed admission policy or an upgraded API server, which nothing
 		// would bring the ToolServer back for: try again at resync.
 		return notReady("InvalidSpec", "the API server refuses its Deployment or Service: "+err.Error())
