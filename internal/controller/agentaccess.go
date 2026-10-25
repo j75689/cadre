@@ -47,6 +47,12 @@ func accessSharers(ctx context.Context, c client.Reader, ns, sa string) ([]v1alp
 
 // tokenOwner is the AgentAccess's minted token.
 func (r *agentAccessReconciler) tokenOwner(aa *v1alpha1.AgentAccess) tokenOwner {
+	return accessTokenOwner(aa)
+}
+
+// accessTokenOwner is aa's minted token, for the reconciler and the API's
+// rotation alike.
+func accessTokenOwner(aa *v1alpha1.AgentAccess) tokenOwner {
 	return tokenOwner{obj: aa, kind: "AgentAccess", secret: AccessTokenSecretName(aa.Name), label: v1alpha1.LabelAgentAccess, status: &aa.Status.MintedToken}
 }
 

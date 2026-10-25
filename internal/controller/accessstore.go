@@ -6,16 +6,20 @@ import (
 	"fmt"
 	"slices"
 	"strings"
+	"time"
 
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/util/wait"
 	"k8s.io/client-go/tools/events"
 	"sigs.k8s.io/controller-runtime/pkg/client"
+	"sigs.k8s.io/controller-runtime/pkg/log"
 
 	v1alpha1 "github.com/j75689/cadre/api/v1alpha1"
 	"github.com/j75689/cadre/internal/api"
 	"github.com/j75689/cadre/internal/storage"
+	"github.com/j75689/cadre/internal/token"
 )
 
 // +kubebuilder:rbac:groups=cadre.dev,resources=agentaccesses,verbs=create;update;delete
@@ -72,7 +76,16 @@ func (s accessStore) DeleteAgentAccess(ctx context.Context, ns, name string) err
 	return storeError("delete", name, s.c.Delete(ctx, &v1alpha1.AgentAccess{ObjectMeta: metav1.ObjectMeta{Namespace: ns, Name: name}}))
 }
 
+// RotateAgentAccessToken rotates the token, then waits, 2 seconds at most,
+// for the cache to see the new hash: a minted token is checked against the
+// cache first, so one answered before the cache has it would be refused,
+// and that refusal remembered, by an agent using it at once. A cache that
+// takes longer still gets the answer, the token being good, and is logged.
 func (s accessStore) RotateAgentAccessToken(ctx context.Context, ns, name, by string) (string, error) {
+	// The reconciler's preconditions, before anything is written.
+	if msg := invalidName("AgentAccess", name); msg != "" {
+		return "", fmt.Errorf("%s: %w", msg, storage.ErrInvalid)
+	}
 	aa, err := s.GetAgentAccess(ctx, ns, name)
 	if err != nil {
 		return "", err
@@ -80,15 +93,25 @@ func (s accessStore) RotateAgentAccessToken(ctx context.Context, ns, name, by st
 	if aa.Spec.ServiceAccount != nil {
 		return "", fmt.Errorf("AgentAccess %s authenticates as ServiceAccount %s: it has no minted token: %w", name, aa.Spec.ServiceAccount.Name, storage.ErrInvalid)
 	}
-	o := tokenOwner{obj: aa, kind: "AgentAccess", secret: AccessTokenSecretName(name), label: v1alpha1.LabelAgentAccess, status: &aa.Status.MintedToken}
-	tok, err := rotateToken(ctx, s.c, s.fresh, o)
+	tok, err := rotateToken(ctx, s.c, s.fresh, accessTokenOwner(aa))
 	switch {
 	case errors.Is(err, ErrNotOwned):
-		return "", fmt.Errorf("%s; delete it to have a token minted: %w", err.Error(), storage.ErrInvalid)
+		return "", fmt.Errorf("%w; delete it to have a token minted: %w", err, storage.ErrInvalid)
+	case errors.Is(err, storage.ErrConflict):
+		return "", err
 	case err != nil:
-		return "", storeError("rotate the token of", name, err)
+		return "", storeError("update", name, err)
 	}
 	s.events.Eventf(aa, nil, corev1.EventTypeNormal, "TokenRotated", "RotateToken", "token rotated by %s", by)
+	hash := token.Hash(tok)
+	seen := func(ctx context.Context) (bool, error) {
+		var cached v1alpha1.AgentAccess
+		err := s.c.Get(ctx, client.ObjectKey{Namespace: ns, Name: name}, &cached)
+		return err == nil && cached.Status.TokenHash == hash, nil
+	}
+	if err := wait.PollUntilContextTimeout(ctx, 100*time.Millisecond, 2*time.Second, true, seen); err != nil {
+		log.FromContext(ctx).Info("the cache had not seen a rotated token's hash after 2s; answering anyway", "namespace", ns, "agentAccess", name)
+	}
 	return tok, nil
 }
 

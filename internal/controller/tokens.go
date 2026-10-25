@@ -14,6 +14,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
 
 	v1alpha1 "github.com/j75689/cadre/api/v1alpha1"
+	"github.com/j75689/cadre/internal/storage"
 	"github.com/j75689/cadre/internal/token"
 )
 
@@ -72,20 +73,17 @@ func setToken(o tokenOwner, hash string) bool {
 // Secret on the next reconcile. A Secret of that name the owner does not
 // own, or one without a token, is a problem, not a token.
 func (b base) ensureToken(ctx context.Context, o tokenOwner) (hash, problem string, err error) {
-	key := client.ObjectKey{Namespace: o.obj.GetNamespace(), Name: o.secret}
-	var s corev1.Secret
-	err = b.secrets.Get(ctx, key, &s)
+	sec, err := ownedSecret(ctx, b.secrets, o)
+	var notOwned *notOwnedError
 	switch {
-	case err == nil:
-		tok := s.Data[tokenKey]
-		if len(tok) == 0 || !ownedBy(&s, o.obj) {
-			return "", fmt.Sprintf("Secret %s exists but is not this %s's token; delete it to have a token minted", key.Name, o.kind), nil
-		}
-		return token.Hash(string(tok)), "", nil
-	case !apierrors.IsNotFound(err):
+	case errors.As(err, &notOwned):
+		return "", notOwned.problem() + "; delete it to have a token minted", nil
+	case err != nil:
 		return "", "", err
+	case sec != nil:
+		return token.Hash(string(sec.Data[tokenKey])), "", nil
 	}
-	tok, hash, err := token.Mint(key.Namespace, o.obj.GetName())
+	tok, hash, err := token.Mint(o.obj.GetNamespace(), o.obj.GetName())
 	if err != nil {
 		return "", "", err
 	}
@@ -94,6 +92,32 @@ func (b base) ensureToken(ctx context.Context, o tokenOwner) (hash, problem stri
 	}
 	return hash, "", nil
 }
+
+// ownedSecret reads o's token Secret through r: nil if there is none, and
+// a *notOwnedError if one of that name is not o's, or holds no token.
+func ownedSecret(ctx context.Context, r client.Reader, o tokenOwner) (*corev1.Secret, error) {
+	var s corev1.Secret
+	err := r.Get(ctx, client.ObjectKey{Namespace: o.obj.GetNamespace(), Name: o.secret}, &s)
+	switch {
+	case apierrors.IsNotFound(err):
+		return nil, nil
+	case err != nil:
+		return nil, err
+	case len(s.Data[tokenKey]) == 0 || !ownedBy(&s, o.obj):
+		return nil, &notOwnedError{secret: o.secret, kind: o.kind}
+	}
+	return &s, nil
+}
+
+// notOwnedError is a Secret of a token's name that is not its owner's
+// token. It is ErrNotOwned.
+type notOwnedError struct{ secret, kind string }
+
+func (e *notOwnedError) problem() string {
+	return fmt.Sprintf("Secret %s exists but is not this %s's token", e.secret, e.kind)
+}
+func (e *notOwnedError) Error() string        { return e.problem() }
+func (e *notOwnedError) Is(target error) bool { return target == ErrNotOwned }
 
 // createToken creates o's token Secret holding tok, labelled with o's name
 // and owned by o.
@@ -110,39 +134,78 @@ func createToken(ctx context.Context, c client.Client, o tokenOwner, tok string)
 }
 
 // rotateToken mints a new token for o into its Secret, replacing what it
-// held, and writes its hash into o's status, conditionally on o's version:
-// what the reconciler does when the Secret is deleted, done at once, so it
-// then finds nothing to do. The old token stops when the status changes.
-// The Secret, read fresh, is written first, as ensureToken does: a status
-// write that is lost is redone from the Secret on the next reconcile. A
-// Secret of that name o does not own is ErrNotOwned.
+// held, and writes its hash into o's status: what the reconciler does when
+// the Secret is deleted, done at once, so it then finds nothing to do. The
+// old token stops when the status changes.
+//
+// The Secret, read fresh, is the fence: it is written first, conditionally
+// on the version read, so of two rotations at once one wins and the other
+// is a conflict, and a lost status write is redone from it by the
+// reconciler. The status write then converges on it: on a conflict o is
+// read again, through fresh, into o.obj, and is done if it holds the hash
+// already (the reconciler took it from the Secret), or written again, three
+// tries at most. Last, the Secret must still hold the token: another
+// rotation may have replaced it since. Every lost race is ErrConflict.
 func rotateToken(ctx context.Context, c client.Client, fresh client.Reader, o tokenOwner) (string, error) {
 	tok, hash, err := token.Mint(o.obj.GetNamespace(), o.obj.GetName())
 	if err != nil {
 		return "", err
 	}
-	var s corev1.Secret
-	switch err := fresh.Get(ctx, client.ObjectKey{Namespace: o.obj.GetNamespace(), Name: o.secret}, &s); {
-	case apierrors.IsNotFound(err):
-		if err := createToken(ctx, c, o, tok); err != nil {
-			return "", err
+	// What it answers names the Secret only: the API server's own words
+	// stay here.
+	meanwhile := fmt.Errorf("the token Secret %s changed meanwhile, rotated or edited by someone else: ask them for the token, or rotate it again: %w", o.secret, storage.ErrConflict)
+	sec, err := ownedSecret(ctx, fresh, o)
+	if err != nil {
+		return "", err
+	}
+	afterSecretRead()
+	if sec == nil {
+		err = createToken(ctx, c, o, tok)
+	} else {
+		if sec.Data == nil {
+			sec.Data = map[string][]byte{}
 		}
+		sec.Data[tokenKey] = []byte(tok) // the other keys stay as they are
+		err = c.Update(ctx, sec)
+	}
+	switch {
+	case apierrors.IsConflict(err), apierrors.IsAlreadyExists(err), apierrors.IsNotFound(err):
+		return "", meanwhile
 	case err != nil:
 		return "", err
-	case !ownedBy(&s, o.obj):
-		return "", fmt.Errorf("the Secret %s is not this %s's token: %w", o.secret, o.kind, ErrNotOwned)
-	default:
-		s.Data = map[string][]byte{tokenKey: []byte(tok)}
-		if err := c.Update(ctx, &s); err != nil {
+	}
+	beforeStatusWrite()
+	key := client.ObjectKeyFromObject(o.obj)
+	for try := 0; ; try++ {
+		if o.status.TokenHash == hash {
+			break
+		}
+		setToken(o, hash)
+		err := c.Status().Update(ctx, o.obj)
+		if err == nil {
+			break
+		}
+		if !apierrors.IsConflict(err) || try == 2 {
+			if apierrors.IsConflict(err) {
+				return "", fmt.Errorf("the %s kept changing while its token was rotated; try again: %w", o.kind, storage.ErrConflict)
+			}
+			return "", err
+		}
+		if err := fresh.Get(ctx, key, o.obj); err != nil {
 			return "", err
 		}
 	}
-	setToken(o, hash)
-	if err := c.Status().Update(ctx, o.obj); err != nil {
+	switch cur, err := ownedSecret(ctx, fresh, o); {
+	case err != nil:
 		return "", err
+	case cur == nil || string(cur.Data[tokenKey]) != tok:
+		return "", meanwhile
 	}
 	return tok, nil
 }
+
+// Test hooks: a rotation's Secret read and its status write.
+var afterSecretRead, beforeStatusWrite = func() {}, func() {}
 
 // ErrNotOwned means a Secret of a token's name is not its owner's.
 var ErrNotOwned = errors.New("not the owner's token")

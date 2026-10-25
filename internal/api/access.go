@@ -114,7 +114,12 @@ func (s *Server) rotateAgentAccessToken(w http.ResponseWriter, r *http.Request) 
 		by = id.Username
 	}
 	tok, err := s.access.RotateAgentAccessToken(r.Context(), ns, name, by)
-	if err != nil {
+	switch {
+	case errors.Is(err, storage.ErrConflict):
+		// Its own message says what changed meanwhile.
+		httpjson.WriteError(w, http.StatusConflict, httpjson.CodeConflict, err.Error())
+		return
+	case err != nil:
 		s.failAccess(w, name, err)
 		return
 	}
