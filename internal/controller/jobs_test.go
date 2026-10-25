@@ -7,13 +7,16 @@ import (
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"sync"
 	"testing"
 	"time"
 
 	batchv1 "k8s.io/api/batch/v1"
 	corev1 "k8s.io/api/core/v1"
+	eventsv1 "k8s.io/api/events/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
+	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/client-go/rest"
 	"k8s.io/client-go/util/retry"
@@ -543,4 +546,56 @@ func sleep(ctx context.Context, d time.Duration) {
 	case <-ctx.Done():
 	case <-time.After(d):
 	}
+}
+
+// A Job the API server refuses for a quota, not for authorization, leaves
+// the Agent Ready and says why on it in an Event; once the quota is gone the
+// Job is created.
+func TestAJobRefusedByAQuota(t *testing.T) {
+	e := startJobs(t)
+	ctx := context.Background()
+	// No Jobs at all. envtest runs no quota controller, so the quota's
+	// usage is written here, as that controller would.
+	quota := &corev1.ResourceQuota{ObjectMeta: meta2(jobsNS, "no-jobs"), Spec: corev1.ResourceQuotaSpec{
+		Hard: corev1.ResourceList{"count/jobs.batch": resource.MustParse("0")},
+	}}
+	e.create(quota)
+	quota.Status = corev1.ResourceQuotaStatus{
+		Hard: corev1.ResourceList{"count/jobs.batch": resource.MustParse("0")},
+		Used: corev1.ResourceList{"count/jobs.batch": resource.MustParse("0")},
+	}
+	if err := e.c.Status().Update(ctx, quota); err != nil {
+		t.Fatal(err)
+	}
+
+	agent := jobAgent("quoted", 1)
+	e.create(agent)
+	e.ready(agent, metav1.ConditionTrue, "Resolved")
+	e.task(t, "one", "quoted")
+	eventually(t, 10*time.Second, func() (bool, string) {
+		var list eventsv1.EventList
+		if err := e.c.List(ctx, &list, client.InNamespace(jobsNS)); err != nil {
+			return false, err.Error()
+		}
+		for _, ev := range list.Items {
+			if ev.Regarding.Kind == "Agent" && ev.Regarding.Name == "quoted" && ev.Reason == "JobRefused" &&
+				ev.Type == corev1.EventTypeWarning && strings.Contains(ev.Note, "exceeded quota") {
+				return true, ""
+			}
+		}
+		return false, fmt.Sprintf("no JobRefused event among %d", len(list.Items))
+	})
+	if n := len(e.jobs(t, "quoted")); n != 0 {
+		t.Fatalf("%d Jobs under a quota of none", n)
+	}
+	// Ready gates the creates: still Ready, so the next one is tried.
+	e.ready(agent, metav1.ConditionTrue, "Resolved")
+
+	if err := e.c.Delete(ctx, quota); err != nil {
+		t.Fatal(err)
+	}
+	eventually(t, 10*time.Second, func() (bool, string) {
+		n := len(e.jobs(t, "quoted"))
+		return n == 1, fmt.Sprintf("%d Jobs once the quota is gone", n)
+	})
 }

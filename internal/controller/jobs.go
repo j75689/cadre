@@ -13,6 +13,7 @@ import (
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
+	"k8s.io/client-go/tools/events"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/builder"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -67,6 +68,7 @@ type jobReconciler struct {
 	base
 	serverURL string
 	lease     time.Duration
+	events    events.EventRecorder
 
 	mu      sync.Mutex
 	claimed map[types.NamespacedName]claim // Jobs seen running a run
@@ -88,6 +90,7 @@ type claim struct {
 const createdFor = time.Minute
 
 func (r *jobReconciler) setup(mgr ctrl.Manager) error {
+	r.events = mgr.GetEventRecorder("cadre-jobs")
 	return ctrl.NewControllerManagedBy(mgr).For(&v1alpha1.Agent{}).Named("agent-jobs").WithOptions(r.options()).
 		Owns(&batchv1.Job{}).
 		Watches(&v1alpha1.Task{}, handler.EnqueueRequestsFromMapFunc(assignee), builder.WithPredicates(jobRelevant)).
@@ -274,9 +277,19 @@ func (r *jobReconciler) Reconcile(ctx context.Context, req reconcile.Request) (r
 				return reconcile.Result{}, err
 			}
 			if err := r.client.Create(ctx, j); err != nil {
-				if apierrors.IsForbidden(err) {
+				switch {
+				case apierrors.IsForbidden(err) && authzRefusal.MatchString(err.Error()):
 					// The Agent's Ready condition says so (resolveJob).
 					log.FromContext(ctx).Error(err, "cadre-server may not create Jobs here; bind config/rbac/workloads.yaml", "namespace", agent.Namespace)
+					return reconcile.Result{RequeueAfter: r.resync}, nil
+				case apierrors.IsForbidden(err):
+					// A quota or an admission policy, which no binding fixes
+					// and the access reviews cannot see. Not on Ready: it
+					// gates these very creates, so Ready=False would stop
+					// the attempt that finds the quota lifted. An Event on
+					// the Agent says why no Job starts, as Kubernetes' own
+					// controllers report a create they are refused.
+					r.events.Eventf(&agent, nil, corev1.EventTypeWarning, "JobRefused", "CreateJob", "the API server refused a Job: %s", err.Error())
 					return reconcile.Result{RequeueAfter: r.resync}, nil
 				}
 				return reconcile.Result{}, err
