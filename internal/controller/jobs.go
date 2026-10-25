@@ -2,9 +2,11 @@ package controller
 
 import (
 	"context"
+	"regexp"
 	"strings"
 	"sync"
 	"time"
+	"unicode/utf8"
 
 	"github.com/oklog/ulid/v2"
 	batchv1 "k8s.io/api/batch/v1"
@@ -35,6 +37,7 @@ import (
 //
 // +kubebuilder:rbac:groups=batch,resources=jobs,verbs=get;list;watch
 // +kubebuilder:rbac:groups=cadre.dev,resources=tasks,verbs=get;list;watch
+// +kubebuilder:rbac:groups=events.k8s.io,resources=events,verbs=create;patch
 
 // Job labels and the runner's environment.
 const (
@@ -220,7 +223,7 @@ func (r *jobReconciler) Reconcile(ctx context.Context, req reconcile.Request) (r
 			r.mu.Unlock()
 			continue
 		}
-		if err := r.markRunning(ctx, j, now); err != nil {
+		if err := r.markRunning(ctx, &agent, j, now); err != nil {
 			return reconcile.Result{}, err
 		}
 		r.mu.Lock()
@@ -266,6 +269,11 @@ func (r *jobReconciler) Reconcile(ctx context.Context, req reconcile.Request) (r
 	if maxPending <= 0 {
 		maxPending = defaultMaxPending
 	}
+	// How soon to look again: at resync, or when a Job's exit lease ends.
+	after := r.resync
+	if exiting {
+		after = min(r.lease, r.resync)
+	}
 	if n := min(todo-pending, free, maxPending-pending); n > 0 {
 		var rn v1alpha1.Runner
 		if err := r.client.Get(ctx, client.ObjectKey{Namespace: agent.Namespace, Name: spec.RunnerRef}, &rn); err != nil {
@@ -277,20 +285,9 @@ func (r *jobReconciler) Reconcile(ctx context.Context, req reconcile.Request) (r
 				return reconcile.Result{}, err
 			}
 			if err := r.client.Create(ctx, j); err != nil {
-				switch {
-				case apierrors.IsForbidden(err) && authzRefusal.MatchString(err.Error()):
-					// The Agent's Ready condition says so (resolveJob).
-					log.FromContext(ctx).Error(err, "cadre-server may not create Jobs here; bind config/rbac/workloads.yaml", "namespace", agent.Namespace)
-					return reconcile.Result{RequeueAfter: r.resync}, nil
-				case apierrors.IsForbidden(err):
-					// A quota or an admission policy, which no binding fixes
-					// and the access reviews cannot see. Not on Ready: it
-					// gates these very creates, so Ready=False would stop
-					// the attempt that finds the quota lifted. An Event on
-					// the Agent says why no Job starts, as Kubernetes' own
-					// controllers report a create they are refused.
-					r.events.Eventf(&agent, nil, corev1.EventTypeWarning, "JobRefused", "CreateJob", "the API server refused a Job: %s", err.Error())
-					return reconcile.Result{RequeueAfter: r.resync}, nil
+				if apierrors.IsForbidden(err) {
+					r.refused(ctx, &agent, "CreateJob", err)
+					return reconcile.Result{RequeueAfter: after}, nil
 				}
 				return reconcile.Result{}, err
 			}
@@ -302,10 +299,49 @@ func (r *jobReconciler) Reconcile(ctx context.Context, req reconcile.Request) (r
 			r.mu.Unlock()
 		}
 	}
-	if exiting {
-		return reconcile.Result{RequeueAfter: min(r.lease, r.resync)}, nil
+	return reconcile.Result{RequeueAfter: after}, nil
+}
+
+// refused reports a 403 on a Job of agent's. One from authorization the
+// Agent's Ready condition says (resolveJob), and is only logged. Any other,
+// a quota or an admission policy, which no binding fixes and the access
+// reviews cannot see, is also an Event on the Agent: not on Ready, which
+// gates the creates, so that Ready=False would stop the one that finds the
+// quota lifted. Kubernetes' own controllers report a refused create so.
+func (r *jobReconciler) refused(ctx context.Context, agent *v1alpha1.Agent, action string, err error) {
+	if authzRefusal.MatchString(err.Error()) {
+		log.FromContext(ctx).Error(err, "cadre-server may not change Jobs here; bind config/rbac/workloads.yaml", "namespace", agent.Namespace, "action", action)
+		return
 	}
-	return reconcile.Result{RequeueAfter: r.resync}, nil
+	log.FromContext(ctx).Error(err, "the API server refused a Job", "namespace", agent.Namespace, "agent", agent.Name, "action", action)
+	// A namespace going away takes no Events either.
+	if apierrors.HasStatusCause(err, corev1.NamespaceTerminatingCause) {
+		return
+	}
+	r.events.Eventf(agent, nil, corev1.EventTypeWarning, "JobRefused", action, "%s", refusalNote(err))
+}
+
+// eventNoteMax is the longest note events.k8s.io takes, in bytes; a longer
+// one is refused, and client-go drops it.
+const eventNoteMax = 1024
+
+// forbiddenPrefix is the start of a 403's message that names the object:
+// a Job never created, by a name made up for it.
+var forbiddenPrefix = regexp.MustCompile(`^[a-z0-9.]+ "[^"]*" is forbidden: `)
+
+// refusalNote is the note of a JobRefused Event: why, without the Job's
+// name, so that one refusal repeated is one Event's series, cut to fit.
+func refusalNote(err error) string {
+	note := "the API server refused a Job: " + forbiddenPrefix.ReplaceAllString(err.Error(), "")
+	if len(note) <= eventNoteMax {
+		return note
+	}
+	const more = "..."
+	cut := eventNoteMax - len(more)
+	for cut > 0 && !utf8.RuneStart(note[cut]) {
+		cut--
+	}
+	return note[:cut] + more
 }
 
 // remove deletes a Job and its pod, and forgets it.
@@ -322,7 +358,7 @@ func (r *jobReconciler) remove(ctx context.Context, j *batchv1.Job) error {
 const AnnotationRunningSince = "cadre.dev/running-since"
 
 // markRunning notes when j's pod first runs.
-func (r *jobReconciler) markRunning(ctx context.Context, j *batchv1.Job, now time.Time) error {
+func (r *jobReconciler) markRunning(ctx context.Context, agent *v1alpha1.Agent, j *batchv1.Job, now time.Time) error {
 	if _, ok := j.Annotations[AnnotationRunningSince]; ok || j.Status.Ready == nil || *j.Status.Ready == 0 {
 		return nil
 	}
@@ -333,7 +369,9 @@ func (r *jobReconciler) markRunning(ctx context.Context, j *batchv1.Job, now tim
 	j.Annotations[AnnotationRunningSince] = now.UTC().Format(time.RFC3339)
 	err := r.client.Patch(ctx, j, client.MergeFrom(orig))
 	if apierrors.IsForbidden(err) {
-		return nil // the Agent's Ready condition says so (resolveJob)
+		// Unmarked, a frozen pod is never found stuck: say so.
+		r.refused(ctx, agent, "PatchJob", err)
+		return nil
 	}
 	return client.IgnoreNotFound(err)
 }
