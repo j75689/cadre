@@ -169,12 +169,9 @@ func (r *agentReconciler) Reconcile(ctx context.Context, req reconcile.Request) 
 	if err != nil {
 		return reconcile.Result{}, err
 	}
-	var res reconcile.Result
-	if agent.Spec.Runtime.Job != nil {
-		// Its Runner's ServiceAccount is read, not watched: check again.
-		res.RequeueAfter = r.resync
-	}
-	return res, r.setReady(ctx, &agent, &agent.Status, ready, reason, msg)
+	// Checked again at resync: its Runner's ServiceAccount is read, not
+	// watched, and its Team may go, which brings no event for it.
+	return reconcile.Result{RequeueAfter: r.resync}, r.setReady(ctx, &agent, &agent.Status, ready, reason, msg)
 }
 
 // resolve checks the Agent's references in order and names the first one
@@ -256,10 +253,11 @@ const forbidden = "cadre-server may not run Jobs in this namespace: bind the Clu
 // checked again later. An error is returned alone, since controller-runtime
 // ignores a requeue that comes with one.
 func (b base) noTeam(ctx context.Context, obj client.Object, status *v1alpha1.ConfigStatus, err error) (reconcile.Result, error) {
+	res, err := waitForTeam(err, b.resync)
 	if err != nil {
-		return reconcile.Result{}, err
+		return res, err
 	}
-	return reconcile.Result{RequeueAfter: b.resync}, b.setReady(ctx, obj, status, false, "NoTeam", noTeamMessage(obj.GetNamespace()))
+	return res, b.setReady(ctx, obj, status, false, "NoTeam", noTeamMessage(obj.GetNamespace()))
 }
 
 // noTeamMessage is the message of a Ready condition with reason NoTeam.
