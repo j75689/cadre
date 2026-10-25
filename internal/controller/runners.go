@@ -158,9 +158,9 @@ func MintedIdentity(namespace, runner string) string {
 // rotated token stops as soon as the status changes. A ServiceAccount token
 // (a JWT, three parts) goes to reviews, which may be cached; its Runners,
 // those in the ServiceAccount's namespace naming it, are then found
-// through an index, so a change to them applies at once. builtin is
-// cadre-runner's identity: it claims builtin agents everywhere and needs no
-// Runner. c must be a controller manager's client, whose cache has the
+// through an index, so a change to them applies at once, and one that no
+// Runner holds is refused. builtin is cadre-runner's identity: it claims
+// builtin agents everywhere and needs no Runner. c must be a controller manager's client, whose cache has the
 // Runner index.
 func Runners(c client.Client, reviews runner.Authenticator, builtin string) runner.Authenticator {
 	a := runners{c: c, reviews: reviews, builtin: builtin}
@@ -195,11 +195,13 @@ func (a runners) Authenticate(ctx context.Context, tok string) (runner.Identity,
 	}
 	// The labels of the Runner holding the ServiceAccount, decided from the
 	// specs as the Runner reconciler decides it: another Runner naming the
-	// account gives nothing.
-	id.Scope = map[string]map[string]string{}
-	if h := holder(list); h != nil {
-		id.Scope[h.Namespace] = h.Spec.Labels
+	// account gives nothing. A ServiceAccount no Runner holds, an
+	// AgentAccess's say, is no runner.
+	h := holder(list)
+	if h == nil {
+		return runner.Identity{}, runner.ErrUnauthenticated
 	}
+	id.Scope = map[string]map[string]string{h.Namespace: h.Spec.Labels}
 	return id, nil
 }
 

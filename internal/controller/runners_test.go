@@ -151,6 +151,12 @@ func TestRunners(t *testing.T) {
 	if b, err := auth.Authenticate(ctx, saToken("cadre-system", "cadre-runner")); err != nil || b.Scope != nil {
 		t.Fatalf("cadre-runner: %+v, %v; want everywhere", b, err)
 	}
+	// A ServiceAccount no Runner holds, an AgentAccess's say, is no runner.
+	create(&corev1.ServiceAccount{ObjectMeta: metav1.ObjectMeta{Namespace: "team-a", Name: "bot"}})
+	botToken := saToken("team-a", "bot")
+	if _, err := auth.Authenticate(ctx, botToken); !errors.Is(err, runner.ErrUnauthenticated) {
+		t.Fatalf("a ServiceAccount no Runner holds: %v", err)
+	}
 
 	// The claim follows the laptop's Runner: its labels, its namespace,
 	// whatever it sends.
@@ -173,6 +179,9 @@ func TestRunners(t *testing.T) {
 		if _, err := m.CreateTask(ctx, ns, "render", v1alpha1.TaskSpec{Title: "render", Assignee: &v1alpha1.Assignee{Kind: v1alpha1.AssigneeAgent, Name: "gpu-worker"}}); err != nil {
 			t.Fatal(err)
 		}
+	}
+	if _, err := cadreclient.New(srv.URL, &http.Client{Transport: bearer(botToken)}).Claim(ctx, runner.ClaimRequest{Runner: "bot"}); err == nil || !strings.Contains(err.Error(), "401") {
+		t.Fatalf("claiming with a ServiceAccount no Runner holds: %v", err)
 	}
 	laptop := cadreclient.New(srv.URL, &http.Client{Transport: bearer(next)})
 	// It sends no labels, and asks for team-b too: only team-a's task is

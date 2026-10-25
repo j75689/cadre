@@ -128,7 +128,11 @@ func run() error {
 	if *external == "" {
 		*external = *publicURL
 	}
-	authn, err := newAuthenticator(ctx, *authMode, inCluster, oidcCfg, *external, log)
+	// One TokenReview cache serves runners and agents on the board: both
+	// send ServiceAccount tokens for the audience cadre.
+	reviews := runner.Cached(controller.TokenReviews(ctrls.GetClient()))
+	agents := controller.AgentAccesses(ctrls.GetClient(), ctrls.GetAPIReader(), reviews, log)
+	authn, err := newAuthenticator(ctx, *authMode, inCluster, oidcCfg, *external, agents, log)
 	if err != nil {
 		return err
 	}
@@ -175,7 +179,6 @@ func run() error {
 	})
 	var runnerOpts []runner.Option
 	if *auth == "required" {
-		reviews := runner.Cached(controller.TokenReviews(ctrls.GetClient()))
 		auth := controller.Runners(ctrls.GetClient(), reviews, *builtin)
 		runnerOpts = append(runnerOpts, runner.WithAuth(auth, *builtin))
 	} else {
@@ -287,8 +290,10 @@ type oidcFlags struct {
 }
 
 // newAuthenticator builds the --auth mode: oidc by default in a cluster,
-// none outside one. externalURL is where browsers reach the server.
-func newAuthenticator(ctx context.Context, mode string, inCluster bool, f oidcFlags, externalURL string, log *slog.Logger) (auth.Authenticator, error) {
+// none outside one. externalURL is where browsers reach the server; agents
+// authenticates agents outside Cadre, with oidc only: without logins
+// nobody is authenticated, and an AgentAccess grants nothing.
+func newAuthenticator(ctx context.Context, mode string, inCluster bool, f oidcFlags, externalURL string, agents auth.Agents, log *slog.Logger) (auth.Authenticator, error) {
 	if mode == "" {
 		mode = auth.ModeNone
 		if inCluster {
@@ -326,7 +331,7 @@ func newAuthenticator(ctx context.Context, mode string, inCluster bool, f oidcFl
 		Issuer: f.issuer, ClientID: f.clientID, ClientSecret: secret, CLIClientID: f.cliClientID,
 		Scopes:        strings.FieldsFunc(f.scopes, func(r rune) bool { return r == ' ' || r == ',' }),
 		UsernameClaim: f.usernameClaim, GroupsClaim: f.groupsClaim,
-		PublicURL: externalURL, SessionKey: key, Log: log,
+		PublicURL: externalURL, SessionKey: key, Agents: agents, Log: log,
 	})
 }
 

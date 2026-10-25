@@ -108,14 +108,14 @@ func TestRoutesCoexist(t *testing.T) {
 func TestNewAuthenticator(t *testing.T) {
 	log := slog.New(slog.NewTextHandler(io.Discard, nil))
 	ctx := context.Background()
-	if a, err := newAuthenticator(ctx, "", false, oidcFlags{}, "http://localhost:8080", log); err != nil || a.Info().Mode != auth.ModeNone {
+	if a, err := newAuthenticator(ctx, "", false, oidcFlags{}, "http://localhost:8080", nil, log); err != nil || a.Info().Mode != auth.ModeNone {
 		t.Errorf("outside a cluster: %v, %v", a, err)
 	}
 	// In a cluster logins are the default, and need their flags.
-	if _, err := newAuthenticator(ctx, "", true, oidcFlags{}, "https://cadre.example.test", log); err == nil || !strings.Contains(err.Error(), "--oidc-issuer") {
+	if _, err := newAuthenticator(ctx, "", true, oidcFlags{}, "https://cadre.example.test", nil, log); err == nil || !strings.Contains(err.Error(), "--oidc-issuer") {
 		t.Errorf("in a cluster without OIDC flags: %v", err)
 	}
-	if _, err := newAuthenticator(ctx, "basic", false, oidcFlags{}, "http://localhost:8080", log); err == nil {
+	if _, err := newAuthenticator(ctx, "basic", false, oidcFlags{}, "http://localhost:8080", nil, log); err == nil {
 		t.Error("--auth=basic accepted")
 	}
 	idp := oidctest.New(t)
@@ -124,7 +124,7 @@ func TestNewAuthenticator(t *testing.T) {
 		t.Fatal(err)
 	}
 	f := oidcFlags{issuer: idp.URL, clientID: oidctest.ClientID, scopes: "openid, email groups", usernameClaim: "email", groupsClaim: "groups", sessionKeyFile: key}
-	a, err := newAuthenticator(ctx, "oidc", false, f, "http://localhost:8080", log)
+	a, err := newAuthenticator(ctx, "oidc", false, f, "http://localhost:8080", nil, log)
 	if err != nil || a.Info().Mode != auth.ModeOIDC || strings.Join(a.Info().Scopes, " ") != "openid email groups" {
 		t.Fatalf("oidc: %+v, %v", a, err)
 	}
@@ -157,7 +157,7 @@ func TestNewPolicy(t *testing.T) {
 	idp := oidctest.New(t)
 	key := filepath.Join(t.TempDir(), "key")
 	_ = os.WriteFile(key, []byte(strings.Repeat("ab", 32)), 0o600)
-	oidcAuth, err := newAuthenticator(context.Background(), "oidc", false, oidcFlags{issuer: idp.URL, clientID: oidctest.ClientID, usernameClaim: "email", sessionKeyFile: key}, "http://localhost:8080", log)
+	oidcAuth, err := newAuthenticator(context.Background(), "oidc", false, oidcFlags{issuer: idp.URL, clientID: oidctest.ClientID, usernameClaim: "email", sessionKeyFile: key}, "http://localhost:8080", nil, log)
 	if err != nil {
 		t.Fatal(err)
 	}
