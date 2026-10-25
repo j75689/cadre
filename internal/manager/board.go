@@ -430,24 +430,55 @@ func ValidateTeamSpec(spec *v1alpha1.TeamSpec) error {
 	return nil
 }
 
-// TaskByNumber finds a namespace's task by its number, a page of the board
-// at a time; storage.ErrNotFound if none has it.
+// Waiting for a task the index has not seen yet, by number.
+const (
+	numberWait = 2 * time.Second
+	numberPoll = 100 * time.Millisecond
+)
+
+// TaskByNumber finds a namespace's task by its number, in one read of the
+// index; storage.ErrNotFound if none has it. The index lags the store by a
+// moment, so a miss is checked against the Team's counter, read live: a
+// number never given is not found at once, and one given, to a task just
+// created say, is looked for again every 100 ms for up to 2 seconds. The
+// namespace is never listed.
 func (m *Manager) TaskByNumber(ctx context.Context, namespace string, number int64) (*v1alpha1.Task, error) {
-	const page = 500
-	for offset := 0; ; offset += page {
-		tasks, err := m.ListTasks(ctx, storage.Query{Namespace: namespace, Offset: offset, Limit: page})
-		if err != nil {
+	q := storage.Query{Namespace: namespace, Number: number}
+	find := func() (*v1alpha1.Task, error) {
+		tasks, err := m.ListTasks(ctx, q)
+		if err != nil || len(tasks) == 0 {
 			return nil, err
 		}
-		for i := range tasks {
-			if tasks[i].Status.Number == number {
-				return &tasks[i], nil
-			}
+		return &tasks[0], nil
+	}
+	notFound := fmt.Errorf("no task #%d in %s: %w", number, namespace, storage.ErrNotFound)
+	if number < 1 {
+		return nil, notFound
+	}
+	if t, err := find(); t != nil || err != nil {
+		return t, err
+	}
+	team, err := m.LiveTeam(ctx, namespace)
+	switch {
+	case errors.Is(err, storage.ErrNotFound):
+		return nil, notFound
+	case err != nil:
+		return nil, err
+	case number >= team.Status.NextNumber:
+		return nil, notFound // never given
+	}
+	deadline := time.Now().Add(numberWait)
+	for time.Now().Before(deadline) {
+		select {
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		case <-time.After(numberPoll):
 		}
-		if len(tasks) < page {
-			return nil, fmt.Errorf("no task #%d in %s: %w", number, namespace, storage.ErrNotFound)
+		if t, err := find(); t != nil || err != nil {
+			return t, err
 		}
 	}
+	return nil, notFound
 }
 
 // ListAgents lists the Agents of a Team's namespace, by name.

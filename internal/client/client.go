@@ -108,6 +108,7 @@ func (c *Client) CreateTask(ctx context.Context, ns, name string, spec v1alpha1.
 type TaskQuery struct {
 	Phases []v1alpha1.Phase // any of these; empty means all
 	Parent string           // subtasks of this task only
+	Number int64            // the task with this number only; zero means any
 	Offset int
 	Limit  int // zero means the server's default
 }
@@ -120,6 +121,9 @@ func (c *Client) ListTasks(ctx context.Context, ns string, tq TaskQuery) (*api.T
 	}
 	if tq.Parent != "" {
 		q.Set("parent", tq.Parent)
+	}
+	if tq.Number > 0 {
+		q.Set("number", strconv.FormatInt(tq.Number, 10))
 	}
 	if tq.Offset > 0 {
 		q.Set("offset", strconv.Itoa(tq.Offset))

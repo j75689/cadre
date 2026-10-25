@@ -220,6 +220,50 @@ func TestListSubtasks(t *testing.T) {
 	}
 }
 
+// number finds the one task with it, with the other filters applied to
+// it; a number nobody has finds nothing, and one that is not a task
+// number is refused.
+func TestListByNumber(t *testing.T) {
+	c, m, base := startURL(t)
+	if _, err := m.InitTeam(ctx, ns, v1alpha1.TeamSpec{}); err != nil {
+		t.Fatal(err)
+	}
+	for _, name := range []string{"first", "second"} {
+		if _, err := c.CreateTask(ctx, ns, name, v1alpha1.TaskSpec{Title: name}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for _, tc := range []struct {
+		q    client.TaskQuery
+		want string
+	}{
+		{client.TaskQuery{Number: 2}, "second"},
+		{client.TaskQuery{Number: 2, Phases: []v1alpha1.Phase{v1alpha1.PhaseTodo}}, "second"},
+		{client.TaskQuery{Number: 2, Phases: []v1alpha1.Phase{v1alpha1.PhaseDone}}, ""},
+		{client.TaskQuery{Number: 2, Offset: 1}, ""},
+		{client.TaskQuery{Number: 3}, ""},
+	} {
+		list, err := c.ListTasks(ctx, ns, tc.q)
+		var got []string
+		for _, tk := range list.Items {
+			got = append(got, tk.Name)
+		}
+		if err != nil || strings.Join(got, " ") != tc.want || list.Items == nil {
+			t.Errorf("%+v: %q, %v; want %q", tc.q, got, err, tc.want)
+		}
+	}
+	for _, q := range []string{"number=0", "number=-1", "number=two", "number=1&number=2"} {
+		resp, err := http.Get(base + "/api/v1/namespaces/" + ns + "/tasks?" + q)
+		if err != nil {
+			t.Fatal(err)
+		}
+		_ = resp.Body.Close()
+		if resp.StatusCode != http.StatusBadRequest {
+			t.Errorf("%s: status %d", q, resp.StatusCode)
+		}
+	}
+}
+
 func TestListTasksPageSize(t *testing.T) {
 	c, m := start(t)
 	if _, err := m.InitTeam(ctx, ns, v1alpha1.TeamSpec{}); err != nil {

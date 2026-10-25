@@ -435,6 +435,14 @@ func testIndexQuery(t *testing.T, s *suite) {
 		{storage.Query{Namespace: s.ns, Parent: "low"}, []string{}},
 		{storage.Query{Namespace: s.ns, Parent: "unknown"}, []string{}},
 		{storage.Query{Namespace: "elsewhere", Parent: "medium-a"}, []string{}},
+		// By number: the one task, with the other filters applied to it.
+		{storage.Query{Namespace: s.ns, Number: 7}, []string{"child-b"}},
+		{storage.Query{Namespace: s.ns, Number: 7, Parent: "medium-a"}, []string{"child-b"}},
+		{storage.Query{Namespace: s.ns, Number: 7, Parent: "low"}, []string{}},
+		{storage.Query{Namespace: s.ns, Number: 7, Phases: []v1alpha1.Phase{v1alpha1.PhaseTodo}}, []string{}},
+		{storage.Query{Namespace: s.ns, Number: 7, Offset: 1}, []string{}},
+		{storage.Query{Namespace: s.ns, Number: 99}, []string{}},
+		{storage.Query{Namespace: "elsewhere", Number: 7}, []string{}},
 	} {
 		eventually(t, fmt.Sprintf("query %+v", tc.q), func() error {
 			got, err := names(tc.q)
@@ -534,6 +542,7 @@ func testIndexRejectsInvalidQueries(t *testing.T, s *suite) {
 		{},
 		{Namespace: s.ns, Offset: -1},
 		{Namespace: s.ns, Limit: -1},
+		{Namespace: s.ns, Number: -1},
 	} {
 		if _, err := d.ListTasks(s.ctx, q); !errors.Is(err, storage.ErrInvalidQuery) {
 			t.Errorf("query %+v: got %v, want ErrInvalidQuery", q, err)

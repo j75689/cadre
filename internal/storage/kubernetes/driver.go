@@ -12,6 +12,7 @@ import (
 	"errors"
 	"fmt"
 	"slices"
+	"strconv"
 	"strings"
 	"sync"
 
@@ -119,7 +120,7 @@ func Open(ctx context.Context, cfg Config) (*Driver, error) {
 		}
 		synced = append(synced, inf.HasSynced)
 		if _, ok := obj.(*v1alpha1.Task); ok {
-			if err := indexParents(ctx, d.index); err != nil {
+			if err := indexTasks(ctx, d.index); err != nil {
 				return nil, err
 			}
 			d.tasks = inf
@@ -255,21 +256,38 @@ func (d *Driver) IndexedTeam(ctx context.Context, namespace string) (*v1alpha1.T
 	return team, nil
 }
 
-// indexParent indexes cached Tasks by spec.parentRef.name, so that a
-// task's subtasks are listed without reading its whole namespace.
-const indexParent = "spec.parentRef.name"
+// Cached Tasks are indexed by spec.parentRef.name, so that a task's
+// subtasks are listed without reading its whole namespace, and by
+// status.number, so that a task is found by its number in one read.
+const (
+	indexParent = "spec.parentRef.name"
+	indexNumber = "status.number"
+)
 
-// indexParents adds the parent index to a cache. A cache shared with an
-// earlier driver has it already: the same index, kept.
-func indexParents(ctx context.Context, c cache.Cache) error {
-	err := c.IndexField(ctx, &v1alpha1.Task{}, indexParent, func(o client.Object) []string {
-		if p := o.(*v1alpha1.Task).Spec.ParentRef; p != nil {
-			return []string{p.Name}
+// indexTasks adds the Task indexes to a cache. A cache shared with an
+// earlier driver has them already: the same indexes, kept.
+func indexTasks(ctx context.Context, c cache.Cache) error {
+	for _, idx := range []struct {
+		field string
+		of    func(*v1alpha1.Task) []string
+	}{
+		{indexParent, func(t *v1alpha1.Task) []string {
+			if p := t.Spec.ParentRef; p != nil {
+				return []string{p.Name}
+			}
+			return nil
+		}},
+		{indexNumber, func(t *v1alpha1.Task) []string {
+			if t.Status.Number > 0 {
+				return []string{strconv.FormatInt(t.Status.Number, 10)}
+			}
+			return nil
+		}},
+	} {
+		err := c.IndexField(ctx, &v1alpha1.Task{}, idx.field, func(o client.Object) []string { return idx.of(o.(*v1alpha1.Task)) })
+		if err != nil && !strings.Contains(err.Error(), "indexer conflict") {
+			return fmt.Errorf("index tasks by %s: %w", idx.field, err)
 		}
-		return nil
-	})
-	if err != nil && !strings.Contains(err.Error(), "indexer conflict") {
-		return fmt.Errorf("index tasks by parent: %w", err)
 	}
 	return nil
 }
@@ -280,7 +298,11 @@ func (d *Driver) ListTasks(ctx context.Context, q storage.Query) ([]v1alpha1.Tas
 		return nil, err
 	}
 	opts := []client.ListOption{client.InNamespace(q.Namespace)}
-	if q.Parent != "" {
+	switch {
+	case q.Number > 0:
+		// The one task, from the number index; Matches checks the rest.
+		opts = append(opts, client.MatchingFields{indexNumber: strconv.FormatInt(q.Number, 10)})
+	case q.Parent != "":
 		// Its subtasks only, from the parent index; Matches checks again.
 		opts = append(opts, client.MatchingFields{indexParent: q.Parent})
 	}

@@ -15,6 +15,8 @@ import (
 
 	v1alpha1 "github.com/j75689/cadre/api/v1alpha1"
 	"github.com/j75689/cadre/internal/api"
+	"github.com/j75689/cadre/internal/client"
+	"github.com/j75689/cadre/internal/httpjson"
 	"github.com/j75689/cadre/internal/manager"
 	"github.com/j75689/cadre/internal/runner"
 	"github.com/j75689/cadre/internal/storage"
@@ -294,5 +296,36 @@ func TestRunnerFakeInAJob(t *testing.T) {
 	got := <-claims
 	if got.Runner != "coder-01jb" || got.Agent != "coder" || len(got.Namespaces) != 1 || got.Namespaces[0] != "team-a" {
 		t.Fatalf("claim %+v", got)
+	}
+}
+
+// #N is the server's lookup by number: one list by number, never a scan of
+// the board's pages.
+func TestNumberIsTheServersLookup(t *testing.T) {
+	var lists []string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/api/v1/namespaces/team-a/tasks" {
+			http.NotFound(w, r)
+			return
+		}
+		lists = append(lists, r.URL.RawQuery)
+		items := []v1alpha1.Task{}
+		if r.URL.Query().Get("number") == "7" {
+			tk := v1alpha1.Task{}
+			tk.Name, tk.Status.Number = "seven", 7
+			items = append(items, tk)
+		}
+		httpjson.Write(w, http.StatusOK, api.TaskList{Items: items, Limit: api.DefaultLimit})
+	}))
+	defer srv.Close()
+	c := client.New(srv.URL, nil)
+	if name, err := resolve(context.Background(), c, "team-a", "#7"); err != nil || name != "seven" {
+		t.Fatalf("#7: %q, %v", name, err)
+	}
+	if _, err := resolve(context.Background(), c, "team-a", "#8"); err == nil || !strings.Contains(err.Error(), "no task #8") {
+		t.Fatalf("#8: %v", err)
+	}
+	if len(lists) != 2 || lists[0] != "number=7" || lists[1] != "number=8" {
+		t.Fatalf("lists %q", lists)
 	}
 }

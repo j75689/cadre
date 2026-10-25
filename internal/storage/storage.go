@@ -153,6 +153,7 @@ type Query struct {
 	Namespace string           // required
 	Phases    []v1alpha1.Phase // any of these; empty means all
 	Parent    string           // subtasks of this task (spec.parentRef.name); empty means any
+	Number    int64            // the task with this status.number, unique in a namespace; zero means any
 	Offset    int              // not negative
 	Limit     int              // not negative; zero means no limit
 }
@@ -160,14 +161,16 @@ type Query struct {
 // ErrInvalidQuery is returned by ListTasks for a query Validate rejects.
 var ErrInvalidQuery = errors.New("invalid query")
 
-// Validate rejects a query without a namespace or with a negative offset or
-// limit. Every driver calls it first in ListTasks.
+// Validate rejects a query without a namespace or with a negative number,
+// offset or limit. Every driver calls it first in ListTasks.
 func (q Query) Validate() error {
 	switch {
 	case q.Namespace == "":
 		return fmt.Errorf("namespace is required: %w", ErrInvalidQuery)
 	case q.Offset < 0 || q.Limit < 0:
 		return fmt.Errorf("offset %d, limit %d: must not be negative: %w", q.Offset, q.Limit, ErrInvalidQuery)
+	case q.Number < 0:
+		return fmt.Errorf("number %d: must not be negative: %w", q.Number, ErrInvalidQuery)
 	}
 	return nil
 }
