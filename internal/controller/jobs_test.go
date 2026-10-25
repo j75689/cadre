@@ -574,8 +574,8 @@ func TestAJobRefusedByAQuota(t *testing.T) {
 	e.create(agent)
 	e.ready(agent, metav1.ConditionTrue, "Resolved")
 	e.task(t, "one", "quoted")
-	// One Event, its series growing with every refused create, and its note
-	// the reason without the Job's made-up name.
+	// One Event for the Agent's refused creates, its note the reason
+	// without the Job's name. (Its series count is client-go's to keep.)
 	eventually(t, 10*time.Second, func() (bool, string) {
 		refusals := e.refusals(t, "quoted")
 		if len(refusals) != 1 {
@@ -587,11 +587,13 @@ func TestAJobRefusedByAQuota(t *testing.T) {
 			return false, fmt.Sprintf("event %s %s %q", ev.Type, ev.Action, ev.Note)
 		case strings.Contains(ev.Note, `jobs.batch "`):
 			return false, "the note names the Job: " + ev.Note
-		case ev.Series == nil || ev.Series.Count < 2:
-			return false, fmt.Sprintf("series %+v", ev.Series)
 		}
 		return true, ""
 	})
+	time.Sleep(time.Second) // several refused creates
+	if n := len(e.refusals(t, "quoted")); n != 1 {
+		t.Fatalf("%d JobRefused events after several refusals, want one", n)
+	}
 	if n := len(e.jobs(t, "quoted")); n != 0 {
 		t.Fatalf("%d Jobs under a quota of none", n)
 	}
@@ -650,6 +652,22 @@ func TestARefusedJobMark(t *testing.T) {
 		_ = e.c.Delete(ctx, binding)
 		_ = e.c.Delete(ctx, policy)
 	})
+	// The binding takes effect a moment after it is created: wait until a
+	// throwaway Job's update is refused, or the Agent's first Job could be
+	// marked before it does.
+	probe := &batchv1.Job{ObjectMeta: meta2(jobsNS, "probe"), Spec: batchv1.JobSpec{Template: corev1.PodTemplateSpec{Spec: corev1.PodSpec{
+		RestartPolicy: corev1.RestartPolicyNever, Containers: []corev1.Container{{Name: "c", Image: "example.test/probe:v1"}},
+	}}}}
+	e.create(probe)
+	eventually(t, 10*time.Second, func() (bool, string) {
+		patch := client.MergeFrom(probe.DeepCopy())
+		probe.Annotations = map[string]string{"probe": time.Now().Format(time.RFC3339Nano)}
+		err := e.c.Patch(ctx, probe, patch, client.DryRunAll)
+		return apierrors.IsForbidden(err), fmt.Sprintf("a probe update gave %v", err)
+	})
+	if err := e.c.Delete(ctx, probe); err != nil {
+		t.Fatal(err)
+	}
 
 	agent := jobAgent("marked", 1)
 	e.create(agent)

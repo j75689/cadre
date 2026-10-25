@@ -313,11 +313,12 @@ func (r *jobReconciler) refused(ctx context.Context, agent *v1alpha1.Agent, acti
 		log.FromContext(ctx).Error(err, "cadre-server may not change Jobs here; bind config/rbac/workloads.yaml", "namespace", agent.Namespace, "action", action)
 		return
 	}
-	log.FromContext(ctx).Error(err, "the API server refused a Job", "namespace", agent.Namespace, "agent", agent.Name, "action", action)
-	// A namespace going away takes no Events either.
+	// A namespace going away refuses everything, Events too: nothing to
+	// report, and no error to log on every requeue until it is gone.
 	if apierrors.HasStatusCause(err, corev1.NamespaceTerminatingCause) {
 		return
 	}
+	log.FromContext(ctx).Error(err, "the API server refused a Job", "namespace", agent.Namespace, "agent", agent.Name, "action", action)
 	r.events.Eventf(agent, nil, corev1.EventTypeWarning, "JobRefused", action, "%s", refusalNote(err))
 }
 
@@ -326,11 +327,14 @@ func (r *jobReconciler) refused(ctx context.Context, agent *v1alpha1.Agent, acti
 const eventNoteMax = 1024
 
 // forbiddenPrefix is the start of a 403's message that names the object:
-// a Job never created, by a name made up for it.
+// the Job's name goes to the log, not to the Event, whether it is a Job
+// that exists (PatchJob) or one never created (CreateJob).
 var forbiddenPrefix = regexp.MustCompile(`^[a-z0-9.]+ "[^"]*" is forbidden: `)
 
-// refusalNote is the note of a JobRefused Event: why, without the Job's
-// name, so that one refusal repeated is one Event's series, cut to fit.
+// refusalNote is the note of a JobRefused Event: the reason, without the
+// object's name, cut to fit an Event. client-go aggregates an Agent's
+// refusals of one action into one Event whatever their notes, and that
+// Event keeps the note of the first cause seen.
 func refusalNote(err error) string {
 	note := "the API server refused a Job: " + forbiddenPrefix.ReplaceAllString(err.Error(), "")
 	if len(note) <= eventNoteMax {

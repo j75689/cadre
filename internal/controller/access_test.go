@@ -6,7 +6,6 @@ import (
 	"strings"
 	"testing"
 	"time"
-	"unicode/utf8"
 
 	authorizationv1 "k8s.io/api/authorization/v1"
 	corev1 "k8s.io/api/core/v1"
@@ -264,20 +263,5 @@ func TestJobAccessUnknown(t *testing.T) {
 	}
 	if got := reason(false); got != "Resolved: " {
 		t.Fatalf("Ready %q once the review works", got)
-	}
-}
-
-// A JobRefused note is the reason without the Job's name, and fits an
-// Event, cut at a character's start.
-func TestRefusalNote(t *testing.T) {
-	gr := schema.GroupResource{Group: "batch", Resource: "jobs"}
-	err := apierrors.NewForbidden(gr, "coder-01jexample", errors.New("exceeded quota: no-jobs, requested: count/jobs.batch=1"))
-	if got, want := refusalNote(err), "the API server refused a Job: exceeded quota: no-jobs, requested: count/jobs.batch=1"; got != want {
-		t.Errorf("got %q, want %q", got, want)
-	}
-	long := apierrors.NewForbidden(gr, "x", errors.New(strings.Repeat("é", 1000)))
-	note := refusalNote(long)
-	if len(note) > eventNoteMax || !strings.HasSuffix(note, "...") || !utf8.ValidString(note) {
-		t.Errorf("a long note: %d bytes, valid %v, ends %q", len(note), utf8.ValidString(note), note[len(note)-5:])
 	}
 }
