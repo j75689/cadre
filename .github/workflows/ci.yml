@@ -150,3 +150,68 @@ jobs:
           labels: ${{ steps.meta.outputs.labels }}
           cache-from: type=gha,scope=${{ matrix.cmd }}
           cache-to: type=gha,mode=max,scope=${{ matrix.cmd }}
+
+  # A v* tag, once all three images are published, also publishes the chart
+  # to oci://ghcr.io/<owner>/charts/cadre, at the tag without its v and with
+  # appVersion the tag, and makes the GitHub release, with install.yaml. Tags
+  # are independent: one run per tag, none dropped.
+  release:
+    name: Release the chart and install.yaml
+    if: github.event_name == 'push' && github.ref_type == 'tag'
+    needs: publish
+    runs-on: ubuntu-latest
+    concurrency:
+      group: release-${{ github.ref }}
+      cancel-in-progress: false
+    permissions:
+      contents: write
+      packages: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      - name: Tool versions
+        id: tools
+        run: echo "key=tools-${{ runner.os }}-$(grep -E '^[A-Z0-9_]+_VERSION +:=' Makefile | tr -d ' ' | sort | tr '\n' '-')" >> "$GITHUB_OUTPUT"
+      - name: Cache tools
+        uses: actions/cache@v4
+        with:
+          path: bin/tools
+          key: ${{ steps.tools.outputs.key }}
+      - name: Package the chart and render install.yaml
+        run: make chart-dist RELEASE="$GITHUB_REF_NAME"
+      - name: Find the package and install.yaml
+        id: dist
+        shell: bash
+        run: |
+          paths=$(make -s print-chart-paths RELEASE="$GITHUB_REF_NAME")
+          read -r pkg yaml <<< "$paths"
+          echo "pkg=$pkg" >> "$GITHUB_OUTPUT"
+          echo "yaml=$yaml" >> "$GITHUB_OUTPUT"
+      - name: Push the chart
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          OWNER: ${{ github.repository_owner }}
+          PKG: ${{ steps.dist.outputs.pkg }}
+        run: |
+          helm=$(make -s print-helm)
+          printf '%s' "$GITHUB_TOKEN" | "$helm" registry login ghcr.io -u "$GITHUB_ACTOR" --password-stdin
+          "$helm" push "$PKG" "oci://ghcr.io/${OWNER,,}/charts"
+      # The release may exist already: made in the UI with its tag, or by an
+      # earlier attempt of this job. A tag whose version (before any +build)
+      # has a - (v1.0.0-rc.1) is a pre-release.
+      - name: Create or update the GitHub release
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          YAML: ${{ steps.dist.outputs.yaml }}
+        run: |
+          pre=()
+          case "${GITHUB_REF_NAME%%+*}" in *-*) pre=(--prerelease) ;; esac
+          if gh release view "$GITHUB_REF_NAME" > /dev/null 2>&1; then
+            gh release upload "$GITHUB_REF_NAME" "$YAML" --clobber
+            if [ ${#pre[@]} -gt 0 ]; then gh release edit "$GITHUB_REF_NAME" --prerelease; fi
+          else
+            gh release create "$GITHUB_REF_NAME" "$YAML" --verify-tag --generate-notes --title "$GITHUB_REF_NAME" "${pre[@]}"
+          fi

@@ -15,6 +15,10 @@ helm install cadre oci://ghcr.io/j75689/charts/cadre -n cadre-system --create-na
 
 `values.yaml` documents every value; `values.schema.json` checks them.
 
+Each release `vX.Y.Z` publishes the chart at version `X.Y.Z` with `appVersion`
+`vX.Y.Z`, the image tag it installs by default; pick one with `--version`. The
+chart in the repository has `appVersion` `main`, the images built from main.
+
 ## What it installs
 
 - **cadre-server**: a Deployment of `server.replicas` (default 2) with

@@ -48,11 +48,15 @@ cadre-server serves the board, task pages with their threads and actions, and a 
 
 ## Installation
 
+With the Helm chart, the supported way:
+
 ```sh
 helm install cadre oci://ghcr.io/j75689/charts/cadre -n cadre-system --create-namespace
 ```
 
 with an OIDC issuer and client, the URL browsers reach it at (an Ingress host or `server.externalURL`), bootstrap admins and an S3 bucket set: see the chart's [README](charts/cadre/README.md) for the values, the per-Team RBAC and upgrading the CRDs.
+
+Or, to try Cadre, with the `install.yaml` attached to each [release](https://github.com/j75689/cadre/releases): the chart rendered without logins, so anyone who reaches cadre-server is an admin, and with the bucket `CHANGE-ME` to replace. Its header says how to apply it.
 
 ## Images
 
