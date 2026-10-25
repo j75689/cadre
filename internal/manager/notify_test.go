@@ -450,7 +450,7 @@ func TestNotifyAfterAnotherServer(t *testing.T) {
 	if _, err := e.m.transition(ctx, key, task.NotifyDelivered{ID: stale.ID, To: []string{"a"}}); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := e.m.notifyItem(ctx, key, stale, byName); err != nil {
+	if _, err := e.m.notifyItem(ctx, key, stale, byName, &goneMemo{}); err != nil {
 		t.Fatal(err)
 	}
 	if na, nb := len(a.deliveries()), len(b.deliveries()); na != 0 || nb != 1 {
@@ -460,7 +460,7 @@ func TestNotifyAfterAnotherServer(t *testing.T) {
 	if _, err := e.m.transition(ctx, key, task.AckOutbox{IDs: []string{stale.ID}}); err != nil {
 		t.Fatal(err)
 	}
-	if done, err := e.m.notifyItem(ctx, key, stale, byName); err != nil || done {
+	if done, err := e.m.notifyItem(ctx, key, stale, byName, &goneMemo{}); err != nil || done {
 		t.Errorf("a gone item: done %v, %v", done, err)
 	}
 	if na, nb := len(a.deliveries()), len(b.deliveries()); na != 0 || nb != 1 {
@@ -636,13 +636,61 @@ func TestNotifyUnreadableNotifierIsNotGone(t *testing.T) {
 	if items := notifyItems(e.get(t, key)); len(items) != 1 || writes != 0 {
 		t.Errorf("%d writes, items %+v", writes, items)
 	}
-	// Read again, it is gone: the turn's end removes the notification.
+	// Read again, it is gone: the notification is acked, one write.
 	e.m.cfg.Notifiers = nf
 	if err := e.m.DeliverNotifications(ctx); err != nil {
 		t.Fatal(err)
 	}
-	if items := notifyItems(e.get(t, key)); len(items) != 0 || writes != 2 {
+	if items := notifyItems(e.get(t, key)); len(items) != 0 || writes != 1 {
 		t.Errorf("%d writes, items %+v", writes, items)
+	}
+}
+
+// countingNotifiers counts fresh reads.
+type countingNotifiers struct {
+	unseenNotifiers
+	reads *int
+}
+
+func (c countingNotifiers) NotifierGone(ctx context.Context, ns, name string) (bool, error) {
+	*c.reads++
+	return c.unseenNotifiers.NotifierGone(ctx, ns, name)
+}
+
+// A pass reads a Notifier missing from the cache once, however many
+// notifications name it.
+func TestNotifyReadsAMissingNotifierOncePerPass(t *testing.T) {
+	rec := newReceiver(t)
+	e, _ := notifyEnv(t, notifier("hook", rec.URL, nil, v1alpha1.NotifyQuestion, v1alpha1.NotifyCancelled))
+	key := e.addTask(t, "x", v1alpha1.AssigneeAgent)
+	e.question(t, key)
+	if _, err := e.m.Cancel(ctx, key); err != nil {
+		t.Fatal(err)
+	}
+	var reads int
+	e.m.cfg.Notifiers = countingNotifiers{unseenNotifiers{e.m.cfg.Notifiers.(StaticNotifiers), 0}, &reads}
+	if err := e.m.DeliverNotifications(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if items := notifyItems(e.get(t, key)); len(items) != 2 || reads != 1 {
+		t.Errorf("%d reads, items %+v", reads, items)
+	}
+}
+
+// An expired notification tried by some and not seen by others says both.
+func TestNotifyDropSaysWhoWasUnseen(t *testing.T) {
+	a, b := newReceiver(t), newReceiver(t)
+	e, recorded := notifyEnv(t, notifier("a", a.URL, nil, v1alpha1.NotifyQuestion), notifier("b", b.URL, nil, v1alpha1.NotifyQuestion))
+	key := e.addTask(t, "x", v1alpha1.AssigneeAgent)
+	e.question(t, key)
+	e.m.cfg.Notifiers = unseenNotifiers{e.m.cfg.Notifiers.(StaticNotifiers), 1}
+	e.clock.add(NotifyTTL + time.Minute)
+	if err := e.m.DeliverNotifications(ctx); err != nil {
+		t.Fatal(err)
+	}
+	last := (*recorded)[len(*recorded)-1]
+	if !strings.Contains(last, "not taken within 24h0m0s by: a; b were not in this server's cache") {
+		t.Errorf("recorded %v", *recorded)
 	}
 }
 
@@ -707,7 +755,7 @@ func TestNotifyFinishedBeforeTheClaim(t *testing.T) {
 		t.Fatalf("the record of the last Notifier left %+v", items)
 	}
 	nfs, _ := e.m.cfg.Notifiers.ListNotifiers(ctx, ns)
-	ack, err := e.m.notifyItem(ctx, key, stale, map[string]*v1alpha1.Notifier{"hook": &nfs[0]})
+	ack, err := e.m.notifyItem(ctx, key, stale, map[string]*v1alpha1.Notifier{"hook": &nfs[0]}, &goneMemo{})
 	if err != nil || ack || len(rec.deliveries()) != 0 {
 		t.Fatalf("ack %v, %v, %d deliveries", ack, err, len(rec.deliveries()))
 	}
@@ -732,7 +780,7 @@ func TestNotifyTakenItemLeftByAnOlderServer(t *testing.T) {
 		t.Fatal(err)
 	}
 	nfs, _ := e.m.cfg.Notifiers.ListNotifiers(ctx, ns)
-	ack, err := e.m.notifyItem(ctx, key, stale, map[string]*v1alpha1.Notifier{"hook": &nfs[0]})
+	ack, err := e.m.notifyItem(ctx, key, stale, map[string]*v1alpha1.Notifier{"hook": &nfs[0]}, &goneMemo{})
 	if err != nil || ack || len(rec.deliveries()) != 0 {
 		t.Fatalf("ack %v, %v, %d deliveries", ack, err, len(rec.deliveries()))
 	}
@@ -816,6 +864,80 @@ func TestNotifyDropIsToldOnce(t *testing.T) {
 	}
 	if items := notifyItems(e.get(t, key)); len(items) != 0 {
 		t.Errorf("items %+v", items)
+	}
+}
+
+// A drop does not cut short another server's live turn: the first
+// server's turn runs out after its claim, the second claims it and is
+// sending it when the first's drop arrives. The first says nothing and
+// leaves the item to the second.
+func TestNotifyDropLeavesALiveTurn(t *testing.T) {
+	rec := newReceiver(t)
+	e, recorded := notifyEnv(t, notifier("hook", rec.URL, nil, v1alpha1.NotifyQuestion))
+	key := e.addTask(t, "x", v1alpha1.AssigneeAgent)
+	e.question(t, key)
+	e.clock.add(NotifyTTL + time.Minute)
+	id := notifyItems(e.get(t, key))[0].ID
+	other := New(e.store, e.m.cfg, WithClock(e.clock.now))
+	var writes int
+	e.m.store = afterWrite{e.store, &writes, func() {
+		e.clock.add(notifyTurn(1) + time.Second)
+		if _, err := other.transition(ctx, key, task.NotifyClaim{ID: id, By: other.id, Until: e.clock.now().Add(time.Minute)}); err != nil {
+			t.Error(err)
+		}
+	}}
+	if err := e.m.DeliverNotifications(ctx); err != nil {
+		t.Fatal(err)
+	}
+	for _, r := range *recorded {
+		if strings.Contains(r, "NotificationDropped") {
+			t.Errorf("told of a drop under another server's turn: %s", r)
+		}
+	}
+	if items := notifyItems(e.get(t, key)); len(items) != 1 || items[0].Notify.SendingBy != other.id {
+		t.Errorf("items %+v", items)
+	}
+}
+
+// lostAnswer writes a drop, then something else changes the task, and the
+// drop's writer is told the write failed.
+type lostAnswer struct{ storage.Driver }
+
+func (l lostAnswer) UpdateTaskStatus(ctx context.Context, t *v1alpha1.Task) error {
+	cur, err := l.GetTask(ctx, storage.Key{Namespace: t.Namespace, Name: t.Name})
+	if err != nil || len(t.Status.Outbox) >= len(cur.Status.Outbox) {
+		return l.Driver.UpdateTaskStatus(ctx, t)
+	}
+	if err := l.Driver.UpdateTaskStatus(ctx, t); err != nil {
+		return err
+	}
+	t.Status.Conditions = append(t.Status.Conditions, metav1.Condition{Type: "Unrelated", Status: metav1.ConditionTrue, Reason: "Test", LastTransitionTime: metav1.Now()})
+	if err := l.Driver.UpdateTaskStatus(ctx, t); err != nil {
+		return err
+	}
+	return errors.New("the answer is lost")
+}
+
+// A drop whose write landed is told of, even when the answer was lost and
+// the task changed since.
+func TestNotifyDropThatLandedIsTold(t *testing.T) {
+	rec := newReceiver(t)
+	e, recorded := notifyEnv(t, notifier("hook", rec.URL, nil, v1alpha1.NotifyQuestion))
+	key := e.addTask(t, "x", v1alpha1.AssigneeAgent)
+	e.question(t, key)
+	e.clock.add(NotifyTTL + time.Minute)
+	e.m.store = lostAnswer{e.store}
+	if err := e.m.DeliverNotifications(ctx); err != nil {
+		t.Fatal(err)
+	}
+	var told int
+	for _, r := range *recorded {
+		if strings.Contains(r, "NotificationDropped") {
+			told++
+		}
+	}
+	if items := notifyItems(e.get(t, key)); len(items) != 0 || told != 1 {
+		t.Errorf("told %d times, items %+v", told, items)
 	}
 }
 

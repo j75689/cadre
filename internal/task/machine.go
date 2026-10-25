@@ -321,7 +321,9 @@ func (ReserveItem) kind() Kind { return KindReserve }
 // acked as having nobody to tell, as a server without Notifiers does.
 // Drop removes the item whoever has taken it, as one not taken in time:
 // a drop that finds no item to remove is ErrNotifyGone, so of servers
-// dropping one item, only the one whose write removed it tells of it.
+// dropping one item, only the one whose write removed it tells of it. A
+// drop under another server's live turn is ErrNotifySending: that server
+// is sending it, and drops it itself once its own check says so.
 type NotifyDelivered struct {
 	ID   string
 	To   []string
@@ -599,6 +601,9 @@ func Apply(t *v1alpha1.Task, ev Event, now time.Time) (Result, error) {
 				continue
 			}
 			found = true
+			if ev.Drop && n.SendingBy != "" && n.SendingBy != ev.By && n.SendingUntil != nil && n.SendingUntil.After(now) {
+				return Result{}, ErrNotifySending
+			}
 			for _, to := range ev.To {
 				if !slices.Contains(n.Delivered, to) {
 					n.Delivered = append(n.Delivered, to)
