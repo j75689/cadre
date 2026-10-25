@@ -87,46 +87,72 @@ func (s *Server) Register(mux *http.ServeMux) {
 	mux.HandleFunc("GET "+Base+"/me", s.me)
 }
 
-// guard lets a request through when the caller's role on the team of its
-// namespace allows action. A team the caller has no role on, or that does
-// not exist, is refused with 403, so its existence is not told; a bootstrap
-// admin passes, and the handler answers 404 for what is not there. The
-// board index decides first, seconds behind the store at worst: a refusal
-// there is final, since a lagging index can grant too much, never too
-// little. A write the index allows is confirmed on the Team read from the
-// store, so a role taken away fences the next write, and only someone the
-// index already lets write costs a store read.
+// guard lets a request through when Check allows action on the team of
+// its namespace.
 func (s *Server) guard(action authz.Action, h http.HandlerFunc) http.HandlerFunc {
 	if s.policy == nil {
 		return h
 	}
 	return func(w http.ResponseWriter, r *http.Request) {
-		id, ok := auth.FromContext(r.Context())
-		if !ok {
+		var refused *Refused
+		switch err := Check(r.Context(), s.m, s.policy, r.PathValue("ns"), action); {
+		case errors.Is(err, ErrUnauthenticated):
 			httpjson.WriteError(w, http.StatusUnauthorized, httpjson.CodeUnauthenticated, "log in first")
-			return
+		case errors.As(err, &refused):
+			httpjson.WriteError(w, http.StatusForbidden, httpjson.CodeNoRole, refused.Message)
+		case err != nil:
+			httpjson.Fail(w, s.log, err)
+		default:
+			h(w, r)
 		}
-		ns := r.PathValue("ns")
-		reads := []func(context.Context, string) (*v1alpha1.Team, error){s.m.Team}
-		if action != authz.Read {
-			reads = append(reads, s.m.LiveTeam)
-		}
-		for _, read := range reads {
-			team, err := read(r.Context(), ns)
-			switch {
-			case errors.Is(err, storage.ErrNotFound):
-				team = nil
-			case err != nil:
-				httpjson.Fail(w, s.log, err)
-				return
-			}
-			if role, _ := s.policy.Role(id, team); !authz.Allowed(role, action) {
-				httpjson.WriteError(w, http.StatusForbidden, httpjson.CodeNoRole, authz.Refusal(ns, role, action))
-				return
-			}
-		}
-		h(w, r)
 	}
+}
+
+// ErrUnauthenticated is a request with no identity where logins are on.
+var ErrUnauthenticated = errors.New("log in first")
+
+// Refused is an action the caller's role does not allow; its message names
+// the role it needs and the caller's.
+type Refused struct{ Message string }
+
+func (r *Refused) Error() string { return r.Message }
+
+// Check decides whether the caller of ctx may take action on the team of
+// namespace ns, under policy (nil: everyone may do anything). A team the
+// caller has no role on, or that does not exist, is a refusal, so its
+// existence is not told; a bootstrap admin passes, and what is not there is
+// answered later as not found. The board index decides first, seconds
+// behind the store at worst: a refusal there is final, since a lagging
+// index can grant too much, never too little. A write the index allows is
+// confirmed on the Team read from the store, so a role taken away fences
+// the next write, and only someone the index already lets write costs a
+// store read. The API's routes and the MCP endpoint's tools all decide
+// here.
+func Check(ctx context.Context, m *manager.Manager, policy *authz.Policy, ns string, action authz.Action) error {
+	if policy == nil {
+		return nil
+	}
+	id, ok := auth.FromContext(ctx)
+	if !ok {
+		return ErrUnauthenticated
+	}
+	reads := []func(context.Context, string) (*v1alpha1.Team, error){m.Team}
+	if action != authz.Read {
+		reads = append(reads, m.LiveTeam)
+	}
+	for _, read := range reads {
+		team, err := read(ctx, ns)
+		switch {
+		case errors.Is(err, storage.ErrNotFound):
+			team = nil
+		case err != nil:
+			return err
+		}
+		if role, _ := policy.Role(id, team); !authz.Allowed(role, action) {
+			return &Refused{Message: authz.Refusal(ns, role, action)}
+		}
+	}
+	return nil
 }
 
 // me says who the caller is and their role on each team they may see.
@@ -172,11 +198,11 @@ func (s *Server) listTasks(w http.ResponseWriter, r *http.Request) {
 	query := r.URL.Query()
 	q := storage.Query{Namespace: r.PathValue("ns")}
 	for _, p := range query["phase"] {
-		if !slices.Contains(phases, v1alpha1.Phase(p)) {
-			httpjson.WriteError(w, http.StatusBadRequest, httpjson.CodeInvalid, fmt.Sprintf("phase %q: not one of %v", p, phases))
-			return
-		}
 		q.Phases = append(q.Phases, v1alpha1.Phase(p))
+	}
+	if err := ValidatePhases(q.Phases); err != nil {
+		httpjson.WriteError(w, http.StatusBadRequest, httpjson.CodeInvalid, err.Error())
+		return
 	}
 	for _, name := range []string{"parent", "offset", "limit"} {
 		if n := len(query[name]); n > 1 {
@@ -184,12 +210,10 @@ func (s *Server) listTasks(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
-	// A task name is a DNS subdomain, so a parent's is.
-	if q.Parent = query.Get("parent"); q.Parent != "" {
-		if errs := validation.IsDNS1123Subdomain(q.Parent); len(errs) > 0 {
-			httpjson.WriteError(w, http.StatusBadRequest, httpjson.CodeInvalid, fmt.Sprintf("parent %q: %s", q.Parent, strings.Join(errs, "; ")))
-			return
-		}
+	q.Parent = query.Get("parent")
+	if err := ValidateParent(q.Parent); err != nil {
+		httpjson.WriteError(w, http.StatusBadRequest, httpjson.CodeInvalid, err.Error())
+		return
 	}
 	var ok bool
 	if q.Offset, ok = intParam(w, query, "offset"); !ok {
@@ -198,14 +222,8 @@ func (s *Server) listTasks(w http.ResponseWriter, r *http.Request) {
 	if q.Limit, ok = intParam(w, query, "limit"); !ok {
 		return
 	}
-	// A board page is bounded: no limit means the default, and a larger
-	// one is capped. The response says which limit applied.
-	switch {
-	case q.Limit == 0:
-		q.Limit = DefaultLimit
-	case q.Limit > MaxLimit:
-		q.Limit = MaxLimit
-	}
+	// The response says which limit applied.
+	q.Limit = ClampLimit(q.Limit)
 	items, err := s.m.ListTasks(r.Context(), q)
 	if err != nil {
 		httpjson.Fail(w, s.log, err)
@@ -215,6 +233,42 @@ func (s *Server) listTasks(w http.ResponseWriter, r *http.Request) {
 		items = []v1alpha1.Task{}
 	}
 	httpjson.Write(w, http.StatusOK, TaskList{Items: items, Offset: q.Offset, Limit: q.Limit})
+}
+
+// ValidatePhases refuses a phase that is not a Task's, naming the ones
+// that are: an unknown one would match nothing, and look like an empty
+// board.
+func ValidatePhases(ps []v1alpha1.Phase) error {
+	for _, p := range ps {
+		if !slices.Contains(phases, p) {
+			return fmt.Errorf("phase %q: not one of %v", p, phases)
+		}
+	}
+	return nil
+}
+
+// ValidateParent refuses a parent that cannot be a task's name: a task name
+// is a DNS subdomain, so a parent's is. Empty is no parent.
+func ValidateParent(parent string) error {
+	if parent == "" {
+		return nil
+	}
+	if errs := validation.IsDNS1123Subdomain(parent); len(errs) > 0 {
+		return fmt.Errorf("parent %q: %s", parent, strings.Join(errs, "; "))
+	}
+	return nil
+}
+
+// ClampLimit is the page size a board read applies to the limit asked for:
+// none means DefaultLimit, and more than MaxLimit is MaxLimit.
+func ClampLimit(limit int) int {
+	switch {
+	case limit <= 0:
+		return DefaultLimit
+	case limit > MaxLimit:
+		return MaxLimit
+	}
+	return limit
 }
 
 var phases = []v1alpha1.Phase{
@@ -356,7 +410,8 @@ func (s *Server) putTeam(w http.ResponseWriter, r *http.Request) {
 	switch {
 	case errors.Is(err, storage.ErrNotFound) && req.ResourceVersion != "":
 		// An edit of a Team deleted since it was read: not a creation.
-		httpjson.Fail(w, s.log, fmt.Errorf("team %s is gone: %w", ns, manager.ErrTeamChanged))
+		// Not ErrTeamChanged's advice to read it again: a read is a 404.
+		httpjson.WriteError(w, http.StatusConflict, httpjson.CodeConflict, fmt.Sprintf("the Team of %s was deleted since it was read: there is nothing to edit", ns))
 		return
 	case errors.Is(err, storage.ErrNotFound):
 		team, err := s.m.InitTeam(r.Context(), ns, req.TeamSpec)

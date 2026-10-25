@@ -50,7 +50,7 @@ func main() {
 
 func run() error {
 	var (
-		listen    = flag.String("listen", ":8080", "address to serve /api/v1, /runner/v1, /mcp/run and the health probes on")
+		listen    = flag.String("listen", ":8080", "address to serve /api/v1, /runner/v1, /mcp/run (the per-run MCP endpoint), /mcp (the board MCP endpoint for outside agents), the board UI and the health probes on")
 		publicURL = flag.String("public-url", "", "URL runners reach this server at, for their per-run MCP endpoint; required in a cluster (default outside one: http://localhost and the listen port)")
 		lease     = flag.Duration("lease", manager.DefaultConfig.Lease, "how long a claim or heartbeat keeps a run alive")
 		stepIdle  = flag.Duration("step-idle", manager.DefaultConfig.StepIdle, "how long a free step of a step-mode run waits for a worker before the run fails")
@@ -224,12 +224,14 @@ func run() error {
 }
 
 // newMux routes everything cadre-server serves: the runner protocol, the
-// per-run MCP endpoint, the API, the health probes and the board UI.
+// per-run MCP endpoint, the board MCP endpoint for agents outside Cadre, the
+// API, the health probes and the board UI.
 func newMux(m *manager.Manager, log *slog.Logger, publicURL string, authn auth.Authenticator, policy *authz.Policy, runnerOpts []runner.Option, mcpOpts ...mcp.Option) http.Handler {
 	mux := http.NewServeMux()
 	authn.Register(mux, api.Base)
 	runner.NewServer(m, log, publicURL, runnerOpts...).Register(mux)
 	mcp.NewServer(m, log, mcpOpts...).Register(mux)
+	mcp.NewBoard(m, log, policy).Register(mux, authn)
 	api.NewServer(m, log, api.WithAccess(authn.Info().Mode, policy)).Register(mux)
 	mux.HandleFunc("GET /healthz", func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(http.StatusOK) })
 	mux.HandleFunc("GET /readyz", func(w http.ResponseWriter, r *http.Request) {
@@ -295,7 +297,7 @@ func newAuthenticator(ctx context.Context, mode string, inCluster bool, f oidcFl
 	}
 	switch mode {
 	case auth.ModeNone:
-		log.Warn("people are not authenticated (--auth=none): anyone may act as anyone through the API and the UI")
+		log.Warn("people are not authenticated (--auth=none): anyone may act as anyone through the API, the UI and the board MCP endpoint, /mcp")
 		return auth.None{}, nil
 	case auth.ModeOIDC:
 	default:
@@ -343,7 +345,8 @@ const (
 func boundRequests(next http.Handler, d, mcpBound time.Duration) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		bound := d
-		if r.URL.Path == mcp.Path || api.IsApproval(r) {
+		// The board endpoint has the per-run one's bound, as both are MCP.
+		if r.URL.Path == mcp.Path || r.URL.Path == mcp.BoardPath || api.IsApproval(r) {
 			bound = mcpBound
 		}
 		ctx, cancel := context.WithTimeout(r.Context(), bound)

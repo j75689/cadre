@@ -60,7 +60,7 @@ func newRoot() *cobra.Command {
 		}
 		return nil
 	}
-	root.AddCommand(newTaskCmd(g), newTeamCmd(g), newRunnerCmd(g), newLoginCmd(g), &cobra.Command{
+	root.AddCommand(newTaskCmd(g), newTeamCmd(g), newRunnerCmd(g), newLoginCmd(g), newAuthCmd(g), &cobra.Command{
 		Use:   "version",
 		Short: "Print the version",
 		Args:  cobra.NoArgs,

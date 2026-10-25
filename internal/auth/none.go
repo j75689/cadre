@@ -16,6 +16,9 @@ func (None) Info() Info { return Info{Mode: ModeNone} }
 // Wrap implements Authenticator: nothing is checked.
 func (None) Wrap(next http.Handler, _ string) http.Handler { return next }
 
+// Bearer implements Authenticator: nothing is checked.
+func (None) Bearer(next http.Handler) http.Handler { return next }
+
 // Register implements Authenticator.
 func (n None) Register(mux *http.ServeMux, base string) {
 	mux.HandleFunc("GET "+base+"/auth", func(w http.ResponseWriter, _ *http.Request) { httpjson.Write(w, http.StatusOK, n.Info()) })

@@ -376,7 +376,7 @@ func TestTeamEdits(t *testing.T) {
 	}
 	// An edit of a Team gone since it was read is a conflict, not a creation.
 	body, _ := json.Marshal(api.TeamRequest{TeamSpec: v1alpha1.TeamSpec{Roles: roles}, ResourceVersion: got.ResourceVersion})
-	if code, out := e.do(root, "PUT", "/namespaces/team-c/team", string(body)); code != 409 || !strings.Contains(out, `"conflict"`) {
+	if code, out := e.do(root, "PUT", "/namespaces/team-c/team", string(body)); code != 409 || !strings.Contains(out, `"conflict"`) || !strings.Contains(out, "deleted since it was read") {
 		t.Errorf("an edit of a Team that is not there: %d %s", code, out)
 	}
 	if code, out := e.do(root, "GET", "/namespaces/team-c/team", ""); code != 404 {

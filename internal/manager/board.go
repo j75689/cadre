@@ -430,6 +430,26 @@ func ValidateTeamSpec(spec *v1alpha1.TeamSpec) error {
 	return nil
 }
 
+// TaskByNumber finds a namespace's task by its number, a page of the board
+// at a time; storage.ErrNotFound if none has it.
+func (m *Manager) TaskByNumber(ctx context.Context, namespace string, number int64) (*v1alpha1.Task, error) {
+	const page = 500
+	for offset := 0; ; offset += page {
+		tasks, err := m.ListTasks(ctx, storage.Query{Namespace: namespace, Offset: offset, Limit: page})
+		if err != nil {
+			return nil, err
+		}
+		for i := range tasks {
+			if tasks[i].Status.Number == number {
+				return &tasks[i], nil
+			}
+		}
+		if len(tasks) < page {
+			return nil, fmt.Errorf("no task #%d in %s: %w", number, namespace, storage.ErrNotFound)
+		}
+	}
+}
+
 // ListAgents lists the Agents of a Team's namespace, by name.
 func (m *Manager) ListAgents(ctx context.Context, namespace string) ([]v1alpha1.Agent, error) {
 	if err := validNamespace(namespace); err != nil {

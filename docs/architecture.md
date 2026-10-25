@@ -39,9 +39,16 @@ Cadre is not a SaaS, not a workflow engine, not an LLM gateway and not a sandbox
 - New task at `/t/<namespace>/new`, linked from the board: title, description, an assignee (an Agent picked from the team's, a not-Ready one saying why, or a user by name), priority and labels; the server names the task. It is checked as the server would before it is sent.
 - A subtask's card and page link to its parent, and a task's page lists its subtasks.
 - Identity: with logins the UI asks `GET /api/v1/me` who it is, shows the user with a logout, and sends no author; any request answered 401 sends the browser to log in and back to the page. Without logins (`--auth=none`) it asks for a display name once, keeps it in the browser and sends it as the author, as `--as` does for the CLI. See [Identity and access](#identity-and-access).
-- The routes the UI uses, under `/api/v1`: `GET /auth`, `GET /me`, `GET /teams`; under `/namespaces/<namespace>`: `GET /agents` (each Agent's name, whether it is Ready, and if not why), `GET /tasks` (`phase`, `parent`, `offset`, `limit`; `parent` lists a task's subtasks), `POST /tasks`, `GET /team` and `PUT /team` (creating it, for a bootstrap admin, or editing it, for its admins), and under `/tasks/<name>`: `GET`, `GET /thread` (`after`, `limit`), `POST /comments`, `POST /reply`, `POST /approve`, `POST /cancel`, `GET /runs` and `GET /runs/<run>/events`.
+- The routes the UI uses, under `/api/v1`: `GET /auth`, `GET /me`, `GET /teams`; under `/namespaces/<namespace>`: `GET /agents` (each Agent's name, whether it is Ready, and if not why), `GET /tasks` (`phase`, `parent`, `offset`, `limit`; `parent` lists a task's subtasks), `POST /tasks`, and under `/tasks/<name>`: `GET`, `GET /thread` (`after`, `limit`), `POST /comments`, `POST /reply`, `POST /approve`, `POST /cancel`, `GET /runs` and `GET /runs/<run>/events`.
+- The CLI also uses, under `/api/v1/namespaces/<namespace>`: `GET /team` and `PUT /team` (creating the Team, for a bootstrap admin, or editing it, for its admins).
 - Planned: subtask tree, deliverable approval queue (approve, reject, publish; plugin, see below).
-- The API serves the CLI and external systems; the MCP endpoint lets external agents (Claude Code, for example) create tasks, comment and read progress.
+- The API serves the CLI and external systems; the board MCP endpoint, `POST /mcp`, lets external agents (Claude Code, for example) list and read tasks and their threads, create tasks, comment and reply. Its tools are `list_tasks`, `get_task`, `create_task`, `comment` and `reply`; each names the team's namespace and a task by name or `#number`.
+  - **Authentication.** It takes a bearer ID token only, verified as the API verifies one, with no session cookie, so a page in a browser cannot act through it.
+  - **Authorization.** Each tool call is decided by the caller's role on the team it names, as the API's routes are: a viewer reads, a member also writes, and a refusal is a tool error naming the role needed.
+  - **Authorship.** What it writes is the caller's.
+  - **Without logins.** With `--auth=none` it is open, like the API, and what it writes is `anonymous`'s.
+  - **Connecting an agent.** `cadre auth token` prints the token `cadre login` stored, while it is good for more than a minute, for example: `claude mcp add --transport http cadre https://cadre.example.test/mcp --header "Authorization: Bearer $(cadre auth token)"`.
+  - **The limit.** An ID token lasts hours at most, so this suits an agent someone runs themselves and logs in for; an unattended agent needs a token of its own (#93).
 - Stateless and horizontally scalable. Every state change is delegated to the Task Manager.
 
 ### Task Manager
@@ -94,7 +101,7 @@ Two layers, as in Argo CD:
 
 ### Authentication
 
-People log in with any OIDC provider; there is no provider-specific code. This covers the web UI, the API and the CLI. Runners (ServiceAccount tokens checked with TokenReview, or minted Runner tokens) and the per-run MCP endpoint authenticate their own way and are not affected.
+People log in with any OIDC provider; there is no provider-specific code. This covers the web UI, the API and the CLI. The board MCP endpoint takes the same ID tokens, as a bearer token only. Runners (ServiceAccount tokens checked with TokenReview, or minted Runner tokens) and the per-run MCP endpoint authenticate their own way and are not affected.
 
 - **Modes.** `--auth=oidc` requires a login for every `/api/v1` route except `GET /api/v1/auth`. `--auth=none` requires nothing: a request's author is whatever the client names, so anyone may act as anyone; cadre-server logs a warning, as for `--runner-auth=none`. The default is `oidc` in a cluster and `none` outside one.
 - **Flags.**
@@ -121,7 +128,6 @@ People log in with any OIDC provider; there is no provider-specific code. This c
   - Against a server without logins, `cadre login` forgets any login kept for it.
   - `--as` is refused by a server with logins ("identity comes from login") and still names the author with `--auth=none`.
 - **Identity in the API.** The author of a comment, reply or approval is the caller's username. The `author` fields of those requests count only with `--auth=none`. `GET /api/v1/me` returns the mode and the identity.
-- **Not yet.** The MCP endpoint for outside agents has no login yet (#68).
 
 ### Authorization
 
@@ -199,7 +205,7 @@ cmd/cadre-runner/        runner for the builtin loop
 internal/task/           aggregate and state machine, pure logic, no storage access
 internal/storage/        driver interface, conformance/, kubernetes/, postgres/
 internal/runner/         runner protocol
-internal/mcp/            per-run MCP endpoint
+internal/mcp/            per-run and board MCP endpoints
 internal/controller/     Team, Task, Agent, ToolServer reconcilers
 docs/                    architecture and design
 ```

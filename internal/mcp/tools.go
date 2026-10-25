@@ -2,6 +2,7 @@ package mcp
 
 import (
 	"context"
+	"log/slog"
 
 	sdk "github.com/modelcontextprotocol/go-sdk/mcp"
 
@@ -179,29 +180,38 @@ func callContext(ctx context.Context, req *sdk.CallToolRequest) context.Context 
 	return ctx
 }
 
-// fail turns an error into a tool error the model can read. It uses the
-// classification the HTTP APIs use. Storage details stay in the server log.
-func (s *Server) fail(err error) *sdk.CallToolResult {
+// fail is failure for a run's tool: a run that lost its task is told so.
+func (s *Server) fail(err error) *sdk.CallToolResult { return failure(s.log, err, true) }
+
+// failure turns an error into a tool error an agent can read, the same on
+// both endpoints. It uses the classification the HTTP APIs use; storage
+// details stay in the server log. For a run (run), a mismatched run or a
+// transition its task no longer allows means the run is over; for the
+// board, the transition is one the task's phase does not allow.
+func failure(log *slog.Logger, err error, run bool) *sdk.CallToolResult {
 	var msg string
-	switch httpjson.Classify(err) {
-	case httpjson.CodeRunMismatch, httpjson.CodeStepMismatch, httpjson.CodeInvalidTransition:
-		msg = msgRunGone
-	case httpjson.CodeInvalid:
-		msg = "Invalid call: " + err.Error()
-	case httpjson.CodeNotFound:
-		msg = "Not found."
-	case httpjson.CodeAlreadyExists:
-		msg = "Already exists."
-	default:
-		s.log.Warn("MCP tool failed", "err", err)
-		msg = "A temporary error occurred; try again."
-	}
-	r := &sdk.CallToolResult{Content: []sdk.Content{&sdk.TextContent{Text: msg}}}
-	r.IsError = true
-	if msg == msgRunGone {
+	switch code := httpjson.Classify(err); {
+	case run && (code == httpjson.CodeRunMismatch || code == httpjson.CodeStepMismatch || code == httpjson.CodeInvalidTransition):
+		r := toolError(msgRunGone)
 		// The run is over: the runner stops now, not at its next
 		// heartbeat.
 		r.Meta = sdk.Meta{MetaRunEnded: true}
+		return r
+	case code == httpjson.CodeInvalidTransition:
+		// The reason says what to do, as an Answer to a task waiting for
+		// an approval says to approve or deny it.
+		msg = "Not allowed in the task's phase: " + err.Error()
+	case code == httpjson.CodeInvalid:
+		msg = "Invalid call: " + err.Error()
+	case code == httpjson.CodeNotFound:
+		msg = "Not found."
+	case code == httpjson.CodeAlreadyExists:
+		msg = "Already exists."
+	case code == httpjson.CodeEntryPending:
+		msg = manager.ErrEntryPending.Error()
+	default:
+		log.Warn("MCP tool failed", "err", err)
+		msg = "A temporary error occurred; try again."
 	}
-	return r
+	return toolError(msg)
 }

@@ -74,6 +74,9 @@ type Authenticator interface {
 	// Wrap authenticates the requests under the API's base path that next
 	// would serve, and leaves every other path alone.
 	Wrap(next http.Handler, base string) http.Handler
+	// Bearer authenticates every request to next with a bearer token only,
+	// for endpoints called by programs; without logins it checks nothing.
+	Bearer(next http.Handler) http.Handler
 	// Register adds the login routes, if the mode has any, and GET
 	// <base>/auth. The API serves <base>/me.
 	Register(mux *http.ServeMux, base string)
