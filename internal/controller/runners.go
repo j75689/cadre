@@ -44,6 +44,9 @@ func sharing[T any, P interface {
 	client.Object
 }](c client.Reader, saOf func(client.Object) []string, list func(context.Context, client.Reader, string, string) ([]T, error)) handler.MapFunc {
 	return func(ctx context.Context, o client.Object) []reconcile.Request {
+		if _, ok := o.(P); !ok {
+			return nil // saOf takes P only
+		}
 		sa := saOf(o)
 		if len(sa) == 0 {
 			return nil

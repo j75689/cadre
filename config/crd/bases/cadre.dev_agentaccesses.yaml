@@ -172,6 +172,10 @@ spec:
         required:
         - spec
         type: object
+        x-kubernetes-validations:
+        - message: an AgentAccess's name is at most 240 characters, so that its Secret's,
+            <name>-access-token, is a valid name
+          rule: self.metadata.name.size() <= 240
     served: true
     storage: true
     subresources:

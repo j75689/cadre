@@ -8,6 +8,7 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/runtime/schema"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
 
@@ -31,7 +32,8 @@ const tokenKey = "token"
 func TokenSecretName(runner string) string { return runner + "-token" }
 
 // AccessTokenSecretName is the Secret an AgentAccess's minted token is kept
-// in: named apart from a Runner's, so the two never share one.
+// in: named apart from a Runner's, which keeps a coincidence rare; where
+// one happens the Runner holds the name.
 func AccessTokenSecretName(access string) string { return access + "-access-token" }
 
 // tokenOwner is an object Cadre mints a token for.
@@ -77,7 +79,7 @@ func (b base) ensureToken(ctx context.Context, o tokenOwner) (hash string, minte
 	case err == nil:
 		tok := s.Data[tokenKey]
 		if len(tok) == 0 || !ownedBy(&s, o.obj) {
-			return "", false, fmt.Sprintf("Secret %s exists but is not this %s's token; delete it to have a token minted", key.Name, o.kind), nil
+			return "", false, notOwned(&s, o), nil
 		}
 		return token.Hash(string(tok)), false, "", nil
 	case !apierrors.IsNotFound(err):
@@ -99,6 +101,24 @@ func (b base) ensureToken(ctx context.Context, o tokenOwner) (hash string, minte
 		return "", false, "", err // a concurrent create is redone on the requeue
 	}
 	return hash, true, "", nil
+}
+
+// notOwned says why the Secret s is not o's token. One that is the other
+// kind's token, a Runner's or an AgentAccess's, names its owner: deleting
+// it would only rotate the other's token.
+func notOwned(s *corev1.Secret, o tokenOwner) string {
+	if c := metav1.GetControllerOf(s); c != nil && c.Kind != o.kind {
+		gv, err := schema.ParseGroupVersion(c.APIVersion)
+		switch {
+		case err != nil || gv.Group != v1alpha1.GroupVersion.Group:
+		case c.Kind == "AgentAccess":
+			// The AgentAccess yields the name to the Runner.
+			return fmt.Sprintf("Secret %s is AgentAccess %s's token; it yields within a minute", s.Name, c.Name)
+		case c.Kind == "Runner":
+			return fmt.Sprintf("Secret %s is Runner %s's token; give this %s another name", s.Name, c.Name, o.kind)
+		}
+	}
+	return fmt.Sprintf("Secret %s exists but is not this %s's token; delete it to have a token minted", s.Name, o.kind)
 }
 
 // deleteToken deletes the owner's own token Secret, if it has one.

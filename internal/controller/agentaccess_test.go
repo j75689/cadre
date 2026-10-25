@@ -133,7 +133,65 @@ func TestAgentAccesses(t *testing.T) {
 			}
 		}
 	}
+	// Settled for a few resyncs, neither token moved again.
+	time.Sleep(time.Second)
+	if r, a := hashes(); r != runnerHash || a != accessHash {
+		t.Fatalf("hashes moved: %s, %s from %s, %s", r, a, runnerHash, accessHash)
+	}
 	waitAccess(t, c, "team-a", "shared", ready(true, "TokenMinted"))
+	waitRunner(t, c, "shared", func(rn *v1alpha1.Runner) bool {
+		cond := meta.FindStatusCondition(rn.Status.Conditions, v1alpha1.ConditionReady)
+		return cond != nil && cond.Status == metav1.ConditionTrue && cond.Reason == "TokenMinted"
+	})
+
+	// Where the two Secret names coincide, Runner p-access's and
+	// AgentAccess p's, the Runner holds it, whichever came first, and the
+	// Secret re-minted after a rotation is the Runner's.
+	for _, runnerFirst := range []bool{true, false} {
+		name := "pa"
+		if !runnerFirst {
+			name = "pb"
+		}
+		secret, runnerName := name+"-access-token", name+"-access"
+		newRunner := &v1alpha1.Runner{ObjectMeta: metav1.ObjectMeta{Namespace: "team-a", Name: runnerName}, Spec: v1alpha1.RunnerSpec{Labels: map[string]string{"pool": "x"}}}
+		if runnerFirst {
+			create(newRunner)
+			waitRunner(t, c, runnerName, func(rn *v1alpha1.Runner) bool { return rn.Status.TokenHash != "" })
+			create(access("team-a", name, ""))
+		} else {
+			create(access("team-a", name, ""))
+			waitAccess(t, c, "team-a", name, ready(true, "TokenMinted"))
+			create(newRunner)
+		}
+		taken := func(aa *v1alpha1.AgentAccess) bool {
+			return ready(false, "SecretNameTaken")(aa) && aa.Status.TokenHash == "" && aa.Status.TokenSecret == "" &&
+				strings.Contains(meta.FindStatusCondition(aa.Status.Conditions, v1alpha1.ConditionReady).Message, "is Runner "+runnerName+"'s token")
+		}
+		waitAccess(t, c, "team-a", name, taken)
+		var rn v1alpha1.Runner
+		held := func(old string) {
+			t.Helper()
+			for deadline := time.Now().Add(10 * time.Second); ; time.Sleep(50 * time.Millisecond) {
+				var s corev1.Secret
+				if c.Get(ctx, client.ObjectKey{Namespace: "team-a", Name: runnerName}, &rn) == nil &&
+					c.Get(ctx, client.ObjectKey{Namespace: "team-a", Name: secret}, &s) == nil &&
+					len(s.OwnerReferences) == 1 && s.OwnerReferences[0].UID == rn.UID && s.OwnerReferences[0].Kind == "Runner" &&
+					rn.Status.TokenHash == token.Hash(string(s.Data["token"])) && rn.Status.TokenHash != old {
+					return
+				}
+				if time.Now().After(deadline) {
+					t.Fatalf("Runner %s never held %s: %+v", runnerName, secret, rn.Status)
+				}
+			}
+		}
+		held("")
+		first := rn.Status.TokenHash
+		if err := c.Delete(ctx, &corev1.Secret{ObjectMeta: metav1.ObjectMeta{Namespace: "team-a", Name: secret}}); err != nil {
+			t.Fatal(err)
+		}
+		held(first)
+		waitAccess(t, c, "team-a", name, taken)
+	}
 
 	// One ServiceAccount is one AgentAccess's: the oldest, then by name.
 	create(access("team-a", "first", "agent-sa"), access("team-a", "second", "agent-sa"))

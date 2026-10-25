@@ -40,6 +40,7 @@ type AgentAccessStatus struct {
 // +kubebuilder:object:root=true
 // +kubebuilder:subresource:status
 // +kubebuilder:resource:scope=Namespaced
+// +kubebuilder:validation:XValidation:rule="self.metadata.name.size() <= 240",message="an AgentAccess's name is at most 240 characters, so that its Secret's, <name>-access-token, is a valid name"
 // +kubebuilder:printcolumn:name="Role",type=string,JSONPath=`.spec.role`
 // +kubebuilder:printcolumn:name="ServiceAccount",type=string,JSONPath=`.spec.serviceAccount.name`
 // +kubebuilder:printcolumn:name="Token",type=string,JSONPath=`.status.tokenSecret`
