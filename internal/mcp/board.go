@@ -15,10 +15,8 @@ import (
 	"github.com/j75689/cadre/internal/api"
 	"github.com/j75689/cadre/internal/auth"
 	"github.com/j75689/cadre/internal/authz"
-	"github.com/j75689/cadre/internal/httpjson"
 	"github.com/j75689/cadre/internal/manager"
 	"github.com/j75689/cadre/internal/storage"
-	"github.com/j75689/cadre/internal/task"
 )
 
 // BoardPath is where the board endpoint is served: the board's tools for
@@ -77,16 +75,22 @@ type (
 		Limit     int              `json:"limit,omitempty" jsonschema:"at most this many, 50 by default and 500 at most"`
 	}
 	boardListOut struct {
-		Tasks []v1alpha1.Task `json:"tasks"`
+		Tasks  []v1alpha1.Task `json:"tasks"`
+		Offset int             `json:"offset"`
+		Limit  int             `json:"limit"` // the page size applied: a full page may have more after it
 	}
 	boardTaskIn struct {
 		Namespace string `json:"namespace" jsonschema:"the team's namespace"`
 		Task      string `json:"task" jsonschema:"the task's name, or #number"`
 		After     int64  `json:"after,omitempty" jsonschema:"the thread entries after this sequence number; 0 reads from the start"`
+		Limit     int    `json:"limit,omitempty" jsonschema:"at most this many thread entries, 200 at most and by default"`
 	}
 	boardTaskOut struct {
 		Task   *v1alpha1.Task        `json:"task"`
 		Thread []manager.ThreadEntry `json:"thread"`
+		// Last is the last entry's sequence number read: pass it as after
+		// for the next page. A full page may have more after it.
+		Last int64 `json:"last"`
 	}
 	boardCreateIn struct {
 		Namespace   string             `json:"namespace" jsonschema:"the team's namespace"`
@@ -94,6 +98,7 @@ type (
 		Description string             `json:"description,omitempty"`
 		Priority    v1alpha1.Priority  `json:"priority,omitempty" jsonschema:"low, medium, high or urgent"`
 		Assignee    *v1alpha1.Assignee `json:"assignee,omitempty" jsonschema:"who works on it: kind Agent or User, and a name; unassigned when omitted"`
+		Labels      []string           `json:"labels,omitempty"`
 		Parent      string             `json:"parent,omitempty" jsonschema:"make it a subtask of this task, by name"`
 	}
 	boardPostIn struct {
@@ -103,24 +108,23 @@ type (
 	}
 )
 
-// serverFor builds the MCP server for one request, with the board's tools
-// acting as the request's caller. Their results are declared any: a Task's
+// serverFor builds the MCP server for one request, with the board's tools.
+// A tool reads the caller from its context: the stateless handler serves
+// the request on its own context, which Bearer gave the identity, and
+// api.Check reads it there too. Their results are declared any: a Task's
 // schema cannot be inferred (its metadata's types have their own), so a
 // result is sent as structured content without an output schema.
-func (b *Board) serverFor(r *http.Request) *sdk.Server {
-	id, _ := auth.FromContext(r.Context())
+func (b *Board) serverFor(*http.Request) *sdk.Server {
 	server := sdk.NewServer(&sdk.Implementation{Name: "cadre", Version: v1alpha1.GroupVersion.Version}, &sdk.ServerOptions{SchemaCache: b.schemas})
-	author := anonymous
-	if id != nil {
-		author = id.Username
-	}
-	as := manager.Author{Kind: manager.AuthorUser, Name: author}
-	// allowed decides a call: the caller's identity, as Check reads it from
-	// the context, on the namespace the call names.
-	allowed := func(ctx context.Context, tool, ns string) *sdk.CallToolResult {
-		if id != nil {
-			ctx = auth.WithIdentity(ctx, id)
+	// as is who writes: the caller, or anonymous without logins.
+	as := func(ctx context.Context) manager.Author {
+		if id, ok := auth.FromContext(ctx); ok {
+			return manager.Author{Kind: manager.AuthorUser, Name: id.Username}
 		}
+		return manager.Author{Kind: manager.AuthorUser, Name: anonymous}
+	}
+	// allowed decides a call: the caller's role on the namespace it names.
+	allowed := func(ctx context.Context, tool, ns string) *sdk.CallToolResult {
 		var refused *api.Refused
 		switch err := api.Check(ctx, b.m, b.policy, ns, BoardTools[tool]); {
 		case errors.As(err, &refused):
@@ -138,13 +142,15 @@ func (b *Board) serverFor(r *http.Request) *sdk.Server {
 			if res := allowed(ctx, "list_tasks", in.Namespace); res != nil {
 				return res, nil, nil
 			}
-			limit := in.Limit
-			switch {
-			case limit <= 0:
-				limit = api.DefaultLimit
-			case limit > api.MaxLimit:
-				limit = api.MaxLimit
+			// As the API checks them: an unknown phase would match
+			// nothing, and look like an empty board.
+			if err := errors.Join(api.ValidatePhases(in.Phase), api.ValidateParent(in.Parent)); err != nil {
+				return toolError("Invalid call: " + err.Error()), nil, nil
 			}
+			if in.Offset < 0 {
+				return toolError("Invalid call: offset must not be negative"), nil, nil
+			}
+			limit := api.ClampLimit(in.Limit)
 			tasks, err := b.m.ListTasks(ctx, storage.Query{Namespace: in.Namespace, Phases: in.Phase, Parent: in.Parent, Offset: in.Offset, Limit: limit})
 			if err != nil {
 				return b.fail(err), nil, nil
@@ -152,10 +158,10 @@ func (b *Board) serverFor(r *http.Request) *sdk.Server {
 			if tasks == nil {
 				tasks = []v1alpha1.Task{}
 			}
-			return nil, boardListOut{Tasks: tasks}, nil
+			return nil, boardListOut{Tasks: tasks, Offset: in.Offset, Limit: limit}, nil
 		})
 
-	sdk.AddTool(server, &sdk.Tool{Name: "get_task", Description: "Read a task and its thread: comments, questions, answers and tool calls, oldest first. Page the thread with after, the last sequence number read."},
+	sdk.AddTool(server, &sdk.Tool{Name: "get_task", Description: "Read a task and a page of its thread: comments, questions, answers and tool calls, oldest first. For the next page pass after, the last sequence number this one returned."},
 		func(ctx context.Context, _ *sdk.CallToolRequest, in boardTaskIn) (*sdk.CallToolResult, any, error) {
 			if res := allowed(ctx, "get_task", in.Namespace); res != nil {
 				return res, nil, nil
@@ -168,14 +174,21 @@ func (b *Board) serverFor(r *http.Request) *sdk.Server {
 			if err != nil {
 				return b.fail(err), nil, nil
 			}
-			thread, err := b.m.ReadThread(ctx, key, in.After, 0)
+			limit := in.Limit
+			if limit <= 0 || limit > manager.MaxThreadPage {
+				limit = manager.MaxThreadPage
+			}
+			thread, err := b.m.ReadThread(ctx, key, in.After, limit)
 			if err != nil {
 				return b.fail(err), nil, nil
 			}
-			if thread == nil {
+			last := in.After
+			if len(thread) > 0 {
+				last = thread[len(thread)-1].Seq
+			} else {
 				thread = []manager.ThreadEntry{}
 			}
-			return nil, boardTaskOut{Task: t, Thread: thread}, nil
+			return nil, boardTaskOut{Task: t, Thread: thread, Last: last}, nil
 		})
 
 	sdk.AddTool(server, &sdk.Tool{Name: "create_task", Description: "Create a task on a team's board. It is unassigned unless an assignee is given."},
@@ -183,7 +196,7 @@ func (b *Board) serverFor(r *http.Request) *sdk.Server {
 			if res := allowed(ctx, "create_task", in.Namespace); res != nil {
 				return res, nil, nil
 			}
-			spec := v1alpha1.TaskSpec{Title: in.Title, Description: in.Description, Priority: in.Priority, Assignee: in.Assignee}
+			spec := v1alpha1.TaskSpec{Title: in.Title, Description: in.Description, Priority: in.Priority, Assignee: in.Assignee, Labels: in.Labels}
 			if in.Parent != "" {
 				spec.ParentRef = &v1alpha1.TaskReference{Name: in.Parent}
 			}
@@ -203,7 +216,7 @@ func (b *Board) serverFor(r *http.Request) *sdk.Server {
 			if err != nil {
 				return b.fail(err), nil, nil
 			}
-			e, err := b.m.AppendThread(ctx, key, as, manager.EntryComment, in.Body)
+			e, err := b.m.AppendThread(ctx, key, as(ctx), manager.EntryComment, in.Body)
 			if err != nil {
 				return b.fail(err), nil, nil
 			}
@@ -219,7 +232,7 @@ func (b *Board) serverFor(r *http.Request) *sdk.Server {
 			if err != nil {
 				return b.fail(err), nil, nil
 			}
-			_, e, err := b.m.Answer(ctx, key, as, in.Body)
+			_, e, err := b.m.Answer(ctx, key, as(ctx), in.Body)
 			if err != nil {
 				return b.fail(err), nil, nil
 			}
@@ -228,8 +241,7 @@ func (b *Board) serverFor(r *http.Request) *sdk.Server {
 	return server
 }
 
-// resolve turns a task's name, or #number, into its key: a number is
-// looked up on the board, a page at a time.
+// resolve turns a task's name, or #number, into its key.
 func (b *Board) resolve(ctx context.Context, ns, ref string) (storage.Key, error) {
 	digits, ok := strings.CutPrefix(ref, "#")
 	if !ok {
@@ -239,37 +251,12 @@ func (b *Board) resolve(ctx context.Context, ns, ref string) (storage.Key, error
 	if err != nil || n < 1 {
 		return storage.Key{}, fmt.Errorf("%q is not a task number: %w", ref, manager.ErrInvalid)
 	}
-	for offset := 0; ; offset += api.MaxLimit {
-		tasks, err := b.m.ListTasks(ctx, storage.Query{Namespace: ns, Offset: offset, Limit: api.MaxLimit})
-		if err != nil {
-			return storage.Key{}, err
-		}
-		for _, t := range tasks {
-			if t.Status.Number == n {
-				return storage.Key{Namespace: ns, Name: t.Name}, nil
-			}
-		}
-		if len(tasks) < api.MaxLimit {
-			return storage.Key{}, fmt.Errorf("no task #%d: %w", n, storage.ErrNotFound)
-		}
+	t, err := b.m.TaskByNumber(ctx, ns, n)
+	if err != nil {
+		return storage.Key{}, err
 	}
+	return storage.Key{Namespace: ns, Name: t.Name}, nil
 }
 
-// fail turns an error into a tool error the agent can read, classified as
-// the API classifies it; storage details stay in the server log.
-func (b *Board) fail(err error) *sdk.CallToolResult {
-	switch httpjson.Classify(err) {
-	case httpjson.CodeInvalid:
-		return toolError("Invalid call: " + err.Error())
-	case httpjson.CodeNotFound:
-		return toolError("Not found.")
-	case httpjson.CodeAlreadyExists:
-		return toolError("Already exists.")
-	case httpjson.CodeInvalidTransition:
-		return toolError("Not allowed in the task's phase: " + task.ErrInvalidTransition.Error())
-	case httpjson.CodeEntryPending:
-		return toolError(manager.ErrEntryPending.Error())
-	}
-	b.log.Warn("board MCP tool failed", "err", err)
-	return toolError("A temporary error occurred; try again.")
-}
+// fail is failure for a board tool.
+func (b *Board) fail(err error) *sdk.CallToolResult { return failure(b.log, err, false) }

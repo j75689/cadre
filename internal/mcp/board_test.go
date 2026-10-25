@@ -2,6 +2,7 @@ package mcp_test
 
 import (
 	"encoding/json"
+	"fmt"
 	"io"
 	"log/slog"
 	"net/http"
@@ -204,4 +205,71 @@ func text(res *sdk.CallToolResult) string {
 		}
 	}
 	return b.String()
+}
+
+// What an agent reads says what it is: a thread a page at a time with the
+// last sequence number read, a list with the page it is, and an unknown
+// phase as a mistake rather than an empty board.
+func TestBoardReads(t *testing.T) {
+	e := startBoard(t)
+	m := manager.New(e.store, manager.Config{})
+	key := storage.Key{Namespace: ns, Name: "x"}
+	for i := range 3 {
+		if _, err := m.AppendThread(ctx, key, manager.Author{Kind: manager.AuthorUser, Name: "dev@example.test"}, manager.EntryComment, fmt.Sprint("note ", i)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	s := e.session(t, e.as("dev@example.test", "backend"))
+	call := func(tool string, args map[string]any, out any) *sdk.CallToolResult {
+		t.Helper()
+		res, err := s.CallTool(ctx, &sdk.CallToolParams{Name: tool, Arguments: args})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if out != nil {
+			b, _ := json.Marshal(res.StructuredContent)
+			if err := json.Unmarshal(b, out); err != nil {
+				t.Fatal(err)
+			}
+		}
+		return res
+	}
+
+	var page struct {
+		Thread []manager.ThreadEntry `json:"thread"`
+		Last   int64                 `json:"last"`
+	}
+	call("get_task", map[string]any{"namespace": ns, "task": "x", "limit": 2}, &page)
+	if len(page.Thread) != 2 || page.Last != 2 {
+		t.Fatalf("first page: %d entries, last %d", len(page.Thread), page.Last)
+	}
+	call("get_task", map[string]any{"namespace": ns, "task": "x", "after": page.Last, "limit": 2}, &page)
+	if len(page.Thread) != 1 || page.Last != 3 || page.Thread[0].Body != "note 2" {
+		t.Fatalf("second page: %+v, last %d", page.Thread, page.Last)
+	}
+
+	var list struct {
+		Tasks  []v1alpha1.Task `json:"tasks"`
+		Offset int             `json:"offset"`
+		Limit  int             `json:"limit"`
+	}
+	call("list_tasks", map[string]any{"namespace": ns, "limit": 10000}, &list)
+	if len(list.Tasks) != 1 || list.Offset != 0 || list.Limit != api.MaxLimit {
+		t.Errorf("list: %d tasks, offset %d, limit %d", len(list.Tasks), list.Offset, list.Limit)
+	}
+	for _, bad := range []map[string]any{
+		{"namespace": ns, "phase": []string{"todo"}},
+		{"namespace": ns, "parent": "Not_A_Name"},
+		{"namespace": ns, "offset": -1},
+	} {
+		if res := call("list_tasks", bad, nil); !res.IsError || !strings.Contains(text(res), "Invalid call") {
+			t.Errorf("list_tasks %v: %s", bad, text(res))
+		}
+	}
+
+	var created v1alpha1.Task
+	call("create_task", map[string]any{"namespace": ns, "title": "labelled", "labels": []string{"bug"}}, &created)
+	if len(created.Spec.Labels) != 1 || created.Spec.Labels[0] != "bug" {
+		t.Errorf("created %+v", created.Spec)
+	}
 }

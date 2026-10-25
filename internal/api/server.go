@@ -198,11 +198,11 @@ func (s *Server) listTasks(w http.ResponseWriter, r *http.Request) {
 	query := r.URL.Query()
 	q := storage.Query{Namespace: r.PathValue("ns")}
 	for _, p := range query["phase"] {
-		if !slices.Contains(phases, v1alpha1.Phase(p)) {
-			httpjson.WriteError(w, http.StatusBadRequest, httpjson.CodeInvalid, fmt.Sprintf("phase %q: not one of %v", p, phases))
-			return
-		}
 		q.Phases = append(q.Phases, v1alpha1.Phase(p))
+	}
+	if err := ValidatePhases(q.Phases); err != nil {
+		httpjson.WriteError(w, http.StatusBadRequest, httpjson.CodeInvalid, err.Error())
+		return
 	}
 	for _, name := range []string{"parent", "offset", "limit"} {
 		if n := len(query[name]); n > 1 {
@@ -210,12 +210,10 @@ func (s *Server) listTasks(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
-	// A task name is a DNS subdomain, so a parent's is.
-	if q.Parent = query.Get("parent"); q.Parent != "" {
-		if errs := validation.IsDNS1123Subdomain(q.Parent); len(errs) > 0 {
-			httpjson.WriteError(w, http.StatusBadRequest, httpjson.CodeInvalid, fmt.Sprintf("parent %q: %s", q.Parent, strings.Join(errs, "; ")))
-			return
-		}
+	q.Parent = query.Get("parent")
+	if err := ValidateParent(q.Parent); err != nil {
+		httpjson.WriteError(w, http.StatusBadRequest, httpjson.CodeInvalid, err.Error())
+		return
 	}
 	var ok bool
 	if q.Offset, ok = intParam(w, query, "offset"); !ok {
@@ -224,14 +222,8 @@ func (s *Server) listTasks(w http.ResponseWriter, r *http.Request) {
 	if q.Limit, ok = intParam(w, query, "limit"); !ok {
 		return
 	}
-	// A board page is bounded: no limit means the default, and a larger
-	// one is capped. The response says which limit applied.
-	switch {
-	case q.Limit == 0:
-		q.Limit = DefaultLimit
-	case q.Limit > MaxLimit:
-		q.Limit = MaxLimit
-	}
+	// The response says which limit applied.
+	q.Limit = ClampLimit(q.Limit)
 	items, err := s.m.ListTasks(r.Context(), q)
 	if err != nil {
 		httpjson.Fail(w, s.log, err)
@@ -241,6 +233,42 @@ func (s *Server) listTasks(w http.ResponseWriter, r *http.Request) {
 		items = []v1alpha1.Task{}
 	}
 	httpjson.Write(w, http.StatusOK, TaskList{Items: items, Offset: q.Offset, Limit: q.Limit})
+}
+
+// ValidatePhases refuses a phase that is not a Task's, naming the ones
+// that are: an unknown one would match nothing, and look like an empty
+// board.
+func ValidatePhases(ps []v1alpha1.Phase) error {
+	for _, p := range ps {
+		if !slices.Contains(phases, p) {
+			return fmt.Errorf("phase %q: not one of %v", p, phases)
+		}
+	}
+	return nil
+}
+
+// ValidateParent refuses a parent that cannot be a task's name: a task name
+// is a DNS subdomain, so a parent's is. Empty is no parent.
+func ValidateParent(parent string) error {
+	if parent == "" {
+		return nil
+	}
+	if errs := validation.IsDNS1123Subdomain(parent); len(errs) > 0 {
+		return fmt.Errorf("parent %q: %s", parent, strings.Join(errs, "; "))
+	}
+	return nil
+}
+
+// ClampLimit is the page size a board read applies to the limit asked for:
+// none means DefaultLimit, and more than MaxLimit is MaxLimit.
+func ClampLimit(limit int) int {
+	switch {
+	case limit <= 0:
+		return DefaultLimit
+	case limit > MaxLimit:
+		return MaxLimit
+	}
+	return limit
 }
 
 var phases = []v1alpha1.Phase{

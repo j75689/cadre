@@ -50,7 +50,7 @@ func main() {
 
 func run() error {
 	var (
-		listen    = flag.String("listen", ":8080", "address to serve /api/v1, /runner/v1, /mcp/run and the health probes on")
+		listen    = flag.String("listen", ":8080", "address to serve /api/v1, /runner/v1, /mcp/run (the per-run MCP endpoint), /mcp (the board MCP endpoint for outside agents), the board UI and the health probes on")
 		publicURL = flag.String("public-url", "", "URL runners reach this server at, for their per-run MCP endpoint; required in a cluster (default outside one: http://localhost and the listen port)")
 		lease     = flag.Duration("lease", manager.DefaultConfig.Lease, "how long a claim or heartbeat keeps a run alive")
 		stepIdle  = flag.Duration("step-idle", manager.DefaultConfig.StepIdle, "how long a free step of a step-mode run waits for a worker before the run fails")
@@ -297,7 +297,7 @@ func newAuthenticator(ctx context.Context, mode string, inCluster bool, f oidcFl
 	}
 	switch mode {
 	case auth.ModeNone:
-		log.Warn("people are not authenticated (--auth=none): anyone may act as anyone through the API and the UI")
+		log.Warn("people are not authenticated (--auth=none): anyone may act as anyone through the API, the UI and the board MCP endpoint, /mcp")
 		return auth.None{}, nil
 	case auth.ModeOIDC:
 	default:
