@@ -47,7 +47,7 @@ Cadre is not a SaaS, not a workflow engine, not an LLM gateway and not a sandbox
   - **Authorization.** Each tool call is decided by the caller's role on the team it names, as the API's routes are: a viewer reads, a member also writes, and a refusal is a tool error naming the role needed.
   - **Authorship.** What it writes is the caller's.
   - **Without logins.** With `--auth=none` it is open, like the API, and what it writes is `anonymous`'s.
-  - **Connecting an agent.** `cadre auth token` prints the token `cadre login` stored, while it is good for more than a minute, for example: `claude mcp add --transport http cadre https://cadre.example.test/mcp --header "Authorization: Bearer $(cadre auth token)"`.
+  - **Connecting an agent.** `cadre auth token` prints the token `cadre login` stored, while it is good for more than a minute (refreshing it first, where the login has a refresh token), for example: `claude mcp add --transport http cadre https://cadre.example.test/mcp --header "Authorization: Bearer $(cadre auth token)"`.
   - **The limit.** An ID token lasts hours at most, so this suits an agent someone runs themselves and logs in for; an unattended agent needs a token of its own (#93).
 - Stateless and horizontally scalable. Every state change is delegated to the Task Manager.
 
@@ -123,8 +123,10 @@ People log in with any OIDC provider; there is no provider-specific code. This c
   - A change made with the cookie (any method but GET or HEAD) must carry an `Origin`, or failing that a `Referer`, of the public URL, or it is refused with 403.
 - **CLI.**
   - `cadre login` asks `GET /api/v1/auth` for the issuer, client and scopes. It then runs the same code flow with PKCE in the browser, with the callback on a listener at `http://127.0.0.1:<port>/callback`: the loopback address itself, since `localhost` may resolve to another one. A request to it without this login's state is turned away and the wait goes on.
-  - It keeps the ID token, and nothing else, in `$XDG_CONFIG_HOME/cadre/credentials` (by default `~/.config`), mode 0600, by server URL.
+  - It keeps the ID token in `$XDG_CONFIG_HOME/cadre/credentials` (by default `~/.config`), mode 0600, by server URL. Where the provider's discovery document lists `offline_access` in `scopes_supported`, the login asks for it too, and keeps the refresh token beside the ID token, with the issuer, client and subject it is for: a long-lived secret in that file. Elsewhere (Google, for one) no refresh token is asked for or kept.
   - Every request to that server then sends `Authorization: Bearer <ID token>`, verified like the browser's; bearer requests need no `Origin`. Once the token expires the CLI says so and asks for cadre login again.
+  - With a refresh token, a command whose ID token expires within a minute refreshes it first, with no browser; `cadre auth token` too. The answer must carry an ID token for the same issuer, client and subject; it is kept, with the refresh token if the provider rotated it. A refresh the provider refuses (a revoked or used refresh token), or one that comes back as another user, drops the refresh token, and the CLI asks for cadre login again; one that could not be made (the provider unreachable) fails the command and keeps the refresh token. Two cadre processes refreshing at once may find the token rotated under them: the one that loses takes the login the other kept.
+  - `cadre logout` forgets the login, and revokes its refresh token at the provider's revocation endpoint (RFC 7009) where discovery names one. Where it does not, forgetting it, or deleting the credentials file, is all the revoking there is: the provider's own session controls end it.
   - Against a server without logins, `cadre login` forgets any login kept for it.
   - `--as` is refused by a server with logins ("identity comes from login") and still names the author with `--auth=none`.
 - **Agents.** With `--auth=oidc`, a bearer token on `/mcp` or the API is routed by its shape before anything is checked.

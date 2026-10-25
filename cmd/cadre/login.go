@@ -14,6 +14,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"slices"
 	"strings"
 	"time"
 
@@ -25,14 +26,23 @@ import (
 	"github.com/j75689/cadre/internal/client"
 )
 
-// credentials are the ID tokens cadre login stored, by server URL. Nothing
-// else is kept: no refresh token, so an expired token means logging in
-// again.
+// credentials are the logins cadre login stored, by server URL: the ID
+// token, and, where the provider issues one, a refresh token, a long-lived
+// secret that gets the next ID token without a browser. Deleting the file,
+// or cadre logout, forgets them; against a provider without a revocation
+// endpoint that is all there is to revoking a refresh token.
 type credentials map[string]credential
 
 type credential struct {
 	IDToken string    `json:"idToken"`
 	Expires time.Time `json:"expires"`
+	// RefreshToken, with the issuer and client it is for and the subject
+	// it logged in, refreshes the ID token; empty where the provider
+	// issued none, and then an expired ID token means logging in again.
+	RefreshToken string `json:"refreshToken,omitempty"`
+	Issuer       string `json:"issuer,omitempty"`
+	ClientID     string `json:"clientId,omitempty"`
+	Subject      string `json:"subject,omitempty"`
 }
 
 // credentialsPath is $XDG_CONFIG_HOME/cadre/credentials, by default under
@@ -116,7 +126,9 @@ func newLoginCmd(g *globals) *cobra.Command {
 		Short: "Log in to the server with its OIDC provider",
 		Long: "Log in to the server with its OIDC provider, in your browser. The ID token is kept in " +
 			"$XDG_CONFIG_HOME/cadre/credentials (~/.config by default), readable by you only, and sent " +
-			"with every request to this server until it expires.",
+			"with every request to this server until it expires. Where the provider offers offline_access, " +
+			"a refresh token is kept there too, a long-lived secret that gets the next ID token without a " +
+			"browser: cadre logout revokes it where the provider can, and deleting the file forgets it.",
 		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			ctx, cancel := context.WithTimeout(cmd.Context(), loginTimeout)
@@ -184,8 +196,17 @@ func login(ctx context.Context, w io.Writer, info *auth.Info) (credential, error
 	if clientID == "" {
 		clientID = info.ClientID
 	}
+	scopes := info.Scopes
+	// A refresh token only where the provider says it gives one: asking
+	// another for offline_access may fail the login.
+	var offers struct {
+		Scopes []string `json:"scopes_supported"`
+	}
+	if provider.Claims(&offers) == nil && slices.Contains(offers.Scopes, offlineAccess) && !slices.Contains(scopes, offlineAccess) {
+		scopes = append(slices.Clone(scopes), offlineAccess)
+	}
 	conf := oauth2.Config{
-		ClientID: clientID, Endpoint: provider.Endpoint(), Scopes: info.Scopes,
+		ClientID: clientID, Endpoint: provider.Endpoint(), Scopes: scopes,
 		// The loopback address the listener is on, not "localhost", which
 		// may resolve to another one (RFC 8252, 8.3); providers allow a
 		// native client there at any port.
@@ -206,6 +227,7 @@ func login(ctx context.Context, w io.Writer, info *auth.Info) (credential, error
 			return
 		}
 		cred, err := finishLogin(r, &conf, provider.Verifier(&oidc.Config{ClientID: clientID}), nonce, verifier)
+		cred.Issuer, cred.ClientID = info.Issuer, clientID
 		if err != nil {
 			http.Error(rw, "Login failed: "+err.Error(), http.StatusBadRequest)
 		} else {
@@ -250,8 +272,11 @@ func finishLogin(r *http.Request, conf *oauth2.Config, verifier *oidc.IDTokenVer
 	if id.Nonce != nonce {
 		return credential{}, errors.New("nonce mismatch")
 	}
-	return credential{IDToken: raw, Expires: id.Expiry}, nil
+	return credential{IDToken: raw, Expires: id.Expiry, RefreshToken: tok.RefreshToken, Subject: id.Subject}, nil
 }
+
+// offlineAccess is the scope that asks for a refresh token.
+const offlineAccess = "offline_access"
 
 func randomString() string {
 	b := make([]byte, 24)

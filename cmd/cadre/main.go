@@ -3,6 +3,7 @@
 package main
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"io"
@@ -60,7 +61,7 @@ func newRoot() *cobra.Command {
 		}
 		return nil
 	}
-	root.AddCommand(newTaskCmd(g), newTeamCmd(g), newAgentAccessCmd(g), newRunnerCmd(g), newLoginCmd(g), newAuthCmd(g), &cobra.Command{
+	root.AddCommand(newTaskCmd(g), newTeamCmd(g), newAgentAccessCmd(g), newRunnerCmd(g), newLoginCmd(g), newLogoutCmd(g), newAuthCmd(g), &cobra.Command{
 		Use:   "version",
 		Short: "Print the version",
 		Args:  cobra.NoArgs,
@@ -70,12 +71,14 @@ func newRoot() *cobra.Command {
 }
 
 // client talks to the server, with the ID token cadre login stored for it,
-// if any. One that has expired fails every request with a pointer to cadre
-// login.
+// if any, refreshed first if it is about to expire and it can be. One that
+// has expired fails every request with a pointer to cadre login, and a
+// refresh that could not be made with what failed.
 func (g *globals) client() *client.Client {
-	creds, err := loadCredentials()
-	c, ok := creds[serverKey(g.server)]
+	c, ok, err := currentLogin(context.Background(), g.server)
 	switch {
+	case err != nil && ok:
+		return client.New(g.server, &http.Client{Transport: failing{err}})
 	case err != nil || !ok:
 		return client.New(g.server, nil)
 	case !time.Now().Before(c.Expires):
@@ -83,6 +86,11 @@ func (g *globals) client() *client.Client {
 	}
 	return client.New(g.server, &http.Client{Transport: client.Bearer(c.IDToken, nil)})
 }
+
+// failing refuses to send a request, for err.
+type failing struct{ err error }
+
+func (f failing) RoundTrip(*http.Request) (*http.Response, error) { return nil, f.err }
 
 // expired refuses to send a request with a login that has run out.
 type expired struct{ server string }
