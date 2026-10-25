@@ -64,9 +64,7 @@ func (r *toolServerReconciler) reconcileManaged(ctx context.Context, ts *v1alpha
 	var taken *nameTaken
 	switch {
 	case apierrors.IsForbidden(err):
-		// RBAC most likely; a quota or an admission denial is a 403 too,
-		// so the API server's own message goes with it.
-		return notReady("Forbidden", forbiddenWorkloads+": "+err.Error())
+		return notReady("Forbidden", forbiddenMessage(err, forbiddenWorkloads))
 	case errors.As(err, &taken):
 		return notReady("NameTaken", taken.Error())
 	case apierrors.IsInvalid(err):

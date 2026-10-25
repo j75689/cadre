@@ -43,13 +43,10 @@ func SetupSchedules(mgr ctrl.Manager, store storage.Objects, o Options, opts ...
 	if o.Resync <= 0 {
 		o.Resync = DefaultResync
 	}
-	if o.Now == nil {
-		o.Now = time.Now
-	}
 	r := &scheduleReconciler{
 		base:   base{client: mgr.GetClient(), secrets: mgr.GetAPIReader(), resync: o.Resync, skipNames: sc.skipNameValidation},
 		store:  store,
-		now:    o.Now,
+		now:    o.now(),
 		events: mgr.GetEventRecorder("cadre-schedule"),
 	}
 	return ctrl.NewControllerManagedBy(mgr).

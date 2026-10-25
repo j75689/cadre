@@ -63,6 +63,16 @@ func TestNotifiers(t *testing.T) {
 	orphan := &v1alpha1.Notifier{ObjectMeta: meta2("no-team", "n"), Spec: v1alpha1.NotifierSpec{On: []v1alpha1.NotifyEvent{v1alpha1.NotifyDone}, Webhook: &v1alpha1.Webhook{URL: "https://hooks.example.test/x"}}}
 	e.create(orphan)
 	e.ready(orphan, metav1.ConditionFalse, "NoTeam")
+	// With a Team it is Ready; its Team deleted, it says so again.
+	orphanTeam := &v1alpha1.Team{ObjectMeta: meta2("no-team", v1alpha1.TeamName)}
+	e.create(orphanTeam)
+	e.ready(orphan, metav1.ConditionTrue, "Ready")
+	if err := c.Delete(context.Background(), orphanTeam); err != nil {
+		t.Fatal(err)
+	}
+	e.ready(orphan, metav1.ConditionFalse, "NoTeam")
+	e.create(&v1alpha1.Team{ObjectMeta: meta2("no-team", v1alpha1.TeamName)})
+	e.ready(orphan, metav1.ConditionTrue, "Ready")
 	e.create(&corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: ns}}, &v1alpha1.Team{ObjectMeta: meta2(ns, v1alpha1.TeamName)})
 	hostless := &v1alpha1.Notifier{ObjectMeta: meta2(ns, "hostless"), Spec: v1alpha1.NotifierSpec{On: []v1alpha1.NotifyEvent{v1alpha1.NotifyDone}, Webhook: &v1alpha1.Webhook{URL: "http://:8080/x"}}}
 	unsigned := &v1alpha1.Notifier{ObjectMeta: meta2(ns, "unsigned"), Spec: v1alpha1.NotifierSpec{On: []v1alpha1.NotifyEvent{v1alpha1.NotifyDone},

@@ -6,7 +6,6 @@ import (
 	"time"
 
 	appsv1 "k8s.io/api/apps/v1"
-	authorizationv1 "k8s.io/api/authorization/v1"
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/types"
@@ -117,7 +116,7 @@ func (r *toolServerReconciler) Reconcile(ctx context.Context, req reconcile.Requ
 	if ts.Status.URL != "" {
 		switch changed, err = r.unmanage(ctx, &ts); {
 		case apierrors.IsForbidden(err):
-			return reconcile.Result{RequeueAfter: r.resync}, r.writeStatus(ctx, &ts, &ts.Status.ConfigStatus, false, "Forbidden", forbiddenUnmanage, false)
+			return reconcile.Result{RequeueAfter: r.resync}, r.writeStatus(ctx, &ts, &ts.Status.ConfigStatus, false, "Forbidden", forbiddenMessage(err, forbiddenUnmanage), false)
 		case err != nil:
 			return reconcile.Result{}, err
 		}
@@ -131,7 +130,10 @@ func (r *toolServerReconciler) Reconcile(ctx context.Context, req reconcile.Requ
 	return reconcile.Result{RequeueAfter: r.resync}, r.writeStatus(ctx, &ts, &ts.Status.ConfigStatus, ready, reason, msg, changed)
 }
 
-type agentReconciler struct{ base }
+type agentReconciler struct {
+	base
+	jobs *jobAccess
+}
 
 func (r *agentReconciler) setup(mgr ctrl.Manager) error {
 	return ctrl.NewControllerManagedBy(mgr).For(&v1alpha1.Agent{}).Named("agent").WithOptions(r.options()).
@@ -167,11 +169,34 @@ func (r *agentReconciler) Reconcile(ctx context.Context, req reconcile.Request) 
 	}
 	ready, reason, msg, err := r.resolve(ctx, &agent)
 	if err != nil {
+		if reason != "" {
+			// A check that could not be made, with a reason to say so:
+			// written, then returned, so that the backoff applies.
+			if werr := r.setReady(ctx, &agent, &agent.Status, false, reason, msg); werr != nil {
+				return reconcile.Result{}, werr
+			}
+		}
 		return reconcile.Result{}, err
 	}
 	// Checked again at resync: its Runner's ServiceAccount is read, not
-	// watched, and its Team may go, which brings no event for it.
-	return reconcile.Result{RequeueAfter: r.resync}, r.setReady(ctx, &agent, &agent.Status, ready, reason, msg)
+	// watched, and its Team may go, which brings no event for it. One that
+	// relies on a shared Job access answer checks again when it expires, so
+	// that every Agent in the namespace sees a change within a resync.
+	return reconcile.Result{RequeueAfter: r.recheck(&agent)}, r.setReady(ctx, &agent, &agent.Status, ready, reason, msg)
+}
+
+// recheck is how soon an Agent is reconciled again: at resync, or sooner
+// when the Job access answer it was resolved with expires first.
+func (r *agentReconciler) recheck(agent *v1alpha1.Agent) time.Duration {
+	if agent.Spec.Runtime.Job == nil {
+		return r.resync
+	}
+	until, ok := r.jobs.expiry(agent.Namespace)
+	if !ok {
+		return r.resync
+	}
+	// Never zero, which would mean no requeue at all.
+	return max(min(r.resync, until.Sub(r.jobs.now())), 100*time.Millisecond)
 }
 
 // resolve checks the Agent's references in order and names the first one
@@ -224,22 +249,19 @@ func (r *agentReconciler) resolveJob(ctx context.Context, agent *v1alpha1.Agent,
 	var sa corev1.ServiceAccount
 	switch err := r.secrets.Get(ctx, client.ObjectKey{Namespace: agent.Namespace, Name: rn.Spec.ServiceAccount.Name}, &sa); {
 	case apierrors.IsForbidden(err):
-		return false, "Forbidden", forbidden, nil
+		return false, "Forbidden", forbiddenMessage(err, forbidden), nil
 	case client.IgnoreNotFound(err) != nil:
 		return false, "", "", err
 	case err != nil:
 		return false, "ServiceAccountNotFound", fmt.Sprintf("ServiceAccount %s of Runner %s does not exist", rn.Spec.ServiceAccount.Name, job.RunnerRef), nil
 	}
-	for _, verb := range []string{"create", "delete", "patch"} {
-		review := &authorizationv1.SelfSubjectAccessReview{Spec: authorizationv1.SelfSubjectAccessReviewSpec{
-			ResourceAttributes: &authorizationv1.ResourceAttributes{Namespace: agent.Namespace, Verb: verb, Group: "batch", Resource: "jobs"},
-		}}
-		if err := r.client.Create(ctx, review); err != nil {
-			return false, "", "", err
-		}
-		if !review.Status.Allowed {
-			return false, "Forbidden", forbidden, nil
-		}
+	switch ok, err := r.jobs.check(ctx, agent.Namespace); {
+	case err != nil:
+		// Not Ready while unknown: the Job reconciler starts Jobs only
+		// for Ready Agents.
+		return false, "AccessUnknown", err.Error(), err
+	case !ok:
+		return false, "Forbidden", forbidden, nil
 	}
 	return true, "Resolved", "", nil
 }
