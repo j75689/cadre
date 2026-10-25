@@ -12,6 +12,7 @@ import (
 	"strings"
 
 	"k8s.io/apimachinery/pkg/api/meta"
+	"k8s.io/apimachinery/pkg/util/validation"
 
 	v1alpha1 "github.com/j75689/cadre/api/v1alpha1"
 	"github.com/j75689/cadre/internal/auth"
@@ -175,6 +176,12 @@ func (s *Server) listTasks(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		q.Phases = append(q.Phases, v1alpha1.Phase(p))
+	}
+	if q.Parent = query.Get("parent"); q.Parent != "" {
+		if errs := validation.IsDNS1123Label(q.Parent); len(errs) > 0 {
+			httpjson.WriteError(w, http.StatusBadRequest, httpjson.CodeInvalid, fmt.Sprintf("parent %q: %s", q.Parent, strings.Join(errs, "; ")))
+			return
+		}
 	}
 	var ok bool
 	if q.Offset, ok = intParam(w, query, "offset"); !ok {

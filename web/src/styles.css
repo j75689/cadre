@@ -319,3 +319,22 @@ main {
   text-align: left;
   font: inherit;
 }
+
+.subtasks ul {
+  list-style: none;
+  padding: 0;
+}
+
+.subtasks li {
+  display: flex;
+  gap: 0.5rem;
+  align-items: baseline;
+  padding: 0.25rem 0;
+  border-bottom: 1px solid var(--line);
+}
+
+.subtasks .phase,
+.subtasks .assignee {
+  color: var(--muted);
+  font-size: 0.85em;
+}

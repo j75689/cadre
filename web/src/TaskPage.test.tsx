@@ -2,6 +2,8 @@ import { act, cleanup, fireEvent, render, screen } from "@testing-library/react"
 import { MemoryRouter } from "react-router";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { App } from "./App";
+import type { Phase, Task } from "./api";
+import { subtaskPage } from "./Subtasks";
 import { entry, json, task } from "./testing";
 
 beforeEach(() => {
@@ -14,9 +16,9 @@ afterEach(() => {
   vi.useRealTimers();
 });
 
-// server answers the task page's reads from a growing thread and records
-// what it was asked.
-function server(thread: ReturnType<typeof entry>[], onPost?: (url: string) => Promise<Response>) {
+// server answers the task page's reads from a growing thread and its
+// subtasks, and records what it was asked.
+function server(thread: ReturnType<typeof entry>[], onPost?: (url: string) => Promise<Response>, subtasks: Task[] = []) {
   const calls: string[] = [];
   vi.stubGlobal("fetch", (url: string, init?: RequestInit) => {
     calls.push(`${init?.method ?? "GET"} ${url}`);
@@ -28,6 +30,13 @@ function server(thread: ReturnType<typeof entry>[], onPost?: (url: string) => Pr
       return json({ items: thread.filter((e) => e.seq > after) });
     }
     if (u.pathname.endsWith("/runs")) return json({ items: [] });
+    if (u.pathname.endsWith("/tasks")) {
+      // As the API pages: offset and limit, capped at the page size.
+      const offset = Number(u.searchParams.get("offset"));
+      const limit = Number(u.searchParams.get("limit"));
+      const items = u.searchParams.get("parent") === "x" ? subtasks.slice(offset, offset + limit) : [];
+      return json({ items, offset, limit });
+    }
     return json(task("Running"));
   });
   return calls;
@@ -124,5 +133,55 @@ describe("TaskPage", () => {
     status = { phase: "Todo", runs: { count: 2 } };
     await act(() => vi.advanceTimersByTimeAsync(5000));
     await vi.waitFor(() => expect(runReads()).toBe(2));
+  });
+});
+
+// subtask is a subtask of x, numbered n.
+function subtask(n: number, phase: Phase = "Todo"): Task {
+  return {
+    metadata: { name: `x-${n}`, namespace: "a" },
+    spec: { title: `Step ${n}`, parentRef: { name: "x" }, assignee: { kind: "Agent", name: "coder" } },
+    status: { phase, number: 100 + n },
+  };
+}
+
+describe("Subtasks", () => {
+  it("lists a task's subtasks with their number, phase and assignee", async () => {
+    server([], undefined, [subtask(1, "Done"), subtask(2)]);
+    renderTask();
+    const section = await screen.findByRole("region", { name: "Subtasks" });
+    expect(section.textContent).toContain("#101");
+    expect(section.textContent).toContain("Step 1");
+    expect(section.textContent).toContain("Done");
+    expect(section.textContent).toContain("coder");
+    expect(screen.getByRole("link", { name: "Step 2" }).getAttribute("href")).toBe("/t/a/tasks/x-2");
+    expect(screen.queryByRole("button", { name: "Load more" })).toBeNull();
+  });
+
+  it("shows no section for a task without subtasks", async () => {
+    const calls = server([]);
+    renderTask();
+    await screen.findByText("Task x");
+    await vi.waitFor(() => expect(calls.some((c) => c.includes("parent=x"))).toBe(true));
+    expect(screen.queryByRole("region", { name: "Subtasks" })).toBeNull();
+  });
+
+  it("loads more past a page, and keeps polling every page loaded", async () => {
+    const subtasks = Array.from({ length: subtaskPage + 3 }, (_, i) => subtask(i + 1));
+    const calls = server([], undefined, subtasks);
+    renderTask();
+    await screen.findByText(`Step ${subtaskPage}`);
+    expect(screen.queryByText(`Step ${subtaskPage + 1}`)).toBeNull();
+    fireEvent.click(screen.getByRole("button", { name: "Load more" }));
+    expect(await screen.findByText(`Step ${subtaskPage + 3}`)).toBeTruthy();
+    expect(screen.queryByRole("button", { name: "Load more" })).toBeNull();
+
+    // A new subtask on the last page shows on the next poll, both pages read.
+    subtasks.push(subtask(subtaskPage + 4));
+    const reads = () => calls.filter((c) => c.includes("parent=x")).length;
+    const before = reads();
+    await act(() => vi.advanceTimersByTimeAsync(5000));
+    expect(await screen.findByText(`Step ${subtaskPage + 4}`)).toBeTruthy();
+    expect(reads() - before).toBe(2);
   });
 });

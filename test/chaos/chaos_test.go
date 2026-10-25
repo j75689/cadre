@@ -342,7 +342,7 @@ func human(chaos context.Context, cl *client.Client, rnd *lockedRand, rec *recor
 		for ns := range teams {
 			var tasks []v1alpha1.Task
 			for offset := 0; ; {
-				page, err := cl.ListTasks(chaos, ns, live, offset, api.MaxLimit)
+				page, err := cl.ListTasks(chaos, ns, client.TaskQuery{Phases: live, Offset: offset, Limit: api.MaxLimit})
 				if err != nil {
 					break
 				}

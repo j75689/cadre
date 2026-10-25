@@ -69,6 +69,7 @@ func newTaskCreate(g *globals) *cobra.Command {
 
 func newTaskList(g *globals) *cobra.Command {
 	var phases []string
+	var parent string
 	var limit int
 	cmd := &cobra.Command{
 		Use:   "list",
@@ -79,7 +80,7 @@ func newTaskList(g *globals) *cobra.Command {
 			for _, p := range phases {
 				ps = append(ps, v1alpha1.Phase(p))
 			}
-			list, err := g.client().ListTasks(cmd.Context(), g.namespace, ps, 0, limit)
+			list, err := g.client().ListTasks(cmd.Context(), g.namespace, client.TaskQuery{Phases: ps, Parent: parent, Limit: limit})
 			if err != nil {
 				return err
 			}
@@ -92,6 +93,7 @@ func newTaskList(g *globals) *cobra.Command {
 		},
 	}
 	cmd.Flags().StringSliceVar(&phases, "phase", nil, "only these phases; repeatable")
+	cmd.Flags().StringVar(&parent, "parent", "", "only the subtasks of this task, by name")
 	cmd.Flags().IntVar(&limit, "limit", 100, "at most this many tasks")
 	return cmd
 }
@@ -337,7 +339,7 @@ func resolve(ctx context.Context, c *client.Client, ns, ref string) (string, err
 		return "", fmt.Errorf("%q is not a task number", ref)
 	}
 	for offset := 0; ; {
-		list, err := c.ListTasks(ctx, ns, nil, offset, 0)
+		list, err := c.ListTasks(ctx, ns, client.TaskQuery{Offset: offset})
 		if err != nil {
 			return "", err
 		}

@@ -118,7 +118,7 @@ status:
 | `spec.title` | required |
 | `spec.assignee.kind` | `Agent` or `User`; an unassigned task is never claimed |
 | `spec.priority` | `low`, `medium`, `high`, `urgent`; default `medium` |
-| `spec.parentRef` | another Task in the same namespace, never the task itself |
+| `spec.parentRef` | another Task in the same namespace, never the task itself. A task's subtasks are listed with `GET /tasks?parent=<name>` (one level: their own subtasks are listed from their pages), which the task page shows and `cadre task list --parent` prints |
 | `status.phase` | the seven phases above |
 | `status.waiting.reason` | `Question`, `ToolApproval`, `Review` |
 | `status.waiting.threadSeq` | a thread sequence; sequences start at 1 |

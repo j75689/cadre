@@ -99,6 +99,11 @@ func TestTaskLifeFromTheCLI(t *testing.T) {
 		t.Fatalf("%d Todo subtasks, want 2:\n%s", got, list)
 	}
 	mustContain(t, cadre(t, srv.URL, "task", "list", "--phase", "Done"), "fix-login")
+	subtasks := cadre(t, srv.URL, "task", "list", "--parent", "fix-login")
+	mustContain(t, subtasks, "Subtask 1 of Fix the flaky login test", "Subtask 2 of Fix the flaky login test")
+	if lines := strings.Count(strings.TrimSpace(subtasks), "\n") + 1; lines != 3 || strings.Contains(subtasks, "#1 ") {
+		t.Fatalf("subtasks of fix-login:\n%s", subtasks)
+	}
 
 	mustContain(t, cadre(t, srv.URL, "task", "cancel", "#2"), "#2 is Cancelled")
 	if err := cadreFails(t, srv.URL, "task", "get", "#99"); !strings.Contains(err.Error(), "no task #99") {

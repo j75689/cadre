@@ -4,6 +4,7 @@ import { APIError, getTask, readThread, type Task, type ThreadEntry } from "./ap
 import { Actions } from "./Actions";
 import { RoleLine } from "./Identity";
 import { Runs } from "./Runs";
+import { Subtasks } from "./Subtasks";
 import { Thread } from "./Thread";
 import { usePolling } from "./usePolling";
 
@@ -81,6 +82,7 @@ export function TaskPage() {
                 onTask={setTask}
                 onRefresh={() => setRefresh((n) => n + 1)}
               />
+              <Subtasks ns={ns} name={name} />
             </section>
             <aside className="task-side">
               <Details task={task} />
