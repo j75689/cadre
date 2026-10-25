@@ -9,8 +9,9 @@
 #
 # To use this file:
 #   1. kubectl create namespace cadre-system
-#      It must be cadre-system: the ClusterRoleBindings' subjects and the leader
-#      election Lease below name it, and the objects carry no namespace.
+#      It must be cadre-system: the objects carry no namespace, while the
+#      ClusterRoleBindings' subjects and cadre-server's --leader-elect-namespace
+#      and --builtin-runner arguments below name it.
 #   2. Set the bucket: replace --s3-bucket=CHANGE-ME in cadre-server's args.
 #      For a store other than AWS S3, add --s3-endpoint=<URL>, change
 #      --s3-path-style to true if it needs it, and add the CADRE_S3_ACCESS_KEY

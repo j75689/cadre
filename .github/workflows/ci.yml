@@ -180,9 +180,13 @@ jobs:
           path: bin/tools
           key: ${{ steps.tools.outputs.key }}
       - name: Package the chart and render install.yaml
+        run: make chart-dist RELEASE="$GITHUB_REF_NAME"
+      - name: Find the package and install.yaml
         id: dist
+        shell: bash
         run: |
-          read -r pkg yaml < <(make -s chart-dist RELEASE="$GITHUB_REF_NAME" | tail -n 1)
+          paths=$(make -s print-chart-paths RELEASE="$GITHUB_REF_NAME")
+          read -r pkg yaml <<< "$paths"
           echo "pkg=$pkg" >> "$GITHUB_OUTPUT"
           echo "yaml=$yaml" >> "$GITHUB_OUTPUT"
       - name: Push the chart
@@ -195,17 +199,19 @@ jobs:
           printf '%s' "$GITHUB_TOKEN" | "$helm" registry login ghcr.io -u "$GITHUB_ACTOR" --password-stdin
           "$helm" push "$PKG" "oci://ghcr.io/${OWNER,,}/charts"
       # The release may exist already: made in the UI with its tag, or by an
-      # earlier attempt of this job. A tag with a - (v1.0.0-rc.1) is a
-      # pre-release.
+      # earlier attempt of this job. A tag whose version (before any +build)
+      # has a - (v1.0.0-rc.1) is a pre-release.
       - name: Create or update the GitHub release
+        shell: bash
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           YAML: ${{ steps.dist.outputs.yaml }}
         run: |
+          pre=()
+          case "${GITHUB_REF_NAME%%+*}" in *-*) pre=(--prerelease) ;; esac
           if gh release view "$GITHUB_REF_NAME" > /dev/null 2>&1; then
             gh release upload "$GITHUB_REF_NAME" "$YAML" --clobber
+            if [ ${#pre[@]} -gt 0 ]; then gh release edit "$GITHUB_REF_NAME" --prerelease; fi
           else
-            pre=()
-            case "$GITHUB_REF_NAME" in *-*) pre=(--prerelease) ;; esac
             gh release create "$GITHUB_REF_NAME" "$YAML" --verify-tag --generate-notes --title "$GITHUB_REF_NAME" "${pre[@]}"
           fi

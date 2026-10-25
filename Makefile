@@ -27,7 +27,7 @@ define go-install
 	mkdir -p $(TOOLS); mv $$tmp/$$(basename $(2)) $(1); rm -rf $$tmp
 endef
 
-.PHONY: all build test smoke chaos fmt vet lint check tidy clean generate manifests verify-generated verify-tidy tools image images ui ui-check chart-files chart-lint chart-dist print-helm
+.PHONY: all build test smoke chaos fmt vet lint check tidy clean generate manifests verify-generated verify-tidy tools image images ui ui-check chart-files chart-lint chart-dist print-chart-paths print-helm
 
 all: build
 
@@ -104,18 +104,22 @@ chart-lint: $(HELM) $(KUBECONFORM) ## Lint the Helm chart and validate its outpu
 		printf '%s\n' "$$out" | $(KUBECONFORM) -strict -summary -kubernetes-version $(ENVTEST_K8S_VERSION) -; \
 	done
 
-# chart-dist packages the chart at RELEASE (a vX.Y.Z tag: chart version X.Y.Z,
-# appVersion the tag) and renders install.yaml from it, both into dist/, and
-# prints the two paths as its last line.
+# chart-dist packages the chart at RELEASE (a vX.Y.Z tag, semver: chart
+# version X.Y.Z, appVersion the tag) and renders install.yaml from it, both
+# into dist/; print-chart-paths prints the two paths.
 CHART_VERSION = $(patsubst v%,%,$(RELEASE))
 CHART_PKG     = dist/cadre-$(CHART_VERSION).tgz
+check-release = @echo "$(RELEASE)" | grep -Eq '^v[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?(\+[0-9A-Za-z.-]+)?$$' || { echo "RELEASE must be a vX.Y.Z tag, not '$(RELEASE)'"; exit 1; }
 chart-dist: $(HELM) ## Package the chart and render install.yaml for RELEASE=vX.Y.Z
-	@case "$(RELEASE)" in v[0-9]*.[0-9]*.[0-9]*) ;; *) echo "RELEASE must be a vX.Y.Z tag, not '$(RELEASE)'"; exit 1;; esac
+	$(check-release)
 	@mkdir -p dist
 	$(HELM) package charts/cadre --version $(CHART_VERSION) --app-version $(RELEASE) -d dist
 	@set -e; out=$$($(HELM) template cadre $(CHART_PKG) -n cadre-system --include-crds \
 		--set auth.mode=none --set storage.s3.bucket=CHANGE-ME); \
 		{ cat hack/install-header.yaml; printf '%s\n' "$$out"; } > dist/install.yaml
+
+print-chart-paths: ## Print chart-dist's package and install.yaml for RELEASE=vX.Y.Z
+	$(check-release)
 	@echo "$(CHART_PKG) dist/install.yaml"
 
 print-helm: $(HELM) ## Print the pinned helm's path, installing it
