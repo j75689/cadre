@@ -382,7 +382,8 @@ func (s *Server) putTeam(w http.ResponseWriter, r *http.Request) {
 	switch {
 	case errors.Is(err, storage.ErrNotFound) && req.ResourceVersion != "":
 		// An edit of a Team deleted since it was read: not a creation.
-		httpjson.Fail(w, s.log, fmt.Errorf("team %s is gone: %w", ns, manager.ErrTeamChanged))
+		// Not ErrTeamChanged's advice to read it again: a read is a 404.
+		httpjson.WriteError(w, http.StatusConflict, httpjson.CodeConflict, fmt.Sprintf("the Team of %s was deleted since it was read: there is nothing to edit", ns))
 		return
 	case errors.Is(err, storage.ErrNotFound):
 		team, err := s.m.InitTeam(r.Context(), ns, req.TeamSpec)

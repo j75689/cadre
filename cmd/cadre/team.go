@@ -71,6 +71,9 @@ func newTeamSet(g *globals) *cobra.Command {
 				s.DisplayName = displayName
 			}
 			if f.Changed("max-concurrent-runs") {
+				if maxRuns < 1 {
+					return fmt.Errorf("--max-concurrent-runs %d: at least 1", maxRuns)
+				}
 				s.MaxConcurrentRuns = maxRuns
 			}
 			if f.Changed("archive-after") {

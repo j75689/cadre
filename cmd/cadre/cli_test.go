@@ -96,6 +96,9 @@ func TestTaskLifeFromTheCLI(t *testing.T) {
 	if team, err := m.LiveTeam(ctx, "team-a"); err != nil || team.Spec.ArchiveAfter != nil || team.Spec.MaxConcurrentRuns != 2 {
 		t.Fatalf("after --archive-after 0: %+v, %v", team, err)
 	}
+	if err := cadreFails(t, srv.URL, "team", "set", "--max-concurrent-runs", "0"); !strings.Contains(err.Error(), "at least 1") {
+		t.Fatalf("a run cap of 0: %v", err)
+	}
 	if err := cadreFails(t, srv.URL, "team", "set", "--role", "owner"); !strings.Contains(err.Error(), "want role=") {
 		t.Fatalf("a role without subjects: %v", err)
 	}
