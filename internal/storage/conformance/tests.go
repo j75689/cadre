@@ -574,8 +574,25 @@ func testLogNestedStreams(t *testing.T, s *suite) {
 		t.Errorf("paged read of %s: %+v, %v", parent, got, err)
 	}
 
+	// A stream named after another's entry: the entry and the stream
+	// both hold, whatever the store (the Log's layout).
+	runs, events := s.ns+"/t/runs", s.ns+"/t/runs/R1/events"
+	for _, w := range []struct{ stream, key string }{{events, storage.SeqKey(1)}, {runs, "R1"}, {events, storage.SeqKey(2)}} {
+		if err := d.Append(s.ctx, w.stream, w.key, []byte(w.stream)); err != nil {
+			t.Fatalf("append %s/%s, a stream and an entry of one name: %v", w.stream, w.key, err)
+		}
+	}
+	if got, err := d.Read(s.ctx, runs, "", 0); err != nil || len(got) != 1 || got[0].Key != "R1" {
+		t.Errorf("read %s: %+v, %v", runs, got, err)
+	}
+	if got, err := d.Read(s.ctx, events, "", 0); err != nil || len(got) != 2 {
+		t.Errorf("read %s: %+v, %v", events, got, err)
+	}
+
 	for _, bad := range []struct{ stream, key string }{
 		{"", "k"}, {"/" + parent, "k"}, {parent + "/", "k"}, {s.ns + "//t", "k"}, {parent, ""}, {parent, "a/b"},
+		// The segment entries live under.
+		{parent + "/" + storage.EntrySegment, "k"}, {s.ns + "/" + storage.EntrySegment + "/t", "k"},
 	} {
 		if err := d.Append(s.ctx, bad.stream, bad.key, nil); !errors.Is(err, storage.ErrInvalidName) {
 			t.Errorf("append stream %q key %q: got %v, want ErrInvalidName", bad.stream, bad.key, err)

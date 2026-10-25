@@ -3,8 +3,11 @@ package kubernetes
 import (
 	"context"
 	"errors"
+	"strings"
 	"testing"
 	"time"
+
+	"github.com/aws/aws-sdk-go-v2/service/s3"
 
 	"github.com/j75689/cadre/internal/s3fake"
 	"github.com/j75689/cadre/internal/storage"
@@ -51,8 +54,10 @@ func TestProbeFailsWithoutBucket(t *testing.T) {
 	}
 }
 
-// A 412 is "taken" only if the entry exists: on a filesystem-backed store a
-// key that is the directory of a nested stream also answers 412.
+// A stream named after another's entry does not collide with it, even on a
+// filesystem-backed store: entries live under the reserved segment. A 412 is
+// still "taken" only if the entry exists: a key whose path something else
+// made a directory is a collision, not an entry.
 func TestAppendTellsATakenKeyFromACollision(t *testing.T) {
 	ctx := context.Background()
 	l, fake := fakeLog(t, false)
@@ -66,9 +71,17 @@ func TestAppendTellsATakenKeyFromACollision(t *testing.T) {
 	if err := l.Append(ctx, "a/runs/R2/events", "0001", []byte("event")); err != nil {
 		t.Fatal(err)
 	}
-	err := l.Append(ctx, "a/runs", "R2", []byte("record"))
+	if err := l.Append(ctx, "a/runs", "R2", []byte("record")); err != nil {
+		t.Errorf("append an entry named like a nested stream: %v", err)
+	}
+	// An object below the entry's path, from another writer.
+	foreign := "cadre/a/runs/" + storage.EntrySegment + "/R3/x"
+	if _, err := l.s3.PutObject(ctx, &s3.PutObjectInput{Bucket: &l.bucket, Key: &foreign, Body: strings.NewReader("x")}); err != nil {
+		t.Fatal(err)
+	}
+	err := l.Append(ctx, "a/runs", "R3", []byte("record"))
 	if !errors.Is(err, storage.ErrStreamCollision) || errors.Is(err, storage.ErrAlreadyExists) {
-		t.Errorf("append over a nested stream: %v, want ErrStreamCollision", err)
+		t.Errorf("append over a directory: %v, want ErrStreamCollision", err)
 	}
 }
 
