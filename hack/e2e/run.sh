@@ -43,7 +43,7 @@ ROOT=$(cd "$(dirname "$0")/../.." && pwd)
 HERE=$ROOT/hack/e2e
 TOOLS=$ROOT/bin/tools
 versions=$(make -s -C "$ROOT" print-e2e-tools)
-read -r KIND_VERSION KUBECTL_VERSION <<<"$versions"
+read -r KIND_VERSION KUBECTL_VERSION CMDS <<<"$versions"
 KIND=$TOOLS/kind-$KIND_VERSION
 KUBECTL=$TOOLS/kubectl-$KUBECTL_VERSION
 
@@ -83,6 +83,12 @@ trap cleanup EXIT
 for tool in curl jq docker; do
   command -v "$tool" >/dev/null || fail "$tool is needed"
 done
+# docker save --platform, for the dependency images, is Docker 28's.
+engine=$(docker version -f '{{.Server.Version}}')
+[ "${engine%%.*}" -ge 28 ] || fail "Docker $engine: 28 or later is needed"
+# The node runs on the daemon's architecture, which may not be this
+# machine's (a remote DOCKER_HOST, an emulated terminal).
+node_platform=linux/$(docker version -f '{{.Server.Arch}}')
 
 # fetch downloads url to dst, unless there, and checks its SHA-256.
 fetch() {
@@ -141,21 +147,23 @@ wait_for() {
   fail "$what"
 }
 
+# The dependencies' images, pulled first: a registry problem fails here,
+# before a cluster is made.
+deps=$(sed -nE 's/^ *(- )?image: *"?([^" ]+)"?.*/\2/p' "$HERE/seaweedfs.yaml" "$HERE/dex.yaml")
+for img in $deps; do docker pull -q --platform "$node_platform" "$img" >/dev/null; done
+
 log "kind cluster $CLUSTER"
 "$KIND" delete cluster --name "$CLUSTER" >/dev/null 2>&1 || true
 "$KIND" create cluster --name "$CLUSTER" --image "$KIND_NODE" --config "$HERE/kind.yaml" --wait 120s
 # Every image is loaded from the host, the dependencies' too, so that no
 # pull from inside the node meets a registry's rate limit.
+for cmd in $CMDS; do
+  "$KIND" load docker-image --name "$CLUSTER" "$REGISTRY/$cmd:$TAG"
+done
 # A pulled image is a multi-platform index with one platform's content,
 # which kind cannot load: it goes in as an archive of the node's platform.
-for img in "$REGISTRY/cadre-server:$TAG" "$REGISTRY/cadre-runner:$TAG"; do
-  "$KIND" load docker-image --name "$CLUSTER" "$img"
-done
-for img in $(sed -n 's/^ *image: *//p' "$HERE/seaweedfs.yaml" "$HERE/dex.yaml"); do
-  docker pull -q --platform "linux/$arch" "$img" >/dev/null
-  docker save --platform "linux/$arch" -o "$WORK/image.tar" "$img"
-  "$KIND" load image-archive --name "$CLUSTER" "$WORK/image.tar"
-  rm -f "$WORK/image.tar"
+for img in $deps; do
+  docker save --platform "$node_platform" "$img" | "$KIND" load image-archive --name "$CLUSTER" /dev/stdin
 done
 
 log "SeaweedFS and Dex"

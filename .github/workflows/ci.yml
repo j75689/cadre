@@ -154,13 +154,14 @@ jobs:
 
   # main and v* tags publish to ghcr.io/<owner>/<command>, once check has
   # passed on the same commit, and on main the install in kind too (it does
-  # not run on tags, where it is skipped). One push at a time per ref and
+  # not run on tags, where it is skipped; !cancelled() lets a skipped e2e
+  # through, and stops on a cancelled run). One push at a time per ref and
   # command: an older build finishing last would move the mutable main tag
   # back.
   publish:
     name: Publish ${{ matrix.cmd }}
     if: >-
-      always() && github.event_name == 'push' && needs.check.result == 'success' &&
+      !cancelled() && github.event_name == 'push' && needs.check.result == 'success' &&
       (needs.e2e.result == 'success' || needs.e2e.result == 'skipped')
     needs: [check, e2e]
     runs-on: ubuntu-latest
@@ -216,9 +217,9 @@ jobs:
   # are independent: one run per tag, none dropped.
   release:
     name: Release the chart and install.yaml
-    # always(): on a tag e2e is skipped, which would skip this job too
-    # without it, though publish succeeded.
-    if: always() && github.event_name == 'push' && github.ref_type == 'tag' && needs.publish.result == 'success'
+    # !cancelled(): on a tag e2e is skipped, which would skip this job too
+    # without it, though publish succeeded; a cancelled run still skips it.
+    if: ${{ !cancelled() && github.event_name == 'push' && github.ref_type == 'tag' && needs.publish.result == 'success' }}
     needs: publish
     runs-on: ubuntu-latest
     concurrency:

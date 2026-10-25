@@ -23,8 +23,6 @@ FROM scratch AS ui-cadre
 FROM ui-${CMD} AS ui
 
 FROM --platform=$BUILDPLATFORM golang:1.27.3 AS build
-ARG CMD
-ARG VERSION=dev
 ARG TARGETOS
 ARG TARGETARCH
 WORKDIR /src
@@ -32,6 +30,10 @@ COPY go.mod go.sum ./
 RUN --mount=type=cache,target=/go/pkg/mod go mod download
 COPY . .
 COPY --from=ui / /src/internal/web/
+# Declared here, not above: a RUN after an ARG is cached by its value, and
+# the version differs on every build.
+ARG CMD
+ARG VERSION=dev
 RUN --mount=type=cache,target=/go/pkg/mod --mount=type=cache,target=/root/.cache/go-build \
     CGO_ENABLED=0 GOOS=$TARGETOS GOARCH=$TARGETARCH \
     go build -trimpath -ldflags "-s -w -X main.version=$VERSION" -o /out/app "./cmd/$CMD"
