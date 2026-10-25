@@ -86,7 +86,7 @@ func (r *scheduleReconciler) Reconcile(ctx context.Context, req reconcile.Reques
 	if ok, err := r.hasTeam(ctx, req.Namespace); err != nil {
 		return reconcile.Result{}, err
 	} else if !ok {
-		return inactive(false, "NoTeam", "namespace "+req.Namespace+" has no Team")
+		return inactive(false, "NoTeam", noTeamMessage(req.Namespace))
 	}
 	sched, err := parseSchedule(s.Spec)
 	if err == nil {

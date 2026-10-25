@@ -75,7 +75,7 @@ func (r *modelProviderReconciler) Reconcile(ctx context.Context, req reconcile.R
 		return reconcile.Result{}, client.IgnoreNotFound(err)
 	}
 	if ok, err := r.hasTeam(ctx, req.Namespace); err != nil || !ok {
-		return noTeam(err, r.resync)
+		return r.noTeam(ctx, &mp, &mp.Status, err)
 	}
 	ready, reason, msg := true, "WorkloadIdentity", ""
 	if mp.Spec.Auth != nil {
@@ -105,7 +105,7 @@ func (r *toolServerReconciler) Reconcile(ctx context.Context, req reconcile.Requ
 		return reconcile.Result{}, client.IgnoreNotFound(err)
 	}
 	if ok, err := r.hasTeam(ctx, req.Namespace); err != nil || !ok {
-		return noTeam(err, r.resync)
+		return r.noTeam(ctx, &ts, &ts.Status.ConfigStatus, err)
 	}
 	if ts.Spec.Managed != nil {
 		return r.reconcileManaged(ctx, &ts)
@@ -163,18 +163,15 @@ func (r *agentReconciler) Reconcile(ctx context.Context, req reconcile.Request) 
 		return reconcile.Result{}, client.IgnoreNotFound(err)
 	}
 	if ok, err := r.hasTeam(ctx, req.Namespace); err != nil || !ok {
-		return noTeam(err, r.resync)
+		return r.noTeam(ctx, &agent, &agent.Status, err)
 	}
 	ready, reason, msg, err := r.resolve(ctx, &agent)
 	if err != nil {
 		return reconcile.Result{}, err
 	}
-	var res reconcile.Result
-	if agent.Spec.Runtime.Job != nil {
-		// Its Runner's ServiceAccount is read, not watched: check again.
-		res.RequeueAfter = r.resync
-	}
-	return res, r.setReady(ctx, &agent, &agent.Status, ready, reason, msg)
+	// Checked again at resync: its Runner's ServiceAccount is read, not
+	// watched, and its Team may go, which brings no event for it.
+	return reconcile.Result{RequeueAfter: r.resync}, r.setReady(ctx, &agent, &agent.Status, ready, reason, msg)
 }
 
 // resolve checks the Agent's references in order and names the first one
@@ -251,10 +248,24 @@ func (r *agentReconciler) resolveJob(ctx context.Context, agent *v1alpha1.Agent,
 // lacks.
 const forbidden = "cadre-server may not run Jobs in this namespace: bind the ClusterRole in config/rbac/workloads.yaml here"
 
-// noTeam ends a reconcile in a namespace that has no Team (yet): check again
-// later. An error is returned alone, since controller-runtime ignores a
-// requeue that comes with one.
-func noTeam(err error, resync time.Duration) (reconcile.Result, error) {
+// noTeam ends the reconcile of obj in a namespace that has no Team (yet),
+// or whose Team could not be read (err): obj is Ready=False NoTeam, and
+// checked again later. An error is returned alone, since controller-runtime
+// ignores a requeue that comes with one.
+func (b base) noTeam(ctx context.Context, obj client.Object, status *v1alpha1.ConfigStatus, err error) (reconcile.Result, error) {
+	res, err := waitForTeam(err, b.resync)
+	if err != nil {
+		return res, err
+	}
+	return res, b.setReady(ctx, obj, status, false, "NoTeam", noTeamMessage(obj.GetNamespace()))
+}
+
+// noTeamMessage is the message of a Ready condition with reason NoTeam.
+func noTeamMessage(ns string) string { return "namespace " + ns + " has no Team" }
+
+// waitForTeam ends a reconcile that writes no status in a namespace that
+// has no Team (yet), as noTeam does.
+func waitForTeam(err error, resync time.Duration) (reconcile.Result, error) {
 	if err != nil {
 		return reconcile.Result{}, err
 	}

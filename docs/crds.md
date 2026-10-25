@@ -217,16 +217,16 @@ spec:
 | Runner | `labels` | required, at least one: the labels the runner's claims are matched with, set here and never taken from the runner's request; the `cadre.dev/` prefix is reserved |
 | Agent | `effort` | `low`, `medium`, `high` (the default), `xhigh` or `max`: how much thinking the builtin loop asks the model for. It is on the Agent, not the ModelProvider, because one model serves agents that need different depth |
 
-All three report a `Ready` condition and `observedGeneration` in their status:
+Each reports a `Ready` condition and `observedGeneration` in its status:
 
 | Resource | Ready when |
 | --- | --- |
 | ModelProvider | the referenced Secret has the key, or `workloadIdentity` is set |
-| ToolServer | an external server's Secret has its key, when `auth` is set. A managed one's Deployment is Available for its current spec (`Available`); until then `Deploying`, and `Forbidden` where cadre-server may not create its Deployment or Service (bind `config/rbac/workloads.yaml` in the namespace), `NameTaken` where a Deployment of its name is not Cadre's |
+| ToolServer | an external server's Secret has its key, when `auth` is set. A managed one's Deployment is Available for its current spec (`Available`); until then `Deploying`, and `Forbidden` where cadre-server may not create its Deployment or Service (bind `config/rbac/workloads.yaml` in the namespace), `NameTaken` where a Deployment of its name is not Cadre's, `RolloutFailed` when the Deployment's rollout fails, and `InvalidSpec` when the API server refuses the Deployment or the Service made from the spec (a `readinessProbe` a Pod may not have, say), with its message. With `RolloutFailed` and `InvalidSpec` whatever was running keeps running while Ready is False |
 | Agent | its ModelProvider and every ToolServer exist and are Ready; the reason names the first that is not |
 | Runner | `ServiceAccount` for an in-cluster runner; `TokenMinted` once an outside runner's token exists. A Secret of the token's name that the Runner does not own, or one without a token, makes it not Ready (`SecretNotOwned`) and no token works until it is deleted |
 
-Controllers only act in namespaces with a `Team`. Secrets are read one by one when a resource is reconciled, never watched or cached, and the resources that reference them are re-checked every minute.
+Controllers only act in namespaces with a `Team`: elsewhere every resource here, and Schedules and Notifiers, are not Ready with reason `NoTeam`, and are checked again every minute. Secrets are read one by one when a resource is reconciled, never watched or cached, and the resources that reference them are re-checked every minute.
 
 ## Runner
 
@@ -245,7 +245,7 @@ status:
 
 - A Runner lives in the Team namespace it serves, and lets its runner claim there only: the namespace is the tenant boundary. Its ServiceAccount is in that namespace too, so a Team cannot enlist another Team's runner; an in-cluster runner serving several Teams runs as a ServiceAccount, and a pod, in each. Letting a ServiceAccount consent to Runners in other namespaces is a later relaxation.
 - The claim's labels come from the Runner; what the runner sends is ignored, so it cannot claim agents meant for another pool.
-- A Runner without `serviceAccount` gets a token minted into the Secret `<name>-token`, labelled `cadre.dev/runner: <name>` and owned by the Runner. The Secret reaches the runner's machine out of band (`kubectl get secret`, a secret manager); Cadre never serves it. Deleting the Secret rotates the token: a new one is minted on the next reconcile, within a minute, and the old one stops working then. Switching a Runner to `serviceAccount` deletes its minted Secret, so switching back mints a fresh token.
+- A Runner without `serviceAccount` gets a token minted into the Secret `<name>-token`, labelled `cadre.dev/runner: <name>` and owned by the Runner. The Secret reaches the runner's machine out of band (`kubectl get secret`, a secret manager); Cadre never serves it. Deleting the Secret rotates the token: a new one is minted on the next reconcile, within a minute, and the old one stops working then. Switching a Runner to `serviceAccount` deletes its minted Secret, so switching back mints a fresh token. In a namespace whose Team is gone the Runner is not Ready (`NoTeam`) and its token stays valid, but claims nothing, since work is claimed only in Team namespaces; the same token works again once the Team is back.
 - `cadre-runner` needs no Runner: its identity (`--builtin-runner`) may claim builtin agents in every Team namespace.
 
 ## Schedule and Notifier

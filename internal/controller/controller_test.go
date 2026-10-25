@@ -6,7 +6,9 @@ import (
 	"testing"
 	"time"
 
+	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -87,6 +89,8 @@ func conditions(obj client.Object) []metav1.Condition {
 		return o.Status.Conditions
 	case *v1alpha1.Notifier:
 		return o.Status.Conditions
+	case *v1alpha1.Runner:
+		return o.Status.Conditions
 	}
 	return nil
 }
@@ -144,16 +148,93 @@ func TestReadiness(t *testing.T) {
 	}
 	e.ready(agent, metav1.ConditionFalse, "ToolServerNotFound")
 
-	// Outside Team namespaces nothing is reconciled. (One manager per test
-	// binary: controller-runtime rejects a second controller of a name.)
-	e.create(&corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: "elsewhere"}})
-	stranger := &v1alpha1.Agent{ObjectMeta: meta2("elsewhere", "coder"), Spec: v1alpha1.AgentSpec{ModelRef: "claude"}}
-	e.create(stranger)
-	time.Sleep(time.Second)
-	if err := e.c.Get(context.Background(), client.ObjectKeyFromObject(stranger), stranger); err != nil {
+	// Outside Team namespaces nothing is acted on, and every resource says
+	// why it is not Ready; once there is a Team, they go on. (One manager
+	// per test binary: controller-runtime rejects a second controller of a
+	// name.)
+	const elsewhere = "elsewhere"
+	e.create(&corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: elsewhere}})
+	strangers := []struct {
+		obj    client.Object
+		reason string // once there is a Team
+	}{
+		{&v1alpha1.ModelProvider{ObjectMeta: meta2(elsewhere, "claude"), Spec: v1alpha1.ModelProviderSpec{
+			Type: v1alpha1.ProviderBedrock, Model: "anthropic.claude", WorkloadIdentity: true, Region: "us-east-1",
+		}}, "WorkloadIdentity"},
+		{&v1alpha1.ToolServer{ObjectMeta: meta2(elsewhere, "github"), Spec: v1alpha1.ToolServerSpec{URL: "https://mcp.example.com/"}}, "External"},
+		{&v1alpha1.ToolServer{ObjectMeta: meta2(elsewhere, "search"), Spec: v1alpha1.ToolServerSpec{Managed: &v1alpha1.ManagedServer{Image: "example/mcp:1.0", Port: 8080}}}, "Deploying"},
+		{&v1alpha1.Agent{ObjectMeta: meta2(elsewhere, "coder"), Spec: v1alpha1.AgentSpec{ModelRef: "claude", ToolRefs: []string{"github"}}}, "Resolved"},
+		// Nothing it refers to changes when the Team goes: only the
+		// resync brings it back.
+		{&v1alpha1.Agent{ObjectMeta: meta2(elsewhere, "lonely"), Spec: v1alpha1.AgentSpec{ModelRef: "missing"}}, "ModelProviderNotFound"},
+		{&v1alpha1.Runner{ObjectMeta: meta2(elsewhere, "outside"), Spec: v1alpha1.RunnerSpec{Labels: map[string]string{"pool": "a"}}}, "TokenMinted"},
+	}
+	for _, s := range strangers {
+		e.create(s.obj)
+	}
+	for _, s := range strangers {
+		e.ready(s.obj, metav1.ConditionFalse, "NoTeam")
+		if c := meta.FindStatusCondition(conditions(s.obj), v1alpha1.ConditionReady); c.Message != "namespace elsewhere has no Team" {
+			t.Errorf("%T %s: message %q", s.obj, s.obj.GetName(), c.Message)
+		}
+	}
+	// Nor did any of them make what it would in a Team namespace.
+	for name, obj := range map[string]client.Object{"search": &appsv1.Deployment{}, controller.TokenSecretName("outside"): &corev1.Secret{}} {
+		if err := e.c.Get(context.Background(), client.ObjectKey{Namespace: elsewhere, Name: name}, obj); !apierrors.IsNotFound(err) {
+			t.Errorf("%T %s made outside a Team namespace: %v", obj, name, err)
+		}
+	}
+	recovered := func() {
+		t.Helper()
+		e.create(&v1alpha1.Team{ObjectMeta: meta2(elsewhere, v1alpha1.TeamName)})
+		for _, s := range strangers {
+			status := metav1.ConditionTrue
+			if s.reason == "Deploying" || s.reason == "ModelProviderNotFound" {
+				status = metav1.ConditionFalse
+			}
+			e.ready(s.obj, status, s.reason)
+		}
+	}
+	recovered()
+
+	// Its Team deleted, each says so within a resync, and what it made
+	// stays: the Deployment, and the Runner's token, which claims nothing
+	// meanwhile. With a Team again they go on as they were.
+	var dep appsv1.Deployment
+	var token corev1.Secret
+	ctx := context.Background()
+	if err := e.c.Get(ctx, client.ObjectKey{Namespace: elsewhere, Name: "search"}, &dep); err != nil {
 		t.Fatal(err)
 	}
-	if len(stranger.Status.Conditions) != 0 {
-		t.Fatalf("an Agent outside any Team namespace got status %+v", stranger.Status)
+	if err := e.c.Get(ctx, client.ObjectKey{Namespace: elsewhere, Name: controller.TokenSecretName("outside")}, &token); err != nil {
+		t.Fatal(err)
+	}
+	runner := &v1alpha1.Runner{}
+	if err := e.c.Get(ctx, client.ObjectKey{Namespace: elsewhere, Name: "outside"}, runner); err != nil {
+		t.Fatal(err)
+	}
+	hash := runner.Status.TokenHash
+	if err := e.c.Delete(ctx, &v1alpha1.Team{ObjectMeta: meta2(elsewhere, v1alpha1.TeamName)}); err != nil {
+		t.Fatal(err)
+	}
+	for _, s := range strangers {
+		e.ready(s.obj, metav1.ConditionFalse, "NoTeam")
+	}
+	for _, obj := range []client.Object{&dep, &token} {
+		rv := obj.GetResourceVersion()
+		if err := e.c.Get(ctx, client.ObjectKeyFromObject(obj), obj); err != nil {
+			t.Fatalf("%T %s gone with the Team: %v", obj, obj.GetName(), err)
+		}
+		if obj.GetResourceVersion() != rv {
+			t.Errorf("%T %s changed with the Team gone", obj, obj.GetName())
+		}
+	}
+	recovered()
+	// The same token, not a new one.
+	if err := e.c.Get(ctx, client.ObjectKeyFromObject(runner), runner); err != nil {
+		t.Fatal(err)
+	}
+	if runner.Status.TokenHash != hash || hash == "" {
+		t.Errorf("the Runner's token hash went from %q to %q", hash, runner.Status.TokenHash)
 	}
 }

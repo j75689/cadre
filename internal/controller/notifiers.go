@@ -91,7 +91,7 @@ func (r *notifierReconciler) Reconcile(ctx context.Context, req reconcile.Reques
 // decide says whether n can be delivered to, and if not why.
 func (r *notifierReconciler) decide(ctx context.Context, n *v1alpha1.Notifier) (bool, string, string, error) {
 	if ok, err := r.hasTeam(ctx, n.Namespace); err != nil || !ok {
-		return false, "NoTeam", "namespace " + n.Namespace + " has no Team", err
+		return false, "NoTeam", noTeamMessage(n.Namespace), err
 	}
 	if tool := n.Spec.ToolServer; tool != nil {
 		var ts v1alpha1.ToolServer

@@ -53,7 +53,7 @@ func (r *runnerReconciler) Reconcile(ctx context.Context, req reconcile.Request)
 		return reconcile.Result{}, client.IgnoreNotFound(err)
 	}
 	if ok, err := r.hasTeam(ctx, req.Namespace); err != nil || !ok {
-		return noTeam(err, r.resync)
+		return r.noTeam(ctx, &rn, &rn.Status.ConfigStatus, err)
 	}
 	if rn.Spec.ServiceAccount != nil {
 		// A token minted before a switch to a ServiceAccount must not come
