@@ -123,6 +123,10 @@ func (r *toolServerReconciler) Reconcile(ctx context.Context, req reconcile.Requ
 		return r.noTeam(ctx, &ts, &ts.Status.ConfigStatus, err)
 	}
 	if ts.Spec.Managed != nil {
+		// Before anything else: what runs for it is left as it is.
+		if msg := invalidName("managed ToolServer", ts.Name); msg != "" {
+			return reconcile.Result{RequeueAfter: r.resync}, r.setReady(ctx, &ts, &ts.Status.ConfigStatus, false, "InvalidName", msg)
+		}
 		return r.reconcileManaged(ctx, &ts)
 	}
 	// Once managed (it has a URL of Cadre's), now external: what Cadre ran

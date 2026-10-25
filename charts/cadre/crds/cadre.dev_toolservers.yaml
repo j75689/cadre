@@ -400,6 +400,12 @@ spec:
         required:
         - spec
         type: object
+        x-kubernetes-validations:
+        - message: 'a managed ToolServer''s name is a DNS label (at most 63 characters,
+            no dot): it names its Deployment and Service'
+          optionalOldSelf: true
+          rule: '!has(self.spec.managed) || (size(self.metadata.name) <= 63 && !self.metadata.name.contains(''.''))
+            || (oldSelf.hasValue() && has(oldSelf.value().spec.managed))'
     served: true
     storage: true
     subresources:
