@@ -28,6 +28,9 @@ func TestNameRuleRatchets(t *testing.T) {
 		"agentaccesses.cadre.dev": func(name string) client.Object {
 			return &v1alpha1.AgentAccess{ObjectMeta: metav1.ObjectMeta{Namespace: ns, Name: name}, Spec: v1alpha1.AgentAccessSpec{Role: "member"}}
 		},
+		"toolservers.cadre.dev": func(name string) client.Object {
+			return &v1alpha1.ToolServer{ObjectMeta: metav1.ObjectMeta{Namespace: ns, Name: name}, Spec: v1alpha1.ToolServerSpec{Managed: &v1alpha1.ManagedServer{Image: "example/search:1.0", Port: 8080}}}
+		},
 	} {
 		// setRule takes the name rule off the CRD's root, or puts it back.
 		var rule apiextensionsv1.ValidationRule
@@ -82,6 +85,8 @@ func TestNameRuleRatchets(t *testing.T) {
 			o.Spec.Labels["pool"] = "b"
 		case *v1alpha1.AgentAccess:
 			o.Spec.Role = "viewer"
+		case *v1alpha1.ToolServer:
+			o.Spec.Managed.Port = 9090
 		}
 		if err := c.Update(ctx, old); err != nil {
 			t.Fatalf("%s: updating an object from before the rule: %v", crd, err)
@@ -89,5 +94,20 @@ func TestNameRuleRatchets(t *testing.T) {
 		if err := c.Status().Update(ctx, old); err != nil {
 			t.Fatalf("%s: writing its status: %v", crd, err)
 		}
+	}
+}
+
+// An external ToolServer may have a dotted name; it cannot become managed
+// with one, since its Deployment and Service would take it.
+func TestManagedToolServerName(t *testing.T) {
+	c := startAPIServer(t)
+	ctx := context.Background()
+	ts := &v1alpha1.ToolServer{ObjectMeta: metav1.ObjectMeta{Namespace: ns, Name: "tools.v2"}, Spec: v1alpha1.ToolServerSpec{URL: "https://tools.example.test/mcp"}}
+	if err := c.Create(ctx, ts); err != nil {
+		t.Fatalf("an external ToolServer with a dotted name: %v", err)
+	}
+	ts.Spec = v1alpha1.ToolServerSpec{Managed: &v1alpha1.ManagedServer{Image: "example/search:1.0", Port: 8080}}
+	if err := c.Update(ctx, ts); !apierrors.IsInvalid(err) {
+		t.Fatalf("making it managed: %v, want Invalid", err)
 	}
 }

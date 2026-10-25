@@ -11,6 +11,7 @@ import (
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/client-go/rest"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	v1alpha1 "github.com/j75689/cadre/api/v1alpha1"
@@ -19,8 +20,9 @@ import (
 )
 
 type env struct {
-	t *testing.T
-	c client.Client
+	t   *testing.T
+	c   client.Client
+	cfg *rest.Config
 }
 
 func start(t *testing.T) *env {
@@ -46,7 +48,7 @@ func start(t *testing.T) *env {
 	if err != nil {
 		t.Fatal(err)
 	}
-	return &env{t: t, c: c}
+	return &env{t: t, c: c, cfg: cfg}
 }
 
 func (e *env) create(objs ...client.Object) {

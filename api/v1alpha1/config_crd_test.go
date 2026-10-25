@@ -90,6 +90,28 @@ func TestConfigCRDs(t *testing.T) {
 	} {
 		expect(t, c, "ToolServer "+name, &v1alpha1.ToolServer{ObjectMeta: meta(), Spec: tc.spec}, tc.valid)
 	}
+	// A managed ToolServer's name names its Deployment and Service, so it
+	// is a DNS-1035 label, starting with a letter; an external one's names
+	// nothing.
+	managed := v1alpha1.ToolServerSpec{Managed: &v1alpha1.ManagedServer{Image: "i", Port: 1}}
+	external := v1alpha1.ToolServerSpec{URL: "https://x"}
+	for _, tc := range []struct {
+		name  string
+		spec  v1alpha1.ToolServerSpec
+		valid bool
+	}{
+		{"search-v2", managed, true},
+		{"tools.v2", managed, false},
+		{strings.Repeat("s", 63), managed, true},
+		{strings.Repeat("s", 64), managed, false},
+		{"fa2-tools", managed, true},
+		{"2fa-tools", managed, false},
+		{"2fa-tools", external, true},
+		{"tools.v2", external, true},
+		{strings.Repeat("s", 64), external, true},
+	} {
+		expect(t, c, fmt.Sprintf("ToolServer %s, managed %v", tc.name, tc.spec.Managed != nil), &v1alpha1.ToolServer{ObjectMeta: metav1.ObjectMeta{Name: tc.name}, Spec: tc.spec}, tc.valid)
+	}
 
 	task := v1alpha1.TaskSpec{Title: "Today's thread", Assignee: &v1alpha1.Assignee{Kind: v1alpha1.AssigneeAgent, Name: "writer"}}
 	withParent := task
