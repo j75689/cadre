@@ -233,7 +233,10 @@ func (s *Server) listTasks(w http.ResponseWriter, r *http.Request) {
 	// The response says which limit applied.
 	q.Limit = ClampLimit(q.Limit)
 	items, err := s.tasks(r.Context(), q)
-	if err != nil {
+	switch {
+	case err != nil && r.Context().Err() != nil:
+		return // the caller went away during a lookup's wait: nobody to answer
+	case err != nil:
 		httpjson.Fail(w, s.log, err)
 		return
 	}

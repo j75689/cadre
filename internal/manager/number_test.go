@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -109,7 +110,7 @@ func TestTaskByNumberNotFound(t *testing.T) {
 	if _, err := e.m.TaskByNumber(ctx, ns, gone.Status.Number+1); !errors.Is(err, storage.ErrNotFound) {
 		t.Fatalf("a number never given: %v", err)
 	}
-	if took := time.Since(start); took >= numberPoll {
+	if took := time.Since(start); took >= numberWait/2 {
 		t.Fatalf("a number never given took %s", took)
 	}
 
@@ -117,12 +118,61 @@ func TestTaskByNumberNotFound(t *testing.T) {
 	if _, err := e.m.TaskByNumber(ctx, ns, gone.Status.Number); !errors.Is(err, storage.ErrNotFound) {
 		t.Fatalf("a number whose task is gone: %v", err)
 	}
-	if took := time.Since(start); took < numberWait || took > numberWait+time.Second {
+	if took := time.Since(start); took < numberWait || took >= 3*numberWait {
 		t.Fatalf("a number whose task is gone took %s, want the %s wait", took, numberWait)
 	}
 	for _, n := range []int64{0, -1} {
 		if _, err := e.m.TaskByNumber(ctx, ns, n); !errors.Is(err, storage.ErrNotFound) {
 			t.Errorf("#%d: %v", n, err)
 		}
+	}
+}
+
+// A number given long ago, more than numberRecent before the next, with no
+// task is not found at once: the index cannot be lagging that far, and a
+// stale link costs no wait.
+func TestTaskByNumberOldIsNotWaitedFor(t *testing.T) {
+	e, idx := lagging(t)
+	gone, err := e.m.CreateTask(ctx, ns, "gone", v1alpha1.TaskSpec{Title: "gone"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	idx.hide("gone", time.Now().Add(time.Hour))
+	for i := range numberRecent {
+		if _, err := e.m.CreateTask(ctx, ns, fmt.Sprintf("later-%d", i), v1alpha1.TaskSpec{Title: "later"}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	start := time.Now()
+	if _, err := e.m.TaskByNumber(ctx, ns, gone.Status.Number); !errors.Is(err, storage.ErrNotFound) {
+		t.Fatalf("a number given long ago: %v", err)
+	}
+	if took := time.Since(start); took >= numberWait/2 {
+		t.Fatalf("a number given long ago took %s", took)
+	}
+}
+
+// A number two tasks share, after a Team made again, say, names neither:
+// it is an error that names both.
+func TestTaskByNumberAmbiguous(t *testing.T) {
+	e, _ := lagging(t)
+	for _, name := range []string{"old", "new"} {
+		tk := &v1alpha1.Task{Spec: v1alpha1.TaskSpec{Title: name}}
+		tk.Namespace, tk.Name = ns, name
+		if err := e.store.CreateTask(ctx, tk); err != nil {
+			t.Fatal(err)
+		}
+		got, err := e.store.GetTask(ctx, storage.Key{Namespace: ns, Name: name})
+		if err != nil {
+			t.Fatal(err)
+		}
+		got.Status.Number, got.Status.Phase = 3, v1alpha1.PhaseTodo
+		if err := e.store.UpdateTaskStatus(ctx, got); err != nil {
+			t.Fatal(err)
+		}
+	}
+	_, err := e.m.TaskByNumber(ctx, ns, 3)
+	if !errors.Is(err, ErrAmbiguous) || !strings.Contains(err.Error(), "new, old") {
+		t.Fatalf("#3 shared: %v", err)
 	}
 }

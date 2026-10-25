@@ -122,7 +122,9 @@ func (c *Client) ListTasks(ctx context.Context, ns string, tq TaskQuery) (*api.T
 	if tq.Parent != "" {
 		q.Set("parent", tq.Parent)
 	}
-	if tq.Number > 0 {
+	if tq.Number != 0 {
+		// A negative one too, which the server refuses, rather than
+		// listing the whole board.
 		q.Set("number", strconv.FormatInt(tq.Number, 10))
 	}
 	if tq.Offset > 0 {

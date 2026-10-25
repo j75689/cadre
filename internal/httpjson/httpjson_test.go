@@ -2,6 +2,7 @@ package httpjson_test
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
@@ -39,6 +40,7 @@ func TestFail(t *testing.T) {
 		manager.ErrInProgress:      {409, httpjson.CodeInProgress},
 		task.ErrForbidden:          {403, httpjson.CodeForbidden},
 		manager.ErrEntryPending:    {409, httpjson.CodeEntryPending},
+		&manager.AmbiguousNumber{Namespace: "team-a", Number: 3, Names: []string{"new", "old"}}: {409, httpjson.CodeConflict},
 		fmt.Errorf("etcd timeout"): {503, httpjson.CodeUnavailable},
 	} {
 		rec := httptest.NewRecorder()
@@ -47,6 +49,9 @@ func TestFail(t *testing.T) {
 		_ = json.NewDecoder(rec.Body).Decode(&er)
 		if rec.Code != want.status || er.Error.Code != want.code {
 			t.Errorf("%v: %d %s, want %d %s", err, rec.Code, er.Error.Code, want.status, want.code)
+		}
+		if a := (*manager.AmbiguousNumber)(nil); errors.As(err, &a) && er.Error.Message != a.Error() {
+			t.Errorf("%v: message %q, want the tasks named", err, er.Error.Message)
 		}
 		leaks := strings.Contains(er.Error.Message, "10.0.0.1") || strings.Contains(er.Error.Message, "secret-bucket")
 		if leaks && want.status != 400 {

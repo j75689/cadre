@@ -430,24 +430,54 @@ func ValidateTeamSpec(spec *v1alpha1.TeamSpec) error {
 	return nil
 }
 
-// Waiting for a task the index has not seen yet, by number.
+// Waiting for a task the index has not seen yet, by number: only one of the
+// last numbers given can be lagging, since the index is seconds behind.
 const (
-	numberWait = 2 * time.Second
-	numberPoll = 100 * time.Millisecond
+	numberWait   = 2 * time.Second
+	numberPoll   = 100 * time.Millisecond
+	numberRecent = 100
 )
 
+// ErrAmbiguous means a number names more than one task, as it can after a
+// Team is deleted and made again, which starts its counter over. It comes
+// as an *AmbiguousNumber.
+var ErrAmbiguous = errors.New("ambiguous")
+
+// AmbiguousNumber is a number that names several tasks: its message names
+// them, and is for the caller.
+type AmbiguousNumber struct {
+	Namespace string
+	Number    int64
+	Names     []string
+}
+
+func (a *AmbiguousNumber) Error() string {
+	return fmt.Sprintf("#%d in %s names %d tasks, %s: give one by its name", a.Number, a.Namespace, len(a.Names), strings.Join(a.Names, ", "))
+}
+
+// Is makes an AmbiguousNumber ErrAmbiguous.
+func (a *AmbiguousNumber) Is(target error) bool { return target == ErrAmbiguous }
+
 // TaskByNumber finds a namespace's task by its number, in one read of the
-// index; storage.ErrNotFound if none has it. The index lags the store by a
-// moment, so a miss is checked against the Team's counter, read live: a
-// number never given is not found at once, and one given, to a task just
+// index; storage.ErrNotFound if none has it, ErrAmbiguous if several do.
+// The index lags the store by a moment, so a miss is checked against the
+// Team's counter, read live: a number never given, or one given before the
+// last 100, is not found at once; one given a moment ago, to a task just
 // created say, is looked for again every 100 ms for up to 2 seconds. The
 // namespace is never listed.
 func (m *Manager) TaskByNumber(ctx context.Context, namespace string, number int64) (*v1alpha1.Task, error) {
 	q := storage.Query{Namespace: namespace, Number: number}
 	find := func() (*v1alpha1.Task, error) {
 		tasks, err := m.ListTasks(ctx, q)
-		if err != nil || len(tasks) == 0 {
+		switch {
+		case err != nil || len(tasks) == 0:
 			return nil, err
+		case len(tasks) > 1:
+			names := make([]string, len(tasks))
+			for i := range tasks {
+				names[i] = tasks[i].Name
+			}
+			return nil, &AmbiguousNumber{Namespace: namespace, Number: number, Names: names}
 		}
 		return &tasks[0], nil
 	}
@@ -466,6 +496,8 @@ func (m *Manager) TaskByNumber(ctx context.Context, namespace string, number int
 		return nil, err
 	case number >= team.Status.NextNumber:
 		return nil, notFound // never given
+	case team.Status.NextNumber-number > numberRecent:
+		return nil, notFound // given long enough ago for the index to have it
 	}
 	deadline := time.Now().Add(numberWait)
 	for time.Now().Before(deadline) {
