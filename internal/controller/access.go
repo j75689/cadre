@@ -75,6 +75,11 @@ func (a *jobAccess) review(ctx context.Context, ns string) (bool, error) {
 		if err := a.client.Create(ctx, review); err != nil {
 			return false, err
 		}
+		// An explicit denial is a refusal, error or not; an allowance
+		// stands despite an error from another authorizer.
+		if review.Status.Denied {
+			return false, nil
+		}
 		if e := review.Status.EvaluationError; e != "" && !review.Status.Allowed {
 			return false, fmt.Errorf("reviewing whether cadre-server may %s Jobs in %s: %s", verb, ns, e)
 		}
@@ -85,14 +90,17 @@ func (a *jobAccess) review(ctx context.Context, ns string) (bool, error) {
 	return true, nil
 }
 
-// rbacRefusal matches the API server's message for a request RBAC refused.
-var rbacRefusal = regexp.MustCompile(`User "[^"]*" cannot \S+ resource `)
+// authzRefusal matches the API server's message for a request an
+// authorizer refused: RBAC most often, but a webhook or ABAC refusal reads
+// the same.
+var authzRefusal = regexp.MustCompile(`User "[^"]*" cannot \S+ resource `)
 
 // forbiddenMessage is a 403's message, followed by hint, which says what to
-// bind, when RBAC refused the request. A quota or an admission denial is a
-// 403 too: there the API server's message stands alone.
+// bind, when authorization refused the request. A quota or an admission
+// denial is a 403 too, which no binding fixes: there the API server's
+// message stands alone.
 func forbiddenMessage(err error, hint string) string {
-	if rbacRefusal.MatchString(err.Error()) {
+	if authzRefusal.MatchString(err.Error()) {
 		return err.Error() + "; " + hint
 	}
 	return err.Error()

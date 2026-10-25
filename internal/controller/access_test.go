@@ -3,12 +3,14 @@ package controller
 import (
 	"context"
 	"errors"
+	"strings"
 	"testing"
 	"time"
 
 	authorizationv1 "k8s.io/api/authorization/v1"
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
+	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/runtime/schema"
@@ -16,19 +18,22 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 	"sigs.k8s.io/controller-runtime/pkg/client/interceptor"
+	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
 	v1alpha1 "github.com/j75689/cadre/api/v1alpha1"
 )
 
 // reviews is an API server that answers SelfSubjectAccessReviews on Jobs
 // from allowed, by namespace and verb, and counts them. fail, when set,
-// fails the next one; undecided answers it with an evaluation error.
+// fails the next one; evalError answers it with that evaluation error too,
+// and denied makes it an explicit denial.
 type reviews struct {
 	t         *testing.T
 	allowed   map[string]bool // namespace/verb
 	asked     int
 	fail      error
-	undecided bool
+	evalError string
+	denied    bool
 }
 
 func (r *reviews) client(objs ...client.Object) client.Client {
@@ -40,7 +45,7 @@ func (r *reviews) client(objs ...client.Object) client.Client {
 	if err := v1alpha1.AddToScheme(scheme); err != nil {
 		r.t.Fatal(err)
 	}
-	return fake.NewClientBuilder().WithScheme(scheme).WithObjects(objs...).WithInterceptorFuncs(interceptor.Funcs{
+	return fake.NewClientBuilder().WithScheme(scheme).WithObjects(objs...).WithStatusSubresource(&v1alpha1.Agent{}).WithInterceptorFuncs(interceptor.Funcs{
 		Create: func(ctx context.Context, c client.WithWatch, obj client.Object, opts ...client.CreateOption) error {
 			review, ok := obj.(*authorizationv1.SelfSubjectAccessReview)
 			if !ok {
@@ -55,12 +60,8 @@ func (r *reviews) client(objs ...client.Object) client.Client {
 				r.fail = nil
 				return err
 			}
-			if r.undecided {
-				r.undecided = false
-				review.Status.EvaluationError = "webhook authorizer timed out"
-				return nil
-			}
 			review.Status.Allowed = r.allowed[a.Namespace+"/"+a.Verb]
+			review.Status.EvaluationError, review.Status.Denied = r.evalError, r.denied
 			return nil
 		},
 	}).Build()
@@ -123,10 +124,19 @@ func TestJobAccess(t *testing.T) {
 	if d := rec.recheck(agent("team-a", "one")); d != time.Minute {
 		t.Errorf("recheck in %v at the start of the allowance", d)
 	}
+	if d := rec.recheck(&v1alpha1.Agent{ObjectMeta: metav1.ObjectMeta{Namespace: "team-a", Name: "builtin"}}); d != time.Minute {
+		t.Errorf("an Agent without Jobs checks again in %v, not at resync", d)
+	}
 	now = now.Add(59 * time.Second)
 	if d := rec.recheck(agent("team-a", "two")); d != time.Second {
 		t.Errorf("an Agent resolved late in the allowance checks again in %v, not when it expires", d)
 	}
+	// At the very end of it, soon, never not at all.
+	access.allowed["team-a"] = now.Add(time.Nanosecond)
+	if d := rec.recheck(agent("team-a", "two")); d != 100*time.Millisecond {
+		t.Errorf("an Agent resolved as the allowance expires checks again in %v", d)
+	}
+	access.allowed["team-a"] = now.Add(time.Second)
 
 	// A refusal is not kept: a binding added shows on the next resolve,
 	// with no time passing.
@@ -149,20 +159,31 @@ func TestJobAccess(t *testing.T) {
 	asked(10, "after the allowance expired")
 
 	// An authorizer that cannot decide, or a review that fails, is an
-	// error, and nothing is kept: the next reconcile asks again.
+	// error, AccessUnknown, and nothing is kept: the next reconcile asks
+	// again.
 	now = now.Add(time.Minute) // team-b's allowance expired too
-	for _, fail := range []func(){func() { r.undecided = true }, func() { r.fail = errors.New("connection refused") }} {
+	for _, fail := range []func(){
+		func() { r.allowed, r.evalError = map[string]bool{}, "webhook authorizer timed out" },
+		func() { r.fail = errors.New("connection refused") },
+	} {
 		fail()
-		if _, _, _, err := rec.resolveJob(ctx, agent("team-b", "one"), agent("team-b", "one").Spec.Runtime.Job); err == nil {
-			t.Fatal("no error when the review could not be made")
+		ok, reason, _, err := rec.resolveJob(ctx, agent("team-b", "one"), agent("team-b", "one").Spec.Runtime.Job)
+		if err == nil || ok || reason != "AccessUnknown" {
+			t.Fatalf("%v %s %v when the review could not be made", ok, reason, err)
 		}
 		if _, kept := access.expiry("team-b"); kept {
 			t.Fatal("an answer kept from a review that failed")
 		}
 	}
+	// An explicit denial with an error is a refusal; an allowance with an
+	// error from another authorizer is an allowance.
+	r.denied = true
+	resolve(agent("team-b", "one"), "Forbidden")
+	r.denied, r.allowed = false, allowAll("team-b")
 	before := r.asked
 	resolve(agent("team-b", "one"), "Resolved")
 	asked(before+3, "after the failed reviews")
+	r.evalError = ""
 
 	// A namespace not asked about since its allowance expired is
 	// forgotten at the next review.
@@ -193,5 +214,54 @@ func TestForbiddenMessage(t *testing.T) {
 		} else if got != want {
 			t.Errorf("got %q, want the API server's message alone", got)
 		}
+	}
+}
+
+// An Agent whose Job access cannot be checked is not Ready, says why, and
+// is Ready again once it can be.
+func TestJobAccessUnknown(t *testing.T) {
+	ctx := context.Background()
+	r := &reviews{t: t, allowed: allowAll("team-a")}
+	ready := v1alpha1.ConfigStatus{Conditions: []metav1.Condition{{Type: v1alpha1.ConditionReady, Status: metav1.ConditionTrue, Reason: "WorkloadIdentity"}}}
+	a := &v1alpha1.Agent{ObjectMeta: metav1.ObjectMeta{Namespace: "team-a", Name: "coder"}, Spec: v1alpha1.AgentSpec{
+		ModelRef: "claude", Runtime: v1alpha1.AgentRuntime{Job: &v1alpha1.AgentJob{RunnerRef: "jobs"}},
+	}}
+	c := r.client(
+		&v1alpha1.Team{ObjectMeta: metav1.ObjectMeta{Namespace: "team-a", Name: v1alpha1.TeamName}},
+		&v1alpha1.ModelProvider{ObjectMeta: metav1.ObjectMeta{Namespace: "team-a", Name: "claude"}, Status: ready},
+		&corev1.ServiceAccount{ObjectMeta: metav1.ObjectMeta{Namespace: "team-a", Name: "jobs"}},
+		&v1alpha1.Runner{ObjectMeta: metav1.ObjectMeta{Namespace: "team-a", Name: "jobs"}, Spec: v1alpha1.RunnerSpec{
+			ServiceAccount: &v1alpha1.ServiceAccountRef{Name: "jobs"}, Labels: map[string]string{"pool": "jobs"},
+		}},
+		a,
+	)
+	rec := &agentReconciler{base: base{client: c, secrets: c, resync: time.Minute}, jobs: newJobAccess(c, time.Minute, time.Now)}
+	reason := func(wantErr bool) string {
+		t.Helper()
+		_, err := rec.Reconcile(ctx, reconcile.Request{NamespacedName: client.ObjectKeyFromObject(a)})
+		if (err != nil) != wantErr {
+			t.Fatalf("reconcile: %v", err)
+		}
+		if err := c.Get(ctx, client.ObjectKeyFromObject(a), a); err != nil {
+			t.Fatal(err)
+		}
+		cond := meta.FindStatusCondition(a.Status.Conditions, v1alpha1.ConditionReady)
+		if cond == nil {
+			t.Fatal("no Ready condition")
+		}
+		return cond.Reason + ": " + cond.Message
+	}
+	if got := reason(false); got != "Resolved: " {
+		t.Fatalf("Ready %q", got)
+	}
+	// Its allowance expired and the authorizer down: not Ready, and the
+	// error returned for the backoff.
+	rec.jobs = newJobAccess(c, time.Minute, time.Now)
+	r.fail = errors.New("connection refused")
+	if got := reason(true); !strings.HasPrefix(got, "AccessUnknown: ") || !strings.Contains(got, "connection refused") {
+		t.Fatalf("Ready %q while the review fails", got)
+	}
+	if got := reason(false); got != "Resolved: " {
+		t.Fatalf("Ready %q once the review works", got)
 	}
 }

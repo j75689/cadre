@@ -59,8 +59,17 @@ type Options struct {
 	// Lease is the run lease: a Job still running a lease after its run
 	// ended is deleted. Default 30 seconds.
 	Lease time.Duration
-	// Now is the clock Schedules fire by; default time.Now.
+	// Now is the controllers' clock: when Schedules fire, and when a Job
+	// access answer kept for a namespace expires. Default time.Now.
 	Now func() time.Time
+}
+
+// now is o.Now, or time.Now.
+func (o Options) now() func() time.Time {
+	if o.Now == nil {
+		return time.Now
+	}
+	return o.Now
 }
 
 // SetupOption adjusts Setup.
@@ -111,11 +120,7 @@ func Setup(mgr ctrl.Manager, o Options, opts ...SetupOption) error {
 			return err
 		}
 	}
-	now := o.Now
-	if now == nil {
-		now = time.Now
-	}
-	return (&agentReconciler{base: b, jobs: newJobAccess(b.client, b.resync, now)}).setup(mgr)
+	return (&agentReconciler{base: b, jobs: newJobAccess(b.client, b.resync, o.now())}).setup(mgr)
 }
 
 // base is what every reconciler shares.

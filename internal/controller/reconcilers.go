@@ -169,6 +169,13 @@ func (r *agentReconciler) Reconcile(ctx context.Context, req reconcile.Request) 
 	}
 	ready, reason, msg, err := r.resolve(ctx, &agent)
 	if err != nil {
+		if reason != "" {
+			// A check that could not be made, with a reason to say so:
+			// written, then returned, so that the backoff applies.
+			if werr := r.setReady(ctx, &agent, &agent.Status, false, reason, msg); werr != nil {
+				return reconcile.Result{}, werr
+			}
+		}
 		return reconcile.Result{}, err
 	}
 	// Checked again at resync: its Runner's ServiceAccount is read, not
@@ -250,7 +257,9 @@ func (r *agentReconciler) resolveJob(ctx context.Context, agent *v1alpha1.Agent,
 	}
 	switch ok, err := r.jobs.check(ctx, agent.Namespace); {
 	case err != nil:
-		return false, "", "", err
+		// Not Ready while unknown: the Job reconciler starts Jobs only
+		// for Ready Agents.
+		return false, "AccessUnknown", err.Error(), err
 	case !ok:
 		return false, "Forbidden", forbidden, nil
 	}
