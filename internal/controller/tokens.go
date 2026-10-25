@@ -18,23 +18,27 @@ import (
 // +kubebuilder:rbac:groups="",resources=secrets,verbs=create;delete
 
 // An object without a ServiceAccount, a Runner or an AgentAccess,
-// authenticates with a token Cadre mints (see internal/token) into the
-// Secret <name>-token, key token; the object's status holds its hash. The
-// Secret is never watched: like every Secret the controllers touch it is
-// read one at a time, on the resync. Deleting it rotates the token: the
-// next reconcile mints a new one, and the old stops working when the hash
-// changes.
+// authenticates with a token Cadre mints (see internal/token) into a Secret
+// of its own, <name>-token or <name>-access-token, key token; the object's
+// status holds its hash. The Secret is never watched: like every Secret the
+// controllers touch it is read one at a time, on the resync. Deleting it
+// rotates the token: the next reconcile mints a new one, and the old stops
+// working when the hash changes.
 
 const tokenKey = "token"
 
-// TokenSecretName is the Secret the minted token of a Runner or an
-// AgentAccess named name is kept in.
-func TokenSecretName(name string) string { return name + "-token" }
+// TokenSecretName is the Secret a Runner's minted token is kept in.
+func TokenSecretName(runner string) string { return runner + "-token" }
+
+// AccessTokenSecretName is the Secret an AgentAccess's minted token is kept
+// in: named apart from a Runner's, so the two never share one.
+func AccessTokenSecretName(access string) string { return access + "-access-token" }
 
 // tokenOwner is an object Cadre mints a token for.
 type tokenOwner struct {
 	obj    client.Object
 	kind   string // Runner, say: for messages
+	secret string // the Secret's name
 	label  string // the Secret's label naming obj
 	status *v1alpha1.MintedToken
 }
@@ -45,7 +49,7 @@ func setToken(o tokenOwner, hash string, minted bool) bool {
 	st := o.status
 	secret := ""
 	if hash != "" {
-		secret = TokenSecretName(o.obj.GetName())
+		secret = o.secret
 	}
 	if st.TokenHash == hash && st.TokenSecret == secret {
 		return false
@@ -66,14 +70,14 @@ func setToken(o tokenOwner, hash string, minted bool) bool {
 // Secret on the next reconcile. A Secret of that name the owner does not
 // own, or one without a token, is a problem, not a token.
 func (b base) ensureToken(ctx context.Context, o tokenOwner) (hash string, minted bool, problem string, err error) {
-	key := client.ObjectKey{Namespace: o.obj.GetNamespace(), Name: TokenSecretName(o.obj.GetName())}
+	key := client.ObjectKey{Namespace: o.obj.GetNamespace(), Name: o.secret}
 	var s corev1.Secret
 	err = b.secrets.Get(ctx, key, &s)
 	switch {
 	case err == nil:
 		tok := s.Data[tokenKey]
 		if len(tok) == 0 || !ownedBy(&s, o.obj) {
-			return "", false, notOwned(&s, o), nil
+			return "", false, fmt.Sprintf("Secret %s exists but is not this %s's token; delete it to have a token minted", key.Name, o.kind), nil
 		}
 		return token.Hash(string(tok)), false, "", nil
 	case !apierrors.IsNotFound(err):
@@ -97,20 +101,10 @@ func (b base) ensureToken(ctx context.Context, o tokenOwner) (hash string, minte
 	return hash, true, "", nil
 }
 
-// notOwned says why the Secret s is not o's token. A Runner and an
-// AgentAccess of the same name would share it: the other's is not to be
-// deleted, which would rotate its token.
-func notOwned(s *corev1.Secret, o tokenOwner) string {
-	if c := metav1.GetControllerOf(s); c != nil && c.Kind != o.kind && (c.Kind == "Runner" || c.Kind == "AgentAccess") {
-		return fmt.Sprintf("Secret %s is %s %s's token; give this %s another name", s.Name, c.Kind, c.Name, o.kind)
-	}
-	return fmt.Sprintf("Secret %s exists but is not this %s's token; delete it to have a token minted", s.Name, o.kind)
-}
-
 // deleteToken deletes the owner's own token Secret, if it has one.
 func (b base) deleteToken(ctx context.Context, o tokenOwner) error {
 	var s corev1.Secret
-	err := b.secrets.Get(ctx, client.ObjectKey{Namespace: o.obj.GetNamespace(), Name: TokenSecretName(o.obj.GetName())}, &s)
+	err := b.secrets.Get(ctx, client.ObjectKey{Namespace: o.obj.GetNamespace(), Name: o.secret}, &s)
 	switch {
 	case apierrors.IsNotFound(err):
 		return nil

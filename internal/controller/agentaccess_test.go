@@ -2,6 +2,7 @@ package controller_test
 
 import (
 	"context"
+	"errors"
 	"strings"
 	"testing"
 	"time"
@@ -70,12 +71,12 @@ func TestAgentAccesses(t *testing.T) {
 		for deadline := time.Now().Add(10 * time.Second); time.Now().Before(deadline); time.Sleep(50 * time.Millisecond) {
 			var s corev1.Secret
 			var aa v1alpha1.AgentAccess
-			if c.Get(ctx, client.ObjectKey{Namespace: "team-a", Name: "bot-token"}, &s) == nil &&
+			if c.Get(ctx, client.ObjectKey{Namespace: "team-a", Name: "bot-access-token"}, &s) == nil &&
 				c.Get(ctx, client.ObjectKey{Namespace: "team-a", Name: "bot"}, &aa) == nil &&
 				string(s.Data["token"]) != old && aa.Status.TokenHash == token.Hash(string(s.Data["token"])) {
 				ns, name, ok := token.Locate(string(s.Data["token"]))
 				if s.Labels[v1alpha1.LabelAgentAccess] != "bot" || len(s.OwnerReferences) != 1 || s.OwnerReferences[0].UID != aa.UID ||
-					aa.Status.TokenSecret != "bot-token" || aa.Status.MintedAt == nil || !ok || ns != "team-a" || name != "bot" {
+					aa.Status.TokenSecret != "bot-access-token" || aa.Status.MintedAt == nil || !ok || ns != "team-a" || name != "bot" {
 					t.Fatalf("secret %+v, status %+v", s.ObjectMeta, aa.Status)
 				}
 				return string(s.Data["token"])
@@ -88,28 +89,51 @@ func TestAgentAccesses(t *testing.T) {
 	waitAccess(t, c, "team-a", "bot", ready(true, "TokenMinted"))
 
 	// Deleting the Secret rotates the token.
-	if err := c.Delete(ctx, &corev1.Secret{ObjectMeta: metav1.ObjectMeta{Namespace: "team-a", Name: "bot-token"}}); err != nil {
+	if err := c.Delete(ctx, &corev1.Secret{ObjectMeta: metav1.ObjectMeta{Namespace: "team-a", Name: "bot-access-token"}}); err != nil {
 		t.Fatal(err)
 	}
 	minted(tok)
 
-	// A Runner and an AgentAccess of the same name would share the Secret:
-	// the second is not Ready, and the first keeps its token.
-	create(&v1alpha1.Runner{ObjectMeta: metav1.ObjectMeta{Namespace: "team-a", Name: "shared"}, Spec: v1alpha1.RunnerSpec{Labels: map[string]string{"pool": "x"}}})
-	waitRunner(t, c, "shared", func(rn *v1alpha1.Runner) bool { return rn.Status.TokenHash != "" })
-	var rn v1alpha1.Runner
-	if err := c.Get(ctx, client.ObjectKey{Namespace: "team-a", Name: "shared"}, &rn); err != nil {
-		t.Fatal(err)
-	}
-	create(access("team-a", "shared", ""))
-	waitAccess(t, c, "team-a", "shared", func(aa *v1alpha1.AgentAccess) bool {
-		return ready(false, "SecretNotOwned")(aa) && aa.Status.TokenHash == "" &&
-			strings.Contains(meta.FindStatusCondition(aa.Status.Conditions, v1alpha1.ConditionReady).Message, "is Runner shared's token")
+	// A Runner and an AgentAccess of the same name have a Secret each:
+	// rotating one's token leaves the other's alone.
+	create(&v1alpha1.Runner{ObjectMeta: metav1.ObjectMeta{Namespace: "team-a", Name: "shared"}, Spec: v1alpha1.RunnerSpec{Labels: map[string]string{"pool": "x"}}},
+		access("team-a", "shared", ""))
+	waitRunner(t, c, "shared", func(rn *v1alpha1.Runner) bool {
+		return rn.Status.TokenSecret == "shared-token" && rn.Status.TokenHash != ""
 	})
-	var after v1alpha1.Runner
-	if err := c.Get(ctx, client.ObjectKey{Namespace: "team-a", Name: "shared"}, &after); err != nil || after.Status.TokenHash != rn.Status.TokenHash {
-		t.Fatalf("the Runner's token hash went from %q to %q: %v", rn.Status.TokenHash, after.Status.TokenHash, err)
+	waitAccess(t, c, "team-a", "shared", func(aa *v1alpha1.AgentAccess) bool {
+		return ready(true, "TokenMinted")(aa) && aa.Status.TokenSecret == "shared-access-token"
+	})
+	hashes := func() (runner, access string) {
+		t.Helper()
+		var rn v1alpha1.Runner
+		var aa v1alpha1.AgentAccess
+		if err := errors.Join(c.Get(ctx, client.ObjectKey{Namespace: "team-a", Name: "shared"}, &rn), c.Get(ctx, client.ObjectKey{Namespace: "team-a", Name: "shared"}, &aa)); err != nil {
+			t.Fatal(err)
+		}
+		return rn.Status.TokenHash, aa.Status.TokenHash
 	}
+	runnerHash, accessHash := hashes()
+	for _, rotate := range []struct{ secret, kind string }{{"shared-token", "Runner"}, {"shared-access-token", "AgentAccess"}} {
+		if err := c.Delete(ctx, &corev1.Secret{ObjectMeta: metav1.ObjectMeta{Namespace: "team-a", Name: rotate.secret}}); err != nil {
+			t.Fatal(err)
+		}
+		for deadline := time.Now().Add(10 * time.Second); ; time.Sleep(50 * time.Millisecond) {
+			r, a := hashes()
+			if rotate.kind == "Runner" && r != runnerHash && r != "" && a == accessHash {
+				runnerHash = r
+				break
+			}
+			if rotate.kind == "AgentAccess" && a != accessHash && a != "" && r == runnerHash {
+				accessHash = a
+				break
+			}
+			if time.Now().After(deadline) {
+				t.Fatalf("deleting %s: hashes %s, %s from %s, %s", rotate.secret, r, a, runnerHash, accessHash)
+			}
+		}
+	}
+	waitAccess(t, c, "team-a", "shared", ready(true, "TokenMinted"))
 
 	// One ServiceAccount is one AgentAccess's: the oldest, then by name.
 	create(access("team-a", "first", "agent-sa"), access("team-a", "second", "agent-sa"))
@@ -139,7 +163,7 @@ func TestAgentAccesses(t *testing.T) {
 		return ready(true, "ServiceAccount")(aa) && aa.Status.TokenHash == ""
 	})
 	for deadline := time.Now().Add(10 * time.Second); ; time.Sleep(50 * time.Millisecond) {
-		err := c.Get(ctx, client.ObjectKey{Namespace: "team-a", Name: "bot-token"}, &corev1.Secret{})
+		err := c.Get(ctx, client.ObjectKey{Namespace: "team-a", Name: "bot-access-token"}, &corev1.Secret{})
 		if apierrors.IsNotFound(err) {
 			break
 		}
@@ -151,7 +175,7 @@ func TestAgentAccesses(t *testing.T) {
 	// Outside a Team namespace nothing is minted.
 	create(access("no-team", "bot", ""))
 	waitAccess(t, c, "no-team", "bot", ready(false, "NoTeam"))
-	if err := c.Get(ctx, client.ObjectKey{Namespace: "no-team", Name: "bot-token"}, &corev1.Secret{}); !apierrors.IsNotFound(err) {
+	if err := c.Get(ctx, client.ObjectKey{Namespace: "no-team", Name: "bot-access-token"}, &corev1.Secret{}); !apierrors.IsNotFound(err) {
 		t.Fatalf("a token Secret outside a Team namespace: %v", err)
 	}
 }

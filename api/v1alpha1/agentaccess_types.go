@@ -22,7 +22,7 @@ type AgentAccessSpec struct {
 	// authenticates as, with a projected token for the audience cadre. It
 	// is the ServiceAccount of that name in the AgentAccess's own
 	// namespace. Without it Cadre mints a token for the agent into the
-	// Secret <name>-token.
+	// Secret <name>-access-token.
 	// +optional
 	ServiceAccount *ServiceAccountRef `json:"serviceAccount,omitempty"`
 }

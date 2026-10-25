@@ -20,7 +20,9 @@ import (
 // +kubebuilder:rbac:groups=cadre.dev,resources=agentaccesses/finalizers,verbs=update
 
 // An AgentAccess is reconciled as a Runner is: a ServiceAccount is held by
-// one AgentAccess in its namespace, and without one Cadre mints a token.
+// one AgentAccess in its namespace, and without one Cadre mints a token,
+// into a Secret named apart from a Runner's: a Runner and an AgentAccess of
+// the same name never share one.
 // Its conditions are for humans: what a request is allowed is decided from
 // the spec, and the minted token's hash, when it is made.
 
@@ -29,35 +31,15 @@ type agentAccessReconciler struct{ base }
 func (r *agentAccessReconciler) setup(mgr ctrl.Manager) error {
 	return builderctrl.NewControllerManagedBy(mgr).
 		For(&v1alpha1.AgentAccess{}, builder.WithPredicates(predicate.GenerationChangedPredicate{})).
-		Watches(&v1alpha1.AgentAccess{}, handler.EnqueueRequestsFromMapFunc(r.sharing), builder.WithPredicates(predicate.GenerationChangedPredicate{})).
+		Watches(&v1alpha1.AgentAccess{}, handler.EnqueueRequestsFromMapFunc(sharing(r.client, accessSA, accessSharers)), builder.WithPredicates(predicate.GenerationChangedPredicate{})).
 		Named("agentaccess").WithOptions(r.options()).Complete(r)
-}
-
-// sharing maps an AgentAccess to the others in its namespace naming the
-// same ServiceAccount.
-func (r *agentAccessReconciler) sharing(ctx context.Context, o client.Object) []reconcile.Request {
-	aa, ok := o.(*v1alpha1.AgentAccess)
-	if !ok || aa.Spec.ServiceAccount == nil {
-		return nil
-	}
-	others, err := accessSharers(ctx, r.client, aa.Namespace, aa.Spec.ServiceAccount.Name)
-	if err != nil {
-		return nil
-	}
-	var reqs []reconcile.Request
-	for _, other := range others {
-		if other.Name != aa.Name {
-			reqs = append(reqs, reconcile.Request{NamespacedName: client.ObjectKeyFromObject(&other)})
-		}
-	}
-	return reqs
 }
 
 // accessSharers are the AgentAccesses in ns naming the ServiceAccount sa,
 // for holder to decide which holds it, from their specs alone.
 func accessSharers(ctx context.Context, c client.Reader, ns, sa string) ([]v1alpha1.AgentAccess, error) {
 	var list v1alpha1.AgentAccessList
-	if err := c.List(ctx, &list, client.InNamespace(ns), client.MatchingFields{indexAccessSA: sa}); err != nil {
+	if err := c.List(ctx, &list, client.InNamespace(ns), client.MatchingFields{indexSA: sa}); err != nil {
 		return nil, fmt.Errorf("list agent accesses: %w", err)
 	}
 	return list.Items, nil
@@ -65,7 +47,7 @@ func accessSharers(ctx context.Context, c client.Reader, ns, sa string) ([]v1alp
 
 // tokenOwner is the AgentAccess's minted token.
 func (r *agentAccessReconciler) tokenOwner(aa *v1alpha1.AgentAccess) tokenOwner {
-	return tokenOwner{obj: aa, kind: "AgentAccess", label: v1alpha1.LabelAgentAccess, status: &aa.Status.MintedToken}
+	return tokenOwner{obj: aa, kind: "AgentAccess", secret: AccessTokenSecretName(aa.Name), label: v1alpha1.LabelAgentAccess, status: &aa.Status.MintedToken}
 }
 
 func (r *agentAccessReconciler) Reconcile(ctx context.Context, req reconcile.Request) (reconcile.Result, error) {
@@ -90,8 +72,7 @@ func (r *agentAccessReconciler) Reconcile(ctx context.Context, req reconcile.Req
 			return reconcile.Result{}, err
 		}
 		if h := holder(list); h != nil && h.Name != aa.Name {
-			msg := fmt.Sprintf("ServiceAccount %s is AgentAccess %s's, the oldest AgentAccess naming it (then by name); give this AgentAccess a ServiceAccount of its own", sa.Name, h.Name)
-			return reconcile.Result{RequeueAfter: r.resync}, r.writeStatus(ctx, &aa, &aa.Status.ConfigStatus, false, "ServiceAccountInUse", msg, changed)
+			return reconcile.Result{RequeueAfter: r.resync}, r.writeStatus(ctx, &aa, &aa.Status.ConfigStatus, false, "ServiceAccountInUse", inUse("AgentAccess", sa.Name, h.Name), changed)
 		}
 		return reconcile.Result{RequeueAfter: r.resync}, r.writeStatus(ctx, &aa, &aa.Status.ConfigStatus, true, "ServiceAccount", "", changed)
 	}

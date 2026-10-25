@@ -45,7 +45,7 @@ func (r *reviews) client(objs ...client.Object) client.Client {
 	if err := v1alpha1.AddToScheme(scheme); err != nil {
 		r.t.Fatal(err)
 	}
-	return fake.NewClientBuilder().WithScheme(scheme).WithObjects(objs...).WithStatusSubresource(&v1alpha1.Agent{}).WithIndex(&v1alpha1.Runner{}, indexRunnerSA, runnerSA).WithInterceptorFuncs(interceptor.Funcs{
+	return fake.NewClientBuilder().WithScheme(scheme).WithObjects(objs...).WithStatusSubresource(&v1alpha1.Agent{}).WithIndex(&v1alpha1.Runner{}, indexSA, runnerSA).WithInterceptorFuncs(interceptor.Funcs{
 		Create: func(ctx context.Context, c client.WithWatch, obj client.Object, opts ...client.CreateOption) error {
 			review, ok := obj.(*authorizationv1.SelfSubjectAccessReview)
 			if !ok {

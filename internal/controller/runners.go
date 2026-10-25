@@ -32,28 +32,34 @@ func (r *runnerReconciler) setup(mgr ctrl.Manager) error {
 		For(&v1alpha1.Runner{}, builder.WithPredicates(predicate.GenerationChangedPredicate{})).
 		// The Runners sharing a ServiceAccount decide which holds it: one
 		// made, changed or deleted brings back the others.
-		Watches(&v1alpha1.Runner{}, handler.EnqueueRequestsFromMapFunc(r.sharing), builder.WithPredicates(predicate.GenerationChangedPredicate{})).
+		Watches(&v1alpha1.Runner{}, handler.EnqueueRequestsFromMapFunc(sharing(r.client, runnerSA, sharers)), builder.WithPredicates(predicate.GenerationChangedPredicate{})).
 		Named("runner").WithOptions(r.options()).Complete(r)
 }
 
-// sharing maps a Runner to the others in its namespace naming the same
-// ServiceAccount.
-func (r *runnerReconciler) sharing(ctx context.Context, o client.Object) []reconcile.Request {
-	rn, ok := o.(*v1alpha1.Runner)
-	if !ok || rn.Spec.ServiceAccount == nil {
-		return nil
-	}
-	others, err := sharers(ctx, r.client, rn.Namespace, rn.Spec.ServiceAccount.Name)
-	if err != nil {
-		return nil
-	}
-	var reqs []reconcile.Request
-	for _, other := range others {
-		if other.Name != rn.Name {
-			reqs = append(reqs, reconcile.Request{NamespacedName: client.ObjectKeyFromObject(&other)})
+// sharing maps an object naming a ServiceAccount, a Runner or an
+// AgentAccess, to the others of its kind in its namespace naming the same
+// one: saOf is its index function, and list lists them.
+func sharing[T any, P interface {
+	*T
+	client.Object
+}](c client.Reader, saOf func(client.Object) []string, list func(context.Context, client.Reader, string, string) ([]T, error)) handler.MapFunc {
+	return func(ctx context.Context, o client.Object) []reconcile.Request {
+		sa := saOf(o)
+		if len(sa) == 0 {
+			return nil
 		}
+		others, err := list(ctx, c, o.GetNamespace(), sa[0])
+		if err != nil {
+			return nil
+		}
+		var reqs []reconcile.Request
+		for i := range others {
+			if other := P(&others[i]); other.GetName() != o.GetName() {
+				reqs = append(reqs, reconcile.Request{NamespacedName: client.ObjectKeyFromObject(other)})
+			}
+		}
+		return reqs
 	}
-	return reqs
 }
 
 // sharers are the Runners in ns naming the ServiceAccount sa. Every reader
@@ -61,16 +67,16 @@ func (r *runnerReconciler) sharing(ctx context.Context, o client.Object) []recon
 // from their specs alone: no status, so no lag after an edit.
 func sharers(ctx context.Context, c client.Reader, ns, sa string) ([]v1alpha1.Runner, error) {
 	var list v1alpha1.RunnerList
-	if err := c.List(ctx, &list, client.InNamespace(ns), client.MatchingFields{indexRunnerSA: sa}); err != nil {
+	if err := c.List(ctx, &list, client.InNamespace(ns), client.MatchingFields{indexSA: sa}); err != nil {
 		return nil, fmt.Errorf("list runners: %w", err)
 	}
 	return list.Items, nil
 }
 
-// inUse is the message of a Runner, and of an Agent on it, whose
-// ServiceAccount another Runner holds.
-func inUse(sa, holder string) string {
-	return fmt.Sprintf("ServiceAccount %s is Runner %s's, the oldest Runner naming it (then by name); give this Runner a ServiceAccount of its own", sa, holder)
+// inUse is the message of a Runner or an AgentAccess (kind), and of an
+// Agent on a Runner, whose ServiceAccount another of its kind holds.
+func inUse(kind, sa, holder string) string {
+	return fmt.Sprintf("ServiceAccount %s is %s %s's, the oldest %s naming it (then by name); give this %s a ServiceAccount of its own", sa, kind, holder, kind, kind)
 }
 
 // holder is the one of objs, the Runners or the AgentAccesses naming a
@@ -113,7 +119,7 @@ func (r *runnerReconciler) Reconcile(ctx context.Context, req reconcile.Request)
 			return reconcile.Result{}, err
 		}
 		if h := holder(list); h != nil && h.Name != rn.Name {
-			return reconcile.Result{RequeueAfter: r.resync}, r.writeStatus(ctx, &rn, &rn.Status.ConfigStatus, false, "ServiceAccountInUse", inUse(rn.Spec.ServiceAccount.Name, h.Name), changed)
+			return reconcile.Result{RequeueAfter: r.resync}, r.writeStatus(ctx, &rn, &rn.Status.ConfigStatus, false, "ServiceAccountInUse", inUse("Runner", rn.Spec.ServiceAccount.Name, h.Name), changed)
 		}
 		return reconcile.Result{RequeueAfter: r.resync}, r.writeStatus(ctx, &rn, &rn.Status.ConfigStatus, true, "ServiceAccount", "", changed)
 	}
@@ -133,7 +139,7 @@ func (r *runnerReconciler) Reconcile(ctx context.Context, req reconcile.Request)
 
 // tokenOwner is the Runner's minted token.
 func (r *runnerReconciler) tokenOwner(rn *v1alpha1.Runner) tokenOwner {
-	return tokenOwner{obj: rn, kind: "Runner", label: v1alpha1.LabelRunner, status: &rn.Status.MintedToken}
+	return tokenOwner{obj: rn, kind: "Runner", secret: TokenSecretName(rn.Name), label: v1alpha1.LabelRunner, status: &rn.Status.MintedToken}
 }
 
 // MintedIdentity is the identity of a runner authenticated by a minted

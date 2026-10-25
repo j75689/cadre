@@ -22,10 +22,9 @@ import (
 const (
 	indexModelRef = "spec.modelRef"
 	indexToolRefs = "spec.toolRefs"
-	// indexRunnerSA finds the Runners naming a ServiceAccount.
-	indexRunnerSA = "spec.serviceAccount.name"
-	// indexAccessSA finds the AgentAccesses naming a ServiceAccount.
-	indexAccessSA = "spec.serviceAccount.name"
+	// indexSA finds the Runners, or the AgentAccesses, naming a
+	// ServiceAccount.
+	indexSA = "spec.serviceAccount.name"
 	// indexJobRunner finds the Agents whose Jobs run as a Runner.
 	indexJobRunner = "spec.runtime.job.runnerRef"
 )
@@ -53,10 +52,10 @@ func setupIndexes(mgr ctrl.Manager) error {
 	}); err != nil {
 		return err
 	}
-	if err := idx.IndexField(context.Background(), &v1alpha1.Runner{}, indexRunnerSA, runnerSA); err != nil {
+	if err := idx.IndexField(context.Background(), &v1alpha1.Runner{}, indexSA, runnerSA); err != nil {
 		return err
 	}
-	return idx.IndexField(context.Background(), &v1alpha1.AgentAccess{}, indexAccessSA, accessSA)
+	return idx.IndexField(context.Background(), &v1alpha1.AgentAccess{}, indexSA, accessSA)
 }
 
 // accessSA indexes an AgentAccess by the ServiceAccount it names.
@@ -266,7 +265,7 @@ func (r *agentReconciler) resolveJob(ctx context.Context, agent *v1alpha1.Agent,
 		return false, "", "", err
 	}
 	if h := holder(sharing); h != nil && h.Name != rn.Name {
-		return false, "ServiceAccountInUse", fmt.Sprintf("Runner %s: %s", rn.Name, inUse(rn.Spec.ServiceAccount.Name, h.Name)), nil
+		return false, "ServiceAccountInUse", fmt.Sprintf("Runner %s: %s", rn.Name, inUse("Runner", rn.Spec.ServiceAccount.Name, h.Name)), nil
 	}
 	for k, v := range agent.Spec.Runtime.Selector {
 		if rn.Spec.Labels[k] != v {
