@@ -11,6 +11,10 @@ ENVTEST_VERSION        := v0.25.2
 ENVTEST_K8S_VERSION    := 1.37.0
 HELM_VERSION           := v4.3.1
 KUBECONFORM_VERSION    := v0.8.0
+# kind and kubectl for make e2e, downloaded by hack/e2e/run.sh, which holds
+# their checksums.
+KIND_VERSION           := v0.33.0
+KUBECTL_VERSION        := v1.37.0
 
 # Tool binaries carry their version, so bumping a version installs a new binary
 # instead of silently reusing a stale one.
@@ -27,7 +31,7 @@ define go-install
 	mkdir -p $(TOOLS); mv $$tmp/$$(basename $(2)) $(1); rm -rf $$tmp
 endef
 
-.PHONY: all build test smoke chaos fmt vet lint check tidy clean generate manifests verify-generated verify-tidy tools image images ui ui-check chart-files chart-lint chart-dist print-chart-paths print-helm
+.PHONY: all build test smoke chaos fmt vet lint check tidy clean generate manifests verify-generated verify-tidy tools image images ui ui-check chart-files chart-lint chart-dist print-chart-paths print-helm e2e print-e2e-tools
 
 all: build
 
@@ -52,6 +56,19 @@ image: ## Build one command's image: make image CMD=cadre-server [TAG=dev]
 
 images: ## Build every command's image [TAG=dev]
 	@for c in $(CMDS); do $(MAKE) --no-print-directory image CMD=$$c TAG=$(TAG) || exit 1; done
+
+# e2e installs the chart from the images built at this commit (E2E_CMDS:
+# the server's and the runner's, all it deploys) into a kind
+# cluster, with Dex and SeaweedFS, and checks it through the API and the UI.
+# It needs Docker; KEEP=1 keeps the cluster.
+E2E_TAG ?= e2e-$(shell git rev-parse --short HEAD)
+E2E_CMDS := cadre-server cadre-runner
+e2e: ## Check an install end to end in kind (hack/e2e) [KEEP=1]
+	@for c in $(E2E_CMDS); do $(MAKE) --no-print-directory image CMD=$$c TAG=$(E2E_TAG) || exit 1; done
+	hack/e2e/run.sh $(E2E_TAG)
+
+print-e2e-tools: ## Print the kind and kubectl versions make e2e uses, then its images
+	@echo $(KIND_VERSION) $(KUBECTL_VERSION) $(E2E_CMDS)
 
 test: $(ENVTEST) ## Run all tests, the chaos test in its short form; downloads envtest binaries on first run
 	assets=$$($(ENVTEST) use $(ENVTEST_K8S_VERSION) --bin-dir $(TOOLS)/envtest -p path) && \

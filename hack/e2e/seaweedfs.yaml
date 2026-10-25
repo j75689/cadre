@@ -1,0 +1,47 @@
+# SeaweedFS as the S3 object store of the end-to-end test: one Deployment,
+# in memory, with anonymous S3. run.sh creates the bucket.
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: storage
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: seaweedfs
+  namespace: storage
+spec:
+  replicas: 1
+  selector:
+    matchLabels: { app: seaweedfs }
+  template:
+    metadata:
+      labels: { app: seaweedfs }
+    spec:
+      containers:
+        - name: seaweedfs
+          image: chrislusf/seaweedfs:4.48
+          args: ["server", "-s3", "-s3.port=8333", "-dir=/data"]
+          ports:
+            - containerPort: 8333
+          readinessProbe:
+            tcpSocket: { port: 8333 }
+            periodSeconds: 2
+          volumeMounts:
+            - name: data
+              mountPath: /data
+      volumes:
+        - name: data
+          emptyDir: {}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: seaweedfs
+  namespace: storage
+spec:
+  selector: { app: seaweedfs }
+  ports:
+    - name: s3
+      port: 8333

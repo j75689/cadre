@@ -1,0 +1,80 @@
+# Dex for the end-to-end test (hack/e2e/run.sh): hack/dex/dex.yaml with the
+# issuer at its in-cluster Service, where cadre-server reaches it, and the
+# password grant on, so that the test gets an ID token without a browser.
+# Fake secrets and one static user: dev@example.test, password "password".
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: dex
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: dex
+  namespace: dex
+data:
+  config.yaml: |
+    issuer: http://dex.dex.svc:5556/dex
+    storage:
+      type: memory
+    web:
+      http: 0.0.0.0:5556
+    oauth2:
+      skipApprovalScreen: true
+      passwordConnector: local
+    enablePasswordDB: true
+    staticPasswords:
+      - email: dev@example.test
+        hash: "$2a$10$2b2cU8CPhOTaGrs1HRQuAueS7JTT5ZHsHSzYiFPm1leZck7Mc8T4W"
+        username: dev
+        userID: 08a8684b-db88-4b73-90a9-3cd1661f5466
+    staticClients:
+      - id: cadre
+        name: Cadre
+        secret: cadre-e2e-not-a-secret
+        redirectURIs:
+          - http://localhost:8080/auth/callback
+      - id: cadre-cli
+        name: Cadre CLI
+        public: true
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: dex
+  namespace: dex
+spec:
+  replicas: 1
+  selector:
+    matchLabels: { app: dex }
+  template:
+    metadata:
+      labels: { app: dex }
+    spec:
+      containers:
+        - name: dex
+          image: ghcr.io/dexidp/dex:v2.44.0
+          args: ["dex", "serve", "/etc/dex/config.yaml"]
+          ports:
+            - containerPort: 5556
+          readinessProbe:
+            httpGet: { path: /dex/healthz, port: 5556 }
+            periodSeconds: 2
+          volumeMounts:
+            - name: config
+              mountPath: /etc/dex
+      volumes:
+        - name: config
+          configMap:
+            name: dex
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: dex
+  namespace: dex
+spec:
+  selector: { app: dex }
+  ports:
+    - port: 5556
