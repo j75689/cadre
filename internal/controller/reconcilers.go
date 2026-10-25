@@ -60,16 +60,16 @@ func setupIndexes(mgr ctrl.Manager) error {
 
 // accessSA indexes an AgentAccess by the ServiceAccount it names.
 func accessSA(o client.Object) []string {
-	if sa := o.(*v1alpha1.AgentAccess).Spec.ServiceAccount; sa != nil {
-		return []string{sa.Name}
+	if aa, ok := o.(*v1alpha1.AgentAccess); ok && aa.Spec.ServiceAccount != nil {
+		return []string{aa.Spec.ServiceAccount.Name}
 	}
 	return nil
 }
 
 // runnerSA indexes a Runner by the ServiceAccount it names.
 func runnerSA(o client.Object) []string {
-	if sa := o.(*v1alpha1.Runner).Spec.ServiceAccount; sa != nil {
-		return []string{sa.Name}
+	if rn, ok := o.(*v1alpha1.Runner); ok && rn.Spec.ServiceAccount != nil {
+		return []string{rn.Spec.ServiceAccount.Name}
 	}
 	return nil
 }

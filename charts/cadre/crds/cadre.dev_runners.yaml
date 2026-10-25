@@ -173,6 +173,10 @@ spec:
         required:
         - spec
         type: object
+        x-kubernetes-validations:
+        - message: 'a Runner''s name has at most 247 characters and no dot: it names
+            the Secret <name>-token, which must be a valid name and never an AgentAccess''s'
+          rule: size(self.metadata.name) <= 247 && !self.metadata.name.contains('.')
     served: true
     storage: true
     subresources:

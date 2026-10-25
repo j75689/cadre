@@ -167,10 +167,20 @@ func TestConfigCRDs(t *testing.T) {
 	} {
 		expect(t, c, "AgentAccess "+name, &v1alpha1.AgentAccess{ObjectMeta: meta(), Spec: tc.spec}, tc.valid)
 	}
-	// Its Secret, <name>-access-token, must be a valid name too.
+	// Its Secret, <name>.access-token, must be a valid name too.
 	for size, valid := range map[int]bool{240: true, 241: false} {
 		name := strings.Repeat("a", size)
 		expect(t, c, fmt.Sprintf("AgentAccess of a %d-character name", size), &v1alpha1.AgentAccess{ObjectMeta: metav1.ObjectMeta{Name: name}, Spec: v1alpha1.AgentAccessSpec{Role: "member"}}, valid)
+	}
+	// Neither a Runner's nor an AgentAccess's name has a dot: an
+	// AgentAccess's Secret, <name>.access-token, always has one and a
+	// Runner's, <name>-token, never does.
+	for size, valid := range map[int]bool{247: true, 248: false} {
+		expect(t, c, fmt.Sprintf("Runner of a %d-character name", size), &v1alpha1.Runner{ObjectMeta: metav1.ObjectMeta{Name: strings.Repeat("r", size)}, Spec: v1alpha1.RunnerSpec{Labels: map[string]string{"pool": "x"}}}, valid)
+	}
+	for name, valid := range map[string]bool{"bot-access": true, "bot.access": false} {
+		expect(t, c, "Runner "+name, &v1alpha1.Runner{ObjectMeta: metav1.ObjectMeta{Name: name}, Spec: v1alpha1.RunnerSpec{Labels: map[string]string{"pool": "x"}}}, valid)
+		expect(t, c, "AgentAccess "+name, &v1alpha1.AgentAccess{ObjectMeta: metav1.ObjectMeta{Name: name}, Spec: v1alpha1.AgentAccessSpec{Role: "member"}}, valid)
 	}
 
 	// Defaults: an Agent applied without a runtime is builtin (sent as raw
