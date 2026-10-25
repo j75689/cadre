@@ -36,14 +36,15 @@ export function Subtasks({ ns, name }: { ns: string; name: string }) {
     [ns, name, pages],
   );
 
-  if (error) return <p className="error">Could not load the subtasks: {error}</p>;
-  if (!tasks || tasks.length === 0) return null;
+  // What was loaded stays beside an error; a task with none shows nothing.
+  if (!error && (!tasks || tasks.length === 0)) return null;
   const base = `/t/${encodeURIComponent(ns)}/tasks/`;
   return (
     <section className="subtasks" aria-label="Subtasks">
       <h2>Subtasks</h2>
+      {error && <p className="error">Could not load the subtasks: {error}</p>}
       <ul>
-        {tasks.map((t) => (
+        {(tasks ?? []).map((t) => (
           <li key={t.metadata.name}>
             <span className="number">{t.status?.number !== undefined ? `#${t.status.number}` : "new"}</span>{" "}
             <Link to={base + encodeURIComponent(t.metadata.name)}>{t.spec.title}</Link>{" "}

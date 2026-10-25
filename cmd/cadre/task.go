@@ -80,6 +80,12 @@ func newTaskList(g *globals) *cobra.Command {
 			for _, p := range phases {
 				ps = append(ps, v1alpha1.Phase(p))
 			}
+			if parent != "" {
+				var err error
+				if parent, err = resolve(cmd.Context(), g.client(), g.namespace, parent); err != nil {
+					return err
+				}
+			}
 			list, err := g.client().ListTasks(cmd.Context(), g.namespace, client.TaskQuery{Phases: ps, Parent: parent, Limit: limit})
 			if err != nil {
 				return err
@@ -93,7 +99,7 @@ func newTaskList(g *globals) *cobra.Command {
 		},
 	}
 	cmd.Flags().StringSliceVar(&phases, "phase", nil, "only these phases; repeatable")
-	cmd.Flags().StringVar(&parent, "parent", "", "only the subtasks of this task, by name")
+	cmd.Flags().StringVar(&parent, "parent", "", "only the subtasks of this task, by name or #number")
 	cmd.Flags().IntVar(&limit, "limit", 100, "at most this many tasks")
 	return cmd
 }

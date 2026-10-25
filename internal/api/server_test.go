@@ -153,10 +153,16 @@ func TestAPIRejectsBadInput(t *testing.T) {
 	if _, err := c.ListTasks(ctx, ns, client.TaskQuery{Phases: []v1alpha1.Phase{"Sleeping"}}); !client.IsCode(err, httpjson.CodeInvalid) {
 		t.Errorf("unknown phase: %v", err)
 	}
-	if _, err := c.ListTasks(ctx, ns, client.TaskQuery{Parent: "Not_A_Label"}); !client.IsCode(err, httpjson.CodeInvalid) {
-		t.Errorf("a parent that is not a DNS label: %v", err)
+	if _, err := c.ListTasks(ctx, ns, client.TaskQuery{Parent: "Not_A_Name"}); !client.IsCode(err, httpjson.CodeInvalid) {
+		t.Errorf("a parent that is not a task name: %v", err)
 	}
-	for _, q := range []string{"limit=-1", "parent=a.b", "parent=" + strings.Repeat("a", 64)} {
+	// A task name is a DNS subdomain: dots, and more than 63 characters.
+	for _, parent := range []string{"release.2026", strings.Repeat("a", 64)} {
+		if _, err := c.ListTasks(ctx, ns, client.TaskQuery{Parent: parent}); err != nil {
+			t.Errorf("parent %q: %v", parent, err)
+		}
+	}
+	for _, q := range []string{"limit=-1", "parent=-a", "parent=" + strings.Repeat("a", 254), "parent=a&parent=b"} {
 		resp, err := http.Get(base + "/api/v1/namespaces/" + ns + "/tasks?" + q)
 		if err != nil {
 			t.Fatal(err)

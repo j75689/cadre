@@ -119,6 +119,9 @@ func Open(ctx context.Context, cfg Config) (*Driver, error) {
 		}
 		synced = append(synced, inf.HasSynced)
 		if _, ok := obj.(*v1alpha1.Task); ok {
+			if err := indexParents(ctx, d.index); err != nil {
+				return nil, err
+			}
 			d.tasks = inf
 			if d.handler, err = inf.AddEventHandler(toolscache.ResourceEventHandlerFuncs{
 				AddFunc:    func(o any) { d.notify(o) },
@@ -243,13 +246,37 @@ func (d *Driver) IndexedTeam(ctx context.Context, namespace string) (*v1alpha1.T
 	return team, nil
 }
 
+// indexParent indexes cached Tasks by spec.parentRef.name, so that a
+// task's subtasks are listed without reading its whole namespace.
+const indexParent = "spec.parentRef.name"
+
+// indexParents adds the parent index to a cache. A cache shared with an
+// earlier driver has it already: the same index, kept.
+func indexParents(ctx context.Context, c cache.Cache) error {
+	err := c.IndexField(ctx, &v1alpha1.Task{}, indexParent, func(o client.Object) []string {
+		if p := o.(*v1alpha1.Task).Spec.ParentRef; p != nil {
+			return []string{p.Name}
+		}
+		return nil
+	})
+	if err != nil && !strings.Contains(err.Error(), "indexer conflict") {
+		return fmt.Errorf("index tasks by parent: %w", err)
+	}
+	return nil
+}
+
 // ListTasks implements storage.Index from the informer cache.
 func (d *Driver) ListTasks(ctx context.Context, q storage.Query) ([]v1alpha1.Task, error) {
 	if err := q.Validate(); err != nil {
 		return nil, err
 	}
+	opts := []client.ListOption{client.InNamespace(q.Namespace)}
+	if q.Parent != "" {
+		// Its subtasks only, from the parent index; Matches checks again.
+		opts = append(opts, client.MatchingFields{indexParent: q.Parent})
+	}
 	list := &v1alpha1.TaskList{}
-	if err := d.index.List(ctx, list, client.InNamespace(q.Namespace)); err != nil {
+	if err := d.index.List(ctx, list, opts...); err != nil {
 		return nil, fmt.Errorf("list tasks: %w", err)
 	}
 	matched := make([]*v1alpha1.Task, 0, len(list.Items))

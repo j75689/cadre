@@ -158,6 +158,22 @@ describe("Subtasks", () => {
     expect(screen.queryByRole("button", { name: "Load more" })).toBeNull();
   });
 
+  it("keeps the subtasks it has beside an error", async () => {
+    let down = false;
+    const subtasks = [subtask(1)];
+    server([], undefined, subtasks);
+    const inner = globalThis.fetch;
+    vi.stubGlobal("fetch", (url: string, init?: RequestInit) =>
+      down && url.includes("parent=") ? json({ error: { code: "Internal", message: "index unavailable" } }, 500) : inner(url, init),
+    );
+    renderTask();
+    expect(await screen.findByText("Step 1")).toBeTruthy();
+    down = true;
+    await act(() => vi.advanceTimersByTimeAsync(5000));
+    expect(await screen.findByText(/Could not load the subtasks/)).toBeTruthy();
+    expect(screen.getByText("Step 1")).toBeTruthy();
+  });
+
   it("shows no section for a task without subtasks", async () => {
     const calls = server([]);
     renderTask();
