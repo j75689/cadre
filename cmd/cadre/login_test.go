@@ -177,3 +177,28 @@ func TestLoginForgetsWithoutLogins(t *testing.T) {
 		t.Errorf("credentials %v", creds)
 	}
 }
+
+// cadre auth token prints the stored token while it is good for more than
+// a minute, for an agent's Authorization header, and refuses otherwise.
+func TestAuthToken(t *testing.T) {
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+	server := "http://cadre.example.test"
+	if _, err := run("--server", server, "auth", "token"); err == nil || !strings.Contains(err.Error(), "no login") {
+		t.Fatalf("without a login: %v", err)
+	}
+	for _, tc := range []struct {
+		left time.Duration
+		ok   bool
+	}{{time.Hour, true}, {30 * time.Second, false}, {-time.Minute, false}} {
+		if err := (credentials{server: {IDToken: "the-token", Expires: time.Now().Add(tc.left)}}).save(); err != nil {
+			t.Fatal(err)
+		}
+		out, err := run("--server", server+"/", "auth", "token")
+		switch {
+		case tc.ok && (err != nil || out != "the-token\n"):
+			t.Errorf("%s left: %q, %v", tc.left, out, err)
+		case !tc.ok && (err == nil || !strings.Contains(err.Error(), "run cadre login") || strings.Contains(out, "the-token")):
+			t.Errorf("%s left: printed %q, %v", tc.left, out, err)
+		}
+	}
+}

@@ -476,6 +476,33 @@ func originOf(raw string) (string, bool) {
 	return u.Scheme + "://" + host, true
 }
 
+// Bearer authenticates every request to next with a bearer ID token, and
+// with nothing else: no session cookie, so no request from a page in a
+// browser can act for its user. It is for endpoints called by programs,
+// /mcp. The identity is built as Wrap builds it from a bearer token.
+func (o *OIDC) Bearer(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		o.serveBearer(w, r, next)
+	})
+}
+
+// serveBearer verifies the request's bearer ID token and serves next with
+// its identity, the one way both Wrap and Bearer read a bearer token.
+func (o *OIDC) serveBearer(w http.ResponseWriter, r *http.Request, next http.Handler) {
+	d := o.ready.Load()
+	if d == nil {
+		httpjson.WriteError(w, http.StatusServiceUnavailable, httpjson.CodeUnavailable, notReady)
+		return
+	}
+	raw, ok := strings.CutPrefix(r.Header.Get("Authorization"), "Bearer ")
+	id, _, _, err := o.verify(r.Context(), d, strings.TrimSpace(raw))
+	if !ok || err != nil {
+		httpjson.WriteError(w, http.StatusUnauthorized, httpjson.CodeUnauthenticated, "the bearer token is not a valid ID token for this server; run cadre login")
+		return
+	}
+	next.ServeHTTP(w, r.WithContext(WithIdentity(r.Context(), id)))
+}
+
 // Wrap implements Authenticator. Under base, every route but base/auth
 // needs an identity: a bearer ID token, or the session cookie. A change
 // made with the cookie must come from this site.
@@ -485,19 +512,8 @@ func (o *OIDC) Wrap(next http.Handler, base string) http.Handler {
 			next.ServeHTTP(w, r)
 			return
 		}
-		if h := r.Header.Get("Authorization"); h != "" {
-			d := o.ready.Load()
-			if d == nil {
-				httpjson.WriteError(w, http.StatusServiceUnavailable, httpjson.CodeUnavailable, notReady)
-				return
-			}
-			raw, ok := strings.CutPrefix(h, "Bearer ")
-			id, _, _, err := o.verify(r.Context(), d, strings.TrimSpace(raw))
-			if !ok || err != nil {
-				httpjson.WriteError(w, http.StatusUnauthorized, httpjson.CodeUnauthenticated, "the bearer token is not a valid ID token for this server; run cadre login")
-				return
-			}
-			next.ServeHTTP(w, r.WithContext(WithIdentity(r.Context(), id)))
+		if r.Header.Get("Authorization") != "" {
+			o.serveBearer(w, r, next)
 			return
 		}
 		var s session

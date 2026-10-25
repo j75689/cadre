@@ -1,4 +1,6 @@
-// Package mcp serves the per-run MCP endpoint, /mcp/run: the tools a run may
+// Package mcp serves Cadre's two MCP endpoints. The board endpoint, /mcp
+// (Board), gives agents outside Cadre the board's tools, as the person whose
+// ID token they send. The per-run endpoint, /mcp/run, gives the tools a run may
 // use, executed on the Cadre side with the run's identity. A request carries
 // the run's token as "Authorization: Bearer <token>"; the token is handed to
 // the runner at claim, is bound to that one run and dies with it, and every

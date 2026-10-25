@@ -87,46 +87,72 @@ func (s *Server) Register(mux *http.ServeMux) {
 	mux.HandleFunc("GET "+Base+"/me", s.me)
 }
 
-// guard lets a request through when the caller's role on the team of its
-// namespace allows action. A team the caller has no role on, or that does
-// not exist, is refused with 403, so its existence is not told; a bootstrap
-// admin passes, and the handler answers 404 for what is not there. The
-// board index decides first, seconds behind the store at worst: a refusal
-// there is final, since a lagging index can grant too much, never too
-// little. A write the index allows is confirmed on the Team read from the
-// store, so a role taken away fences the next write, and only someone the
-// index already lets write costs a store read.
+// guard lets a request through when Check allows action on the team of
+// its namespace.
 func (s *Server) guard(action authz.Action, h http.HandlerFunc) http.HandlerFunc {
 	if s.policy == nil {
 		return h
 	}
 	return func(w http.ResponseWriter, r *http.Request) {
-		id, ok := auth.FromContext(r.Context())
-		if !ok {
+		var refused *Refused
+		switch err := Check(r.Context(), s.m, s.policy, r.PathValue("ns"), action); {
+		case errors.Is(err, ErrUnauthenticated):
 			httpjson.WriteError(w, http.StatusUnauthorized, httpjson.CodeUnauthenticated, "log in first")
-			return
+		case errors.As(err, &refused):
+			httpjson.WriteError(w, http.StatusForbidden, httpjson.CodeNoRole, refused.Message)
+		case err != nil:
+			httpjson.Fail(w, s.log, err)
+		default:
+			h(w, r)
 		}
-		ns := r.PathValue("ns")
-		reads := []func(context.Context, string) (*v1alpha1.Team, error){s.m.Team}
-		if action != authz.Read {
-			reads = append(reads, s.m.LiveTeam)
-		}
-		for _, read := range reads {
-			team, err := read(r.Context(), ns)
-			switch {
-			case errors.Is(err, storage.ErrNotFound):
-				team = nil
-			case err != nil:
-				httpjson.Fail(w, s.log, err)
-				return
-			}
-			if role, _ := s.policy.Role(id, team); !authz.Allowed(role, action) {
-				httpjson.WriteError(w, http.StatusForbidden, httpjson.CodeNoRole, authz.Refusal(ns, role, action))
-				return
-			}
-		}
-		h(w, r)
 	}
+}
+
+// ErrUnauthenticated is a request with no identity where logins are on.
+var ErrUnauthenticated = errors.New("log in first")
+
+// Refused is an action the caller's role does not allow; its message names
+// the role it needs and the caller's.
+type Refused struct{ Message string }
+
+func (r *Refused) Error() string { return r.Message }
+
+// Check decides whether the caller of ctx may take action on the team of
+// namespace ns, under policy (nil: everyone may do anything). A team the
+// caller has no role on, or that does not exist, is a refusal, so its
+// existence is not told; a bootstrap admin passes, and what is not there is
+// answered later as not found. The board index decides first, seconds
+// behind the store at worst: a refusal there is final, since a lagging
+// index can grant too much, never too little. A write the index allows is
+// confirmed on the Team read from the store, so a role taken away fences
+// the next write, and only someone the index already lets write costs a
+// store read. The API's routes and the MCP endpoint's tools all decide
+// here.
+func Check(ctx context.Context, m *manager.Manager, policy *authz.Policy, ns string, action authz.Action) error {
+	if policy == nil {
+		return nil
+	}
+	id, ok := auth.FromContext(ctx)
+	if !ok {
+		return ErrUnauthenticated
+	}
+	reads := []func(context.Context, string) (*v1alpha1.Team, error){m.Team}
+	if action != authz.Read {
+		reads = append(reads, m.LiveTeam)
+	}
+	for _, read := range reads {
+		team, err := read(ctx, ns)
+		switch {
+		case errors.Is(err, storage.ErrNotFound):
+			team = nil
+		case err != nil:
+			return err
+		}
+		if role, _ := policy.Role(id, team); !authz.Allowed(role, action) {
+			return &Refused{Message: authz.Refusal(ns, role, action)}
+		}
+	}
+	return nil
 }
 
 // me says who the caller is and their role on each team they may see.
