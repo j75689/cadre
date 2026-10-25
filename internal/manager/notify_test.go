@@ -573,19 +573,76 @@ func TestNotifyUnseenNotifierIsNotGone(t *testing.T) {
 	key := e.addTask(t, "x", v1alpha1.AssigneeAgent)
 	e.question(t, key)
 	nf := e.m.cfg.Notifiers.(StaticNotifiers)
-	for listed, want := range []struct{ a, b, items int }{ // deliveries so far
-		{0, 0, 1}, // neither seen: not acked
-		{1, 0, 1}, // a seen: sent to a, not removed
-		{1, 1, 0}, // both: sent to b, and removed
+	for listed, want := range []struct{ a, b, items, writes int }{ // deliveries so far
+		{0, 0, 1, 0}, // neither seen: not acked, and nothing written
+		{1, 0, 1, 2}, // a seen: sent to a (the claim and the record), not removed
+		{1, 1, 0, 2}, // both: sent to b, and removed
 	} {
+		var writes int
+		e.m.store = countWrites{e.store, &writes}
 		e.m.cfg.Notifiers = unseenNotifiers{nf, listed}
 		if err := e.m.DeliverNotifications(ctx); err != nil {
 			t.Fatal(err)
 		}
 		items := notifyItems(e.get(t, key))
-		if len(a.deliveries()) != want.a || len(b.deliveries()) != want.b || len(items) != want.items {
-			t.Errorf("%d seen: a %d, b %d deliveries, items %+v", listed, len(a.deliveries()), len(b.deliveries()), items)
+		if len(a.deliveries()) != want.a || len(b.deliveries()) != want.b || len(items) != want.items || writes != want.writes {
+			t.Errorf("%d seen: a %d, b %d deliveries, %d writes, items %+v", listed, len(a.deliveries()), len(b.deliveries()), writes, items)
 		}
+	}
+}
+
+// A notification left only to Notifiers this server has not seen is
+// dropped when it expires, as one nobody took, and the Event says why.
+func TestNotifyUnseenNotifierExpires(t *testing.T) {
+	rec := newReceiver(t)
+	e, recorded := notifyEnv(t, notifier("hook", rec.URL, nil, v1alpha1.NotifyQuestion))
+	key := e.addTask(t, "x", v1alpha1.AssigneeAgent)
+	e.question(t, key)
+	e.m.cfg.Notifiers = unseenNotifiers{e.m.cfg.Notifiers.(StaticNotifiers), 0}
+	e.clock.add(NotifyTTL + time.Minute)
+	if err := e.m.DeliverNotifications(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if items := notifyItems(e.get(t, key)); len(items) != 0 || len(rec.deliveries()) != 0 {
+		t.Errorf("items %+v, %d deliveries", items, len(rec.deliveries()))
+	}
+	if last := (*recorded)[len(*recorded)-1]; !strings.Contains(last, "NotificationDropped") || !strings.Contains(last, "hook were not in this server's cache") {
+		t.Errorf("recorded %v", *recorded)
+	}
+}
+
+// unreadableNotifiers cannot read a Notifier missing from its list.
+type unreadableNotifiers struct{ unseenNotifiers }
+
+func (unreadableNotifiers) NotifierGone(context.Context, string, string) (bool, error) {
+	return false, errors.New("the API server is unavailable")
+}
+
+// A Notifier that cannot be read is not gone: the notification stays,
+// nothing is written, and the pass goes on.
+func TestNotifyUnreadableNotifierIsNotGone(t *testing.T) {
+	rec := newReceiver(t)
+	e, _ := notifyEnv(t, notifier("hook", rec.URL, nil, v1alpha1.NotifyQuestion))
+	key := e.addTask(t, "x", v1alpha1.AssigneeAgent)
+	e.question(t, key)
+	nf := e.m.cfg.Notifiers.(StaticNotifiers)
+	nf.Items = nil // deleted, but the read cannot say so
+	e.m.cfg.Notifiers = unreadableNotifiers{unseenNotifiers{nf, 0}}
+	var writes int
+	e.m.store = countWrites{e.store, &writes}
+	if err := e.m.DeliverNotifications(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if items := notifyItems(e.get(t, key)); len(items) != 1 || writes != 0 {
+		t.Errorf("%d writes, items %+v", writes, items)
+	}
+	// Read again, it is gone: the turn's end removes the notification.
+	e.m.cfg.Notifiers = nf
+	if err := e.m.DeliverNotifications(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if items := notifyItems(e.get(t, key)); len(items) != 0 || writes != 2 {
+		t.Errorf("%d writes, items %+v", writes, items)
 	}
 }
 

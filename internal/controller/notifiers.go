@@ -153,6 +153,10 @@ func (n notifiers) ListNotifiers(ctx context.Context, ns string) ([]v1alpha1.Not
 // NotifierGone reads the Notifier from the API server, not the cache: a
 // Notifier just made may not be in the cache yet.
 func (n notifiers) NotifierGone(ctx context.Context, ns, name string) (bool, error) {
+	// Bounded, as Delivered is: a slow API server must not hold the
+	// deliveries up.
+	ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
+	defer cancel()
 	err := n.fresh.Get(ctx, types.NamespacedName{Namespace: ns, Name: name}, &v1alpha1.Notifier{})
 	if apierrors.IsNotFound(err) {
 		return true, nil
