@@ -284,8 +284,10 @@ func (m *Manager) sendingElsewhere(n *v1alpha1.Notification) bool {
 
 // notifyItem sends one notification to those of its Notifiers that have
 // not taken it; a Notifier that no longer exists counts as having taken
-// it. It reports whether the item is done: all took it, or it outlived
-// NotifyTTL, in which case drop says so once the item is acked.
+// it. It reports whether the item is to be acked: it was found with
+// nothing pending, or it outlived NotifyTTL, in which case drop says so
+// once it is. An item every Notifier took is removed by the very write
+// that records it (task.NotifyDelivered), and needs no ack.
 func (m *Manager) notifyItem(ctx context.Context, key storage.Key, it v1alpha1.OutboxItem, byName map[string]*v1alpha1.Notifier) (done bool, drop func(), err error) {
 	// The read that found it decides whether there is anything to try:
 	// nothing pending, or nobody pending Ready, costs no write.
@@ -312,13 +314,16 @@ func (m *Manager) notifyItem(ctx context.Context, key storage.Key, it v1alpha1.O
 	// The claim found the item, so it is in the task the claim wrote.
 	it = t.Status.Outbox[slices.IndexFunc(t.Status.Outbox, func(o v1alpha1.OutboxItem) bool { return o.ID == it.ID })]
 	n := it.Notify
+	gone := goneOf(n, byName)
 	endTurn := func() error {
-		_, err := m.transition(ctx, key, task.NotifyDelivered{ID: it.ID, By: m.id})
+		_, err := m.transition(ctx, key, task.NotifyDelivered{ID: it.ID, By: m.id, Gone: gone})
 		return err
 	}
 	pending = pendingOf(n, byName)
 	if len(pending) == 0 {
-		return true, nil, endTurn()
+		// Taken by all since the read that found it: ending the turn
+		// removes it.
+		return false, nil, endTurn()
 	}
 	if m.now().Sub(n.At.Time) > NotifyTTL {
 		names := make([]string, len(pending))
@@ -363,12 +368,25 @@ func (m *Manager) notifyItem(ctx context.Context, key storage.Key, it v1alpha1.O
 		})
 	}
 	wg.Wait()
-	// Record who took it, and end this server's turn, before any ack: an
-	// ack that fails then resends to nobody who has it.
-	if _, err := m.transition(ctx, key, task.NotifyDelivered{ID: it.ID, To: took, By: m.id}); err != nil {
+	// Record who took it, and end this server's turn; once all have, the
+	// same write removes the item. A write that fails records nothing, and
+	// the next pass sends to them again.
+	if _, err := m.transition(ctx, key, task.NotifyDelivered{ID: it.ID, To: took, By: m.id, Gone: gone}); err != nil {
 		return false, nil, errors.Join(append(errs, err)...)
 	}
-	return len(took) == len(pending), nil, errors.Join(errs...)
+	return false, nil, errors.Join(errs...)
+}
+
+// goneOf is the Notifiers of n that no longer exist: they count as having
+// taken it.
+func goneOf(n *v1alpha1.Notification, byName map[string]*v1alpha1.Notifier) []string {
+	var out []string
+	for _, name := range n.To {
+		if _, ok := byName[name]; !ok && !slices.Contains(n.Delivered, name) {
+			out = append(out, name)
+		}
+	}
+	return out
 }
 
 // pendingOf is the Notifiers of n that exist and have not taken it.

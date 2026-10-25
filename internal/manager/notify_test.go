@@ -487,20 +487,67 @@ func (f failAcks) UpdateTaskStatus(ctx context.Context, t *v1alpha1.Task) error 
 	return f.Driver.UpdateTaskStatus(ctx, t)
 }
 
-// Who took it is written before the ack, so an ack that fails resends to
-// nobody.
-func TestNotifyRecordsBeforeTheAck(t *testing.T) {
-	rec := newReceiver(t)
-	e, _ := notifyEnv(t, notifier("hook", rec.URL, nil, v1alpha1.NotifyQuestion))
+// Who took it is written as it is taken, so a Notifier that failed is sent
+// to again without resending to one that took it.
+func TestNotifyRecordsWhoTookIt(t *testing.T) {
+	ok, bad := newReceiver(t), newReceiver(t)
+	bad.answer(http.StatusBadGateway)
+	e, _ := notifyEnv(t, notifier("a", ok.URL, nil, v1alpha1.NotifyQuestion), notifier("b", bad.URL, nil, v1alpha1.NotifyQuestion))
 	key := e.addTask(t, "x", v1alpha1.AssigneeAgent)
 	e.question(t, key)
-	e.m.store = failAcks{e.store}
 	_ = e.m.DeliverNotifications(ctx)
 	_ = e.m.DeliverNotifications(ctx)
-	if n := len(rec.deliveries()); n != 1 {
-		t.Errorf("%d deliveries with the acks lost, want 1", n)
+	if na, nb := len(ok.deliveries()), len(bad.deliveries()); na != 1 || nb != 2 {
+		t.Errorf("a %d, b %d deliveries; want a once and b on every pass", na, nb)
 	}
-	if items := notifyItems(e.get(t, key)); len(items) != 1 || strings.Join(items[0].Notify.Delivered, ",") != "hook" {
+	if items := notifyItems(e.get(t, key)); len(items) != 1 || strings.Join(items[0].Notify.Delivered, ",") != "a" {
+		t.Errorf("items %+v", items)
+	}
+}
+
+// A notification every Notifier takes on the first try costs two writes:
+// the claim, and the record of who took it, which removes it. No ack.
+func TestNotifyTakenByAllIsTwoWrites(t *testing.T) {
+	a, b := newReceiver(t), newReceiver(t)
+	e, _ := notifyEnv(t, notifier("a", a.URL, nil, v1alpha1.NotifyQuestion), notifier("b", b.URL, nil, v1alpha1.NotifyQuestion))
+	key := e.addTask(t, "x", v1alpha1.AssigneeAgent)
+	e.question(t, key)
+	var writes int
+	e.m.store = countWrites{e.store, &writes}
+	if err := e.m.DeliverNotifications(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if writes != 2 || len(a.deliveries()) != 1 || len(b.deliveries()) != 1 {
+		t.Errorf("%d writes, %d and %d deliveries; want 2 writes, one delivery each", writes, len(a.deliveries()), len(b.deliveries()))
+	}
+	if items := notifyItems(e.get(t, key)); len(items) != 0 {
+		t.Errorf("a notification all took stayed: %+v", items)
+	}
+	// Nothing left: another pass writes nothing.
+	if err := e.m.DeliverNotifications(ctx); err != nil || writes != 2 {
+		t.Errorf("%d writes after another pass, %v", writes, err)
+	}
+}
+
+// A Notifier deleted since the notification was written counts as having
+// taken it: the record of the others removes it.
+func TestNotifyGoneNotifierCountsAsTaken(t *testing.T) {
+	a, b := newReceiver(t), newReceiver(t)
+	e, _ := notifyEnv(t, notifier("a", a.URL, nil, v1alpha1.NotifyQuestion), notifier("b", b.URL, nil, v1alpha1.NotifyQuestion))
+	key := e.addTask(t, "x", v1alpha1.AssigneeAgent)
+	e.question(t, key)
+	nf := e.m.cfg.Notifiers.(StaticNotifiers)
+	nf.Items = nf.Items[:1] // b is deleted
+	e.m.cfg.Notifiers = nf
+	var writes int
+	e.m.store = countWrites{e.store, &writes}
+	if err := e.m.DeliverNotifications(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if writes != 2 || len(a.deliveries()) != 1 || len(b.deliveries()) != 0 {
+		t.Errorf("%d writes, a %d, b %d deliveries", writes, len(a.deliveries()), len(b.deliveries()))
+	}
+	if items := notifyItems(e.get(t, key)); len(items) != 0 {
 		t.Errorf("items %+v", items)
 	}
 }
@@ -549,8 +596,8 @@ func TestNotifyNotReadyCostsNoWrite(t *testing.T) {
 	}
 }
 
-// Finished by another server since it was read: the turn is ended and the
-// item acked, with nothing sent.
+// Finished by another server since it was read: nothing is sent, and
+// nothing is left to ack.
 func TestNotifyFinishedMeanwhile(t *testing.T) {
 	rec := newReceiver(t)
 	e, _ := notifyEnv(t, notifier("hook", rec.URL, nil, v1alpha1.NotifyQuestion))
@@ -560,13 +607,41 @@ func TestNotifyFinishedMeanwhile(t *testing.T) {
 	if _, err := e.m.transition(ctx, key, task.NotifyDelivered{ID: stale.ID, To: []string{"hook"}}); err != nil {
 		t.Fatal(err)
 	}
-	nfs, _ := e.m.cfg.Notifiers.ListNotifiers(ctx, ns)
-	done, _, err := e.m.notifyItem(ctx, key, stale, map[string]*v1alpha1.Notifier{"hook": &nfs[0]})
-	if err != nil || !done || len(rec.deliveries()) != 0 {
-		t.Fatalf("done %v, %v, %d deliveries", done, err, len(rec.deliveries()))
+	if items := notifyItems(e.get(t, key)); len(items) != 0 {
+		t.Fatalf("the record of the last Notifier left %+v", items)
 	}
-	if n := notifyItems(e.get(t, key))[0].Notify; n.SendingBy != "" {
-		t.Errorf("the turn outlived the work: %+v", n)
+	nfs, _ := e.m.cfg.Notifiers.ListNotifiers(ctx, ns)
+	ack, _, err := e.m.notifyItem(ctx, key, stale, map[string]*v1alpha1.Notifier{"hook": &nfs[0]})
+	if err != nil || ack || len(rec.deliveries()) != 0 {
+		t.Fatalf("ack %v, %v, %d deliveries", ack, err, len(rec.deliveries()))
+	}
+}
+
+// An item recorded as taken by all but still there, as a server before
+// NotifyDelivered removed items left it, is removed by the turn that finds
+// nothing pending: the turn ends with it.
+func TestNotifyTakenItemLeftByAnOlderServer(t *testing.T) {
+	rec := newReceiver(t)
+	e, _ := notifyEnv(t, notifier("hook", rec.URL, nil, v1alpha1.NotifyQuestion))
+	key := e.addTask(t, "x", v1alpha1.AssigneeAgent)
+	e.question(t, key)
+	stale := notifyItems(e.get(t, key))[0]
+	tk := e.get(t, key)
+	for i := range tk.Status.Outbox {
+		if tk.Status.Outbox[i].ID == stale.ID {
+			tk.Status.Outbox[i].Notify.Delivered = []string{"hook"}
+		}
+	}
+	if err := e.store.UpdateTaskStatus(ctx, tk); err != nil {
+		t.Fatal(err)
+	}
+	nfs, _ := e.m.cfg.Notifiers.ListNotifiers(ctx, ns)
+	ack, _, err := e.m.notifyItem(ctx, key, stale, map[string]*v1alpha1.Notifier{"hook": &nfs[0]})
+	if err != nil || ack || len(rec.deliveries()) != 0 {
+		t.Fatalf("ack %v, %v, %d deliveries", ack, err, len(rec.deliveries()))
+	}
+	if items := notifyItems(e.get(t, key)); len(items) != 0 {
+		t.Errorf("items %+v", items)
 	}
 }
 

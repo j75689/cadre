@@ -313,11 +313,15 @@ func (ReserveItem) kind() Kind { return KindReserve }
 
 // NotifyDelivered records that the Notifiers To took the Notify item ID,
 // so later passes send it only to the others, and ends By's turn sending
-// it.
+// it. Gone are the item's Notifiers that no longer exist, which count as
+// having taken it. Once every Notifier of the item has, the item is
+// removed in the same write: the record and the ack are one, so no ack can
+// be lost after the record and none is needed.
 type NotifyDelivered struct {
-	ID string
-	To []string
-	By string
+	ID   string
+	To   []string
+	By   string
+	Gone []string
 }
 
 func (NotifyDelivered) kind() Kind { return KindDelivered }
@@ -597,6 +601,9 @@ func Apply(t *v1alpha1.Task, ev Event, now time.Time) (Result, error) {
 				n.SendingBy, n.SendingUntil = "", nil
 			}
 		}
+		s.Outbox = slices.DeleteFunc(s.Outbox, func(it v1alpha1.OutboxItem) bool {
+			return it.ID == ev.ID && it.Notify != nil && taken(it.Notify, ev.Gone)
+		})
 
 	case NotifyClaim:
 		if ev.By == "" || !ev.Until.After(now) {
@@ -645,6 +652,16 @@ func Apply(t *v1alpha1.Task, ev Event, now time.Time) (Result, error) {
 		return Result{}, fmt.Errorf("event %T: %w", ev, ErrInvalidEvent)
 	}
 	return res, nil
+}
+
+// taken reports whether every Notifier of n took it, or is gone.
+func taken(n *v1alpha1.Notification, gone []string) bool {
+	for _, to := range n.To {
+		if !slices.Contains(n.Delivered, to) && !slices.Contains(gone, to) {
+			return false
+		}
+	}
+	return true
 }
 
 var waitingReasons = []v1alpha1.WaitingReason{
