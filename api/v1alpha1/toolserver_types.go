@@ -1,6 +1,7 @@
 package v1alpha1
 
 import (
+	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
 
@@ -61,6 +62,11 @@ type ManagedServer struct {
 	// +kubebuilder:default=/mcp
 	// +optional
 	Path string `json:"path,omitempty"`
+
+	// ReadinessProbe replaces the server container's default readiness
+	// probe, a TCP connect to Port, for a server with a health endpoint.
+	// +optional
+	ReadinessProbe *corev1.Probe `json:"readinessProbe,omitempty"`
 }
 
 // ToolServerSpec describes one MCP server: an external one at a URL, or one

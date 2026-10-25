@@ -125,6 +125,7 @@ func (r *toolServerReconciler) ensureDeployment(ctx context.Context, ts *v1alpha
 	labels := map[string]string{LabelToolServer: ts.Name}
 	replicas := int32(1)
 	ports := []corev1.ContainerPort{{Name: "mcp", ContainerPort: ts.Spec.Managed.Port, Protocol: corev1.ProtocolTCP}}
+	probe := readinessProbe(ts.Spec.Managed)
 	var dep appsv1.Deployment
 	err := r.client.Get(ctx, client.ObjectKey{Namespace: ts.Namespace, Name: ts.Name}, &dep)
 	switch {
@@ -138,7 +139,7 @@ func (r *toolServerReconciler) ensureDeployment(ctx context.Context, ts *v1alpha
 				Selector: &metav1.LabelSelector{MatchLabels: labels},
 				Template: corev1.PodTemplateSpec{
 					ObjectMeta: metav1.ObjectMeta{Labels: labels},
-					Spec:       corev1.PodSpec{Containers: []corev1.Container{{Name: "server", Image: ts.Spec.Managed.Image, Ports: ports}}},
+					Spec:       corev1.PodSpec{Containers: []corev1.Container{{Name: "server", Image: ts.Spec.Managed.Image, Ports: ports, ReadinessProbe: probe}}},
 				},
 			},
 		}
@@ -166,12 +167,44 @@ func (r *toolServerReconciler) ensureDeployment(ctx context.Context, ts *v1alpha
 	}
 	// Only what Cadre sets is compared: the API server defaults the rest.
 	c := &dep.Spec.Template.Spec.Containers[0]
-	if dep.Spec.Replicas != nil && *dep.Spec.Replicas == replicas && c.Image == ts.Spec.Managed.Image && equality.Semantic.DeepEqual(c.Ports, ports) {
+	if dep.Spec.Replicas != nil && *dep.Spec.Replicas == replicas && c.Image == ts.Spec.Managed.Image && equality.Semantic.DeepEqual(c.Ports, ports) &&
+		equality.Semantic.DeepEqual(c.ReadinessProbe, probe) {
 		return &dep, nil
 	}
 	dep.Spec.Replicas = &replicas
-	c.Image, c.Ports = ts.Spec.Managed.Image, ports
+	c.Image, c.Ports, c.ReadinessProbe = ts.Spec.Managed.Image, ports, probe
 	return &dep, r.client.Update(ctx, &dep)
+}
+
+// readinessProbe is the server container's readiness probe: m's, or a TCP
+// connect to its port, which any MCP server passes once it listens (streamable
+// HTTP defines no health endpoint). The fields the API server defaults are
+// set to its defaults, so that the probe compares equal to the one read back.
+func readinessProbe(m *v1alpha1.ManagedServer) *corev1.Probe {
+	p := &corev1.Probe{ProbeHandler: corev1.ProbeHandler{TCPSocket: &corev1.TCPSocketAction{Port: intstr.FromInt32(m.Port)}}}
+	if m.ReadinessProbe != nil {
+		p = m.ReadinessProbe.DeepCopy()
+	}
+	for _, f := range []struct {
+		field *int32
+		def   int32
+	}{{&p.TimeoutSeconds, 1}, {&p.PeriodSeconds, 10}, {&p.SuccessThreshold, 1}, {&p.FailureThreshold, 3}} {
+		if *f.field == 0 {
+			*f.field = f.def
+		}
+	}
+	if h := p.HTTPGet; h != nil {
+		if h.Path == "" {
+			h.Path = "/"
+		}
+		if h.Scheme == "" {
+			h.Scheme = corev1.URISchemeHTTP
+		}
+	}
+	if g := p.GRPC; g != nil && g.Service == nil {
+		g.Service = new(string)
+	}
+	return p
 }
 
 // ensureService creates ts's Service, or brings its own to ts's spec. It is

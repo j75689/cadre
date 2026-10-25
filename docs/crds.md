@@ -165,6 +165,8 @@ spec:
     image: ghcr.io/searxng/searxng:2026.10.1
     port: 8080
     # path: /mcp                # the MCP endpoint's path on the server; default /mcp
+    # readinessProbe:           # a corev1.Probe; default a TCP connect to port
+    #   httpGet: { path: /healthz, port: 8080 }
 status:
   url: http://searxng.team-a.svc:8080/mcp   # set by the controller: the Service's address and the path
 ---
@@ -186,7 +188,7 @@ spec:
 - `runtime.type: builtin` is Cadre's own LLM loop. `runner` hands the task to any runner whose labels match the selector (see [execution.md](execution.md)).
 - `permissions` on a ToolServer decide per tool whether a call is allowed, denied or must ask a human first (`ask` ends the run with `Waiting{ToolApproval}`). Without `permissions` every tool is allowed. With them the list is an allowlist: `"*"` covers tools not listed by name, and a tool matching neither is denied.
 - `notifications` opts a ToolServer in as a Notifier channel. A Notifier is not scoped like an Agent's `toolRefs`: whoever may create Notifiers in the namespace may call any tool of an opted-in ToolServer that its `permissions` allow, with chosen static arguments, on every event they pick, and with the ToolServer's credential. Keep it off for a ToolServer whose allowed tools act (create issues, send mail) unless the people with RBAC on Notifiers may do that.
-- The managed mode of ToolServer creates a Deployment and a Service only, both named after the ToolServer, labelled `cadre.dev/toolserver: <name>` and owned by it, so deleting the ToolServer deletes them. The Deployment runs one replica of `image` listening on `port`; the ClusterIP Service maps `port` to it; `status.url` is `http://<name>.<namespace>.svc:<port><path>`, where Cadre reaches the server. A managed server takes no `auth`: it runs in the cluster and is reached unauthenticated. NetworkPolicy and ServiceAccount management may follow.
+- The managed mode of ToolServer creates a Deployment and a Service only, both named after the ToolServer, labelled `cadre.dev/toolserver: <name>` and owned by it, so deleting the ToolServer deletes them. The Deployment runs one replica of `image` listening on `port`, ready (so the ToolServer `Available`) once a TCP connect to `port` succeeds, or `readinessProbe` passes when set; it has no liveness probe, so a slow server is not restarted. The ClusterIP Service maps `port` to it; `status.url` is `http://<name>.<namespace>.svc:<port><path>`, where Cadre reaches the server. A managed server takes no `auth`: it runs in the cluster and is reached unauthenticated. NetworkPolicy and ServiceAccount management may follow.
 
 | Resource | Field | Rule |
 | --- | --- | --- |

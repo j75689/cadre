@@ -12,6 +12,7 @@ import (
 	"k8s.io/apimachinery/pkg/api/equality"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/util/intstr"
 	"k8s.io/client-go/util/retry"
 	"k8s.io/utils/ptr"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -136,6 +137,10 @@ func TestAManagedToolServer(t *testing.T) {
 		// Deleting the ToolServer deletes it through this ownership (the
 		// garbage collector, which envtest does not run).
 		t.Errorf("owners %+v", dep.OwnerReferences)
+	case c.ReadinessProbe == nil || c.ReadinessProbe.TCPSocket == nil || c.ReadinessProbe.TCPSocket.Port.IntValue() != 8080 || c.LivenessProbe != nil:
+		// Ready, and so Available, once it listens; never restarted for
+		// being slow.
+		t.Errorf("readiness probe %+v, liveness probe %+v", c.ReadinessProbe, c.LivenessProbe)
 	}
 	eventually(t, 10*time.Second, func() (bool, string) {
 		return e.c.Get(ctx, client.ObjectKey{Namespace: ns, Name: "search"}, &svc) == nil, "no Service"
@@ -223,6 +228,101 @@ func TestAManagedToolServer(t *testing.T) {
 	})
 	if ts.Status.URL != "" {
 		t.Errorf("status.url %q once external", ts.Status.URL)
+	}
+}
+
+// A managed ToolServer's readinessProbe replaces the default one; the
+// Deployment follows a change to it, and only a change.
+func TestAManagedToolServersReadinessProbe(t *testing.T) {
+	e := start(t)
+	const ns = "team-probe"
+	e.create(
+		&corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: ns}},
+		&v1alpha1.Team{ObjectMeta: meta2(ns, v1alpha1.TeamName)},
+	)
+	// Only the handler set: the API server defaults the rest.
+	health := &corev1.Probe{ProbeHandler: corev1.ProbeHandler{HTTPGet: &corev1.HTTPGetAction{Path: "/healthz", Port: intstr.FromInt32(8081)}}}
+	ts := &v1alpha1.ToolServer{ObjectMeta: meta2(ns, "probed"), Spec: v1alpha1.ToolServerSpec{
+		Managed: &v1alpha1.ManagedServer{Image: "example.test/search:1.0", Port: 8080, ReadinessProbe: health},
+	}}
+	e.create(ts)
+	e.ready(ts, metav1.ConditionFalse, "Deploying")
+	ctx := context.Background()
+	key := client.ObjectKey{Namespace: ns, Name: "probed"}
+	var dep appsv1.Deployment
+	if err := e.c.Get(ctx, key, &dep); err != nil {
+		t.Fatal(err)
+	}
+	if p := dep.Spec.Template.Spec.Containers[0].ReadinessProbe; p == nil || p.TCPSocket != nil || p.HTTPGet == nil || p.HTTPGet.Path != "/healthz" || p.HTTPGet.Port.IntValue() != 8081 {
+		t.Fatalf("readiness probe %+v", p)
+	}
+
+	// The probe as asked for, of each kind, is the one the API server
+	// defaults it to, so that a resync finds the Deployment up to date
+	// rather than updating it each time.
+	for i, asked := range []*corev1.Probe{
+		nil,
+		health,
+		{ProbeHandler: corev1.ProbeHandler{GRPC: &corev1.GRPCAction{Port: 8081}}},
+		{ProbeHandler: corev1.ProbeHandler{Exec: &corev1.ExecAction{Command: []string{"true"}}}, PeriodSeconds: 3},
+	} {
+		m := &v1alpha1.ManagedServer{Image: "example.test/search:1.0", Port: 8080, ReadinessProbe: asked}
+		labels := map[string]string{"probe": fmt.Sprint(i)}
+		raw := m.ReadinessProbe
+		if raw == nil {
+			raw = &corev1.Probe{ProbeHandler: corev1.ProbeHandler{TCPSocket: &corev1.TCPSocketAction{Port: intstr.FromInt32(8080)}}}
+		}
+		d := &appsv1.Deployment{ObjectMeta: meta2(ns, fmt.Sprintf("defaults-%d", i)), Spec: appsv1.DeploymentSpec{
+			Selector: &metav1.LabelSelector{MatchLabels: labels},
+			Template: corev1.PodTemplateSpec{ObjectMeta: metav1.ObjectMeta{Labels: labels}, Spec: corev1.PodSpec{
+				Containers: []corev1.Container{{Name: "server", Image: m.Image, ReadinessProbe: raw.DeepCopy()}},
+			}},
+		}}
+		e.create(d)
+		if got, want := d.Spec.Template.Spec.Containers[0].ReadinessProbe, controller.ReadinessProbe(m); !equality.Semantic.DeepEqual(got, want) {
+			t.Errorf("probe %d: the API server made it %+v, the controller asks for %+v", i, got, want)
+		}
+	}
+
+	// A resync updates nothing.
+	generation := dep.Generation
+	e.makeAvailable(ns, "probed")
+	e.ready(ts, metav1.ConditionTrue, "Available")
+	e.stays(ts, metav1.ConditionTrue, "Available")
+	if err := e.c.Get(ctx, key, &dep); err != nil {
+		t.Fatal(err)
+	}
+	if dep.Generation != generation {
+		t.Fatalf("the Deployment went from generation %d to %d with nothing changed", generation, dep.Generation)
+	}
+
+	// A changed probe is rolled out; none at all is the default again.
+	for _, probe := range []*corev1.Probe{
+		{ProbeHandler: health.ProbeHandler, PeriodSeconds: 5},
+		nil,
+	} {
+		if err := retry.RetryOnConflict(retry.DefaultRetry, func() error {
+			if err := e.c.Get(ctx, client.ObjectKeyFromObject(ts), ts); err != nil {
+				return err
+			}
+			ts.Spec.Managed.ReadinessProbe = probe
+			return e.c.Update(ctx, ts)
+		}); err != nil {
+			t.Fatal(err)
+		}
+		e.ready(ts, metav1.ConditionFalse, "Deploying")
+		eventually(t, 10*time.Second, func() (bool, string) {
+			if err := e.c.Get(ctx, key, &dep); err != nil {
+				return false, err.Error()
+			}
+			p := dep.Spec.Template.Spec.Containers[0].ReadinessProbe
+			if probe == nil {
+				return p != nil && p.TCPSocket != nil && p.TCPSocket.Port.IntValue() == 8080 && p.HTTPGet == nil, fmt.Sprintf("readiness probe %+v", p)
+			}
+			return p != nil && p.HTTPGet != nil && p.PeriodSeconds == 5, fmt.Sprintf("readiness probe %+v", p)
+		})
+		e.makeAvailable(ns, "probed")
+		e.ready(ts, metav1.ConditionTrue, "Available")
 	}
 }
 
