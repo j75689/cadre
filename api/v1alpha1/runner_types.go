@@ -36,9 +36,13 @@ type RunnerSpec struct {
 // RunnerStatus is a Runner's status.
 type RunnerStatus struct {
 	ConfigStatus `json:",inline"`
+	MintedToken  `json:",inline"`
+}
 
-	// TokenSecret is the Secret holding a minted token, for a runner
-	// outside the cluster.
+// MintedToken is the token Cadre mints for an object without a
+// ServiceAccount, a Runner or an AgentAccess: where it is and its hash.
+type MintedToken struct {
+	// TokenSecret is the Secret holding the minted token.
 	// +optional
 	TokenSecret string `json:"tokenSecret,omitempty"`
 
@@ -59,6 +63,7 @@ type RunnerStatus struct {
 // +kubebuilder:object:root=true
 // +kubebuilder:subresource:status
 // +kubebuilder:resource:scope=Namespaced
+// +kubebuilder:validation:XValidation:rule="oldSelf.hasValue() || (size(self.metadata.name) <= 63 && !self.metadata.name.contains('.'))",message="a Runner's name is a DNS label (at most 63 characters, no dot): it names the Secret <name>-token and labels it",optionalOldSelf=true
 // +kubebuilder:printcolumn:name="ServiceAccount",type=string,JSONPath=`.spec.serviceAccount.name`
 // +kubebuilder:printcolumn:name="Token",type=string,JSONPath=`.status.tokenSecret`
 // +kubebuilder:printcolumn:name="Ready",type=string,JSONPath=`.status.conditions[?(@.type=="Ready")].status`

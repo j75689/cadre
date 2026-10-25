@@ -22,14 +22,16 @@ import (
 const (
 	indexModelRef = "spec.modelRef"
 	indexToolRefs = "spec.toolRefs"
-	// indexRunnerSA finds the Runners naming a ServiceAccount.
-	indexRunnerSA = "spec.serviceAccount.name"
+	// indexSA finds the Runners, or the AgentAccesses, naming a
+	// ServiceAccount.
+	indexSA = "spec.serviceAccount.name"
 	// indexJobRunner finds the Agents whose Jobs run as a Runner.
 	indexJobRunner = "spec.runtime.job.runnerRef"
 )
 
 // setupIndexes lets a ModelProvider or ToolServer change find the Agents
-// that reference it, and a ServiceAccount's token find its Runners.
+// that reference it, and a ServiceAccount's token find its Runners and
+// AgentAccesses.
 func setupIndexes(mgr ctrl.Manager) error {
 	idx := mgr.GetFieldIndexer()
 	if err := idx.IndexField(context.Background(), &v1alpha1.Agent{}, indexModelRef, func(o client.Object) []string {
@@ -50,13 +52,24 @@ func setupIndexes(mgr ctrl.Manager) error {
 	}); err != nil {
 		return err
 	}
-	return idx.IndexField(context.Background(), &v1alpha1.Runner{}, indexRunnerSA, runnerSA)
+	if err := idx.IndexField(context.Background(), &v1alpha1.Runner{}, indexSA, runnerSA); err != nil {
+		return err
+	}
+	return idx.IndexField(context.Background(), &v1alpha1.AgentAccess{}, indexSA, accessSA)
+}
+
+// accessSA indexes an AgentAccess by the ServiceAccount it names.
+func accessSA(o client.Object) []string {
+	if aa, ok := o.(*v1alpha1.AgentAccess); ok && aa.Spec.ServiceAccount != nil {
+		return []string{aa.Spec.ServiceAccount.Name}
+	}
+	return nil
 }
 
 // runnerSA indexes a Runner by the ServiceAccount it names.
 func runnerSA(o client.Object) []string {
-	if sa := o.(*v1alpha1.Runner).Spec.ServiceAccount; sa != nil {
-		return []string{sa.Name}
+	if rn, ok := o.(*v1alpha1.Runner); ok && rn.Spec.ServiceAccount != nil {
+		return []string{rn.Spec.ServiceAccount.Name}
 	}
 	return nil
 }
@@ -252,7 +265,7 @@ func (r *agentReconciler) resolveJob(ctx context.Context, agent *v1alpha1.Agent,
 		return false, "", "", err
 	}
 	if h := holder(sharing); h != nil && h.Name != rn.Name {
-		return false, "ServiceAccountInUse", fmt.Sprintf("Runner %s: %s", rn.Name, inUse(rn.Spec.ServiceAccount.Name, h.Name)), nil
+		return false, "ServiceAccountInUse", fmt.Sprintf("Runner %s: %s", rn.Name, inUse("Runner", rn.Spec.ServiceAccount.Name, h.Name)), nil
 	}
 	for k, v := range agent.Spec.Runtime.Selector {
 		if rn.Spec.Labels[k] != v {

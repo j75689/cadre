@@ -7,6 +7,7 @@ import (
 	"testing"
 	"time"
 
+	apiextensionsv1 "k8s.io/apiextensions-apiserver/pkg/apis/apiextensions/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
@@ -46,6 +47,10 @@ func startAPIServer(t *testing.T) client.Client {
 	})
 	scheme := runtime.NewScheme()
 	if err := v1alpha1.AddToScheme(scheme); err != nil {
+		t.Fatalf("add to scheme: %v", err)
+	}
+	// For the tests that change a CRD.
+	if err := apiextensionsv1.AddToScheme(scheme); err != nil {
 		t.Fatalf("add to scheme: %v", err)
 	}
 	c, err := client.New(cfg, client.Options{Scheme: scheme})

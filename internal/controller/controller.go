@@ -1,13 +1,14 @@
 // Package controller holds the reconcilers that turn Agent, ModelProvider,
-// ToolServer and Runner resources into something the Task Manager can use:
-// each gets a Ready condition saying whether it can be used, and a Runner
-// outside the cluster gets a minted token. A Schedule creates tasks.
+// ToolServer, Runner and AgentAccess resources into something the Task
+// Manager can use: each gets a Ready condition saying whether it can be
+// used, and a Runner or an AgentAccess without a ServiceAccount gets a
+// minted token. A Schedule creates tasks.
 //
 // The reconcilers only act in namespaces that have a Team. They read Secrets
 // one at a time, directly from the API server, and never watch or cache
 // them, so cadre-server never holds the cluster's Secrets in memory; the
 // resources that depend on a Secret are re-checked periodically instead.
-// The one Secret they write is a Runner's minted token.
+// The only Secrets they write are minted tokens.
 //
 // The reconcilers run on one replica at a time, by leader election: a
 // status write is conditional and would race harmlessly, but starting a Job
@@ -102,6 +103,9 @@ func Setup(mgr ctrl.Manager, o Options, opts ...SetupOption) error {
 		return err
 	}
 	if err := (&runnerReconciler{b}).setup(mgr); err != nil {
+		return err
+	}
+	if err := (&agentAccessReconciler{b}).setup(mgr); err != nil {
 		return err
 	}
 	if err := (&toolServerReconciler{b}).setup(mgr); err != nil {

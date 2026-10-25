@@ -18,6 +18,7 @@ All YAML is illustrative. The API group is provisionally `cadre.dev/v1alpha1`.
 | `Schedule` | namespace | create a task on a cron schedule |
 | `Notifier` | namespace | whom to notify when a human is needed |
 | `Runner` | namespace | a runner allowed to claim in its namespace: in the cluster by ServiceAccount, or outside it with a token Cadre mints |
+| `AgentAccess` | namespace | an agent outside Cadre allowed on its namespace's board, as a viewer or a member: in the cluster by ServiceAccount, or outside it with a token Cadre mints |
 
 Deliverables, approval policies and publishers are plugins with their own CRDs, outside the core.
 
@@ -224,7 +225,8 @@ Each reports a `Ready` condition and `observedGeneration` in its status:
 | ModelProvider | the referenced Secret has the key, or `workloadIdentity` is set |
 | ToolServer | an external server's Secret has its key, when `auth` is set. A managed one's Deployment is Available for its current spec (`Available`); until then `Deploying`, and `Forbidden` where cadre-server may not create its Deployment or Service (bind `config/rbac/workloads.yaml` in the namespace), `NameTaken` where a Deployment of its name is not Cadre's, `RolloutFailed` when the Deployment's rollout fails, and `InvalidSpec` when the API server refuses the Deployment or the Service made from the spec (a `readinessProbe` a Pod may not have, say), with its message. With `RolloutFailed` and `InvalidSpec` whatever was running keeps running while Ready is False |
 | Agent | its ModelProvider and every ToolServer exist and are Ready, and a job-backed one's Runner holds its ServiceAccount (`ServiceAccountInUse` otherwise, naming the Runner that does); the reason names the first that is not |
-| Runner | `ServiceAccount` for an in-cluster runner, while it is the oldest Runner in its namespace naming that ServiceAccount (then by name): a runner authenticated as it claims with one Runner's labels, so another naming it is not Ready (`ServiceAccountInUse`, naming the one that holds it) and takes its place when that one goes; `TokenMinted` once an outside runner's token exists. A Secret of the token's name that the Runner does not own, or one without a token, makes it not Ready (`SecretNotOwned`) and no token works until it is deleted |
+| Runner | `ServiceAccount` for an in-cluster runner, while it is the oldest Runner in its namespace naming that ServiceAccount (then by name): a runner authenticated as it claims with one Runner's labels, so another naming it is not Ready (`ServiceAccountInUse`, naming the one that holds it) and takes its place when that one goes; `TokenMinted` once an outside runner's token exists. A Secret of the token's name that the Runner does not own, or one without a token, makes it not Ready (`SecretNotOwned`) and no token works until it is deleted. `InvalidName`, before anything else, for a name that is not a DNS label, made before the CRD refused it |
+| AgentAccess | as a Runner: `ServiceAccount` while it is the oldest AgentAccess in its namespace naming that ServiceAccount (then by name), `ServiceAccountInUse` otherwise, naming the one that holds it; `TokenMinted` once a minted token exists; `SecretNotOwned` for a Secret of the token's name it does not own, or one without a token; `InvalidName` as a Runner. Ready is for humans: a request is decided from the spec and the token's hash, not from it |
 
 Controllers only act in namespaces with a `Team`: elsewhere every resource here, and Schedules and Notifiers, are not Ready with reason `NoTeam`, and are checked again every minute. Secrets are read one by one when a resource is reconciled, never watched or cached, and the resources that reference them are re-checked every minute.
 
@@ -247,6 +249,30 @@ status:
 - The claim's labels come from the Runner; what the runner sends is ignored, so it cannot claim agents meant for another pool.
 - A Runner without `serviceAccount` gets a token minted into the Secret `<name>-token`, labelled `cadre.dev/runner: <name>` and owned by the Runner. The Secret reaches the runner's machine out of band (`kubectl get secret`, a secret manager); Cadre never serves it. Deleting the Secret rotates the token: a new one is minted on the next reconcile, within a minute, and the old one stops working then. Switching a Runner to `serviceAccount` deletes its minted Secret, so switching back mints a fresh token. In a namespace whose Team is gone the Runner is not Ready (`NoTeam`) and its token stays valid, but claims nothing, since work is claimed only in Team namespaces; the same token works again once the Team is back.
 - `cadre-runner` needs no Runner: its identity (`--builtin-runner`) may claim builtin agents in every Team namespace.
+- A Runner's name names its Secret, `<name>-token`, and labels it, so it is a DNS label: at most 63 characters and no dot, which also keeps it from ever being an AgentAccess's (`<name>.access-token`). The CRD refuses another name at create. The rule came in before 1.0: a Runner made earlier with such a name is not Ready (`InvalidName`) and does nothing, its Secret left alone, until re-created under another name.
+
+## AgentAccess
+
+```yaml
+apiVersion: cadre.dev/v1alpha1
+kind: AgentAccess
+metadata: { name: triage-bot, namespace: team-a }
+spec:
+  role: member                     # viewer or member; never admin
+  # serviceAccount: { name: triage-bot }   # in the cluster: authenticate as this ServiceAccount, in this namespace
+status:
+  tokenSecret: triage-bot.access-token   # outside the cluster: the minted token, key token
+  tokenHash: 3f9a...               # its SHA-256; a token with another hash is refused
+  mintedAt: ...
+```
+
+An AgentAccess is an agent Cadre does not run, a bot or a scheduled job say, allowed on its namespace's board. It is created with kubectl or GitOps, so Kubernetes RBAC on the CRD decides who may. What a request authenticated as an AgentAccess may do is in [architecture.md, Identity and access](architecture.md#identity-and-access).
+
+- **Identity and role.** The agent is `agent:<namespace>/<name>`, whichever way it authenticates. `spec.role` is its role on its own namespace's Team: `viewer` or `member`. The CRD refuses `admin`, so an agent can never edit the Team.
+- **In the cluster** (`serviceAccount`), the agent authenticates as a ServiceAccount in the AgentAccess's namespace, with a projected token for the audience `cadre`, as an in-cluster runner does. A ServiceAccount is one AgentAccess's: the oldest naming it, then by name, decided from the specs. Another naming it is not Ready (`ServiceAccountInUse`, naming the one that holds it), and takes its place when that one goes.
+- **Outside the cluster** (no `serviceAccount`), Cadre mints a token into the Secret `<name>.access-token`, labelled `cadre.dev/agentaccess: <name>` and owned by the AgentAccess. A Runner and an AgentAccess never share a Secret: a Runner's is `<name>-token`, an AgentAccess's `<name>.access-token`, and names have no dot. An AgentAccess's name names and labels its Secret, so it is a DNS label too: at most 63 characters and no dot, which the CRD checks at create (`InvalidName` for one that is not). The Secret lives in the Team namespace, and who may read it is that namespace's own Kubernetes RBAC; Cadre never serves it. Switching to `serviceAccount` deletes the minted Secret, so switching back mints a fresh token.
+- **Revoke and rotate.** To revoke, delete the AgentAccess. To rotate, delete the Secret: a new token is minted on the next reconcile, within a minute, and the old one stops then. Either way a credential stops working within a minute at most.
+- **Without logins** (`--auth=none`) everyone is an admin and nobody authenticates: an AgentAccess is reconciled as usual but grants nothing.
 
 ## Schedule and Notifier
 

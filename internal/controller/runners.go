@@ -6,15 +6,11 @@ import (
 	"fmt"
 	"slices"
 	"strings"
-	"time"
 
-	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
-	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	builderctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/builder"
 	"sigs.k8s.io/controller-runtime/pkg/client"
-	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
 	"sigs.k8s.io/controller-runtime/pkg/handler"
 	ctrl "sigs.k8s.io/controller-runtime/pkg/manager"
 	"sigs.k8s.io/controller-runtime/pkg/predicate"
@@ -28,19 +24,6 @@ import (
 // +kubebuilder:rbac:groups=cadre.dev,resources=runners,verbs=get;list;watch
 // +kubebuilder:rbac:groups=cadre.dev,resources=runners/status,verbs=get;update
 // +kubebuilder:rbac:groups=cadre.dev,resources=runners/finalizers,verbs=update
-// +kubebuilder:rbac:groups="",resources=secrets,verbs=create;delete
-
-// A runner outside the cluster authenticates with a token Cadre mints (see
-// internal/token) into the Secret <runner>-token, key token; the Runner's
-// status holds its hash. The Secret is never watched: like every Secret the
-// controllers touch it is read one at a time, on the resync. Deleting it
-// rotates the token: the next reconcile mints a new one, and the old stops
-// working when the hash changes.
-
-const tokenKey = "token"
-
-// TokenSecretName is the Secret a Runner's minted token is kept in.
-func TokenSecretName(runner string) string { return runner + "-token" }
 
 type runnerReconciler struct{ base }
 
@@ -49,28 +32,34 @@ func (r *runnerReconciler) setup(mgr ctrl.Manager) error {
 		For(&v1alpha1.Runner{}, builder.WithPredicates(predicate.GenerationChangedPredicate{})).
 		// The Runners sharing a ServiceAccount decide which holds it: one
 		// made, changed or deleted brings back the others.
-		Watches(&v1alpha1.Runner{}, handler.EnqueueRequestsFromMapFunc(r.sharing), builder.WithPredicates(predicate.GenerationChangedPredicate{})).
+		Watches(&v1alpha1.Runner{}, handler.EnqueueRequestsFromMapFunc(sharing(r.client, runnerSA, sharers)), builder.WithPredicates(predicate.GenerationChangedPredicate{})).
 		Named("runner").WithOptions(r.options()).Complete(r)
 }
 
-// sharing maps a Runner to the others in its namespace naming the same
-// ServiceAccount.
-func (r *runnerReconciler) sharing(ctx context.Context, o client.Object) []reconcile.Request {
-	rn, ok := o.(*v1alpha1.Runner)
-	if !ok || rn.Spec.ServiceAccount == nil {
-		return nil
-	}
-	others, err := sharers(ctx, r.client, rn.Namespace, rn.Spec.ServiceAccount.Name)
-	if err != nil {
-		return nil
-	}
-	var reqs []reconcile.Request
-	for _, other := range others {
-		if other.Name != rn.Name {
-			reqs = append(reqs, reconcile.Request{NamespacedName: client.ObjectKeyFromObject(&other)})
+// sharing maps an object naming a ServiceAccount, a Runner or an
+// AgentAccess, to the others of its kind in its namespace naming the same
+// one: saOf is its index function, and list lists them.
+func sharing[T any, P interface {
+	*T
+	client.Object
+}](c client.Reader, saOf func(client.Object) []string, list func(context.Context, client.Reader, string, string) ([]T, error)) handler.MapFunc {
+	return func(ctx context.Context, o client.Object) []reconcile.Request {
+		sa := saOf(o)
+		if len(sa) == 0 {
+			return nil
 		}
+		others, err := list(ctx, c, o.GetNamespace(), sa[0])
+		if err != nil {
+			return nil
+		}
+		var reqs []reconcile.Request
+		for i := range others {
+			if other := P(&others[i]); other.GetName() != o.GetName() {
+				reqs = append(reqs, reconcile.Request{NamespacedName: client.ObjectKeyFromObject(other)})
+			}
+		}
+		return reqs
 	}
-	return reqs
 }
 
 // sharers are the Runners in ns naming the ServiceAccount sa. Every reader
@@ -78,26 +67,31 @@ func (r *runnerReconciler) sharing(ctx context.Context, o client.Object) []recon
 // from their specs alone: no status, so no lag after an edit.
 func sharers(ctx context.Context, c client.Reader, ns, sa string) ([]v1alpha1.Runner, error) {
 	var list v1alpha1.RunnerList
-	if err := c.List(ctx, &list, client.InNamespace(ns), client.MatchingFields{indexRunnerSA: sa}); err != nil {
+	if err := c.List(ctx, &list, client.InNamespace(ns), client.MatchingFields{indexSA: sa}); err != nil {
 		return nil, fmt.Errorf("list runners: %w", err)
 	}
 	return list.Items, nil
 }
 
-// inUse is the message of a Runner, and of an Agent on it, whose
-// ServiceAccount another Runner holds.
-func inUse(sa, holder string) string {
-	return fmt.Sprintf("ServiceAccount %s is Runner %s's, the oldest Runner naming it (then by name); give this Runner a ServiceAccount of its own", sa, holder)
+// inUse is the message of a Runner or an AgentAccess (kind), and of an
+// Agent on a Runner, whose ServiceAccount another of its kind holds.
+func inUse(kind, sa, holder string) string {
+	return fmt.Sprintf("ServiceAccount %s is %s %s's, the oldest %s naming it (then by name); give this %s a ServiceAccount of its own", sa, kind, holder, kind, kind)
 }
 
-// holder is the Runner of runners that holds their ServiceAccount: the
-// oldest, then by name, so that every reader picks the same one.
-func holder(runners []v1alpha1.Runner) *v1alpha1.Runner {
-	if len(runners) == 0 {
+// holder is the one of objs, the Runners or the AgentAccesses naming a
+// ServiceAccount, that holds it: the oldest, then by name, so that every
+// reader picks the same one.
+func holder[T any, P interface {
+	*T
+	client.Object
+}](objs []T) P {
+	if len(objs) == 0 {
 		return nil
 	}
-	h := slices.MinFunc(runners, func(a, b v1alpha1.Runner) int {
-		return cmp.Or(a.CreationTimestamp.Compare(b.CreationTimestamp.Time), strings.Compare(a.Name, b.Name))
+	h := slices.MinFunc(objs, func(a, b T) int {
+		pa, pb := P(&a), P(&b)
+		return cmp.Or(pa.GetCreationTimestamp().Compare(pb.GetCreationTimestamp().Time), strings.Compare(pa.GetName(), pb.GetName()))
 	})
 	return &h
 }
@@ -107,16 +101,20 @@ func (r *runnerReconciler) Reconcile(ctx context.Context, req reconcile.Request)
 	if err := r.client.Get(ctx, req.NamespacedName, &rn); err != nil {
 		return reconcile.Result{}, client.IgnoreNotFound(err)
 	}
+	// Before anything else: it mints nothing, and deletes nothing.
+	if msg := invalidName("Runner", rn.Name); msg != "" {
+		return reconcile.Result{RequeueAfter: r.resync}, r.setReady(ctx, &rn, &rn.Status.ConfigStatus, false, "InvalidName", msg)
+	}
 	if ok, err := r.hasTeam(ctx, req.Namespace); err != nil || !ok {
 		return r.noTeam(ctx, &rn, &rn.Status.ConfigStatus, err)
 	}
 	if rn.Spec.ServiceAccount != nil {
 		// A token minted before a switch to a ServiceAccount must not come
 		// back to life when the Runner switches again.
-		if err := r.deleteToken(ctx, &rn); err != nil {
+		if err := r.deleteToken(ctx, r.tokenOwner(&rn)); err != nil {
 			return reconcile.Result{}, err
 		}
-		changed := r.setToken(&rn, "", false)
+		changed := setToken(r.tokenOwner(&rn), "", false)
 		// One ServiceAccount is one Runner's: a runner authenticated as it
 		// claims with that Runner's labels, so a second Runner naming it
 		// would take work it could never be given.
@@ -125,103 +123,27 @@ func (r *runnerReconciler) Reconcile(ctx context.Context, req reconcile.Request)
 			return reconcile.Result{}, err
 		}
 		if h := holder(list); h != nil && h.Name != rn.Name {
-			return reconcile.Result{RequeueAfter: r.resync}, r.writeStatus(ctx, &rn, &rn.Status.ConfigStatus, false, "ServiceAccountInUse", inUse(rn.Spec.ServiceAccount.Name, h.Name), changed)
+			return reconcile.Result{RequeueAfter: r.resync}, r.writeStatus(ctx, &rn, &rn.Status.ConfigStatus, false, "ServiceAccountInUse", inUse("Runner", rn.Spec.ServiceAccount.Name, h.Name), changed)
 		}
 		return reconcile.Result{RequeueAfter: r.resync}, r.writeStatus(ctx, &rn, &rn.Status.ConfigStatus, true, "ServiceAccount", "", changed)
 	}
-	hash, minted, problem, err := r.ensureToken(ctx, &rn)
+	hash, minted, problem, err := r.ensureToken(ctx, r.tokenOwner(&rn))
 	if err != nil {
 		return reconcile.Result{}, err
 	}
 	if problem != "" {
 		// Whatever the Secret holds now, the old token is no longer what
 		// it holds: refuse every token until the Secret is fixed.
-		changed := r.setToken(&rn, "", false)
+		changed := setToken(r.tokenOwner(&rn), "", false)
 		return reconcile.Result{RequeueAfter: r.resync}, r.writeStatus(ctx, &rn, &rn.Status.ConfigStatus, false, "SecretNotOwned", problem, changed)
 	}
-	changed := r.setToken(&rn, hash, minted)
+	changed := setToken(r.tokenOwner(&rn), hash, minted)
 	return reconcile.Result{RequeueAfter: r.resync}, r.writeStatus(ctx, &rn, &rn.Status.ConfigStatus, true, "TokenMinted", "", changed)
 }
 
-// setToken puts hash (none when empty) in the Runner's status, and reports
-// whether that changed it.
-func (r *runnerReconciler) setToken(rn *v1alpha1.Runner, hash string, minted bool) bool {
-	secret := ""
-	if hash != "" {
-		secret = TokenSecretName(rn.Name)
-	}
-	if rn.Status.TokenHash == hash && rn.Status.TokenSecret == secret {
-		return false
-	}
-	rn.Status.TokenSecret, rn.Status.TokenHash = secret, hash
-	switch {
-	case hash == "":
-		rn.Status.MintedAt = nil
-	case minted || rn.Status.MintedAt == nil:
-		rn.Status.MintedAt = &metav1.Time{Time: time.Now().UTC().Truncate(time.Second)}
-	}
-	return true
-}
-
-// ensureToken reads the Runner's token Secret and returns its token's
-// hash, minting the Secret first if it does not exist. It is created
-// before the status names its hash: a status write that is lost is redone
-// from the Secret on the next reconcile. A Secret of that name the Runner
-// does not own, or one without a token, is a problem, not a token.
-func (r *runnerReconciler) ensureToken(ctx context.Context, rn *v1alpha1.Runner) (hash string, minted bool, problem string, err error) {
-	key := client.ObjectKey{Namespace: rn.Namespace, Name: TokenSecretName(rn.Name)}
-	var s corev1.Secret
-	err = r.secrets.Get(ctx, key, &s)
-	switch {
-	case err == nil:
-		tok := s.Data[tokenKey]
-		if len(tok) == 0 || !ownedBy(&s, rn) {
-			return "", false, fmt.Sprintf("Secret %s exists but is not this Runner's token; delete it to have a token minted", key.Name), nil
-		}
-		return token.Hash(string(tok)), false, "", nil
-	case !apierrors.IsNotFound(err):
-		return "", false, "", err
-	}
-	tok, hash, err := token.Mint(rn.Namespace, rn.Name)
-	if err != nil {
-		return "", false, "", err
-	}
-	s = corev1.Secret{
-		ObjectMeta: metav1.ObjectMeta{Name: key.Name, Namespace: key.Namespace, Labels: map[string]string{v1alpha1.LabelRunner: rn.Name}},
-		Type:       corev1.SecretTypeOpaque,
-		Data:       map[string][]byte{tokenKey: []byte(tok)},
-	}
-	if err := controllerutil.SetControllerReference(rn, &s, r.client.Scheme()); err != nil {
-		return "", false, "", err
-	}
-	if err := r.client.Create(ctx, &s); err != nil {
-		return "", false, "", err // a concurrent create is redone on the requeue
-	}
-	return hash, true, "", nil
-}
-
-// deleteToken deletes the Runner's own token Secret, if it has one.
-func (r *runnerReconciler) deleteToken(ctx context.Context, rn *v1alpha1.Runner) error {
-	var s corev1.Secret
-	err := r.secrets.Get(ctx, client.ObjectKey{Namespace: rn.Namespace, Name: TokenSecretName(rn.Name)}, &s)
-	switch {
-	case apierrors.IsNotFound(err):
-		return nil
-	case err != nil:
-		return err
-	case !ownedBy(&s, rn):
-		return nil // not ours to delete
-	}
-	return client.IgnoreNotFound(r.client.Delete(ctx, &s, client.Preconditions{UID: &s.UID}))
-}
-
-func ownedBy(s *corev1.Secret, rn *v1alpha1.Runner) bool {
-	for _, o := range s.OwnerReferences {
-		if o.UID == rn.UID {
-			return true
-		}
-	}
-	return false
+// tokenOwner is the Runner's minted token.
+func (r *runnerReconciler) tokenOwner(rn *v1alpha1.Runner) tokenOwner {
+	return tokenOwner{obj: rn, kind: "Runner", secret: TokenSecretName(rn.Name), label: v1alpha1.LabelRunner, status: &rn.Status.MintedToken}
 }
 
 // MintedIdentity is the identity of a runner authenticated by a minted
