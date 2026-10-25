@@ -41,8 +41,7 @@ import (
 
 // Job labels and the runner's environment.
 const (
-	LabelAgent  = "cadre.dev/agent"
-	LabelRunner = "cadre.dev/runner"
+	LabelAgent = "cadre.dev/agent"
 
 	// TokenPath is where a Job's pod finds its token for the audience cadre.
 	TokenPath = "/var/run/secrets/cadre/token"
@@ -419,7 +418,7 @@ func (r *jobReconciler) newJob(agent *v1alpha1.Agent, spec *v1alpha1.AgentJob, r
 		prefix = prefix[:36]
 	}
 	name := strings.TrimRight(prefix, "-.") + "-" + strings.ToLower(ulid.Make().String())
-	labels := map[string]string{LabelAgent: agent.Name, LabelRunner: rn.Name}
+	labels := map[string]string{LabelAgent: agent.Name, v1alpha1.LabelRunner: rn.Name}
 
 	tmpl := spec.Template.DeepCopy()
 	if tmpl.Labels == nil {

@@ -3,12 +3,10 @@ package controller
 import (
 	"context"
 	"errors"
-	"fmt"
 	"log/slog"
 	"strings"
 	"time"
 
-	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	v1alpha1 "github.com/j75689/cadre/api/v1alpha1"
@@ -64,8 +62,8 @@ func (a agentAccesses) Authenticate(ctx context.Context, tok string) (*auth.Iden
 	if err != nil {
 		return nil, unauthenticated(err)
 	}
-	ns, sa, ok := strings.Cut(strings.TrimPrefix(id.Name, saPrefix), ":")
-	if !ok || !strings.HasPrefix(id.Name, saPrefix) {
+	ns, sa, ok := serviceAccountOf(id.Name)
+	if !ok {
 		return nil, auth.ErrUnauthenticated
 	}
 	list, err := accessSharers(ctx, a.c, ns, sa)
@@ -104,31 +102,19 @@ func (m mintedAccess) Authenticate(ctx context.Context, tok string) (runner.Iden
 	}
 	// The cache answers first: a lagging one is seconds behind a mint at
 	// worst, and refuses it for the moment a refusal is remembered.
-	if _, err := m.check(ctx, m.cache, ns, name, tok); err != nil {
+	if _, err := checkMinted(ctx, m.cache, ns, name, tok, accessToken); err != nil {
 		return runner.Identity{}, err
 	}
 	ctx, cancel := context.WithTimeout(ctx, freshReadTimeout)
 	defer cancel()
-	aa, err := m.check(ctx, m.fresh, ns, name, tok)
+	aa, err := checkMinted(ctx, m.fresh, ns, name, tok, accessToken)
 	if err != nil {
 		return runner.Identity{}, err
 	}
 	return runner.Identity{Name: ns + "/" + name, Scope: map[string]map[string]string{ns: {"role": string(aa.Spec.Role)}}}, nil
 }
 
-// check reads AgentAccess ns/name through r: it must exist, name no
-// ServiceAccount, and hold tok's hash.
-func (mintedAccess) check(ctx context.Context, r client.Reader, ns, name, tok string) (*v1alpha1.AgentAccess, error) {
-	var aa v1alpha1.AgentAccess
-	err := r.Get(ctx, client.ObjectKey{Namespace: ns, Name: name}, &aa)
-	switch {
-	case apierrors.IsNotFound(err):
-		return nil, runner.ErrUnauthenticated
-	case err != nil:
-		return nil, fmt.Errorf("read agent access: %w", err)
-	}
-	if aa.Spec.ServiceAccount != nil || !token.Matches(tok, aa.Status.TokenHash) {
-		return nil, runner.ErrUnauthenticated
-	}
-	return &aa, nil
+// accessToken is an AgentAccess's ServiceAccount and minted token.
+func accessToken(aa *v1alpha1.AgentAccess) (*v1alpha1.ServiceAccountRef, *v1alpha1.MintedToken) {
+	return aa.Spec.ServiceAccount, &aa.Status.MintedToken
 }

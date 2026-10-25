@@ -301,7 +301,7 @@ func TestJobsDoARunnerAgentsWork(t *testing.T) {
 		t.Errorf("token volume %+v", vol)
 	case len(c.VolumeMounts) != 1 || c.VolumeMounts[0].MountPath != "/var/run/secrets/cadre":
 		t.Errorf("mounts %+v", c.VolumeMounts)
-	case j.Labels[controller.LabelRunner] != "jobs" || len(j.OwnerReferences) != 1 || j.OwnerReferences[0].Name != "coder":
+	case j.Labels[v1alpha1.LabelRunner] != "jobs" || len(j.OwnerReferences) != 1 || j.OwnerReferences[0].Name != "coder":
 		t.Errorf("labels %v, owners %+v", j.Labels, j.OwnerReferences)
 	}
 

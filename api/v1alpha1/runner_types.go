@@ -2,8 +2,8 @@ package v1alpha1
 
 import metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
-// LabelRunner names the Runner a minted token Secret belongs to, so the
-// Secrets can be found.
+// LabelRunner names the Runner a minted token Secret belongs to, and the
+// Runner a Job's pod runs as, so the Secrets and the Jobs can be found.
 const LabelRunner = "cadre.dev/runner"
 
 // ServiceAccountRef names a ServiceAccount in the referring object's own

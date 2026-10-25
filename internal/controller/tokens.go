@@ -46,8 +46,9 @@ type tokenOwner struct {
 }
 
 // setToken puts hash (none when empty) in the owner's status, and reports
-// whether that changed it.
-func setToken(o tokenOwner, hash string, minted bool) bool {
+// whether that changed it. A new hash is a new token, minted or written
+// into the Secret by hand: mintedAt says when the status first had it.
+func setToken(o tokenOwner, hash string) bool {
 	st := o.status
 	secret := ""
 	if hash != "" {
@@ -56,13 +57,12 @@ func setToken(o tokenOwner, hash string, minted bool) bool {
 	if st.TokenHash == hash && st.TokenSecret == secret {
 		return false
 	}
-	st.TokenSecret, st.TokenHash = secret, hash
-	switch {
-	case hash == "":
+	if hash == "" {
 		st.MintedAt = nil
-	case minted || st.MintedAt == nil:
+	} else if st.TokenHash != hash || st.MintedAt == nil {
 		st.MintedAt = &metav1.Time{Time: time.Now().UTC().Truncate(time.Second)}
 	}
+	st.TokenSecret, st.TokenHash = secret, hash
 	return true
 }
 
@@ -71,7 +71,7 @@ func setToken(o tokenOwner, hash string, minted bool) bool {
 // status names its hash: a status write that is lost is redone from the
 // Secret on the next reconcile. A Secret of that name the owner does not
 // own, or one without a token, is a problem, not a token.
-func (b base) ensureToken(ctx context.Context, o tokenOwner) (hash string, minted bool, problem string, err error) {
+func (b base) ensureToken(ctx context.Context, o tokenOwner) (hash, problem string, err error) {
 	key := client.ObjectKey{Namespace: o.obj.GetNamespace(), Name: o.secret}
 	var s corev1.Secret
 	err = b.secrets.Get(ctx, key, &s)
@@ -79,15 +79,15 @@ func (b base) ensureToken(ctx context.Context, o tokenOwner) (hash string, minte
 	case err == nil:
 		tok := s.Data[tokenKey]
 		if len(tok) == 0 || !ownedBy(&s, o.obj) {
-			return "", false, fmt.Sprintf("Secret %s exists but is not this %s's token; delete it to have a token minted", key.Name, o.kind), nil
+			return "", fmt.Sprintf("Secret %s exists but is not this %s's token; delete it to have a token minted", key.Name, o.kind), nil
 		}
-		return token.Hash(string(tok)), false, "", nil
+		return token.Hash(string(tok)), "", nil
 	case !apierrors.IsNotFound(err):
-		return "", false, "", err
+		return "", "", err
 	}
 	tok, hash, err := token.Mint(key.Namespace, o.obj.GetName())
 	if err != nil {
-		return "", false, "", err
+		return "", "", err
 	}
 	s = corev1.Secret{
 		ObjectMeta: metav1.ObjectMeta{Name: key.Name, Namespace: key.Namespace, Labels: map[string]string{o.label: o.obj.GetName()}},
@@ -95,12 +95,12 @@ func (b base) ensureToken(ctx context.Context, o tokenOwner) (hash string, minte
 		Data:       map[string][]byte{tokenKey: []byte(tok)},
 	}
 	if err := controllerutil.SetControllerReference(o.obj, &s, b.client.Scheme()); err != nil {
-		return "", false, "", err
+		return "", "", err
 	}
 	if err := b.client.Create(ctx, &s); err != nil {
-		return "", false, "", err // a concurrent create is redone on the requeue
+		return "", "", err // a concurrent create is redone on the requeue
 	}
-	return hash, true, "", nil
+	return hash, "", nil
 }
 
 // invalidName is why name cannot be a Runner's or an AgentAccess's (kind),
