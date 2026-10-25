@@ -7,6 +7,8 @@ import (
 
 	v1alpha1 "github.com/j75689/cadre/api/v1alpha1"
 	"github.com/j75689/cadre/internal/api"
+	"github.com/j75689/cadre/internal/client"
+	"github.com/j75689/cadre/internal/httpjson"
 )
 
 func newAgentAccessCmd(g *globals) *cobra.Command {
@@ -31,14 +33,13 @@ func newAgentAccessSet(g *globals) *cobra.Command {
 				req.Spec.ServiceAccount = &v1alpha1.ServiceAccountRef{Name: serviceAccount}
 			}
 			c := g.client()
-			list, err := c.ListAgentAccesses(cmd.Context(), g.namespace)
-			if err != nil {
+			// An edit names the version it read; none there, it makes one.
+			switch cur, err := c.GetAgentAccess(cmd.Context(), g.namespace, name); {
+			case client.IsCode(err, httpjson.CodeNotFound):
+			case err != nil:
 				return err
-			}
-			for _, aa := range list.Items {
-				if aa.Name == name {
-					req.ResourceVersion = aa.ResourceVersion
-				}
+			default:
+				req.ResourceVersion = cur.ResourceVersion
 			}
 			view, err := c.PutAgentAccess(cmd.Context(), g.namespace, name, req)
 			if err != nil {
@@ -49,7 +50,12 @@ func newAgentAccessSet(g *globals) *cobra.Command {
 				outf(out, "agentaccess %s: %s, as ServiceAccount %s, with a projected token for the audience cadre\n", name, view.Spec.Role, view.Spec.ServiceAccount.Name)
 				return nil
 			}
-			secret := name + ".access-token"
+			// The status names it once the token is minted; until then it
+			// is the name it will be minted into.
+			secret := view.TokenSecret
+			if secret == "" {
+				secret = v1alpha1.AccessTokenSecretName(name)
+			}
 			outf(out, "agentaccess %s: %s, with a token Cadre mints into the Secret %s\n", name, view.Spec.Role, secret)
 			outf(out, "read it, with access to Secrets in %s: kubectl -n %s get secret %s -o jsonpath='{.data.token}' | base64 -d\n", g.namespace, g.namespace, secret)
 			return nil

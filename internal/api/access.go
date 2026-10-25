@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"net/http"
 
-	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
 	v1alpha1 "github.com/j75689/cadre/api/v1alpha1"
@@ -16,10 +15,13 @@ import (
 
 // AgentAccessStore keeps a namespace's AgentAccesses: the cluster's, through
 // the controllers' client. It fails with storage.ErrNotFound,
-// ErrAlreadyExists and ErrConflict as the store does, and ErrInvalid, with
-// the API server's reason, for an object the CRD refuses.
+// ErrAlreadyExists and ErrConflict as the store does, ErrInvalid, with the
+// API server's reason, for an object the CRD refuses, and ErrNotPermitted
+// when cadre-server itself may not.
 type AgentAccessStore interface {
 	ListAgentAccesses(ctx context.Context, namespace string) ([]v1alpha1.AgentAccess, error)
+	// GetAgentAccess reads one as it is now, not as a cache last saw it:
+	// a PUT decides from it whether it makes or edits.
 	GetAgentAccess(ctx context.Context, namespace, name string) (*v1alpha1.AgentAccess, error)
 	CreateAgentAccess(ctx context.Context, aa *v1alpha1.AgentAccess) error
 	// UpdateAgentAccess writes the spec, conditionally on the version.
@@ -27,8 +29,13 @@ type AgentAccessStore interface {
 	DeleteAgentAccess(ctx context.Context, namespace, name string) error
 }
 
+// ErrNotPermitted means cadre-server's own RBAC refuses what the store was
+// asked to do: a missing ClusterRole verb, which no retry fixes.
+var ErrNotPermitted = errors.New("cadre-server may not do this")
+
 // WithAgentAccesses lets a Team's admins manage its AgentAccesses through
-// the API, kept in store. Without it the routes are not served.
+// the API, kept in store. Without it, or without logins, the routes are not
+// served.
 func WithAgentAccesses(store AgentAccessStore) Option {
 	return func(s *Server) { s.access = store }
 }
@@ -36,7 +43,7 @@ func WithAgentAccesses(store AgentAccessStore) Option {
 func (s *Server) listAgentAccesses(w http.ResponseWriter, r *http.Request) {
 	list, err := s.access.ListAgentAccesses(r.Context(), r.PathValue("ns"))
 	if err != nil {
-		httpjson.Fail(w, s.log, err)
+		s.failAccess(w, "", err)
 		return
 	}
 	items := make([]AgentAccessView, 0, len(list))
@@ -44,6 +51,15 @@ func (s *Server) listAgentAccesses(w http.ResponseWriter, r *http.Request) {
 		items = append(items, viewAccess(&list[i]))
 	}
 	httpjson.Write(w, http.StatusOK, AgentAccessList{Items: items})
+}
+
+func (s *Server) getAgentAccess(w http.ResponseWriter, r *http.Request) {
+	aa, err := s.access.GetAgentAccess(r.Context(), r.PathValue("ns"), r.PathValue("name"))
+	if err != nil {
+		s.failAccess(w, r.PathValue("name"), err)
+		return
+	}
+	httpjson.Write(w, http.StatusOK, viewAccess(aa))
 }
 
 // putAgentAccess makes an AgentAccess, or edits its spec, as putTeam does a
@@ -68,7 +84,7 @@ func (s *Server) putAgentAccess(w http.ResponseWriter, r *http.Request) {
 		httpjson.Write(w, http.StatusCreated, viewAccess(aa))
 		return
 	case err != nil:
-		httpjson.Fail(w, s.log, err)
+		s.failAccess(w, name, err)
 		return
 	case req.ResourceVersion == "":
 		httpjson.Fail(w, s.log, fmt.Errorf("agent access %s: %w", name, storage.ErrAlreadyExists))
@@ -84,34 +100,30 @@ func (s *Server) putAgentAccess(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) deleteAgentAccess(w http.ResponseWriter, r *http.Request) {
 	if err := s.access.DeleteAgentAccess(r.Context(), r.PathValue("ns"), r.PathValue("name")); err != nil {
-		httpjson.Fail(w, s.log, err)
+		s.failAccess(w, r.PathValue("name"), err)
 		return
 	}
 	w.WriteHeader(http.StatusNoContent)
 }
 
-// failAccess answers a write the store refused.
+// failAccess answers what the store refused. cadre-server's own RBAC
+// refusing is logged, as a mistake in its install, and answered as one,
+// not as something to retry.
 func (s *Server) failAccess(w http.ResponseWriter, name string, err error) {
-	if errors.Is(err, storage.ErrConflict) {
+	switch {
+	case errors.Is(err, storage.ErrConflict):
 		httpjson.WriteError(w, http.StatusConflict, httpjson.CodeConflict, fmt.Sprintf("AgentAccess %s changed since it was read: read it again, and edit that", name))
-		return
+	case errors.Is(err, ErrNotPermitted):
+		s.log.Error("cadre-server's ClusterRole lacks a verb on agentaccesses", "err", err)
+		httpjson.WriteError(w, http.StatusInternalServerError, httpjson.CodeServerForbidden, "cadre-server may not do this: its ClusterRole lacks the verb; see its log")
+	default:
+		httpjson.Fail(w, s.log, err)
 	}
-	httpjson.Fail(w, s.log, err)
 }
 
-// viewAccess is aa as the API shows it: never its token, nor its hash. A
-// Ready condition decided for an older spec says nothing about this one.
+// viewAccess is aa as the API shows it: never its token, nor its hash.
 func viewAccess(aa *v1alpha1.AgentAccess) AgentAccessView {
-	out := AgentAccessView{
-		Name: aa.Name, ResourceVersion: aa.ResourceVersion, Spec: aa.Spec,
-		Ready: aa.Status.ReadyFor(aa.Generation), TokenSecret: aa.Status.TokenSecret, MintedAt: aa.Status.MintedAt,
-	}
-	c := meta.FindStatusCondition(aa.Status.Conditions, v1alpha1.ConditionReady)
-	switch {
-	case c == nil || c.ObservedGeneration != aa.Generation || aa.Status.ObservedGeneration != aa.Generation:
-		out.Reason, out.Message = "Pending", "its current spec has not been checked yet"
-	case !out.Ready:
-		out.Reason, out.Message = c.Reason, c.Message
-	}
+	out := AgentAccessView{Name: aa.Name, ResourceVersion: aa.ResourceVersion, Spec: aa.Spec, TokenSecret: aa.Status.TokenSecret, MintedAt: aa.Status.MintedAt}
+	out.Ready, out.Reason, out.Message = readiness(aa.Status.ConfigStatus, aa.Generation)
 	return out
 }

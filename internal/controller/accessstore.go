@@ -18,17 +18,24 @@ import (
 // +kubebuilder:rbac:groups=cadre.dev,resources=agentaccesses,verbs=create;update;delete
 
 // AgentAccessStore keeps AgentAccesses for the API through c, a controller
-// manager's client: they are read from its cache and written to the API
-// server. A write's answer maps to the store's errors, so the API answers
-// it as it does the board's.
-func AgentAccessStore(c client.Client) api.AgentAccessStore { return accessStore{c: c} }
+// manager's client: a list is read from its cache, one AgentAccess fresh
+// through fresh (the manager's API reader), since a PUT decides from it
+// whether it makes or edits, and writes go to the API server. Its answers
+// map to the store's errors, so the API answers them as it does the
+// board's.
+func AgentAccessStore(c client.Client, fresh client.Reader) api.AgentAccessStore {
+	return accessStore{c: c, fresh: fresh}
+}
 
-type accessStore struct{ c client.Client }
+type accessStore struct {
+	c     client.Client
+	fresh client.Reader
+}
 
 func (s accessStore) ListAgentAccesses(ctx context.Context, ns string) ([]v1alpha1.AgentAccess, error) {
 	var list v1alpha1.AgentAccessList
 	if err := s.c.List(ctx, &list, client.InNamespace(ns)); err != nil {
-		return nil, fmt.Errorf("list agent accesses: %w", err)
+		return nil, storeError("list", "", err)
 	}
 	slices.SortFunc(list.Items, func(a, b v1alpha1.AgentAccess) int { return strings.Compare(a.Name, b.Name) })
 	return list.Items, nil
@@ -36,28 +43,34 @@ func (s accessStore) ListAgentAccesses(ctx context.Context, ns string) ([]v1alph
 
 func (s accessStore) GetAgentAccess(ctx context.Context, ns, name string) (*v1alpha1.AgentAccess, error) {
 	var aa v1alpha1.AgentAccess
-	if err := s.c.Get(ctx, client.ObjectKey{Namespace: ns, Name: name}, &aa); err != nil {
-		return nil, storeError(name, err)
+	if err := s.fresh.Get(ctx, client.ObjectKey{Namespace: ns, Name: name}, &aa); err != nil {
+		return nil, storeError("get", name, err)
 	}
 	return &aa, nil
 }
 
 func (s accessStore) CreateAgentAccess(ctx context.Context, aa *v1alpha1.AgentAccess) error {
-	return storeError(aa.Name, s.c.Create(ctx, aa))
+	err := s.c.Create(ctx, aa)
+	if apierrors.IsNotFound(err) {
+		// The namespace is not there: a request to fix, not a 404.
+		return fmt.Errorf("%s: %w", err.Error(), storage.ErrInvalid)
+	}
+	return storeError("create", aa.Name, err)
 }
 
 func (s accessStore) UpdateAgentAccess(ctx context.Context, aa *v1alpha1.AgentAccess) error {
-	return storeError(aa.Name, s.c.Update(ctx, aa))
+	return storeError("update", aa.Name, s.c.Update(ctx, aa))
 }
 
 func (s accessStore) DeleteAgentAccess(ctx context.Context, ns, name string) error {
-	return storeError(name, s.c.Delete(ctx, &v1alpha1.AgentAccess{ObjectMeta: metav1.ObjectMeta{Namespace: ns, Name: name}}))
+	return storeError("delete", name, s.c.Delete(ctx, &v1alpha1.AgentAccess{ObjectMeta: metav1.ObjectMeta{Namespace: ns, Name: name}}))
 }
 
-// storeError is the API server's answer about AgentAccess name as the
+// storeError is the API server's answer to verb on AgentAccess name as the
 // store's errors say it. A refusal of the object itself keeps the API
-// server's reason, which says what the CRD wants.
-func storeError(name string, err error) error {
+// server's reason, which says what the CRD wants; one of cadre-server is
+// api.ErrNotPermitted, naming the verb.
+func storeError(verb, name string, err error) error {
 	switch {
 	case err == nil:
 		return nil
@@ -69,6 +82,8 @@ func storeError(name string, err error) error {
 		return fmt.Errorf("agent access %s: %w", name, storage.ErrConflict)
 	case apierrors.IsInvalid(err), apierrors.IsBadRequest(err):
 		return fmt.Errorf("%s: %w", err.Error(), storage.ErrInvalid)
+	case apierrors.IsForbidden(err), apierrors.IsUnauthorized(err):
+		return fmt.Errorf("%s agentaccesses: %w: %w", verb, api.ErrNotPermitted, err)
 	}
-	return fmt.Errorf("agent access %s: %w", name, err)
+	return fmt.Errorf("%s agent access %s: %w", verb, name, err)
 }

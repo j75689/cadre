@@ -4,6 +4,11 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
+	"log/slog"
+	"net/http"
+	"net/http/httptest"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -11,6 +16,7 @@ import (
 	v1alpha1 "github.com/j75689/cadre/api/v1alpha1"
 	"github.com/j75689/cadre/internal/api"
 	"github.com/j75689/cadre/internal/authz"
+	"github.com/j75689/cadre/internal/manager"
 	"github.com/j75689/cadre/internal/storage"
 	"github.com/j75689/cadre/internal/storage/memory"
 )
@@ -36,6 +42,8 @@ func (f *fakeAccesses) ListAgentAccesses(_ context.Context, ns string) ([]v1alph
 			out = append(out, *aa.DeepCopy())
 		}
 	}
+	// By name, as the cluster's store lists them.
+	slices.SortFunc(out, func(a, b v1alpha1.AgentAccess) int { return strings.Compare(a.Name, b.Name) })
 	return out, nil
 }
 
@@ -49,6 +57,9 @@ func (f *fakeAccesses) GetAgentAccess(_ context.Context, ns, name string) (*v1al
 }
 
 func (f *fakeAccesses) write(aa *v1alpha1.AgentAccess) error {
+	if aa.Name == "forbidden" {
+		return fmt.Errorf("create agentaccesses: %w", api.ErrNotPermitted)
+	}
 	if aa.Spec.Role != "viewer" && aa.Spec.Role != "member" {
 		return fmt.Errorf(`spec.role: Unsupported value: %q: supported values: "member", "viewer": %w`, aa.Spec.Role, storage.ErrInvalid)
 	}
@@ -122,6 +133,10 @@ func TestAgentAccessRoutes(t *testing.T) {
 		{"an admin role, which the CRD refuses", admin, "PUT", path + "/boss", `{"spec":{"role":"admin"}}`, 400, "Unsupported value"},
 		{"a bootstrap admin makes one", root, "PUT", path + "/ci", `{"spec":{"role":"viewer","serviceAccount":{"name":"ci"}}}`, 201, `"serviceAccount":{"name":"ci"}`},
 		{"an admin lists them", admin, "GET", path, "", 200, `"name":"bot"`},
+		{"an admin reads one", admin, "GET", path + "/bot", "", 200, `"role":"viewer"`},
+		{"an admin reads one there is not", admin, "GET", path + "/none", "", 404, "not_found"},
+		{"a member may not read one", member, "GET", path + "/bot", "", 403, "no_role"},
+		{"cadre-server's own RBAC refusing", admin, "PUT", path + "/forbidden", `{"spec":{"role":"member"}}`, 500, "server_forbidden"},
 		{"a member may not list", member, "GET", path, "", 403, "needs the admin role"},
 		{"a member may not make one", member, "PUT", path + "/mine", `{"spec":{"role":"member"}}`, 403, "no_role"},
 		{"a member may not delete", member, "DELETE", path + "/bot", "", 403, "no_role"},
@@ -144,6 +159,31 @@ func TestAgentAccessRoutes(t *testing.T) {
 	for _, b := range bodies {
 		if strings.Contains(b, tokenHash) || strings.Contains(b, "tokenHash") {
 			t.Errorf("a response carries the token's hash: %s", b)
+		}
+	}
+}
+
+// Without logins everyone may do anything: AgentAccesses are not served
+// there, since one made then would be a live credential once logins are on.
+func TestAgentAccessesNotServedWithoutLogins(t *testing.T) {
+	m := manager.New(memory.NewBackend().Open(), manager.Config{})
+	mux := http.NewServeMux()
+	api.NewServer(m, slog.New(slog.NewTextHandler(io.Discard, nil)), api.WithAgentAccesses(&fakeAccesses{objs: map[string]*v1alpha1.AgentAccess{}})).Register(mux)
+	srv := httptest.NewServer(mux)
+	defer srv.Close()
+	for _, method := range []string{"GET", "PUT", "DELETE"} {
+		path := "/namespaces/team-a/agentaccesses/bot"
+		if method == "GET" {
+			path = "/namespaces/team-a/agentaccesses"
+		}
+		req, _ := http.NewRequest(method, srv.URL+api.Base+path, strings.NewReader(`{"spec":{"role":"member"}}`))
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		_ = resp.Body.Close()
+		if resp.StatusCode != http.StatusNotFound {
+			t.Errorf("%s %s without logins: %d", method, path, resp.StatusCode)
 		}
 	}
 }

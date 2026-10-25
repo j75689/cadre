@@ -216,6 +216,13 @@ func (c *Client) ListAgentAccesses(ctx context.Context, ns string) (*api.AgentAc
 	return &list, err
 }
 
+// GetAgentAccess reads AgentAccess name, for its namespace's admins.
+func (c *Client) GetAgentAccess(ctx context.Context, ns, name string) (*api.AgentAccessView, error) {
+	var view api.AgentAccessView
+	_, err := c.do(ctx, http.MethodGet, nsPath(ns)+"/agentaccesses/"+url.PathEscape(name), nil, &view)
+	return &view, err
+}
+
 // PutAgentAccess makes AgentAccess name, or edits it from the version
 // req.ResourceVersion names.
 func (c *Client) PutAgentAccess(ctx context.Context, ns, name string, req api.AgentAccessRequest) (*api.AgentAccessView, error) {

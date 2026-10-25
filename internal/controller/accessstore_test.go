@@ -17,6 +17,8 @@ import (
 
 	v1alpha1 "github.com/j75689/cadre/api/v1alpha1"
 	"github.com/j75689/cadre/internal/api"
+	"github.com/j75689/cadre/internal/auth"
+	"github.com/j75689/cadre/internal/authz"
 	"github.com/j75689/cadre/internal/controller"
 	"github.com/j75689/cadre/internal/manager"
 	"github.com/j75689/cadre/internal/storage/memory"
@@ -32,9 +34,15 @@ func TestAgentAccessesThroughTheAPI(t *testing.T) {
 	const ns = "team-api"
 	e.create(&corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: ns}}, &v1alpha1.Team{ObjectMeta: meta2(ns, v1alpha1.TeamName)})
 	mux := http.NewServeMux()
+	// With logins, as AgentAccesses are served only then: every request
+	// is a bootstrap admin's.
+	root := &auth.Identity{Username: "root@example.test"}
 	api.NewServer(manager.New(memory.NewBackend().Open(), manager.Config{}), slog.New(slog.NewTextHandler(io.Discard, nil)),
-		api.WithAgentAccesses(controller.AgentAccessStore(e.c))).Register(mux)
-	srv := httptest.NewServer(mux)
+		api.WithAccess(auth.ModeOIDC, &authz.Policy{AdminUsers: []string{root.Username}}),
+		api.WithAgentAccesses(controller.AgentAccessStore(e.c, e.c))).Register(mux)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		mux.ServeHTTP(w, r.WithContext(auth.WithIdentity(r.Context(), root)))
+	}))
 	t.Cleanup(srv.Close)
 	var bodies []string
 	do := func(method, path, body string) (int, string) {

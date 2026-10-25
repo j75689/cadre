@@ -33,6 +33,7 @@ const (
 	CodeForbidden         = "forbidden"          // 403: not this caller's to do
 	CodeNoRole            = "no_role"            // 403: the caller's role on the team does not allow it
 	CodeUnavailable       = "unavailable"        // 503: retry later
+	CodeServerForbidden   = "server_forbidden"   // 500: cadre-server's own RBAC refuses it; fix its install
 )
 
 // ErrorResponse is the body of every error.
