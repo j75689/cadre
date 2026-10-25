@@ -1,0 +1,113 @@
+# A v* tag releases the commit it names, once that commit is on main and
+# main's CI passed on it (the checks and the install in kind): then the three images (publish.yml, tagged vX.Y.Z, vX.Y and
+# latest), then the chart, at the tag without its v and with appVersion the
+# tag, to oci://ghcr.io/<owner>/charts/cadre, and the GitHub release with
+# install.yaml. Nothing CI ran is run again. Tags are independent: one run
+# per tag, none dropped.
+name: Release
+
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  # What the header promises: the tagged commit is on main, and main's
+  # checks and install in kind passed on it.
+  on-main:
+    name: The tag is on main, and passed CI there
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      actions: read
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+      - name: Check the commit is on main
+        run: |
+          git merge-base --is-ancestor "$GITHUB_SHA" origin/main ||
+            { echo "::error::$GITHUB_REF_NAME ($GITHUB_SHA) is not on main: tag a commit of main"; exit 1; }
+      # The checks and the install in kind, job by job: main's publish of a
+      # commit may be cancelled when a newer one lands (publish.yml), which
+      # makes the run cancelled while the commit passed everything else.
+      - name: Check main's CI passed on it
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          run=$(gh run list --repo "$GITHUB_REPOSITORY" --workflow ci.yml --commit "$GITHUB_SHA" --branch main --limit 1 --json databaseId --jq '.[0].databaseId // empty')
+          passed=false
+          if [ -n "$run" ]; then
+            passed=$(gh run view "$run" --repo "$GITHUB_REPOSITORY" --json jobs \
+              --jq '[.jobs[] | select(.name | test("^(fmt|lint|test|web|chart|e2e) / "))] | (length >= 6 and all(.conclusion == "success"))')
+          fi
+          [ "$passed" = true ] ||
+            { echo "::error::main's checks and install in kind have not passed on $GITHUB_SHA: wait for main's CI, then re-run this workflow (a tag pushed with its commit races main's CI)"; exit 1; }
+
+  publish:
+    needs: on-main
+    uses: ./.github/workflows/publish.yml
+    permissions:
+      contents: read
+      packages: write
+
+  release:
+    name: Release the chart and install.yaml
+    needs: publish
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      packages: write
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+          # Go here only installs helm, and nothing once bin/tools is warm.
+          cache: false
+      # helm, as chart.yml's job installs it on main.
+      - uses: ./.github/actions/tools-cache
+        with:
+          job: chart
+      - name: Package the chart and render install.yaml
+        run: make chart-dist RELEASE="$GITHUB_REF_NAME"
+      - name: Find the package and install.yaml
+        id: dist
+        shell: bash
+        run: |
+          paths=$(make -s print-chart-paths RELEASE="$GITHUB_REF_NAME")
+          read -r pkg yaml <<< "$paths"
+          echo "pkg=$pkg" >> "$GITHUB_OUTPUT"
+          echo "yaml=$yaml" >> "$GITHUB_OUTPUT"
+      - name: Push the chart
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          OWNER: ${{ github.repository_owner }}
+          PKG: ${{ steps.dist.outputs.pkg }}
+        run: |
+          helm=$(make -s print-helm)
+          printf '%s' "$GITHUB_TOKEN" | "$helm" registry login ghcr.io -u "$GITHUB_ACTOR" --password-stdin
+          "$helm" push "$PKG" "oci://ghcr.io/${OWNER,,}/charts"
+      # The release may exist already: made in the UI with its tag, or by an
+      # earlier attempt of this job. A tag whose version (before any +build)
+      # has a - (v1.0.0-rc.1) is a pre-release.
+      - name: Create or update the GitHub release
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          YAML: ${{ steps.dist.outputs.yaml }}
+        run: |
+          pre=()
+          case "${GITHUB_REF_NAME%%+*}" in *-*) pre=(--prerelease) ;; esac
+          if gh release view "$GITHUB_REF_NAME" > /dev/null 2>&1; then
+            gh release upload "$GITHUB_REF_NAME" "$YAML" --clobber
+            if [ ${#pre[@]} -gt 0 ]; then gh release edit "$GITHUB_REF_NAME" --prerelease; fi
+          else
+            gh release create "$GITHUB_REF_NAME" "$YAML" --verify-tag --generate-notes --title "$GITHUB_REF_NAME" "${pre[@]}"
+          fi

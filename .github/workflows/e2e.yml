@@ -1,0 +1,57 @@
+# The chart from this commit's images, installed in kind with Dex and
+# SeaweedFS and checked through the API and the UI (hack/e2e). The two
+# images it deploys are built for linux/amd64 into the runner's Docker,
+# from the cache publish writes: warm after a build of main.
+name: e2e
+
+on:
+  workflow_call:
+
+permissions:
+  contents: read
+
+jobs:
+  e2e:
+    name: Install in kind
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+          # The images build in Docker; Go here only installs tools, and
+          # nothing once bin/tools is warm.
+          cache: false
+      - uses: ./.github/actions/tools-cache
+      - uses: docker/setup-buildx-action@v4
+      - name: Registry
+        id: registry
+        env:
+          OWNER: ${{ github.repository_owner }}
+        run: echo "name=ghcr.io/${OWNER,,}" >> "$GITHUB_OUTPUT"
+      - name: Build cadre-server
+        uses: docker/build-push-action@v7
+        with:
+          context: .
+          platforms: linux/amd64
+          build-args: |
+            CMD=cadre-server
+            VERSION=e2e
+          tags: ${{ steps.registry.outputs.name }}/cadre-server:e2e
+          load: true
+          cache-from: type=gha,scope=cadre-server
+      - name: Build cadre-runner
+        uses: docker/build-push-action@v7
+        with:
+          context: .
+          platforms: linux/amd64
+          build-args: |
+            CMD=cadre-runner
+            VERSION=e2e
+          tags: ${{ steps.registry.outputs.name }}/cadre-runner:e2e
+          load: true
+          cache-from: type=gha,scope=cadre-runner
+      - name: Install and check
+        env:
+          REGISTRY: ${{ steps.registry.outputs.name }}
+        run: hack/e2e/run.sh e2e

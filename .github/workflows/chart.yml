@@ -1,0 +1,23 @@
+# helm lint and kubeconform over the chart's ci/ values.
+name: chart
+
+on:
+  workflow_call:
+
+permissions:
+  contents: read
+
+jobs:
+  chart:
+    name: Helm chart
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+          # Nothing compiles once bin/tools is warm.
+          cache: false
+      - uses: ./.github/actions/tools-cache
+      - name: Helm chart
+        run: make chart-lint
