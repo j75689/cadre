@@ -664,12 +664,13 @@ func TestReserveItem(t *testing.T) {
 }
 
 // NotifyDelivered adds to a Notify item's Delivered, once each, and leaves
-// other items alone.
+// other items alone; once every Notifier of the item took it, or is gone,
+// it removes the item.
 func TestNotifyDelivered(t *testing.T) {
 	const id = "01JB0000000000000000000001"
 	tk := taskIn(v1alpha1.PhaseWaiting, step)
 	tk.Status.Outbox = []v1alpha1.OutboxItem{
-		{ID: id, Kind: v1alpha1.OutboxNotify, Notify: &v1alpha1.Notification{Event: v1alpha1.NotifyQuestion, Delivered: []string{"b"}}},
+		{ID: id, Kind: v1alpha1.OutboxNotify, Notify: &v1alpha1.Notification{Event: v1alpha1.NotifyQuestion, To: []string{"a", "b", "c", "d", "e"}, Delivered: []string{"b"}}},
 		item("01JB0000000000000000000002"),
 	}
 	tk.Status = apply(t, tk, NotifyDelivered{ID: id, To: []string{"c", "a", "b"}}).Status
@@ -679,6 +680,15 @@ func TestNotifyDelivered(t *testing.T) {
 	if tk.Status.Outbox[1].Notify != nil {
 		t.Errorf("another item changed: %+v", tk.Status.Outbox[1])
 	}
+	// d gone is not enough while e has not taken it.
+	tk.Status = apply(t, tk, NotifyDelivered{ID: id, Gone: []string{"d"}}).Status
+	if len(tk.Status.Outbox) != 2 {
+		t.Fatalf("removed with e pending: %+v", tk.Status.Outbox)
+	}
+	tk.Status = apply(t, tk, NotifyDelivered{ID: id, To: []string{"e"}, Gone: []string{"d"}}).Status
+	if len(tk.Status.Outbox) != 1 || tk.Status.Outbox[0].ID != "01JB0000000000000000000002" {
+		t.Errorf("outbox once all took it %+v, want the other item only", tk.Status.Outbox)
+	}
 }
 
 // One server at a time sends a notification: another's turn holds until it
@@ -687,7 +697,7 @@ func TestNotifyClaim(t *testing.T) {
 	const id = "01JB0000000000000000000001"
 	now := time.Date(2026, 10, 25, 9, 0, 0, 0, time.UTC)
 	tk := taskIn(v1alpha1.PhaseWaiting, step)
-	tk.Status.Outbox = []v1alpha1.OutboxItem{{ID: id, Kind: v1alpha1.OutboxNotify, Notify: &v1alpha1.Notification{Event: v1alpha1.NotifyQuestion}}}
+	tk.Status.Outbox = []v1alpha1.OutboxItem{{ID: id, Kind: v1alpha1.OutboxNotify, Notify: &v1alpha1.Notification{Event: v1alpha1.NotifyQuestion, To: []string{"a", "b"}}}}
 	claim := func(by string, at time.Time) error {
 		res, err := Apply(tk, NotifyClaim{ID: id, By: by, Until: at.Add(30 * time.Second)}, at)
 		if err == nil {

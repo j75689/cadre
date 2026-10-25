@@ -176,7 +176,7 @@ func testNotifyItemRoundTrips(t *testing.T, s *suite) {
 	tk := s.get(first, "told")
 	at := metav1.NewTime(time.Date(2026, 10, 25, 9, 0, 0, 0, time.UTC))
 	tk.Status.Outbox = append(tk.Status.Outbox, v1alpha1.OutboxItem{ID: runID(200), Kind: v1alpha1.OutboxNotify,
-		Notify: &v1alpha1.Notification{Event: v1alpha1.NotifyQuestion, ThreadSeq: 3, At: at}})
+		Notify: &v1alpha1.Notification{Event: v1alpha1.NotifyQuestion, ThreadSeq: 3, At: at, To: []string{"hook", "chat"}}})
 	if err := first.UpdateTaskStatus(s.ctx, tk); err != nil {
 		t.Fatalf("write the item: %v", err)
 	}
@@ -188,8 +188,16 @@ func testNotifyItemRoundTrips(t *testing.T, s *suite) {
 		t.Fatalf("outbox %+v", got)
 	}
 	n := got[0].Notify
-	if n.Event != v1alpha1.NotifyQuestion || n.ThreadSeq != 3 || !n.At.Equal(&at) || len(n.Delivered) != 1 || n.Delivered[0] != "hook" {
+	if n.Event != v1alpha1.NotifyQuestion || n.ThreadSeq != 3 || !n.At.Equal(&at) || len(n.Delivered) != 1 || n.Delivered[0] != "hook" ||
+		strings.Join(n.To, ",") != "hook,chat" {
 		t.Errorf("notification %+v", n)
+	}
+	// The last of its Notifiers taking it removes it, in the same write.
+	if err := transition(s.ctx, first, s.key("told"), task.NotifyDelivered{ID: runID(200), To: []string{"chat"}}); err != nil {
+		t.Fatalf("record the last delivery: %v", err)
+	}
+	if got := s.get(s.open(), "told").Status.Outbox; len(got) != 0 {
+		t.Errorf("outbox %+v once all took it", got)
 	}
 }
 
