@@ -1,0 +1,14 @@
+name: Tools cache
+description: Restore bin/tools, keyed on the tool versions the Makefile pins.
+runs:
+  using: composite
+  steps:
+    - name: Tool versions
+      id: tools
+      shell: bash
+      run: echo "key=tools-${{ runner.os }}-$(grep -E '^[A-Z0-9_]+_VERSION +:=' Makefile | tr -d ' ' | sort | tr '\n' '-')" >> "$GITHUB_OUTPUT"
+    - name: Cache tools
+      uses: actions/cache@v6
+      with:
+        path: bin/tools
+        key: ${{ steps.tools.outputs.key }}

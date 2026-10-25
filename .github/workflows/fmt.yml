@@ -1,0 +1,26 @@
+# go.mod tidy, gofmt, and the generated code and CRDs up to date.
+name: fmt
+
+on:
+  workflow_call:
+
+permissions:
+  contents: read
+
+jobs:
+  fmt:
+    name: Format, tidy and generated code
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+      - uses: ./.github/actions/tools-cache
+      - name: Verify go.mod is tidy
+        run: make verify-tidy
+      - name: Format
+        run: make fmt
+      - name: Verify generated code and CRDs
+        run: make verify-generated

@@ -1,0 +1,49 @@
+# Every test, against envtest and a real S3-compatible store, then the build.
+name: test
+
+on:
+  workflow_call:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    name: Test and build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+      - uses: ./.github/actions/tools-cache
+      - uses: actions/setup-node@v4
+        with:
+          node-version-file: web/.nvmrc
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+      # The embed tests run against a real build.
+      - name: Build the web UI
+        run: make ui
+      # The kubernetes driver's conformance suite runs against a real
+      # S3-compatible store that enforces If-None-Match. Service containers
+      # cannot pass arguments, so the server is started here.
+      - name: Start SeaweedFS
+        run: |
+          docker run -d --name seaweedfs -p 8333:8333 chrislusf/seaweedfs:4.48 server -s3 -s3.port=8333
+          for i in $(seq 1 60); do
+            curl -sf -X PUT http://localhost:8333/cadre-test >/dev/null && exit 0
+            sleep 1
+          done
+          docker logs seaweedfs
+          exit 1
+      - name: Test
+        run: make test
+        env:
+          CADRE_TEST_S3_ENDPOINT: http://localhost:8333
+          CADRE_TEST_S3_BUCKET: cadre-test
+          CADRE_TEST_S3_ACCESS_KEY: test-access-key
+          CADRE_TEST_S3_SECRET_KEY: test-secret-key
+      - name: Build
+        run: go build ./...

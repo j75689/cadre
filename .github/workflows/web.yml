@@ -1,0 +1,22 @@
+# The web UI's typecheck, eslint and vitest.
+name: web
+
+on:
+  workflow_call:
+
+permissions:
+  contents: read
+
+jobs:
+  web:
+    name: Web UI checks
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version-file: web/.nvmrc
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+      - name: Web UI checks
+        run: make ui-check

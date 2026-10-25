@@ -1,279 +1,52 @@
+# Every push to main and every pull request: the checks, each its own
+# workflow; on a pull request the images built for both platforms; the
+# install in kind; and on main the images published as main and
+# main-<short sha>, once all of that passed on the same commit. v* tags are
+# released by release.yml.
 name: CI
 
 on:
   push:
     branches: [main]
-    tags: ["v*"]
   pull_request:
 
 permissions:
   contents: read
 
+# A pull request's newer push replaces its running checks. Each push to main
+# is a group of its own, so none is queued behind another and dropped: each
+# publishes its commit.
+concurrency:
+  group: ci-${{ github.event_name == 'pull_request' && github.ref || github.sha }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
 jobs:
-  check:
-    name: Build, lint and test
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-go@v5
-        with:
-          go-version-file: go.mod
-          cache: true
-      - name: Tool versions
-        id: tools
-        run: echo "key=tools-${{ runner.os }}-$(grep -E '^[A-Z0-9_]+_VERSION +:=' Makefile | tr -d ' ' | sort | tr '\n' '-')" >> "$GITHUB_OUTPUT"
-      - name: Cache tools
-        uses: actions/cache@v4
-        with:
-          path: bin/tools
-          key: ${{ steps.tools.outputs.key }}
-      - name: Verify go.mod is tidy
-        run: go mod tidy && git diff --exit-code go.mod go.sum
-      - name: Format
-        run: make fmt
-      - name: Vet
-        run: go vet ./...
-      - name: Verify generated code and CRDs
-        run: make verify-generated
-      - name: Lint
-        run: make lint
-      - name: Helm chart
-        run: make chart-lint
-      - uses: actions/setup-node@v4
-        with:
-          node-version-file: web/.nvmrc
-          cache: npm
-          cache-dependency-path: web/package-lock.json
-      - name: Web UI checks
-        run: make ui-check
-      # The embed tests run against a real build.
-      - name: Build the web UI
-        run: make ui
-      # The kubernetes driver's conformance suite runs against a real
-      # S3-compatible store that enforces If-None-Match. Service containers
-      # cannot pass arguments, so the server is started here.
-      - name: Start SeaweedFS
-        run: |
-          docker run -d --name seaweedfs -p 8333:8333 chrislusf/seaweedfs:4.48 server -s3 -s3.port=8333
-          for i in $(seq 1 60); do
-            curl -sf -X PUT http://localhost:8333/cadre-test >/dev/null && exit 0
-            sleep 1
-          done
-          docker logs seaweedfs
-          exit 1
-      - name: Test
-        run: make test
-        env:
-          CADRE_TEST_S3_ENDPOINT: http://localhost:8333
-          CADRE_TEST_S3_BUCKET: cadre-test
-          CADRE_TEST_S3_ACCESS_KEY: test-access-key
-          CADRE_TEST_S3_SECRET_KEY: test-secret-key
-      - name: Build
-        run: go build ./...
+  fmt:
+    uses: ./.github/workflows/fmt.yml
+  lint:
+    uses: ./.github/workflows/lint.yml
+  test:
+    uses: ./.github/workflows/test.yml
+  web:
+    uses: ./.github/workflows/web.yml
+  chart:
+    uses: ./.github/workflows/chart.yml
 
-  # A pull request builds every image, for both platforms, and pushes none:
-  # a broken Dockerfile fails here.
-  image:
-    name: Build ${{ matrix.cmd }} image
+  images:
     if: github.event_name == 'pull_request'
-    runs-on: ubuntu-latest
-    concurrency:
-      group: images-${{ github.ref }}-${{ matrix.cmd }}
-      cancel-in-progress: true
-    strategy:
-      fail-fast: false
-      matrix:
-        cmd: [cadre-server, cadre-runner, cadre]
-    steps:
-      - uses: actions/checkout@v4
-      - uses: docker/setup-buildx-action@v3
-      - uses: docker/build-push-action@v6
-        with:
-          context: .
-          platforms: linux/amd64,linux/arm64
-          build-args: |
-            CMD=${{ matrix.cmd }}
-            VERSION=pr-${{ github.event.number }}
-          push: false
-          cache-from: type=gha,scope=${{ matrix.cmd }}
+    uses: ./.github/workflows/images.yml
+    with:
+      version: pr-${{ github.event.number }}
 
-  # The chart from this commit's images, installed in kind with Dex and
-  # SeaweedFS and checked through the API and the UI (hack/e2e). The two
-  # images it deploys are built for linux/amd64 into the runner's Docker,
-  # from the cache main's publish writes: warm after a build of main.
   e2e:
-    name: Install in kind
-    if: github.event_name == 'pull_request' || github.ref == 'refs/heads/main'
-    needs: check
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-go@v5
-        with:
-          go-version-file: go.mod
-      - name: Tool versions
-        id: tools
-        run: echo "key=tools-${{ runner.os }}-$(grep -E '^[A-Z0-9_]+_VERSION +:=' Makefile | tr -d ' ' | sort | tr '\n' '-')" >> "$GITHUB_OUTPUT"
-      - name: Cache tools
-        uses: actions/cache@v4
-        with:
-          path: bin/tools
-          key: ${{ steps.tools.outputs.key }}
-      - uses: docker/setup-buildx-action@v3
-      - name: Registry
-        id: registry
-        env:
-          OWNER: ${{ github.repository_owner }}
-        run: echo "name=ghcr.io/${OWNER,,}" >> "$GITHUB_OUTPUT"
-      - name: Build cadre-server
-        uses: docker/build-push-action@v6
-        with:
-          context: .
-          platforms: linux/amd64
-          build-args: |
-            CMD=cadre-server
-            VERSION=e2e
-          tags: ${{ steps.registry.outputs.name }}/cadre-server:e2e
-          load: true
-          cache-from: type=gha,scope=cadre-server
-      - name: Build cadre-runner
-        uses: docker/build-push-action@v6
-        with:
-          context: .
-          platforms: linux/amd64
-          build-args: |
-            CMD=cadre-runner
-            VERSION=e2e
-          tags: ${{ steps.registry.outputs.name }}/cadre-runner:e2e
-          load: true
-          cache-from: type=gha,scope=cadre-runner
-      - name: Install and check
-        env:
-          REGISTRY: ${{ steps.registry.outputs.name }}
-        run: hack/e2e/run.sh e2e
+    needs: [fmt, lint, test, web, chart]
+    uses: ./.github/workflows/e2e.yml
 
-  # main and v* tags publish to ghcr.io/<owner>/<command>, once check has
-  # passed on the same commit, and on main the install in kind too (it does
-  # not run on tags, where it is skipped; !cancelled() lets a skipped e2e
-  # through, and stops on a cancelled run). One push at a time per ref and
-  # command: an older build finishing last would move the mutable main tag
-  # back.
+  # A broken install does not move :main.
   publish:
-    name: Publish ${{ matrix.cmd }}
-    if: >-
-      !cancelled() && github.event_name == 'push' && needs.check.result == 'success' &&
-      (needs.e2e.result == 'success' || needs.e2e.result == 'skipped')
-    needs: [check, e2e]
-    runs-on: ubuntu-latest
-    concurrency:
-      group: images-${{ github.ref }}-${{ matrix.cmd }}
-      cancel-in-progress: false
+    if: github.event_name == 'push'
+    needs: [fmt, lint, test, web, chart, e2e]
+    uses: ./.github/workflows/publish.yml
     permissions:
       contents: read
       packages: write
-    strategy:
-      fail-fast: false
-      matrix:
-        cmd: [cadre-server, cadre-runner, cadre]
-    steps:
-      - uses: actions/checkout@v4
-      - uses: docker/setup-buildx-action@v3
-      - uses: docker/login-action@v3
-        with:
-          registry: ghcr.io
-          username: ${{ github.actor }}
-          password: ${{ secrets.GITHUB_TOKEN }}
-      # A tag's version is the tag; main's is main-<short sha>, which is also
-      # its tag.
-      - id: version
-        run: |
-          if [ "$GITHUB_REF_TYPE" = tag ]; then echo "version=$GITHUB_REF_NAME"; else echo "version=main-${GITHUB_SHA::7}"; fi >> "$GITHUB_OUTPUT"
-      - id: meta
-        uses: docker/metadata-action@v5
-        with:
-          images: ghcr.io/${{ github.repository_owner }}/${{ matrix.cmd }}
-          # vX.Y.Z, vX.Y and latest on a tag; main and main-<short sha> on main.
-          tags: |
-            type=semver,pattern=v{{version}}
-            type=semver,pattern=v{{major}}.{{minor}}
-            type=raw,value=${{ steps.version.outputs.version }},enable={{is_default_branch}}
-            type=raw,value=main,enable={{is_default_branch}}
-      - uses: docker/build-push-action@v6
-        with:
-          context: .
-          platforms: linux/amd64,linux/arm64
-          build-args: |
-            CMD=${{ matrix.cmd }}
-            VERSION=${{ steps.version.outputs.version }}
-          push: true
-          tags: ${{ steps.meta.outputs.tags }}
-          labels: ${{ steps.meta.outputs.labels }}
-          cache-from: type=gha,scope=${{ matrix.cmd }}
-          cache-to: type=gha,mode=max,scope=${{ matrix.cmd }}
-
-  # A v* tag, once all three images are published, also publishes the chart
-  # to oci://ghcr.io/<owner>/charts/cadre, at the tag without its v and with
-  # appVersion the tag, and makes the GitHub release, with install.yaml. Tags
-  # are independent: one run per tag, none dropped.
-  release:
-    name: Release the chart and install.yaml
-    # !cancelled(): on a tag e2e is skipped, which would skip this job too
-    # without it, though publish succeeded; a cancelled run still skips it.
-    if: ${{ !cancelled() && github.event_name == 'push' && github.ref_type == 'tag' && needs.publish.result == 'success' }}
-    needs: publish
-    runs-on: ubuntu-latest
-    concurrency:
-      group: release-${{ github.ref }}
-      cancel-in-progress: false
-    permissions:
-      contents: write
-      packages: write
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-go@v5
-        with:
-          go-version-file: go.mod
-      - name: Tool versions
-        id: tools
-        run: echo "key=tools-${{ runner.os }}-$(grep -E '^[A-Z0-9_]+_VERSION +:=' Makefile | tr -d ' ' | sort | tr '\n' '-')" >> "$GITHUB_OUTPUT"
-      - name: Cache tools
-        uses: actions/cache@v4
-        with:
-          path: bin/tools
-          key: ${{ steps.tools.outputs.key }}
-      - name: Package the chart and render install.yaml
-        run: make chart-dist RELEASE="$GITHUB_REF_NAME"
-      - name: Find the package and install.yaml
-        id: dist
-        shell: bash
-        run: |
-          paths=$(make -s print-chart-paths RELEASE="$GITHUB_REF_NAME")
-          read -r pkg yaml <<< "$paths"
-          echo "pkg=$pkg" >> "$GITHUB_OUTPUT"
-          echo "yaml=$yaml" >> "$GITHUB_OUTPUT"
-      - name: Push the chart
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          OWNER: ${{ github.repository_owner }}
-          PKG: ${{ steps.dist.outputs.pkg }}
-        run: |
-          helm=$(make -s print-helm)
-          printf '%s' "$GITHUB_TOKEN" | "$helm" registry login ghcr.io -u "$GITHUB_ACTOR" --password-stdin
-          "$helm" push "$PKG" "oci://ghcr.io/${OWNER,,}/charts"
-      # The release may exist already: made in the UI with its tag, or by an
-      # earlier attempt of this job. A tag whose version (before any +build)
-      # has a - (v1.0.0-rc.1) is a pre-release.
-      - name: Create or update the GitHub release
-        shell: bash
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          YAML: ${{ steps.dist.outputs.yaml }}
-        run: |
-          pre=()
-          case "${GITHUB_REF_NAME%%+*}" in *-*) pre=(--prerelease) ;; esac
-          if gh release view "$GITHUB_REF_NAME" > /dev/null 2>&1; then
-            gh release upload "$GITHUB_REF_NAME" "$YAML" --clobber
-            if [ ${#pre[@]} -gt 0 ]; then gh release edit "$GITHUB_REF_NAME" --prerelease; fi
-          else
-            gh release create "$GITHUB_REF_NAME" "$YAML" --verify-tag --generate-notes --title "$GITHUB_REF_NAME" "${pre[@]}"
-          fi
