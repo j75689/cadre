@@ -55,6 +55,12 @@ func (c *clock) advance(d time.Duration) {
 
 func start(t *testing.T) *server {
 	t.Helper()
+	return startWith(t, nil)
+}
+
+// startWith is start, with agents authenticating agents' bearer tokens.
+func startWith(t *testing.T, agents auth.Agents) *server {
+	t.Helper()
 	s := &server{idp: oidctest.New(t), clock: &clock{}}
 	mux := http.NewServeMux()
 	s.Server = httptest.NewServer(nil)
@@ -62,7 +68,7 @@ func start(t *testing.T) *server {
 	authn, err := auth.NewOIDC(context.Background(), auth.Config{
 		Issuer: s.idp.URL, ClientID: oidctest.ClientID, ClientSecret: oidctest.ClientSecret, CLIClientID: oidctest.CLIClientID,
 		Scopes: []string{"openid", "email", "profile", "groups"}, UsernameClaim: "email", GroupsClaim: "groups",
-		PublicURL: s.URL, SessionKey: []byte(strings.Repeat("k", 32)), Now: s.clock.now,
+		PublicURL: s.URL, SessionKey: []byte(strings.Repeat("k", 32)), Now: s.clock.now, Agents: agents,
 		Log: slog.New(slog.NewTextHandler(io.Discard, nil)),
 	})
 	if err != nil {

@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/rand"
 	"encoding/base64"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -48,6 +49,9 @@ type Config struct {
 	// SessionKey (32 bytes) encrypts the cookies, the same on every
 	// replica.
 	SessionKey []byte
+	// Agents, when set, authenticates the bearer tokens of agents outside
+	// Cadre, beside ID tokens.
+	Agents Agents
 	// HTTPClient reaches the provider; Now is the clock. For tests.
 	HTTPClient *http.Client
 	Now        func() time.Time
@@ -414,6 +418,10 @@ func (o *OIDC) verify(ctx context.Context, d *discovered, raw string) (*Identity
 	if o.cfg.UsernameClaim == "email" {
 		username = strings.ToLower(username)
 	}
+	// agent:<namespace>/<name> is an agent's: no login may pass for one.
+	if strings.HasPrefix(strings.ToLower(username), AgentPrefix) {
+		return nil, time.Time{}, "", fmt.Errorf("the username %q is reserved for agents", username)
+	}
 	// An address the provider has not verified names nobody, when the
 	// address is the username: anyone could have registered it. Without
 	// the claim the provider vouches for it.
@@ -486,21 +494,84 @@ func (o *OIDC) Bearer(next http.Handler) http.Handler {
 	})
 }
 
-// serveBearer verifies the request's bearer ID token and serves next with
-// its identity, the one way both Wrap and Bearer read a bearer token.
+// serveBearer authenticates the request's bearer token and serves next
+// with its identity, the one way both Wrap and Bearer read a bearer token.
+// The token's shape routes it, before anything is checked: a JWT issued by
+// the OIDC provider is an ID token, verified as such and nothing else; any
+// other JWT is a ServiceAccount's, and a two-part token one minted for an
+// AgentAccess, both for Agents. So no ID token ever reaches the API server
+// in a TokenReview. This assumes the cluster's ServiceAccount issuer is
+// not the OIDC issuer: if it were, ServiceAccount tokens would be verified
+// as ID tokens, and refused. Anything else is refused unread.
 func (o *OIDC) serveBearer(w http.ResponseWriter, r *http.Request, next http.Handler) {
-	d := o.ready.Load()
-	if d == nil {
-		httpjson.WriteError(w, http.StatusServiceUnavailable, httpjson.CodeUnavailable, notReady)
-		return
-	}
 	raw, ok := strings.CutPrefix(r.Header.Get("Authorization"), "Bearer ")
-	id, _, _, err := o.verify(r.Context(), d, strings.TrimSpace(raw))
-	if !ok || err != nil {
-		httpjson.WriteError(w, http.StatusUnauthorized, httpjson.CodeUnauthenticated, "the bearer token is not a valid ID token for this server; run cadre login")
+	tok := strings.TrimSpace(raw)
+	var id *Identity
+	var err error
+	switch kind := o.tokenKind(tok); {
+	case !ok || kind == "":
+		err = ErrUnauthenticated
+	case kind == kindIDToken:
+		d := o.ready.Load()
+		if d == nil {
+			httpjson.WriteError(w, http.StatusServiceUnavailable, httpjson.CodeUnavailable, notReady)
+			return
+		}
+		if id, _, _, err = o.verify(r.Context(), d, tok); err != nil {
+			err = ErrUnauthenticated
+		}
+	case o.cfg.Agents == nil:
+		err = ErrUnauthenticated
+	default:
+		id, err = o.cfg.Agents.Authenticate(r.Context(), tok)
+	}
+	switch {
+	case errors.Is(err, ErrUnauthenticated):
+		httpjson.WriteError(w, http.StatusUnauthorized, httpjson.CodeUnauthenticated, msgBadBearer)
+		return
+	case err != nil:
+		o.cfg.Log.Warn("authenticate an agent", "err", err)
+		httpjson.WriteError(w, http.StatusServiceUnavailable, httpjson.CodeUnavailable, "temporarily unavailable; retry")
 		return
 	}
 	next.ServeHTTP(w, r.WithContext(WithIdentity(r.Context(), id)))
+}
+
+// msgBadBearer answers every bearer token refused, whatever it is, so a
+// caller learns nothing about which check failed.
+const msgBadBearer = "the bearer token is not valid for this server: send an ID token (run cadre login) or an AgentAccess's token"
+
+// Bearer token kinds.
+const (
+	kindIDToken = "id"    // a JWT the OIDC provider issued
+	kindAgent   = "agent" // another JWT, or a minted token
+)
+
+// tokenKind says what tok is by its shape, unverified: an ID token when it
+// is a JWT whose issuer is the OIDC provider, an agent's when it is
+// another JWT or a two-part minted token, and "" otherwise.
+func (o *OIDC) tokenKind(tok string) string {
+	switch strings.Count(tok, ".") {
+	case 1:
+		return kindAgent
+	case 2:
+	default:
+		return ""
+	}
+	payload, err := base64.RawURLEncoding.DecodeString(strings.Split(tok, ".")[1])
+	if err != nil {
+		return ""
+	}
+	var claims struct {
+		Issuer string `json:"iss"`
+	}
+	if json.Unmarshal(payload, &claims) != nil {
+		return ""
+	}
+	if claims.Issuer == o.cfg.Issuer {
+		return kindIDToken
+	}
+	return kindAgent
 }
 
 // Wrap implements Authenticator. Under base, every route but base/auth

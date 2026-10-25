@@ -108,3 +108,36 @@ func TestFold(t *testing.T) {
 		}
 	}
 }
+
+// An agent has its AgentAccess's role, at most member, on its own
+// namespace's team only: no team role naming it, nor a bootstrap admin
+// entry, gives it more, and it has none anywhere else.
+func TestAgentRole(t *testing.T) {
+	bot := auth.AgentIdentity("team-a", "bot", "member")
+	p := &authz.Policy{AdminUsers: []string{bot.Username}, AdminGroups: []string{"platform"}}
+	own := team(role(v1alpha1.RoleAdmin, user(bot.Username)))
+	own.Namespace = "team-a"
+	other := team(role(v1alpha1.RoleAdmin, user(bot.Username)))
+	other.Namespace = "team-b"
+	for name, c := range map[string]struct {
+		id   *auth.Identity
+		team *v1alpha1.Team
+		want authz.Role
+	}{
+		"its own team, despite an admin entry": {bot, own, authz.Member},
+		"a viewer":                             {auth.AgentIdentity("team-a", "ro", "viewer"), own, authz.Viewer},
+		"an admin role, were one written":      {auth.AgentIdentity("team-a", "x", "admin"), own, authz.Member},
+		"an unknown role":                      {auth.AgentIdentity("team-a", "x", "owner"), own, authz.NoRole},
+		"another team":                         {bot, other, authz.NoRole},
+		"no team":                              {bot, nil, authz.NoRole},
+		"groups, which an agent has none of":   {&auth.Identity{Username: bot.Username, Groups: []string{"platform"}, Agent: bot.Agent}, other, authz.NoRole},
+	} {
+		got, ok := p.Role(c.id, c.team)
+		if got != c.want || ok != (c.want != authz.NoRole) {
+			t.Errorf("%s: %s, %v; want %s", name, got, ok, c.want)
+		}
+	}
+	if p.Bootstrap(bot) {
+		t.Error("an agent named in --admin-users is a bootstrap admin")
+	}
+}

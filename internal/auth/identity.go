@@ -1,21 +1,57 @@
-// Package auth authenticates the humans who use cadre-server's API and web
-// UI: an OIDC login in the browser, held in a session cookie, or an ID token
-// sent as a bearer token by the CLI. Runners and the per-run MCP endpoint
-// authenticate their own way and are not touched here.
+// Package auth authenticates who uses cadre-server's API, web UI and board
+// MCP endpoint: people, with an OIDC login in the browser, held in a session
+// cookie, or an ID token sent as a bearer token by the CLI; and agents
+// outside Cadre, with an AgentAccess's bearer token (see Agents). Runners
+// and the per-run MCP endpoint authenticate their own way and are not
+// touched here.
 package auth
 
 import (
 	"context"
+	"errors"
 	"net/http"
 )
 
-// Identity is who a request comes from, as the OIDC provider said.
+// Identity is who a request comes from, as the OIDC provider said, or, for
+// an agent, as its AgentAccess says.
 type Identity struct {
 	Subject  string   `json:"subject"`
 	Username string   `json:"username"`
 	Name     string   `json:"name"`
 	Groups   []string `json:"groups,omitempty"`
+	// Agent is set for an agent outside Cadre, and only then: its role is
+	// its AgentAccess's, in that namespace alone.
+	Agent *Agent `json:"agent,omitempty"`
 }
+
+// Agent is the AgentAccess an agent authenticated as.
+type Agent struct {
+	Namespace string `json:"namespace"`
+	Name      string `json:"name"`
+	Role      string `json:"role"` // viewer or member
+}
+
+// AgentPrefix starts an agent's username, agent:<namespace>/<name>; a
+// login's username never does.
+const AgentPrefix = "agent:"
+
+// AgentIdentity is the identity of the agent of AgentAccess ns/name.
+func AgentIdentity(ns, name, role string) *Identity {
+	user := AgentPrefix + ns + "/" + name
+	return &Identity{Subject: user, Username: user, Name: user, Agent: &Agent{Namespace: ns, Name: name, Role: role}}
+}
+
+// Agents authenticates agents outside Cadre by their bearer tokens: a
+// token minted for an AgentAccess, or a ServiceAccount token an
+// AgentAccess names. It fails with ErrUnauthenticated when the token is
+// not one; any other error means it could not tell, and the request may
+// be retried.
+type Agents interface {
+	Authenticate(ctx context.Context, token string) (*Identity, error)
+}
+
+// ErrUnauthenticated means a credential is not valid.
+var ErrUnauthenticated = errors.New("unauthenticated")
 
 type identityKey struct{}
 

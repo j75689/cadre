@@ -94,7 +94,7 @@ func startRolesWith(t *testing.T, store storage.Driver, wrap func(storage.Driver
 	t.Cleanup(srv.Close)
 	log := slog.New(slog.NewTextHandler(io.Discard, nil))
 	authn, err := auth.NewOIDC(ctx, auth.Config{Issuer: idp.URL, ClientID: oidctest.ClientID, UsernameClaim: "email", GroupsClaim: "groups",
-		PublicURL: srv.URL, SessionKey: []byte(strings.Repeat("k", 32)), Log: log})
+		PublicURL: srv.URL, SessionKey: []byte(strings.Repeat("k", 32)), Log: log, Agents: agentTokens})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -169,6 +169,60 @@ func TestRoles(t *testing.T) {
 	// The member's comment is theirs.
 	if _, out := e.do(viewer, "GET", "/namespaces/team-a/tasks/x/thread", ""); !strings.Contains(out, `"name":"dana@example.test"`) {
 		t.Errorf("thread %s", out)
+	}
+}
+
+// agentTokens are two agents' tokens: a member of team-a, and a viewer
+// there whom a test's --admin-users names too.
+var agentTokens = staticAgents{
+	"bot.member": auth.AgentIdentity("team-a", "bot", "member"),
+	"root.agent": auth.AgentIdentity("team-a", "root", "viewer"),
+}
+
+type staticAgents map[string]*auth.Identity
+
+func (s staticAgents) Authenticate(_ context.Context, tok string) (*auth.Identity, error) {
+	if id, ok := s[tok]; ok {
+		return id, nil
+	}
+	return nil, auth.ErrUnauthenticated
+}
+
+// An agent has its AgentAccess's role on its own namespace's team, and on
+// no other; no Team role and no bootstrap admin entry gives it more; it
+// writes as itself; and GET /me says so.
+func TestAgentRoles(t *testing.T) {
+	e := startRolesWith(t, memory.NewBackend().Open(), nil, &authz.Policy{AdminUsers: []string{"agent:team-a/root"}})
+	comment := `{"body":"hello"}`
+	for _, c := range []struct {
+		name, token, method, path, body string
+		code                            int
+		says                            string
+	}{
+		{"a member agent comments", "bot.member", "POST", "/namespaces/team-a/tasks/x/comments", comment, 201, ""},
+		{"a member agent creates", "bot.member", "POST", "/namespaces/team-a/tasks", `{"spec":{"title":"y"}}`, 201, ""},
+		{"a member agent may not manage the team", "bot.member", "PUT", "/namespaces/team-a/team", "{}", 403, "needs the admin role"},
+		{"no role on team-b", "bot.member", "GET", "/namespaces/team-b/tasks/x", "", 403, "no role there"},
+		{"no team created", "bot.member", "PUT", "/namespaces/team-c/team", "{}", 403, ""},
+		{"named in --admin-users, still a viewer", "root.agent", "POST", "/namespaces/team-a/tasks/x/comments", comment, 403, "you are a viewer"},
+		{"named in --admin-users, nothing elsewhere", "root.agent", "GET", "/namespaces/team-b/tasks/x", "", 403, "no role there"},
+	} {
+		code, out := e.do(c.token, c.method, c.path, c.body)
+		if code != c.code || !strings.Contains(out, c.says) {
+			t.Errorf("%s: %d %s, want %d %q", c.name, code, out, c.code, c.says)
+		}
+	}
+	if _, out := e.do("bot.member", "GET", "/namespaces/team-a/tasks/x/thread", ""); !strings.Contains(out, `"name":"agent:team-a/bot"`) {
+		t.Errorf("thread %s", out)
+	}
+	code, out := e.do("root.agent", "GET", "/me", "")
+	var me auth.Me
+	if err := json.Unmarshal([]byte(out), &me); err != nil || code != 200 {
+		t.Fatalf("me: %d %s", code, out)
+	}
+	if me.Identity == nil || me.Username != "agent:team-a/root" || me.Agent == nil || me.Agent.Namespace != "team-a" || me.Agent.Role != "viewer" ||
+		me.Admin || len(me.Roles) != 1 || me.Roles["team-a"] != "viewer" {
+		t.Errorf("me %s", out)
 	}
 }
 

@@ -1,6 +1,7 @@
 // Package authz decides what a logged-in person may do on a team's board:
 // their role on the team, from Team.spec.roles or as a bootstrap admin, and
-// a fixed matrix of what each role allows.
+// a fixed matrix of what each role allows. An agent outside Cadre has its
+// AgentAccess's role, on its own namespace's team alone.
 package authz
 
 import (
@@ -110,9 +111,9 @@ func (p *Policy) sameUser(name, username string) bool {
 	return name == username
 }
 
-// Bootstrap reports whether id is a bootstrap admin.
+// Bootstrap reports whether id is a bootstrap admin: an agent never is.
 func (p *Policy) Bootstrap(id *auth.Identity) bool {
-	if id == nil {
+	if id == nil || id.Agent != nil {
 		return false
 	}
 	if slices.ContainsFunc(p.AdminUsers, func(u string) bool { return p.sameUser(u, id.Username) }) {
@@ -127,8 +128,17 @@ func (p *Policy) Bootstrap(id *auth.Identity) bool {
 }
 
 // Role is id's role on team, the strongest of the entries that name it or
-// one of its groups; ok says it has one.
+// one of its groups; ok says it has one. An agent's is its AgentAccess's,
+// at most member, on the team of the AgentAccess's namespace and no other:
+// no entry of the team's roles, nor a bootstrap admin, applies to it.
 func (p *Policy) Role(id *auth.Identity, team *v1alpha1.Team) (Role, bool) {
+	if id != nil && id.Agent != nil {
+		if team == nil || team.Namespace != id.Agent.Namespace {
+			return NoRole, false
+		}
+		role := min(parse(v1alpha1.RoleName(id.Agent.Role)), Member)
+		return role, role > NoRole
+	}
 	if p.Bootstrap(id) {
 		return Admin, true
 	}
