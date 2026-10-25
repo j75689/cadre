@@ -63,7 +63,7 @@ type MintedToken struct {
 // +kubebuilder:object:root=true
 // +kubebuilder:subresource:status
 // +kubebuilder:resource:scope=Namespaced
-// +kubebuilder:validation:XValidation:rule="size(self.metadata.name) <= 247 && !self.metadata.name.contains('.')",message="a Runner's name has at most 247 characters and no dot: it names the Secret <name>-token, which must be a valid name and never an AgentAccess's"
+// +kubebuilder:validation:XValidation:rule="oldSelf.hasValue() || (size(self.metadata.name) <= 63 && !self.metadata.name.contains('.'))",message="a Runner's name is a DNS label (at most 63 characters, no dot): it names the Secret <name>-token and labels it",optionalOldSelf=true
 // +kubebuilder:printcolumn:name="ServiceAccount",type=string,JSONPath=`.spec.serviceAccount.name`
 // +kubebuilder:printcolumn:name="Token",type=string,JSONPath=`.status.tokenSecret`
 // +kubebuilder:printcolumn:name="Ready",type=string,JSONPath=`.status.conditions[?(@.type=="Ready")].status`

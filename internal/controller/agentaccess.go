@@ -55,6 +55,10 @@ func (r *agentAccessReconciler) Reconcile(ctx context.Context, req reconcile.Req
 	if err := r.client.Get(ctx, req.NamespacedName, &aa); err != nil {
 		return reconcile.Result{}, client.IgnoreNotFound(err)
 	}
+	// Before anything else: it mints nothing, and deletes nothing.
+	if msg := invalidName("AgentAccess", aa.Name); msg != "" {
+		return reconcile.Result{RequeueAfter: r.resync}, r.setReady(ctx, &aa, &aa.Status.ConfigStatus, false, "InvalidName", msg)
+	}
 	if ok, err := r.hasTeam(ctx, req.Namespace); err != nil || !ok {
 		return r.noTeam(ctx, &aa, &aa.Status.ConfigStatus, err)
 	}

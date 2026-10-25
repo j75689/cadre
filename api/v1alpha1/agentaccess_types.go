@@ -40,7 +40,7 @@ type AgentAccessStatus struct {
 // +kubebuilder:object:root=true
 // +kubebuilder:subresource:status
 // +kubebuilder:resource:scope=Namespaced
-// +kubebuilder:validation:XValidation:rule="size(self.metadata.name) <= 240 && !self.metadata.name.contains('.')",message="an AgentAccess's name has at most 240 characters and no dot: it names the Secret <name>.access-token, which must be a valid name and never a Runner's"
+// +kubebuilder:validation:XValidation:rule="oldSelf.hasValue() || (size(self.metadata.name) <= 63 && !self.metadata.name.contains('.'))",message="an AgentAccess's name is a DNS label (at most 63 characters, no dot): it names the Secret <name>.access-token and labels it",optionalOldSelf=true
 // +kubebuilder:printcolumn:name="Role",type=string,JSONPath=`.spec.role`
 // +kubebuilder:printcolumn:name="ServiceAccount",type=string,JSONPath=`.spec.serviceAccount.name`
 // +kubebuilder:printcolumn:name="Token",type=string,JSONPath=`.status.tokenSecret`

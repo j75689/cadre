@@ -8,6 +8,7 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/util/validation"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
 
@@ -100,6 +101,16 @@ func (b base) ensureToken(ctx context.Context, o tokenOwner) (hash string, minte
 		return "", false, "", err // a concurrent create is redone on the requeue
 	}
 	return hash, true, "", nil
+}
+
+// invalidName is why name cannot be a Runner's or an AgentAccess's (kind),
+// or "": it names and labels their token Secret, so it is a DNS label. The
+// CRDs refuse other names at create; one made before that is told.
+func invalidName(kind, name string) string {
+	if len(validation.IsDNS1123Label(name)) == 0 {
+		return ""
+	}
+	return fmt.Sprintf("%s names are DNS labels (at most 63 characters, no dot); re-create this %s under another name", kind, kind)
 }
 
 // deleteToken deletes the owner's own token Secret, if it has one.

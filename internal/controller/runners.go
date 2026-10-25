@@ -101,6 +101,10 @@ func (r *runnerReconciler) Reconcile(ctx context.Context, req reconcile.Request)
 	if err := r.client.Get(ctx, req.NamespacedName, &rn); err != nil {
 		return reconcile.Result{}, client.IgnoreNotFound(err)
 	}
+	// Before anything else: it mints nothing, and deletes nothing.
+	if msg := invalidName("Runner", rn.Name); msg != "" {
+		return reconcile.Result{RequeueAfter: r.resync}, r.setReady(ctx, &rn, &rn.Status.ConfigStatus, false, "InvalidName", msg)
+	}
 	if ok, err := r.hasTeam(ctx, req.Namespace); err != nil || !ok {
 		return r.noTeam(ctx, &rn, &rn.Status.ConfigStatus, err)
 	}
