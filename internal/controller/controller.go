@@ -111,7 +111,11 @@ func Setup(mgr ctrl.Manager, o Options, opts ...SetupOption) error {
 			return err
 		}
 	}
-	return (&agentReconciler{base: b, jobs: newJobAccess(b.client, b.resync)}).setup(mgr)
+	now := o.Now
+	if now == nil {
+		now = time.Now
+	}
+	return (&agentReconciler{base: b, jobs: newJobAccess(b.client, b.resync, now)}).setup(mgr)
 }
 
 // base is what every reconciler shares.
