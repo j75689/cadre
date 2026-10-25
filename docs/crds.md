@@ -222,11 +222,11 @@ All three report a `Ready` condition and `observedGeneration` in their status:
 | Resource | Ready when |
 | --- | --- |
 | ModelProvider | the referenced Secret has the key, or `workloadIdentity` is set |
-| ToolServer | an external server's Secret has its key, when `auth` is set. A managed one's Deployment is Available for its current spec (`Available`); until then `Deploying`, and `Forbidden` where cadre-server may not create its Deployment or Service (bind `config/rbac/workloads.yaml` in the namespace), `NameTaken` where a Deployment of its name is not Cadre's |
+| ToolServer | an external server's Secret has its key, when `auth` is set. A managed one's Deployment is Available for its current spec (`Available`); until then `Deploying`, and `Forbidden` where cadre-server may not create its Deployment or Service (bind `config/rbac/workloads.yaml` in the namespace), `NameTaken` where a Deployment of its name is not Cadre's, `RolloutFailed` when the Deployment's rollout fails, and `InvalidSpec` when the API server refuses the Deployment or the Service made from the spec (a `readinessProbe` a Pod may not have, say), with its message. With `RolloutFailed` and `InvalidSpec` the previous spec keeps running while Ready is False |
 | Agent | its ModelProvider and every ToolServer exist and are Ready; the reason names the first that is not |
 | Runner | `ServiceAccount` for an in-cluster runner; `TokenMinted` once an outside runner's token exists. A Secret of the token's name that the Runner does not own, or one without a token, makes it not Ready (`SecretNotOwned`) and no token works until it is deleted |
 
-Controllers only act in namespaces with a `Team`. Secrets are read one by one when a resource is reconciled, never watched or cached, and the resources that reference them are re-checked every minute.
+Controllers only act in namespaces with a `Team`: elsewhere every resource here, and Schedules and Notifiers, are not Ready with reason `NoTeam`, and are checked again every minute. Secrets are read one by one when a resource is reconciled, never watched or cached, and the resources that reference them are re-checked every minute.
 
 ## Runner
 

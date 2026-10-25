@@ -68,9 +68,11 @@ func (r *toolServerReconciler) reconcileManaged(ctx context.Context, ts *v1alpha
 	case errors.As(err, &taken):
 		return notReady("NameTaken", taken.Error())
 	case apierrors.IsInvalid(err):
-		// A spec the CRD admits that the Deployment's does not, such as a
-		// readinessProbe a Pod may not have: retrying cannot help.
-		return notReady("InvalidSpec", "the API server refuses what it runs as: "+err.Error())
+		// A spec the CRD admits from which the API server refuses the
+		// Deployment or the Service (a readinessProbe a Pod may not have, a
+		// name too long for a label): only a new spec, which the watch
+		// brings, can help, so no requeue.
+		return reconcile.Result{}, r.writeStatus(ctx, ts, &ts.Status.ConfigStatus, false, "InvalidSpec", "the API server refuses its Deployment or Service: "+err.Error(), changed)
 	case err != nil:
 		return reconcile.Result{}, err
 	}

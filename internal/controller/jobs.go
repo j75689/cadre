@@ -165,7 +165,8 @@ func (r *jobReconciler) Reconcile(ctx context.Context, req reconcile.Request) (r
 		return reconcile.Result{}, nil
 	}
 	if ok, err := r.hasTeam(ctx, agent.Namespace); err != nil || !ok {
-		return noTeam(err, r.resync)
+		// The agent reconciler reports it on the Agent.
+		return waitForTeam(err, r.resync)
 	}
 	if !isReady(&agent, agent.Status) {
 		return reconcile.Result{RequeueAfter: r.resync}, nil
