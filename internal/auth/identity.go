@@ -91,6 +91,9 @@ type Info struct {
 	ClientID    string   `json:"clientId,omitempty"`
 	CLIClientID string   `json:"cliClientId,omitempty"`
 	Scopes      []string `json:"scopes,omitempty"`
+	// OfflineAccess lets the CLI ask for offline_access, and keep a
+	// refresh token, where the provider offers it.
+	OfflineAccess bool `json:"offlineAccess,omitempty"`
 }
 
 // Me is GET /api/v1/me: the mode, and with OIDC the caller's identity, their

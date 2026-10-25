@@ -75,6 +75,7 @@ func run() error {
 	flag.StringVar(&oidcCfg.cliClientID, "oidc-cli-client-id", "", "the public OIDC client cadre login uses, if not the web UI's; ID tokens for it are accepted too")
 	flag.StringVar(&oidcCfg.scopes, "oidc-scopes", "openid profile email groups", "the scopes asked for, space- or comma-separated")
 	flag.StringVar(&oidcCfg.groupsClaim, "oidc-groups-claim", "groups", "the ID token claim listing a user's groups")
+	flag.BoolVar(&oidcCfg.offlineAccess, "oidc-offline-access", true, "let cadre login ask for offline_access, and keep a refresh token, where the provider offers it")
 	flag.StringVar(&oidcCfg.usernameClaim, "oidc-username-claim", "email", "the ID token claim naming a user")
 	flag.StringVar(&oidcCfg.sessionKeyFile, "session-key-file", "", "a file holding the 32-byte key (raw or hex) that encrypts session cookies, the same on every replica; required with --auth=oidc")
 	flag.StringVar(&s3cfg.Endpoint, "s3-endpoint", "", "S3-compatible endpoint; empty for AWS S3")
@@ -288,6 +289,7 @@ func newPolicy(authn auth.Authenticator, users, groups, usernameClaim string, lo
 // oidcFlags are the --oidc-* flags.
 type oidcFlags struct {
 	issuer, clientID, secretFile, cliClientID, scopes, groupsClaim, usernameClaim, sessionKeyFile string
+	offlineAccess                                                                                 bool
 }
 
 // newAuthenticator builds the --auth mode: oidc by default in a cluster,
@@ -329,7 +331,7 @@ func newAuthenticator(ctx context.Context, mode string, inCluster bool, f oidcFl
 		secret = strings.TrimSpace(string(data))
 	}
 	return auth.NewOIDC(ctx, auth.Config{
-		Issuer: f.issuer, ClientID: f.clientID, ClientSecret: secret, CLIClientID: f.cliClientID,
+		Issuer: f.issuer, ClientID: f.clientID, ClientSecret: secret, CLIClientID: f.cliClientID, OfflineAccess: f.offlineAccess,
 		Scopes:        strings.FieldsFunc(f.scopes, func(r rune) bool { return r == ' ' || r == ',' }),
 		UsernameClaim: f.usernameClaim, GroupsClaim: f.groupsClaim,
 		PublicURL: externalURL, SessionKey: key, Agents: agents, Log: log,

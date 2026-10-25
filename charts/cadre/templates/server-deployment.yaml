@@ -68,6 +68,7 @@ spec:
             - --oidc-scopes={{ .scopes }}
             - --oidc-username-claim={{ .usernameClaim }}
             - --oidc-groups-claim={{ .groupsClaim }}
+            - --oidc-offline-access={{ .offlineAccess }}
             {{- if .clientSecret.secretName }}
             - --oidc-client-secret-file=/etc/cadre/oidc/{{ .clientSecret.key }}
             {{- end }}

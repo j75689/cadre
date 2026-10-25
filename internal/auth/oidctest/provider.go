@@ -1,6 +1,8 @@
 // Package oidctest is an OIDC provider for tests: discovery, a JWKS with a
 // key generated per provider, an authorization endpoint that approves at
-// once, and a token endpoint that checks the client and PKCE.
+// once, and a token endpoint that checks the client and PKCE. With
+// SetOffline it also issues refresh tokens, rotated on every use, and with
+// SetRevocation it has a revocation endpoint (RFC 7009).
 package oidctest
 
 import (
@@ -14,6 +16,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -43,10 +46,19 @@ type Provider struct {
 	down   bool
 	issuer string // what discovery claims, if not URL
 	codes  map[string]grant
+	// offline: offline_access is offered, and a refresh token issued for
+	// it; refresh: the live refresh tokens, by token, with their client;
+	// revoke: a revocation endpoint is offered; revoked: what it revoked.
+	offline, revoke bool
+	refresh         map[string]string
+	revoked         []string
+	refreshes       int
+	refreshStatus   int // when set, every refresh is answered with it
 }
 
 type grant struct {
 	client, redirect, nonce, challenge string
+	offline                            bool
 }
 
 // New starts a provider, stopped when t ends. Its user is a fake one.
@@ -57,16 +69,18 @@ func New(t *testing.T) *Provider {
 		t.Fatal(err)
 	}
 	p := &Provider{
-		key:    key,
-		TTL:    time.Hour,
-		codes:  map[string]grant{},
-		Claims: map[string]any{"sub": "user-1", "email": "dana@example.test", "name": "Dana Example", "groups": []string{"backend", "oncall"}},
+		key:     key,
+		TTL:     time.Hour,
+		codes:   map[string]grant{},
+		refresh: map[string]string{},
+		Claims:  map[string]any{"sub": "user-1", "email": "dana@example.test", "name": "Dana Example", "groups": []string{"backend", "oncall"}},
 	}
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /.well-known/openid-configuration", p.discovery)
 	mux.HandleFunc("GET /keys", p.keys)
 	mux.HandleFunc("GET /authorize", p.authorize)
 	mux.HandleFunc("POST /token", p.token)
+	mux.HandleFunc("POST /revoke", p.revocation)
 	srv := httptest.NewServer(mux)
 	t.Cleanup(srv.Close)
 	p.URL = srv.URL
@@ -84,11 +98,20 @@ func (p *Provider) discovery(w http.ResponseWriter, _ *http.Request) {
 	if issuer == "" {
 		issuer = p.URL
 	}
-	writeJSON(w, map[string]any{
+	doc := map[string]any{
 		"issuer": issuer, "authorization_endpoint": p.URL + "/authorize", "token_endpoint": p.URL + "/token",
 		"jwks_uri": p.URL + "/keys", "response_types_supported": []string{"code"},
 		"subject_types_supported": []string{"public"}, "id_token_signing_alg_values_supported": []string{"RS256"},
-	})
+	}
+	p.mu.Lock()
+	if p.offline {
+		doc["scopes_supported"] = []string{"openid", "email", "profile", "groups", "offline_access"}
+	}
+	if p.revoke {
+		doc["revocation_endpoint"] = p.URL + "/revoke"
+	}
+	p.mu.Unlock()
+	writeJSON(w, doc)
 }
 
 func (p *Provider) keys(w http.ResponseWriter, _ *http.Request) {
@@ -108,7 +131,8 @@ func (p *Provider) authorize(w http.ResponseWriter, r *http.Request) {
 	}
 	code := b64([]byte(time.Now().String() + q.Get("state")))
 	p.mu.Lock()
-	p.codes[code] = grant{client: client, redirect: q.Get("redirect_uri"), nonce: q.Get("nonce"), challenge: q.Get("code_challenge")}
+	p.codes[code] = grant{client: client, redirect: q.Get("redirect_uri"), nonce: q.Get("nonce"), challenge: q.Get("code_challenge"),
+		offline: p.offline && slices.Contains(strings.Fields(q.Get("scope")), "offline_access")}
 	p.mu.Unlock()
 	back, err := url.Parse(q.Get("redirect_uri"))
 	if err != nil {
@@ -131,6 +155,10 @@ func (p *Provider) token(w http.ResponseWriter, r *http.Request) {
 	if !basic {
 		client, secret = r.PostForm.Get("client_id"), r.PostForm.Get("client_secret")
 	}
+	if r.PostForm.Get("grant_type") == "refresh_token" {
+		p.refreshGrant(w, client, r.PostForm.Get("refresh_token"))
+		return
+	}
 	p.mu.Lock()
 	g, ok := p.codes[r.PostForm.Get("code")]
 	delete(p.codes, r.PostForm.Get("code"))
@@ -150,8 +178,109 @@ func (p *Provider) token(w http.ResponseWriter, r *http.Request) {
 			nonce = p.Nonce
 		}
 		p.mu.Unlock()
-		writeJSON(w, map[string]any{"access_token": "opaque", "token_type": "Bearer", "expires_in": 3600, "id_token": p.IDToken(client, nonce, 0)})
+		out := map[string]any{"access_token": "opaque", "token_type": "Bearer", "expires_in": 3600, "id_token": p.IDToken(client, nonce, 0)}
+		if g.offline {
+			out["refresh_token"] = p.newRefresh(client)
+		}
+		writeJSON(w, out)
 	}
+}
+
+// newRefresh issues a refresh token for client.
+func (p *Provider) newRefresh(client string) string {
+	b := make([]byte, 16)
+	_, _ = rand.Read(b)
+	tok := "refresh-" + b64(b)
+	p.mu.Lock()
+	p.refresh[tok] = client
+	p.mu.Unlock()
+	return tok
+}
+
+// refreshGrant answers grant_type=refresh_token: a new ID token, with the
+// provider's claims as they are now, and the refresh token rotated, so the
+// one used is refused from then on.
+func (p *Provider) refreshGrant(w http.ResponseWriter, client, tok string) {
+	p.mu.Lock()
+	if status := p.refreshStatus; status != 0 {
+		p.mu.Unlock()
+		http.Error(w, http.StatusText(status), status)
+		return
+	}
+	owner, ok := p.refresh[tok]
+	delete(p.refresh, tok)
+	if ok {
+		p.refreshes++
+	}
+	p.mu.Unlock()
+	if !ok || owner != client {
+		tokenError(w, "invalid_grant")
+		return
+	}
+	writeJSON(w, map[string]any{"access_token": "opaque", "token_type": "Bearer", "expires_in": 3600,
+		"id_token": p.IDToken(client, "", 0), "refresh_token": p.newRefresh(client)})
+}
+
+// revocation is RFC 7009's endpoint: the token is revoked, known or not.
+func (p *Provider) revocation(w http.ResponseWriter, r *http.Request) {
+	if err := r.ParseForm(); err != nil {
+		http.Error(w, "bad form", http.StatusBadRequest)
+		return
+	}
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if !p.revoke {
+		http.NotFound(w, r)
+		return
+	}
+	tok := r.PostForm.Get("token")
+	delete(p.refresh, tok)
+	p.revoked = append(p.revoked, tok)
+}
+
+// SetOffline makes the provider offer offline_access, and issue a refresh
+// token to a login that asks for it.
+func (p *Provider) SetOffline(on bool) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	p.offline = on
+}
+
+// SetRevocation makes the provider offer a revocation endpoint.
+func (p *Provider) SetRevocation(on bool) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	p.revoke = on
+}
+
+// Revoked is the tokens the revocation endpoint was given.
+func (p *Provider) Revoked() []string {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return append([]string(nil), p.revoked...)
+}
+
+// Refreshes is how many refresh grants the provider answered.
+func (p *Provider) Refreshes() int {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return p.refreshes
+}
+
+// SetRefreshStatus makes every refresh answered with status, as a provider
+// throttling or behind a proxy would; 0 answers them again.
+func (p *Provider) SetRefreshStatus(status int) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	p.refreshStatus = status
+}
+
+// RevokeAll revokes every refresh token, as a provider ending a session
+// would.
+func (p *Provider) RevokeAll() {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	p.refresh = map[string]string{}
 }
 
 // IDToken signs an ID token for audience, with the provider's claims and

@@ -162,6 +162,9 @@
               "type": "string",
               "minLength": 1
             },
+            "offlineAccess": {
+              "type": "boolean"
+            },
             "clientSecret": {
               "type": "object",
               "additionalProperties": false,

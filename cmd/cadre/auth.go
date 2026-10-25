@@ -1,6 +1,7 @@
 package main
 
 import (
+	"errors"
 	"fmt"
 	"time"
 
@@ -18,16 +19,20 @@ func newAuthCmd(g *globals) *cobra.Command {
 		Short: "Print the ID token cadre login stored for the server, for an agent's Authorization header",
 		Long: "Print the ID token cadre login stored for --server, to send as\n" +
 			"\"Authorization: Bearer <token>\" to the server's MCP endpoint, /mcp. A token\n" +
-			"that has expired, or expires within a minute, is not printed: log in again.\n" +
+			"that has expired, or expires within a minute, is refreshed first where the\n" +
+			"login has a refresh token, and otherwise not printed: log in again.\n" +
 			"An ID token lasts hours at most, so it suits an agent you run yourself; an\n" +
 			"agent that runs unattended needs a token of its own.",
 		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
-			creds, err := loadCredentials()
-			if err != nil {
+			cred, ok, err := currentLogin(cmd.Context(), g.server)
+			var refused *refusedError
+			switch {
+			case errors.As(err, &refused):
+				return fmt.Errorf("the login for %s expires within a minute, and %w; run cadre login", g.server, err)
+			case err != nil:
 				return err
 			}
-			cred, ok := creds[serverKey(g.server)]
 			switch {
 			case !ok || cred.IDToken == "":
 				return fmt.Errorf("no login for %s: run cadre login", g.server)
