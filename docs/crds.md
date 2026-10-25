@@ -267,7 +267,7 @@ status:
   mintedAt: ...
 ```
 
-An AgentAccess is an agent Cadre does not run, a bot or a scheduled job say, allowed on its namespace's board. It is created with kubectl or GitOps, so Kubernetes RBAC on the CRD decides who may. What a request authenticated as an AgentAccess may do is in [architecture.md, Identity and access](architecture.md#identity-and-access).
+An AgentAccess is an agent Cadre does not run, a bot or a scheduled job say, allowed on its namespace's board. It is created with kubectl or GitOps, where Kubernetes RBAC on the CRD decides who may, or by a Team admin through the API or `cadre agentaccess set` (see [architecture.md](architecture.md#web-ui-and-api)), where the Team's roles do; the API never serves a minted token. What a request authenticated as an AgentAccess may do is in [architecture.md, Identity and access](architecture.md#identity-and-access).
 
 - **Identity and role.** The agent is `agent:<namespace>/<name>`, whichever way it authenticates. `spec.role` is its role on its own namespace's Team: `viewer` or `member`. The CRD refuses `admin`, so an agent can never edit the Team.
 - **In the cluster** (`serviceAccount`), the agent authenticates as a ServiceAccount in the AgentAccess's namespace, with a projected token for the audience `cadre`, as an in-cluster runner does. A ServiceAccount is one AgentAccess's: the oldest naming it, then by name, decided from the specs. Another naming it is not Ready (`ServiceAccountInUse`, naming the one that holds it), and takes its place when that one goes.

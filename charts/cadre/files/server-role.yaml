@@ -38,15 +38,12 @@ rules:
   - cadre.dev
   resources:
   - agentaccesses
-  - agents
-  - modelproviders
-  - notifiers
-  - runners
-  - schedules
-  - toolservers
   verbs:
+  - create
+  - delete
   - get
   - list
+  - update
   - watch
 - apiGroups:
   - cadre.dev
@@ -70,6 +67,19 @@ rules:
   verbs:
   - get
   - update
+- apiGroups:
+  - cadre.dev
+  resources:
+  - agents
+  - modelproviders
+  - notifiers
+  - runners
+  - schedules
+  - toolservers
+  verbs:
+  - get
+  - list
+  - watch
 - apiGroups:
   - cadre.dev
   resources:

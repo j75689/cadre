@@ -64,17 +64,21 @@ const (
 	Cancel     Action = "cancel tasks"
 	// ManageTeam is initialising or editing the Team.
 	ManageTeam Action = "manage the team"
+	// ManageAccess is listing, making, editing and deleting the Team's
+	// AgentAccesses: who outside Cadre may use its board.
+	ManageAccess Action = "manage agent access"
 )
 
 // needs is the matrix: the weakest role that may take each action.
 var needs = map[Action]Role{
-	Read:       Viewer,
-	CreateTask: Member,
-	Comment:    Member,
-	Reply:      Member,
-	Approve:    Member,
-	Cancel:     Member,
-	ManageTeam: Admin,
+	Read:         Viewer,
+	CreateTask:   Member,
+	Comment:      Member,
+	Reply:        Member,
+	Approve:      Member,
+	Cancel:       Member,
+	ManageTeam:   Admin,
+	ManageAccess: Admin,
 }
 
 // Needs is the weakest role allowed a; an action not in the matrix needs

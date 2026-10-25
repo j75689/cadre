@@ -26,8 +26,9 @@ import (
 type Server struct {
 	m      *manager.Manager
 	log    *slog.Logger
-	mode   string        // auth.ModeOIDC or auth.ModeNone
-	policy *authz.Policy // nil: everyone may do anything
+	mode   string           // auth.ModeOIDC or auth.ModeNone
+	policy *authz.Policy    // nil: everyone may do anything
+	access AgentAccessStore // nil: AgentAccesses are not served
 }
 
 // Option adjusts NewServer.
@@ -82,6 +83,12 @@ func (s *Server) Register(mux *http.ServeMux) {
 		{"GET " + Base + "/namespaces/{ns}/agents", authz.Read, s.listAgents},
 	} {
 		mux.HandleFunc(route.pattern, s.guard(route.action, route.h))
+	}
+	if s.access != nil {
+		const accesses = Base + "/namespaces/{ns}/agentaccesses"
+		mux.HandleFunc("GET "+accesses, s.guard(authz.ManageAccess, s.listAgentAccesses))
+		mux.HandleFunc("PUT "+accesses+"/{name}", s.guard(authz.ManageAccess, s.putAgentAccess))
+		mux.HandleFunc("DELETE "+accesses+"/{name}", s.guard(authz.ManageAccess, s.deleteAgentAccess))
 	}
 	mux.HandleFunc("GET "+Base+"/teams", s.listTeams)
 	mux.HandleFunc("GET "+Base+"/me", s.me)

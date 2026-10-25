@@ -329,3 +329,49 @@ func TestNumberIsTheServersLookup(t *testing.T) {
 		t.Fatalf("lists %q", lists)
 	}
 }
+
+// cadre agentaccess makes, edits, lists and deletes through the API: an
+// edit sends the version it read, and a minted token's command names its
+// Secret, which the API never serves.
+func TestAgentAccessFromTheCLI(t *testing.T) {
+	var puts []api.AgentAccessRequest
+	existing := map[string]api.AgentAccessView{}
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		const base = "/api/v1/namespaces/team-a/agentaccesses"
+		name := strings.TrimPrefix(strings.TrimPrefix(r.URL.Path, base), "/")
+		switch {
+		case r.Method == http.MethodGet && r.URL.Path == base:
+			list := api.AgentAccessList{Items: []api.AgentAccessView{}}
+			for _, v := range existing {
+				list.Items = append(list.Items, v)
+			}
+			httpjson.Write(w, http.StatusOK, list)
+		case r.Method == http.MethodPut:
+			var req api.AgentAccessRequest
+			_ = json.NewDecoder(r.Body).Decode(&req)
+			puts = append(puts, req)
+			view := api.AgentAccessView{Name: name, ResourceVersion: "8", Spec: req.Spec}
+			existing[name] = view
+			httpjson.Write(w, http.StatusOK, view)
+		case r.Method == http.MethodDelete:
+			delete(existing, name)
+			w.WriteHeader(http.StatusNoContent)
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer srv.Close()
+
+	mustContain(t, cadre(t, srv.URL, "agentaccess", "set", "bot", "--role", "member"),
+		"agentaccess bot: member, with a token Cadre mints into the Secret bot.access-token",
+		"kubectl -n team-a get secret bot.access-token -o jsonpath='{.data.token}' | base64 -d")
+	mustContain(t, cadre(t, srv.URL, "agentaccess", "set", "bot", "--role", "viewer", "--service-account", "ci"), "agentaccess bot: viewer, as ServiceAccount ci")
+	if len(puts) != 2 || puts[0].ResourceVersion != "" || puts[1].ResourceVersion != "8" || puts[1].Spec.ServiceAccount == nil || puts[1].Spec.ServiceAccount.Name != "ci" {
+		t.Fatalf("puts %+v: the edit must name the version it read", puts)
+	}
+	mustContain(t, cadre(t, srv.URL, "agentaccess", "list"), "NAME", "TOKEN SECRET", "bot", "viewer", "ci")
+	mustContain(t, cadre(t, srv.URL, "agentaccess", "delete", "bot"), "agentaccess bot deleted")
+	if len(existing) != 0 {
+		t.Errorf("left %v", existing)
+	}
+}

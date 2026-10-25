@@ -58,7 +58,7 @@ func startRolesOn(t *testing.T, store storage.Driver, wrap func(storage.Driver) 
 }
 
 // startRolesWith is startRolesOn with policy deciding the roles.
-func startRolesWith(t *testing.T, store storage.Driver, wrap func(storage.Driver) storage.Driver, policy *authz.Policy) *rolesEnv {
+func startRolesWith(t *testing.T, store storage.Driver, wrap func(storage.Driver) storage.Driver, policy *authz.Policy, opts ...api.Option) *rolesEnv {
 	t.Helper()
 	m := manager.New(store, manager.Config{})
 	ctx := context.Background()
@@ -100,7 +100,7 @@ func startRolesWith(t *testing.T, store storage.Driver, wrap func(storage.Driver
 	}
 	mux := http.NewServeMux()
 	authn.Register(mux, api.Base)
-	api.NewServer(m, log, api.WithAccess(auth.ModeOIDC, policy)).Register(mux)
+	api.NewServer(m, log, append([]api.Option{api.WithAccess(auth.ModeOIDC, policy)}, opts...)...).Register(mux)
 	srv.Config.Handler = authn.Wrap(mux, api.Base)
 	return &rolesEnv{t: t, url: srv.URL, idp: idp}
 }

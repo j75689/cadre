@@ -184,7 +184,8 @@ func run() error {
 	} else {
 		log.Warn("runners are not authenticated (--runner-auth=none): any client may claim and finish runs")
 	}
-	mux := newMux(m, log, *publicURL, authn, policy, runnerOpts, mcp.WithForwarder(forwarder))
+	apiOpts := []api.Option{api.WithAgentAccesses(controller.AgentAccessStore(ctrls.GetClient()))}
+	mux := newMux(m, log, *publicURL, authn, policy, runnerOpts, apiOpts, mcp.WithForwarder(forwarder))
 
 	srv := &http.Server{
 		Addr:              *listen,
@@ -229,13 +230,13 @@ func run() error {
 // newMux routes everything cadre-server serves: the runner protocol, the
 // per-run MCP endpoint, the board MCP endpoint for agents outside Cadre, the
 // API, the health probes and the board UI.
-func newMux(m *manager.Manager, log *slog.Logger, publicURL string, authn auth.Authenticator, policy *authz.Policy, runnerOpts []runner.Option, mcpOpts ...mcp.Option) http.Handler {
+func newMux(m *manager.Manager, log *slog.Logger, publicURL string, authn auth.Authenticator, policy *authz.Policy, runnerOpts []runner.Option, apiOpts []api.Option, mcpOpts ...mcp.Option) http.Handler {
 	mux := http.NewServeMux()
 	authn.Register(mux, api.Base)
 	runner.NewServer(m, log, publicURL, runnerOpts...).Register(mux)
 	mcp.NewServer(m, log, mcpOpts...).Register(mux)
 	mcp.NewBoard(m, log, policy).Register(mux, authn)
-	api.NewServer(m, log, api.WithAccess(authn.Info().Mode, policy)).Register(mux)
+	api.NewServer(m, log, append([]api.Option{api.WithAccess(authn.Info().Mode, policy)}, apiOpts...)...).Register(mux)
 	mux.HandleFunc("GET /healthz", func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(http.StatusOK) })
 	mux.HandleFunc("GET /readyz", func(w http.ResponseWriter, r *http.Request) {
 		if err := m.Ready(r.Context()); err != nil {
