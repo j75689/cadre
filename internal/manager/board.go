@@ -363,7 +363,7 @@ func (m *Manager) InitTeam(ctx context.Context, namespace string, spec v1alpha1.
 	if err := validNamespace(namespace); err != nil {
 		return nil, err
 	}
-	if err := validTeamSpec(&spec); err != nil {
+	if err := ValidateTeamSpec(&spec); err != nil {
 		return nil, err
 	}
 	team := &v1alpha1.Team{ObjectMeta: metav1.ObjectMeta{Name: v1alpha1.TeamName, Namespace: namespace}, Spec: spec}
@@ -373,28 +373,22 @@ func (m *Manager) InitTeam(ctx context.Context, namespace string, spec v1alpha1.
 	return team, nil
 }
 
-// UpdateTeam replaces the spec of a namespace's Team, if it is still at
-// version: a Team changed since it was read fails with storage.ErrConflict,
-// so that two edits never overwrite each other. Its status is left alone.
-func (m *Manager) UpdateTeam(ctx context.Context, namespace string, spec v1alpha1.TeamSpec, version string) (*v1alpha1.Team, error) {
-	if err := validNamespace(namespace); err != nil {
-		return nil, err
-	}
+// UpdateTeam replaces the spec of team, as read from the store, if it is
+// still at version: a Team changed since fails with ErrTeamChanged, so that
+// two edits never overwrite each other. Its status is left alone.
+func (m *Manager) UpdateTeam(ctx context.Context, team *v1alpha1.Team, spec v1alpha1.TeamSpec, version string) (*v1alpha1.Team, error) {
 	if version == "" {
 		return nil, fmt.Errorf("resourceVersion is required to edit a Team, from the Team as read: %w", ErrInvalid)
 	}
-	if err := validTeamSpec(&spec); err != nil {
+	if err := ValidateTeamSpec(&spec); err != nil {
 		return nil, err
 	}
-	team, err := m.store.GetTeam(ctx, namespace)
-	if err != nil {
-		return nil, err
-	}
+	team = team.DeepCopy()
 	team.ResourceVersion = version
 	team.Spec = spec
 	if err := m.store.UpdateTeamSpec(ctx, team); err != nil {
 		if errors.Is(err, storage.ErrConflict) {
-			return nil, fmt.Errorf("team %s: %w", namespace, ErrTeamChanged)
+			return nil, fmt.Errorf("team %s: %w: %w", team.Namespace, ErrTeamChanged, err)
 		}
 		return nil, err
 	}
@@ -404,10 +398,10 @@ func (m *Manager) UpdateTeam(ctx context.Context, namespace string, spec v1alpha
 // ErrTeamChanged is an edit of a Team that changed since it was read.
 var ErrTeamChanged = errors.New("the Team changed since it was read: read it again, and edit that")
 
-// validTeamSpec checks a Team spec as the Team CRD does, so that a driver
-// without an API server stores nothing Kubernetes would refuse, and
-// defaults maxConcurrentRuns to 1.
-func validTeamSpec(spec *v1alpha1.TeamSpec) error {
+// ValidateTeamSpec checks a Team spec as the Team CRD does, so that a
+// driver without an API server stores nothing Kubernetes would refuse, and
+// defaults maxConcurrentRuns to 1. It fails with ErrInvalid.
+func ValidateTeamSpec(spec *v1alpha1.TeamSpec) error {
 	if spec.MaxConcurrentRuns < 0 {
 		return fmt.Errorf("maxConcurrentRuns %d: %w", spec.MaxConcurrentRuns, ErrInvalid)
 	}

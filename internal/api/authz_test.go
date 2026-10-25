@@ -347,7 +347,7 @@ func TestTeamEdits(t *testing.T) {
 
 	edit := func(token, version string, roles []v1alpha1.TeamRole) (int, string) {
 		t.Helper()
-		body, _ := json.Marshal(api.TeamRequest{DisplayName: "Team A", MaxConcurrentRuns: 3, ArchiveAfter: &metav1.Duration{Duration: 720 * time.Hour}, Roles: roles, ResourceVersion: version})
+		body, _ := json.Marshal(api.TeamRequest{TeamSpec: v1alpha1.TeamSpec{DisplayName: "Team A", MaxConcurrentRuns: 3, ArchiveAfter: &metav1.Duration{Duration: 720 * time.Hour}, Roles: roles}, ResourceVersion: version})
 		return e.do(token, "PUT", "/namespaces/team-a/team", string(body))
 	}
 	roles := append(slices.Clone(team.Spec.Roles), v1alpha1.TeamRole{Role: v1alpha1.RoleMember, Subjects: []v1alpha1.RoleSubject{{Kind: v1alpha1.SubjectUser, Name: "new@example.test"}}})
@@ -374,6 +374,14 @@ func TestTeamEdits(t *testing.T) {
 			t.Errorf("%s: %d %s, want %d %s", tc.name, code, body, tc.code, tc.error)
 		}
 	}
+	// An edit of a Team gone since it was read is a conflict, not a creation.
+	body, _ := json.Marshal(api.TeamRequest{TeamSpec: v1alpha1.TeamSpec{Roles: roles}, ResourceVersion: got.ResourceVersion})
+	if code, out := e.do(root, "PUT", "/namespaces/team-c/team", string(body)); code != 409 || !strings.Contains(out, `"conflict"`) {
+		t.Errorf("an edit of a Team that is not there: %d %s", code, out)
+	}
+	if code, out := e.do(root, "GET", "/namespaces/team-c/team", ""); code != 404 {
+		t.Errorf("the edit made the Team: %d %s", code, out)
+	}
 	// With a bootstrap admin to give it back, the last admin role may go.
 	noAdmin := []v1alpha1.TeamRole{{Role: v1alpha1.RoleMember, Subjects: []v1alpha1.RoleSubject{{Kind: v1alpha1.SubjectGroup, Name: "backend"}}}}
 	if code, body := edit(root, got.ResourceVersion, noAdmin); code != 200 {
@@ -392,11 +400,15 @@ func TestTeamKeepsAnAdmin(t *testing.T) {
 		t.Fatalf("GET team: %d %s", code, body)
 	}
 	put := func(roles []v1alpha1.TeamRole) (int, string) {
-		b, _ := json.Marshal(api.TeamRequest{Roles: roles, ResourceVersion: team.ResourceVersion})
+		b, _ := json.Marshal(api.TeamRequest{TeamSpec: v1alpha1.TeamSpec{Roles: roles}, ResourceVersion: team.ResourceVersion})
 		return e.do(lead, "PUT", "/namespaces/team-a/team", string(b))
 	}
 	if code, body := put(team.Spec.Roles[:2]); code != 400 || !strings.Contains(body, "no admin") {
 		t.Errorf("removing the last admin role: %d %s", code, body)
+	}
+	// An admin role with no subjects is told what is wrong with it.
+	if code, body := put([]v1alpha1.TeamRole{{Role: v1alpha1.RoleAdmin}}); code != 400 || !strings.Contains(body, "at least one subject") {
+		t.Errorf("an admin role with no subjects: %d %s", code, body)
 	}
 	if code, body := put(team.Spec.Roles); code != 200 {
 		t.Errorf("keeping it: %d %s", code, body)

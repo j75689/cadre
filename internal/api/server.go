@@ -354,8 +354,12 @@ func (s *Server) putTeam(w http.ResponseWriter, r *http.Request) {
 	ns := r.PathValue("ns")
 	cur, err := s.m.LiveTeam(r.Context(), ns)
 	switch {
+	case errors.Is(err, storage.ErrNotFound) && req.ResourceVersion != "":
+		// An edit of a Team deleted since it was read: not a creation.
+		httpjson.Fail(w, s.log, fmt.Errorf("team %s is gone: %w", ns, manager.ErrTeamChanged))
+		return
 	case errors.Is(err, storage.ErrNotFound):
-		team, err := s.m.InitTeam(r.Context(), ns, req.Spec())
+		team, err := s.m.InitTeam(r.Context(), ns, req.TeamSpec)
 		if err != nil {
 			httpjson.Fail(w, s.log, err)
 			return
@@ -369,12 +373,17 @@ func (s *Server) putTeam(w http.ResponseWriter, r *http.Request) {
 		httpjson.Fail(w, s.log, fmt.Errorf("team %s: %w", ns, storage.ErrAlreadyExists))
 		return
 	}
-	if s.orphans(cur, req.Roles) {
+	spec := req.TeamSpec
+	if err := manager.ValidateTeamSpec(&spec); err != nil {
+		httpjson.Fail(w, s.log, err)
+		return
+	}
+	if s.orphans(cur, spec.Roles) {
 		httpjson.WriteError(w, http.StatusBadRequest, httpjson.CodeInvalid,
 			"the Team would have no admin, and no bootstrap admin is set to give it one back: keep an admin role")
 		return
 	}
-	team, err := s.m.UpdateTeam(r.Context(), ns, req.Spec(), req.ResourceVersion)
+	team, err := s.m.UpdateTeam(r.Context(), cur, spec, req.ResourceVersion)
 	if err != nil {
 		httpjson.Fail(w, s.log, err)
 		return

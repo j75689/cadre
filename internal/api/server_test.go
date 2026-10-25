@@ -51,7 +51,7 @@ func TestBoardThroughTheAPI(t *testing.T) {
 	if _, err := c.CreateTask(ctx, ns, "", v1alpha1.TaskSpec{Title: "x"}); !client.IsCode(err, httpjson.CodeNotFound) {
 		t.Fatalf("create without a Team: %v", err)
 	}
-	if _, err := c.InitTeam(ctx, ns, api.TeamRequest{DisplayName: "Backend", MaxConcurrentRuns: 2}); err != nil {
+	if _, err := c.InitTeam(ctx, ns, api.TeamRequest{TeamSpec: v1alpha1.TeamSpec{DisplayName: "Backend", MaxConcurrentRuns: 2}}); err != nil {
 		t.Fatalf("init team: %v", err)
 	}
 	if _, err := c.InitTeam(ctx, ns, api.TeamRequest{}); !client.IsCode(err, httpjson.CodeAlreadyExists) {
@@ -141,7 +141,7 @@ func TestAPIRejectsBadInput(t *testing.T) {
 	if _, err := c.Events(ctx, ns, "t", "not-a-ulid"); !client.IsCode(err, httpjson.CodeInvalid) {
 		t.Errorf("events for a bad run id: %v", err)
 	}
-	if _, err := c.InitTeam(ctx, "team-b", api.TeamRequest{MaxConcurrentRuns: -1}); !client.IsCode(err, httpjson.CodeInvalid) {
+	if _, err := c.InitTeam(ctx, "team-b", api.TeamRequest{TeamSpec: v1alpha1.TeamSpec{MaxConcurrentRuns: -1}}); !client.IsCode(err, httpjson.CodeInvalid) {
 		t.Errorf("negative maxConcurrentRuns: %v", err)
 	}
 	if _, err := c.InitTeam(ctx, "Team_B", api.TeamRequest{}); !client.IsCode(err, httpjson.CodeInvalid) {

@@ -74,27 +74,31 @@ func newTeamSet(g *globals) *cobra.Command {
 				s.MaxConcurrentRuns = maxRuns
 			}
 			if f.Changed("archive-after") {
-				s.ArchiveAfter = &metav1.Duration{Duration: archiveAfter}
+				// 0 is the default: never archived.
+				s.ArchiveAfter = nil
+				if archiveAfter != 0 {
+					s.ArchiveAfter = &metav1.Duration{Duration: archiveAfter}
+				}
 			}
 			if f.Changed("role") {
 				if s.Roles, err = parseRoles(roles); err != nil {
 					return err
 				}
 			}
-			req := api.TeamRequest{DisplayName: s.DisplayName, MaxConcurrentRuns: s.MaxConcurrentRuns, ArchiveAfter: s.ArchiveAfter, Roles: s.Roles, ResourceVersion: team.ResourceVersion}
-			team, err = c.UpdateTeam(cmd.Context(), g.namespace, req)
-			if err != nil {
+			if _, err := c.UpdateTeam(cmd.Context(), g.namespace, api.TeamRequest{TeamSpec: s, ResourceVersion: team.ResourceVersion}); err != nil {
 				return err
 			}
-			outf(cmd.OutOrStdout(), "team %s updated: %d concurrent runs, %d roles\n", team.Namespace, team.Spec.MaxConcurrentRuns, len(team.Spec.Roles))
+			// What was sent: the reply shows the roles to admins only, and
+			// the edit may have made the caller no longer one.
+			outf(cmd.OutOrStdout(), "team %s updated: %d concurrent runs, %d roles\n", g.namespace, s.MaxConcurrentRuns, len(s.Roles))
 			return nil
 		},
 	}
 	f := cmd.Flags()
 	f.StringVar(&displayName, "display-name", "", "name shown on the board")
-	f.Int32Var(&maxRuns, "max-concurrent-runs", 1, "how many of the team's tasks may run at once")
-	f.DurationVar(&archiveAfter, "archive-after", 0, "how long a finished task stays on the board, as 720h")
-	f.StringArrayVar(&roles, "role", nil, roleUsage+"; replaces all the team's roles")
+	f.Int32Var(&maxRuns, "max-concurrent-runs", 0, "how many of the team's tasks may run at once; unchanged when not given")
+	f.DurationVar(&archiveAfter, "archive-after", 0, "how long a finished task stays on the board, as 720h; 0 for never")
+	f.StringArrayVar(&roles, "role", nil, roleUsage+"; replaces all the team's roles (to remove them all, use the API or kubectl)")
 	return cmd
 }
 

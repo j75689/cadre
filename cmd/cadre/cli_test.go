@@ -91,6 +91,11 @@ func TestTaskLifeFromTheCLI(t *testing.T) {
 		len(s.Roles) != 2 || s.Roles[0].Role != "admin" || len(s.Roles[0].Subjects) != 2 || len(s.Roles[1].Subjects) != 2 {
 		t.Fatalf("team spec %+v", s)
 	}
+	// 0 clears archiving; the run cap, not given, stays.
+	mustContain(t, cadre(t, srv.URL, "team", "set", "--archive-after", "0"), "team team-a updated: 2 concurrent runs, 2 roles")
+	if team, err := m.LiveTeam(ctx, "team-a"); err != nil || team.Spec.ArchiveAfter != nil || team.Spec.MaxConcurrentRuns != 2 {
+		t.Fatalf("after --archive-after 0: %+v, %v", team, err)
+	}
 	if err := cadreFails(t, srv.URL, "team", "set", "--role", "owner"); !strings.Contains(err.Error(), "want role=") {
 		t.Fatalf("a role without subjects: %v", err)
 	}
