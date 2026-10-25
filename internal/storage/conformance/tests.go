@@ -588,6 +588,18 @@ func testLogNestedStreams(t *testing.T, s *suite) {
 	if got, err := d.Read(s.ctx, events, "", 0); err != nil || len(got) != 2 {
 		t.Errorf("read %s: %+v, %v", events, got, err)
 	}
+	for stream, n := range map[string]int{runs: 1, events: 2} {
+		if keys, err := d.Keys(s.ctx, stream, "", 0); err != nil || len(keys) != n {
+			t.Errorf("keys of %s: %+v, %v", stream, keys, err)
+		}
+	}
+	// An entry keyed like the reserved segment is an entry like any other.
+	if err := d.Append(s.ctx, runs, storage.EntrySegment, []byte("x")); err != nil {
+		t.Errorf("append the key %q: %v", storage.EntrySegment, err)
+	}
+	if got, err := d.Read(s.ctx, runs, "", 0); err != nil || len(got) != 2 {
+		t.Errorf("read %s after the key %q: %+v, %v", runs, storage.EntrySegment, got, err)
+	}
 
 	for _, bad := range []struct{ stream, key string }{
 		{"", "k"}, {"/" + parent, "k"}, {parent + "/", "k"}, {s.ns + "//t", "k"}, {parent, ""}, {parent, "a/b"},

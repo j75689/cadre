@@ -87,7 +87,7 @@ type KeyInfo struct {
 // sequence of immutable entries ordered by key.
 //
 // Layout: a driver that keeps entries at paths puts a stream's entries
-// under the reserved segment EntrySegment, <stream>/e/<key>, and no stream
+// under the reserved segment EntrySegment, <stream>/~e/<key>, and no stream
 // name may use it, so a stream and an entry never share a path whatever the
 // names. Object stores backed by a filesystem, such as SeaweedFS, cannot
 // hold a file and a directory of the same name: without it, stream "a/runs"
@@ -117,8 +117,10 @@ type Log interface {
 var ErrInvalidName = errors.New("invalid log stream or key")
 
 // EntrySegment is the path segment a stream's entries live under, which no
-// stream name may use (see Log).
-const EntrySegment = "e"
+// stream name may use (see Log). Its "~" is outside every alphabet a
+// stream's segments are made of (DNS-1123 names, ULIDs, base64url, digits),
+// so no namespace, task, run or path can equal it.
+const EntrySegment = "~e"
 
 // ValidateStream checks a stream name: one or more non-empty segments
 // separated by "/", none of them EntrySegment. Streams nest by name

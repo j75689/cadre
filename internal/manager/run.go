@@ -367,9 +367,7 @@ var outcomePhase = map[task.Outcome]v1alpha1.Phase{
 // RunsStream is the log stream holding a task's run history.
 func RunsStream(key storage.Key) string { return key.Namespace + "/" + key.Name + "/runs" }
 
-// EventsStream is the log stream holding one run's progress events. It is
-// not nested under RunsStream, whose entry keys are run ids: a stream must
-// never sit under a path that is an entry of another (see storage.Log).
+// EventsStream is the log stream holding one run's progress events.
 func EventsStream(key storage.Key, runID string) string {
 	return key.Namespace + "/" + key.Name + "/events/" + runID
 }
