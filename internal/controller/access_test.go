@@ -86,7 +86,7 @@ func TestJobAccess(t *testing.T) {
 		objs = append(objs, &corev1.ServiceAccount{ObjectMeta: metav1.ObjectMeta{Namespace: ns, Name: "jobs"}},
 			&v1alpha1.Runner{ObjectMeta: metav1.ObjectMeta{Namespace: ns, Name: "jobs"}, Spec: v1alpha1.RunnerSpec{
 				ServiceAccount: &v1alpha1.ServiceAccountRef{Name: "jobs"}, Labels: map[string]string{"pool": "jobs"},
-			}})
+			}, Status: v1alpha1.RunnerStatus{ConfigStatus: readyStatus("ServiceAccount")}})
 	}
 	c := r.client(objs...)
 	now := time.Unix(1_800_000_000, 0)
@@ -232,7 +232,7 @@ func TestJobAccessUnknown(t *testing.T) {
 		&corev1.ServiceAccount{ObjectMeta: metav1.ObjectMeta{Namespace: "team-a", Name: "jobs"}},
 		&v1alpha1.Runner{ObjectMeta: metav1.ObjectMeta{Namespace: "team-a", Name: "jobs"}, Spec: v1alpha1.RunnerSpec{
 			ServiceAccount: &v1alpha1.ServiceAccountRef{Name: "jobs"}, Labels: map[string]string{"pool": "jobs"},
-		}},
+		}, Status: v1alpha1.RunnerStatus{ConfigStatus: readyStatus("ServiceAccount")}},
 		a,
 	)
 	rec := &agentReconciler{base: base{client: c, secrets: c, resync: time.Minute}, jobs: newJobAccess(c, time.Minute, time.Now)}
@@ -264,4 +264,9 @@ func TestJobAccessUnknown(t *testing.T) {
 	if got := reason(false); got != "Resolved: " {
 		t.Fatalf("Ready %q once the review works", got)
 	}
+}
+
+// readyStatus is a status Ready for generation 0, a fake client's.
+func readyStatus(reason string) v1alpha1.ConfigStatus {
+	return v1alpha1.ConfigStatus{Conditions: []metav1.Condition{{Type: v1alpha1.ConditionReady, Status: metav1.ConditionTrue, Reason: reason}}}
 }

@@ -8,6 +8,7 @@ import (
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 
@@ -224,6 +225,33 @@ func TestRunners(t *testing.T) {
 		}
 		if time.Now().After(deadline) {
 			t.Fatalf("the minted Secret outlived the switch: %v", err)
+		}
+	}
+
+	// switch now names ci's ServiceAccount, which the older ci holds: it
+	// is not Ready, and the account claims with ci's labels only.
+	waitRunner(t, c, "switch", func(rn *v1alpha1.Runner) bool {
+		cond := meta.FindStatusCondition(rn.Status.Conditions, v1alpha1.ConditionReady)
+		return cond != nil && cond.Status == metav1.ConditionFalse && cond.Reason == "ServiceAccountInUse" && strings.Contains(cond.Message, "Runner ci's")
+	})
+	if id, err := auth.Authenticate(ctx, saToken("team-a", "ci")); err != nil || id.Scope["team-a"]["pool"] != "ci-a" {
+		t.Fatalf("ci's identity with switch naming it too: %+v, %v", id, err)
+	}
+	// ci gone, switch holds it: Ready, and its labels are the account's.
+	if err := c.Delete(ctx, &v1alpha1.Runner{ObjectMeta: metav1.ObjectMeta{Namespace: "team-a", Name: "ci"}}); err != nil {
+		t.Fatal(err)
+	}
+	waitRunner(t, c, "switch", func(rn *v1alpha1.Runner) bool {
+		cond := meta.FindStatusCondition(rn.Status.Conditions, v1alpha1.ConditionReady)
+		return cond != nil && cond.Status == metav1.ConditionTrue && cond.Reason == "ServiceAccount"
+	})
+	for deadline := time.Now().Add(10 * time.Second); ; time.Sleep(50 * time.Millisecond) {
+		id, err := auth.Authenticate(ctx, saToken("team-a", "ci"))
+		if err == nil && id.Scope["team-a"]["pool"] == "x" {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("ci's account once switch holds it: %+v, %v", id, err)
 		}
 	}
 }

@@ -240,6 +240,9 @@ func (r *agentReconciler) resolveJob(ctx context.Context, agent *v1alpha1.Agent,
 		return false, "RunnerNotFound", fmt.Sprintf("Runner %s does not exist", job.RunnerRef), nil
 	case rn.Spec.ServiceAccount == nil:
 		return false, "RunnerOutsideTheCluster", fmt.Sprintf("Runner %s has no serviceAccount for the Jobs to run as", job.RunnerRef), nil
+	case !isReady(&rn, rn.Status.ConfigStatus):
+		// Its Jobs could not claim: a Runner not Ready gives no scope.
+		return false, "RunnerNotReady", fmt.Sprintf("Runner %s is not Ready", job.RunnerRef), nil
 	}
 	for k, v := range agent.Spec.Runtime.Selector {
 		if rn.Spec.Labels[k] != v {

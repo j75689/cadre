@@ -686,6 +686,12 @@ func TestNotifyDelivered(t *testing.T) {
 		t.Fatalf("removed with e pending: %+v", tk.Status.Outbox)
 	}
 	tk.Status = apply(t, tk, NotifyDelivered{ID: id, To: []string{"e"}, Gone: []string{"d"}}).Status
+	// An item with no Notifiers is not removed by a turn's end.
+	tk.Status.Outbox = append(tk.Status.Outbox, v1alpha1.OutboxItem{ID: id, Kind: v1alpha1.OutboxNotify, Notify: &v1alpha1.Notification{Event: v1alpha1.NotifyQuestion}})
+	if got := apply(t, tk, NotifyDelivered{ID: id, By: "s1"}).Status.Outbox; len(got) != 2 {
+		t.Errorf("a turn's end removed an item with no to: %+v", got)
+	}
+	tk.Status.Outbox = tk.Status.Outbox[:1]
 	if len(tk.Status.Outbox) != 1 || tk.Status.Outbox[0].ID != "01JB0000000000000000000002" {
 		t.Errorf("outbox once all took it %+v, want the other item only", tk.Status.Outbox)
 	}
