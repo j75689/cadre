@@ -30,6 +30,10 @@ import (
 type Notifiers interface {
 	// ListNotifiers lists a namespace's Notifiers, possibly from a cache.
 	ListNotifiers(ctx context.Context, namespace string) ([]v1alpha1.Notifier, error)
+	// NotifierGone reports, from a fresh read, that a Notifier does not
+	// exist: one missing from a cached list may be one the cache has not
+	// seen yet.
+	NotifierGone(ctx context.Context, namespace, name string) (bool, error)
 	// SecretValue reads one Secret key, fresh, for a signing secret.
 	SecretValue(ctx context.Context, namespace string, ref v1alpha1.SecretKeyRef) (string, error)
 	// Delivered records a delivery on the Notifier's status, err nil for
@@ -58,6 +62,11 @@ func (s StaticNotifiers) ListNotifiers(_ context.Context, ns string) ([]v1alpha1
 		}
 	}
 	return out, nil
+}
+
+// NotifierGone implements Notifiers.
+func (s StaticNotifiers) NotifierGone(_ context.Context, ns, name string) (bool, error) {
+	return !slices.ContainsFunc(s.Items, func(n v1alpha1.Notifier) bool { return n.Namespace == ns && n.Name == name }), nil
 }
 
 // SecretValue implements Notifiers.
@@ -285,19 +294,22 @@ func (m *Manager) sendingElsewhere(n *v1alpha1.Notification) bool {
 
 // notifyItem sends one notification to those of its Notifiers that have
 // not taken it; a Notifier that no longer exists counts as having taken
-// it. It reports whether the item is to be acked: it was found with
-// nothing pending, or it outlived NotifyTTL, in which case drop says so
-// once it is. An item every Notifier took is removed by the very write
-// that records it (task.NotifyDelivered), and needs no ack.
+// it, once a fresh read says so (confirmGone). It reports whether the item
+// is to be acked: it was found with every Notifier having taken it, or it
+// outlived NotifyTTL, in which case drop says so once it is. An item every
+// Notifier took is removed by the very write that records it
+// (task.NotifyDelivered), and needs no ack.
 func (m *Manager) notifyItem(ctx context.Context, key storage.Key, it v1alpha1.OutboxItem, byName map[string]*v1alpha1.Notifier) (ack bool, drop func(), err error) {
 	// The read that found it decides whether there is anything to try:
 	// nothing pending, or nobody pending Ready, costs no write.
+	// A Notifier the cached list lacks is not taken for gone here: the
+	// claim below confirms it.
 	pending := pendingOf(it.Notify, byName)
-	if len(pending) == 0 {
+	switch {
+	case len(pending) == 0 && len(goneOf(it.Notify, byName)) == 0:
 		return true, nil, nil
-	}
-	if !slices.ContainsFunc(pending, m.canTry) &&
-		m.now().Sub(it.Notify.At.Time) <= NotifyTTL {
+	case len(pending) > 0 && !slices.ContainsFunc(pending, m.canTry) &&
+		m.now().Sub(it.Notify.At.Time) <= NotifyTTL:
 		return false, nil, nil
 	}
 	// One server at a time: the claim is a conditional write on the Task,
@@ -315,22 +327,24 @@ func (m *Manager) notifyItem(ctx context.Context, key storage.Key, it v1alpha1.O
 	// The claim found the item, so it is in the task the claim wrote.
 	it = t.Status.Outbox[slices.IndexFunc(t.Status.Outbox, func(o v1alpha1.OutboxItem) bool { return o.ID == it.ID })]
 	n := it.Notify
-	gone := goneOf(n, byName)
+	gone, unseen, gerr := m.confirmGone(ctx, key.Namespace, goneOf(n, byName))
 	endTurn := func() error {
 		_, err := m.transition(ctx, key, task.NotifyDelivered{ID: it.ID, By: m.id, Gone: gone})
-		return err
+		return errors.Join(gerr, err)
 	}
 	pending = pendingOf(n, byName)
 	if len(pending) == 0 {
-		// Taken by all since the read that found it: ending the turn
-		// removes it.
+		// Taken by all since the read that found it, and ending the turn
+		// removes it; or left to Notifiers this server's cache has not
+		// seen yet, which a later pass sends to.
 		return false, nil, endTurn()
 	}
 	if m.now().Sub(n.At.Time) > NotifyTTL {
-		names := make([]string, len(pending))
-		for i := range pending {
-			names[i] = pending[i].Name
+		names := make([]string, 0, len(pending)+len(unseen))
+		for _, nf := range pending {
+			names = append(names, nf.Name)
 		}
+		names = append(names, unseen...)
 		msg := fmt.Sprintf("the %s notification %s was not taken within %s by: %s", n.Event, it.ID, NotifyTTL, strings.Join(names, ", "))
 		// Said as it is when nothing was ever tried.
 		if !slices.ContainsFunc(pending, m.canTry) {
@@ -350,7 +364,7 @@ func (m *Manager) notifyItem(ctx context.Context, key storage.Key, it v1alpha1.O
 	var mu sync.Mutex
 	var wg sync.WaitGroup
 	var took []string
-	var errs []error
+	errs := []error{gerr}
 	for _, nf := range pending {
 		sem <- struct{}{}
 		wg.Go(func() {
@@ -378,8 +392,29 @@ func (m *Manager) notifyItem(ctx context.Context, key storage.Key, it v1alpha1.O
 	return false, nil, errors.Join(errs...)
 }
 
-// goneOf is the Notifiers of n that no longer exist: they count as having
-// taken it.
+// confirmGone splits names, Notifiers missing from the cached list, into
+// those a fresh read says are gone, which count as having taken a
+// notification, and those it does not: a Notifier the cache has not seen
+// yet, which a later pass sends to. A name that cannot be read is not
+// gone.
+func (m *Manager) confirmGone(ctx context.Context, ns string, names []string) (gone, unseen []string, err error) {
+	var errs []error
+	for _, name := range names {
+		ok, err := m.cfg.Notifiers.NotifierGone(ctx, ns, name)
+		if err != nil {
+			errs = append(errs, fmt.Errorf("notifier %s: %w", name, err))
+		}
+		if ok && err == nil {
+			gone = append(gone, name)
+		} else {
+			unseen = append(unseen, name)
+		}
+	}
+	return gone, unseen, errors.Join(errs...)
+}
+
+// goneOf is the Notifiers of n missing from byName that have not taken it:
+// gone, or not yet seen (confirmGone).
 func goneOf(n *v1alpha1.Notification, byName map[string]*v1alpha1.Notifier) []string {
 	var out []string
 	for _, name := range n.To {

@@ -552,6 +552,43 @@ func TestNotifyGoneNotifierCountsAsTaken(t *testing.T) {
 	}
 }
 
+// unseenNotifiers is a cache that has seen only the first listed of its
+// Notifiers: the others exist, and the fresh read finds them.
+type unseenNotifiers struct {
+	StaticNotifiers
+	listed int
+}
+
+func (u unseenNotifiers) ListNotifiers(ctx context.Context, ns string) ([]v1alpha1.Notifier, error) {
+	all, err := u.StaticNotifiers.ListNotifiers(ctx, ns)
+	return all[:u.listed], err
+}
+
+// A Notifier missing from this server's cache, but not from the API
+// server, has not taken a notification: it is neither acked nor removed,
+// and is sent to once the cache has it.
+func TestNotifyUnseenNotifierIsNotGone(t *testing.T) {
+	a, b := newReceiver(t), newReceiver(t)
+	e, _ := notifyEnv(t, notifier("a", a.URL, nil, v1alpha1.NotifyQuestion), notifier("b", b.URL, nil, v1alpha1.NotifyQuestion))
+	key := e.addTask(t, "x", v1alpha1.AssigneeAgent)
+	e.question(t, key)
+	nf := e.m.cfg.Notifiers.(StaticNotifiers)
+	for listed, want := range []struct{ a, b, items int }{ // deliveries so far
+		{0, 0, 1}, // neither seen: not acked
+		{1, 0, 1}, // a seen: sent to a, not removed
+		{1, 1, 0}, // both: sent to b, and removed
+	} {
+		e.m.cfg.Notifiers = unseenNotifiers{nf, listed}
+		if err := e.m.DeliverNotifications(ctx); err != nil {
+			t.Fatal(err)
+		}
+		items := notifyItems(e.get(t, key))
+		if len(a.deliveries()) != want.a || len(b.deliveries()) != want.b || len(items) != want.items {
+			t.Errorf("%d seen: a %d, b %d deliveries, items %+v", listed, len(a.deliveries()), len(b.deliveries()), items)
+		}
+	}
+}
+
 // A server with no Notifiers has nobody to tell: it acks what it finds.
 func TestNotifyWithoutNotifiers(t *testing.T) {
 	rec := newReceiver(t)
