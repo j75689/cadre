@@ -38,7 +38,7 @@ Not a SaaS. Not a workflow engine. Not an LLM gateway. Not a sandbox. Cadre inte
 | Document | Contents |
 | --- | --- |
 | [docs/architecture.md](docs/architecture.md) | components, execution modes, identity, installation, plugins, ecosystem |
-| [docs/crds.md](docs/crds.md) | `Team`, `Task`, `Agent`, `ModelProvider`, `ToolServer`, `Schedule`, credentials, multi-team |
+| [docs/crds.md](docs/crds.md) | `Team`, `Task`, `Agent`, `ModelProvider`, `ToolServer`, `Runner`, `AgentAccess`, `Schedule`, `Notifier`, credentials, multi-team |
 | [docs/execution.md](docs/execution.md) | state transitions, step and runtime modes, runner protocol, per-run MCP, fencing and idempotency |
 | [docs/storage.md](docs/storage.md) | the three operations, the kubernetes and postgres drivers, conformance tests |
 

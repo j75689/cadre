@@ -24,12 +24,15 @@ const (
 	indexToolRefs = "spec.toolRefs"
 	// indexRunnerSA finds the Runners naming a ServiceAccount.
 	indexRunnerSA = "spec.serviceAccount.name"
+	// indexAccessSA finds the AgentAccesses naming a ServiceAccount.
+	indexAccessSA = "spec.serviceAccount.name"
 	// indexJobRunner finds the Agents whose Jobs run as a Runner.
 	indexJobRunner = "spec.runtime.job.runnerRef"
 )
 
 // setupIndexes lets a ModelProvider or ToolServer change find the Agents
-// that reference it, and a ServiceAccount's token find its Runners.
+// that reference it, and a ServiceAccount's token find its Runners and
+// AgentAccesses.
 func setupIndexes(mgr ctrl.Manager) error {
 	idx := mgr.GetFieldIndexer()
 	if err := idx.IndexField(context.Background(), &v1alpha1.Agent{}, indexModelRef, func(o client.Object) []string {
@@ -50,7 +53,18 @@ func setupIndexes(mgr ctrl.Manager) error {
 	}); err != nil {
 		return err
 	}
-	return idx.IndexField(context.Background(), &v1alpha1.Runner{}, indexRunnerSA, runnerSA)
+	if err := idx.IndexField(context.Background(), &v1alpha1.Runner{}, indexRunnerSA, runnerSA); err != nil {
+		return err
+	}
+	return idx.IndexField(context.Background(), &v1alpha1.AgentAccess{}, indexAccessSA, accessSA)
+}
+
+// accessSA indexes an AgentAccess by the ServiceAccount it names.
+func accessSA(o client.Object) []string {
+	if sa := o.(*v1alpha1.AgentAccess).Spec.ServiceAccount; sa != nil {
+		return []string{sa.Name}
+	}
+	return nil
 }
 
 // runnerSA indexes a Runner by the ServiceAccount it names.

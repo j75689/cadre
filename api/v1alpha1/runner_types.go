@@ -36,9 +36,13 @@ type RunnerSpec struct {
 // RunnerStatus is a Runner's status.
 type RunnerStatus struct {
 	ConfigStatus `json:",inline"`
+	MintedToken  `json:",inline"`
+}
 
-	// TokenSecret is the Secret holding a minted token, for a runner
-	// outside the cluster.
+// MintedToken is the token Cadre mints for an object without a
+// ServiceAccount, a Runner or an AgentAccess: where it is and its hash.
+type MintedToken struct {
+	// TokenSecret is the Secret holding the minted token.
 	// +optional
 	TokenSecret string `json:"tokenSecret,omitempty"`
 

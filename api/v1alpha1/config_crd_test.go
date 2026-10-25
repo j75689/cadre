@@ -153,6 +153,21 @@ func TestConfigCRDs(t *testing.T) {
 		expect(t, c, "Runner "+name, &v1alpha1.Runner{ObjectMeta: meta(), Spec: tc.spec}, tc.valid)
 	}
 
+	// An AgentAccess acts as a viewer or a member, never an admin: it can
+	// never manage its Team.
+	for name, tc := range map[string]struct {
+		spec  v1alpha1.AgentAccessSpec
+		valid bool
+	}{
+		"minted member":            {v1alpha1.AgentAccessSpec{Role: "member"}, true},
+		"service account viewer":   {v1alpha1.AgentAccessSpec{Role: "viewer", ServiceAccount: &v1alpha1.ServiceAccountRef{Name: "bot"}}, true},
+		"admin":                    {v1alpha1.AgentAccessSpec{Role: "admin"}, false},
+		"no role":                  {v1alpha1.AgentAccessSpec{}, false},
+		"service account, no name": {v1alpha1.AgentAccessSpec{Role: "member", ServiceAccount: &v1alpha1.ServiceAccountRef{}}, false},
+	} {
+		expect(t, c, "AgentAccess "+name, &v1alpha1.AgentAccess{ObjectMeta: meta(), Spec: tc.spec}, tc.valid)
+	}
+
 	// Defaults: an Agent applied without a runtime is builtin (sent as raw
 	// YAML would be: the typed client always sends a runtime object); a
 	// ToolServer without a transport speaks streamable HTTP.

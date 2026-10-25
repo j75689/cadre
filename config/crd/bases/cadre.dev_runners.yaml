@@ -167,9 +167,7 @@ spec:
                   revokes the old one.
                 type: string
               tokenSecret:
-                description: |-
-                  TokenSecret is the Secret holding a minted token, for a runner
-                  outside the cluster.
+                description: TokenSecret is the Secret holding the minted token.
                 type: string
             type: object
         required:
