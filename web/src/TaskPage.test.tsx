@@ -174,6 +174,26 @@ describe("Subtasks", () => {
     expect(screen.getByText("Step 1")).toBeTruthy();
   });
 
+  it("shows only the error when the first read fails, and no Load more after a failed poll", async () => {
+    let down = true;
+    server([], undefined, Array.from({ length: subtaskPage + 1 }, (_, i) => subtask(i + 1)));
+    const inner = globalThis.fetch;
+    vi.stubGlobal("fetch", (url: string, init?: RequestInit) =>
+      down && url.includes("parent=") ? json({ error: { code: "Internal", message: "index unavailable" } }, 500) : inner(url, init),
+    );
+    renderTask();
+    expect(await screen.findByText(/Could not load the subtasks/)).toBeTruthy();
+    expect(screen.queryByRole("region", { name: "Subtasks" })).toBeNull();
+    down = false;
+    await act(() => vi.advanceTimersByTimeAsync(5000));
+    expect(await screen.findByRole("button", { name: "Load more" })).toBeTruthy();
+    down = true;
+    await act(() => vi.advanceTimersByTimeAsync(5000));
+    expect(await screen.findByText(/Could not load the subtasks/)).toBeTruthy();
+    expect(screen.queryByRole("button", { name: "Load more" })).toBeNull();
+    expect(screen.getByText("Step 1")).toBeTruthy();
+  });
+
   it("shows no section for a task without subtasks", async () => {
     const calls = server([]);
     renderTask();

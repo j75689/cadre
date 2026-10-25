@@ -162,7 +162,7 @@ func TestAPIRejectsBadInput(t *testing.T) {
 			t.Errorf("parent %q: %v", parent, err)
 		}
 	}
-	for _, q := range []string{"limit=-1", "parent=-a", "parent=" + strings.Repeat("a", 254), "parent=a&parent=b"} {
+	for _, q := range []string{"limit=-1", "parent=-a", "parent=" + strings.Repeat("a", 254), "parent=a&parent=b", "offset=1&offset=2", "limit=1&limit=2"} {
 		resp, err := http.Get(base + "/api/v1/namespaces/" + ns + "/tasks?" + q)
 		if err != nil {
 			t.Fatal(err)

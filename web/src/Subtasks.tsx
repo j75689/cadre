@@ -36,15 +36,17 @@ export function Subtasks({ ns, name }: { ns: string; name: string }) {
     [ns, name, pages],
   );
 
-  // What was loaded stays beside an error; a task with none shows nothing.
-  if (!error && (!tasks || tasks.length === 0)) return null;
+  // Until a page has loaded, an error is all there is to show; after, what
+  // was loaded stays beside it. A task with none shows nothing.
+  if (tasks === null) return error ? <p className="error">Could not load the subtasks: {error}</p> : null;
+  if (!error && tasks.length === 0) return null;
   const base = `/t/${encodeURIComponent(ns)}/tasks/`;
   return (
     <section className="subtasks" aria-label="Subtasks">
       <h2>Subtasks</h2>
       {error && <p className="error">Could not load the subtasks: {error}</p>}
       <ul>
-        {(tasks ?? []).map((t) => (
+        {tasks.map((t) => (
           <li key={t.metadata.name}>
             <span className="number">{t.status?.number !== undefined ? `#${t.status.number}` : "new"}</span>{" "}
             <Link to={base + encodeURIComponent(t.metadata.name)}>{t.spec.title}</Link>{" "}
@@ -53,7 +55,7 @@ export function Subtasks({ ns, name }: { ns: string; name: string }) {
           </li>
         ))}
       </ul>
-      {more && (
+      {more && !error && (
         <button type="button" className="more" onClick={() => setPages((p) => p + 1)}>
           Load more
         </button>

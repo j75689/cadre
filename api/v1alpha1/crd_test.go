@@ -114,10 +114,12 @@ func TestCRDs(t *testing.T) {
 
 	t.Run("task validation", func(t *testing.T) {
 		for name, spec := range map[string]v1alpha1.TaskSpec{
-			"missing title":    {},
-			"unknown priority": {Title: "x", Priority: "whenever"},
-			"unknown assignee": {Title: "x", Assignee: &v1alpha1.Assignee{Kind: "Robot", Name: "r"}},
-			"own parent":       {Title: "x", ParentRef: &v1alpha1.TaskReference{Name: "invalid"}},
+			"missing title":     {},
+			"unknown priority":  {Title: "x", Priority: "whenever"},
+			"unknown assignee":  {Title: "x", Assignee: &v1alpha1.Assignee{Kind: "Robot", Name: "r"}},
+			"own parent":        {Title: "x", ParentRef: &v1alpha1.TaskReference{Name: "invalid"}},
+			"parent not a name": {Title: "x", ParentRef: &v1alpha1.TaskReference{Name: "Not_A_Name"}},
+			"parent a number":   {Title: "x", ParentRef: &v1alpha1.TaskReference{Name: "#1"}},
 		} {
 			task := &v1alpha1.Task{ObjectMeta: metav1.ObjectMeta{Name: "invalid", Namespace: ns}, Spec: spec}
 			if err := c.Create(ctx, task); !apierrors.IsInvalid(err) {

@@ -177,9 +177,11 @@ func (s *Server) listTasks(w http.ResponseWriter, r *http.Request) {
 		}
 		q.Phases = append(q.Phases, v1alpha1.Phase(p))
 	}
-	if parents := query["parent"]; len(parents) > 1 {
-		httpjson.WriteError(w, http.StatusBadRequest, httpjson.CodeInvalid, fmt.Sprintf("parent given %d times: at most once", len(parents)))
-		return
+	for _, name := range []string{"parent", "offset", "limit"} {
+		if n := len(query[name]); n > 1 {
+			httpjson.WriteError(w, http.StatusBadRequest, httpjson.CodeInvalid, fmt.Sprintf("%s given %d times: at most once", name, n))
+			return
+		}
 	}
 	// A task name is a DNS subdomain, so a parent's is.
 	if q.Parent = query.Get("parent"); q.Parent != "" {
