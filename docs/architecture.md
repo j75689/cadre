@@ -42,7 +42,7 @@ Cadre is not a SaaS, not a workflow engine, not an LLM gateway and not a sandbox
 - The routes the UI uses, under `/api/v1`: `GET /auth`, `GET /me`, `GET /teams`; under `/namespaces/<namespace>`: `GET /agents` (each Agent's name, whether it is Ready, and if not why), `GET /tasks` (`phase`, `parent`, `offset`, `limit`; `parent` lists a task's subtasks), `POST /tasks`, and under `/tasks/<name>`: `GET`, `GET /thread` (`after`, `limit`), `POST /comments`, `POST /reply`, `POST /approve`, `POST /cancel`, `GET /runs` and `GET /runs/<run>/events`.
 - The CLI also uses, under `/api/v1/namespaces/<namespace>`: `GET /team` and `PUT /team` (creating the Team, for a bootstrap admin, or editing it, for its admins).
 - Planned: subtask tree, deliverable approval queue (approve, reject, publish; plugin, see below).
-- The API serves the CLI and external systems; the board MCP endpoint, `POST /mcp`, lets external agents (Claude Code, for example) list and read tasks and their threads, create tasks, comment and reply. Its tools are `list_tasks`, `get_task`, `create_task`, `comment` and `reply`; each names the team's namespace and a task by name or `#number`.
+- The API serves the CLI and external systems; the board MCP endpoint, `POST /mcp`, lets external agents (Claude Code, for example) list and read tasks and their threads, create tasks, comment and reply. Its tools are `list_tasks`, `get_task`, `create_task`, `comment` and `reply`; each names the team's namespace; those acting on a task name it, or give its `#number`.
   - **Authentication.** It takes a bearer ID token only, verified as the API verifies one, with no session cookie, so a page in a browser cannot act through it.
   - **Authorization.** Each tool call is decided by the caller's role on the team it names, as the API's routes are: a viewer reads, a member also writes, and a refusal is a tool error naming the role needed.
   - **Authorship.** What it writes is the caller's.
@@ -203,7 +203,7 @@ cmd/cadre/               CLI
 cmd/cadre-server/        API, Task Manager, per-run MCP
 cmd/cadre-runner/        runner for the builtin loop
 internal/task/           aggregate and state machine, pure logic, no storage access
-internal/storage/        driver interface, conformance/, kubernetes/, postgres/
+internal/storage/        driver interface, conformance/, kubernetes/, memory/; postgres/ planned
 internal/runner/         runner protocol
 internal/mcp/            per-run and board MCP endpoints
 internal/controller/     Team, Task, Agent, ToolServer reconcilers
