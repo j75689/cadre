@@ -23,7 +23,7 @@ jobs:
         id: tools
         run: echo "key=tools-${{ runner.os }}-$(grep -E '^[A-Z0-9_]+_VERSION +:=' Makefile | tr -d ' ' | sort | tr '\n' '-')" >> "$GITHUB_OUTPUT"
       - name: Cache tools
-        uses: actions/cache@v4
+        uses: actions/cache@v6
         with:
           path: bin/tools
           key: ${{ steps.tools.outputs.key }}
@@ -115,7 +115,7 @@ jobs:
         id: tools
         run: echo "key=tools-${{ runner.os }}-$(grep -E '^[A-Z0-9_]+_VERSION +:=' Makefile | tr -d ' ' | sort | tr '\n' '-')" >> "$GITHUB_OUTPUT"
       - name: Cache tools
-        uses: actions/cache@v4
+        uses: actions/cache@v6
         with:
           path: bin/tools
           key: ${{ steps.tools.outputs.key }}
@@ -237,7 +237,7 @@ jobs:
         id: tools
         run: echo "key=tools-${{ runner.os }}-$(grep -E '^[A-Z0-9_]+_VERSION +:=' Makefile | tr -d ' ' | sort | tr '\n' '-')" >> "$GITHUB_OUTPUT"
       - name: Cache tools
-        uses: actions/cache@v4
+        uses: actions/cache@v6
         with:
           path: bin/tools
           key: ${{ steps.tools.outputs.key }}
