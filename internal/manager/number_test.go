@@ -176,3 +176,47 @@ func TestTaskByNumberAmbiguous(t *testing.T) {
 		t.Fatalf("#3 shared: %v", err)
 	}
 }
+
+// A Team made again in a namespace whose tasks outlived the old one goes on
+// numbering above them: no number is given twice.
+func TestRecreatedTeamResumesNumbering(t *testing.T) {
+	e, idx := lagging(t)
+	for i := range 5 {
+		if _, err := e.m.CreateTask(ctx, ns, fmt.Sprintf("old-%d", i), v1alpha1.TaskSpec{Title: "old"}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	// The Team made again: its status, the counter with it, starts empty.
+	team, err := e.store.GetTeam(ctx, ns)
+	if err != nil {
+		t.Fatal(err)
+	}
+	team.Status = v1alpha1.TeamStatus{}
+	if err := e.store.UpdateTeamStatus(ctx, team); err != nil {
+		t.Fatal(err)
+	}
+	before := len(idx.reads())
+	created, err := e.m.CreateTask(ctx, ns, "new", v1alpha1.TaskSpec{Title: "new"})
+	if err != nil || created.Status.Number != 6 {
+		t.Fatalf("the first task of the Team made again: %+v, %v; want #6", created, err)
+	}
+	if reads := idx.reads()[before:]; len(reads) != 1 {
+		t.Fatalf("index reads %+v, want one", reads)
+	}
+	// The counter has started: the next one reads nothing more.
+	before = len(idx.reads())
+	if next, err := e.m.CreateTask(ctx, ns, "newer", v1alpha1.TaskSpec{Title: "newer"}); err != nil || next.Status.Number != 7 {
+		t.Fatalf("the second: %+v, %v; want #7", next, err)
+	}
+	if reads := idx.reads()[before:]; len(reads) != 0 {
+		t.Fatalf("index reads %+v, want none", reads)
+	}
+	if got, err := e.m.TaskByNumber(ctx, ns, 3); err != nil || got.Name != "old-2" {
+		t.Fatalf("#3: %+v, %v", got, err)
+	}
+	// A new Team in an empty namespace starts at 1.
+	fresh, _ := lagging(t)
+	if first, err := fresh.m.CreateTask(ctx, ns, "first", v1alpha1.TaskSpec{Title: "first"}); err != nil || first.Status.Number != 1 {
+		t.Fatalf("a new Team's first task: %+v, %v", first, err)
+	}
+}

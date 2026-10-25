@@ -65,9 +65,22 @@ func (m *Manager) NumberNew(ctx context.Context) error {
 
 // numberTask claims a number from the Team's counter and moves the task to
 // Todo. It is the one numbering path, used by NumberNew and by CreateTask.
+// A counter that has not started, a new Team's or one made again in a
+// namespace whose tasks outlived the old Team, starts above the highest
+// number there, so a number is never given twice.
 func (m *Manager) numberTask(ctx context.Context, key storage.Key) (*v1alpha1.Task, error) {
 	var n int64
+	high := int64(-1) // not read yet
 	if err := m.writeTeam(ctx, key.Namespace, func(team *v1alpha1.Team) (v1alpha1.TeamStatus, error) {
+		if team.Status.NextNumber < 1 {
+			if high < 0 {
+				var err error
+				if high, err = m.highestNumber(ctx, key.Namespace); err != nil {
+					return team.Status, err
+				}
+			}
+			team.Status.NextNumber = high + 1
+		}
 		num, next := task.ClaimNumber(team)
 		n = num
 		return next, nil
@@ -75,6 +88,24 @@ func (m *Manager) numberTask(ctx context.Context, key storage.Key) (*v1alpha1.Ta
 		return nil, err
 	}
 	return m.transition(ctx, key, task.Create{Number: n})
+}
+
+// highestNumber is the highest number of a task in namespace, 0 if none
+// has one, from one read of the board index. The index is synced before
+// the store serves, and lags it by seconds at most after that: only a task
+// numbered in the last seconds before the old Team was deleted could be
+// missed, and a lookup of a number it then shares is refused as
+// ambiguous, never applied to the wrong task.
+func (m *Manager) highestNumber(ctx context.Context, namespace string) (int64, error) {
+	tasks, err := m.store.ListTasks(ctx, storage.Query{Namespace: namespace})
+	if err != nil {
+		return 0, err
+	}
+	var high int64
+	for i := range tasks {
+		high = max(high, tasks[i].Status.Number)
+	}
+	return high, nil
 }
 
 // hasDispatchable reports whether t's outbox holds something the dispatcher
