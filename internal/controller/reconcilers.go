@@ -6,7 +6,6 @@ import (
 	"time"
 
 	appsv1 "k8s.io/api/apps/v1"
-	authorizationv1 "k8s.io/api/authorization/v1"
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/types"
@@ -117,7 +116,7 @@ func (r *toolServerReconciler) Reconcile(ctx context.Context, req reconcile.Requ
 	if ts.Status.URL != "" {
 		switch changed, err = r.unmanage(ctx, &ts); {
 		case apierrors.IsForbidden(err):
-			return reconcile.Result{RequeueAfter: r.resync}, r.writeStatus(ctx, &ts, &ts.Status.ConfigStatus, false, "Forbidden", forbiddenUnmanage, false)
+			return reconcile.Result{RequeueAfter: r.resync}, r.writeStatus(ctx, &ts, &ts.Status.ConfigStatus, false, "Forbidden", err.Error()+"; "+forbiddenUnmanage, false)
 		case err != nil:
 			return reconcile.Result{}, err
 		}
@@ -131,7 +130,10 @@ func (r *toolServerReconciler) Reconcile(ctx context.Context, req reconcile.Requ
 	return reconcile.Result{RequeueAfter: r.resync}, r.writeStatus(ctx, &ts, &ts.Status.ConfigStatus, ready, reason, msg, changed)
 }
 
-type agentReconciler struct{ base }
+type agentReconciler struct {
+	base
+	jobs *jobAccess
+}
 
 func (r *agentReconciler) setup(mgr ctrl.Manager) error {
 	return ctrl.NewControllerManagedBy(mgr).For(&v1alpha1.Agent{}).Named("agent").WithOptions(r.options()).
@@ -224,22 +226,17 @@ func (r *agentReconciler) resolveJob(ctx context.Context, agent *v1alpha1.Agent,
 	var sa corev1.ServiceAccount
 	switch err := r.secrets.Get(ctx, client.ObjectKey{Namespace: agent.Namespace, Name: rn.Spec.ServiceAccount.Name}, &sa); {
 	case apierrors.IsForbidden(err):
-		return false, "Forbidden", forbidden, nil
+		return false, "Forbidden", err.Error() + "; " + forbidden, nil
 	case client.IgnoreNotFound(err) != nil:
 		return false, "", "", err
 	case err != nil:
 		return false, "ServiceAccountNotFound", fmt.Sprintf("ServiceAccount %s of Runner %s does not exist", rn.Spec.ServiceAccount.Name, job.RunnerRef), nil
 	}
-	for _, verb := range []string{"create", "delete", "patch"} {
-		review := &authorizationv1.SelfSubjectAccessReview{Spec: authorizationv1.SelfSubjectAccessReviewSpec{
-			ResourceAttributes: &authorizationv1.ResourceAttributes{Namespace: agent.Namespace, Verb: verb, Group: "batch", Resource: "jobs"},
-		}}
-		if err := r.client.Create(ctx, review); err != nil {
-			return false, "", "", err
-		}
-		if !review.Status.Allowed {
-			return false, "Forbidden", forbidden, nil
-		}
+	switch ok, err := r.jobs.allowed(ctx, agent.Namespace); {
+	case err != nil:
+		return false, "", "", err
+	case !ok:
+		return false, "Forbidden", forbidden, nil
 	}
 	return true, "Resolved", "", nil
 }

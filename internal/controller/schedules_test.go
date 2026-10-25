@@ -351,6 +351,16 @@ func TestSchedules(t *testing.T) {
 		e.create(&corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: "no-team"}})
 		s := e.schedule("no-team", "orphan", v1alpha1.ScheduleSpec{Cron: "@hourly"})
 		e.ready(s, metav1.ConditionFalse, "NoTeam")
+		// With a Team it schedules; its Team deleted, it says so again.
+		team := &v1alpha1.Team{ObjectMeta: meta2("no-team", v1alpha1.TeamName)}
+		e.create(team)
+		e.ready(s, metav1.ConditionTrue, "Scheduled")
+		if err := e.c.Delete(context.Background(), team); err != nil {
+			t.Fatal(err)
+		}
+		e.ready(s, metav1.ConditionFalse, "NoTeam")
+		e.create(&v1alpha1.Team{ObjectMeta: meta2("no-team", v1alpha1.TeamName)})
+		e.ready(s, metav1.ConditionTrue, "Scheduled")
 	})
 
 	t.Run("a leader died before its status write", func(t *testing.T) {
