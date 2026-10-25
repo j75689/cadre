@@ -3,14 +3,17 @@ package controller_test
 import (
 	"context"
 	"fmt"
+	"strings"
 	"testing"
 	"time"
 
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
+	apiextensionsv1 "k8s.io/apiextensions-apiserver/pkg/apis/apiextensions/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/client-go/rest"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
@@ -20,9 +23,10 @@ import (
 )
 
 type env struct {
-	t   *testing.T
-	c   client.Client
-	cfg *rest.Config
+	t      *testing.T
+	c      client.Client
+	cfg    *rest.Config
+	lifted map[string]apiextensionsv1.ValidationRule // the name rules liftNameRule took off, by CRD
 }
 
 func start(t *testing.T) *env {
@@ -92,6 +96,8 @@ func conditions(obj client.Object) []metav1.Condition {
 	case *v1alpha1.Notifier:
 		return o.Status.Conditions
 	case *v1alpha1.Runner:
+		return o.Status.Conditions
+	case *v1alpha1.AgentAccess:
 		return o.Status.Conditions
 	}
 	return nil
@@ -239,4 +245,56 @@ func TestReadiness(t *testing.T) {
 	if runner.Status.TokenHash != hash || hash == "" {
 		t.Errorf("the Runner's token hash went from %q to %q", hash, runner.Status.TokenHash)
 	}
+}
+
+// liftNameRule takes a CRD's name rule off (off), or puts it back, so that
+// a test can make an object as it was made before the rule.
+func (e *env) liftNameRule(crd string, off bool) {
+	e.t.Helper()
+	ctx := context.Background()
+	scheme := runtime.NewScheme()
+	if err := apiextensionsv1.AddToScheme(scheme); err != nil {
+		e.t.Fatal(err)
+	}
+	crds, err := client.New(e.cfg, client.Options{Scheme: scheme})
+	if err != nil {
+		e.t.Fatal(err)
+	}
+	var def apiextensionsv1.CustomResourceDefinition
+	if err := crds.Get(ctx, client.ObjectKey{Name: crd}, &def); err != nil {
+		e.t.Fatal(err)
+	}
+	schema := def.Spec.Versions[0].Schema.OpenAPIV3Schema
+	var kept apiextensionsv1.ValidationRules
+	for _, r := range schema.XValidations {
+		if strings.Contains(r.Rule, "oldSelf.hasValue()") {
+			if e.lifted == nil {
+				e.lifted = map[string]apiextensionsv1.ValidationRule{}
+			}
+			e.lifted[crd] = r
+		} else {
+			kept = append(kept, r)
+		}
+	}
+	if !off {
+		rule, ok := e.lifted[crd]
+		if !ok {
+			e.t.Fatalf("%s: the name rule was not lifted, so there is none to put back", crd)
+		}
+		kept = append(kept, rule)
+	}
+	schema.XValidations = kept
+	if err := crds.Update(ctx, &def); err != nil {
+		e.t.Fatal(err)
+	}
+}
+
+// createDespiteTheRule creates obj, retrying until the API server, its
+// CRD's name rule just lifted, takes it.
+func (e *env) createDespiteTheRule(obj client.Object) {
+	e.t.Helper()
+	eventually(e.t, 10*time.Second, func() (bool, string) {
+		err := e.c.Create(context.Background(), obj.DeepCopyObject().(client.Object))
+		return err == nil, fmt.Sprint(err)
+	})
 }

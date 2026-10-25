@@ -225,3 +225,40 @@ func waitAccess(t *testing.T, c client.Client, ns, name string, ok func(*v1alpha
 	}
 	t.Fatalf("AgentAccess %s/%s never got there: %+v", ns, name, aa.Status)
 }
+
+// A Runner or an AgentAccess made before the name rule, with a name that
+// is not a DNS label, is told why, before anything else, and otherwise
+// left alone: nothing is minted, and a token Secret it has is kept.
+func TestInvalidNames(t *testing.T) {
+	e := start(t)
+	ctx := context.Background()
+	const ns = "team-old-names"
+	e.create(&corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: ns}}, &v1alpha1.Team{ObjectMeta: meta2(ns, v1alpha1.TeamName)})
+	for _, tc := range []struct {
+		crd, kind string
+		obj       client.Object
+		secret    string
+	}{
+		{"runners.cadre.dev", "Runner", &v1alpha1.Runner{ObjectMeta: meta2(ns, "pool.a"), Spec: v1alpha1.RunnerSpec{Labels: map[string]string{"pool": "a"}}}, "pool.a-token"},
+		{"agentaccesses.cadre.dev", "AgentAccess", &v1alpha1.AgentAccess{ObjectMeta: meta2(ns, "bot.a"), Spec: v1alpha1.AgentAccessSpec{Role: "member"}}, "bot.a.access-token"},
+	} {
+		e.liftNameRule(tc.crd, true)
+		e.createDespiteTheRule(tc.obj)
+		e.liftNameRule(tc.crd, false)
+		e.ready(tc.obj, metav1.ConditionFalse, "InvalidName")
+		e.stays(tc.obj, metav1.ConditionFalse, "InvalidName")
+		if err := e.c.Get(ctx, client.ObjectKey{Namespace: ns, Name: tc.secret}, &corev1.Secret{}); !apierrors.IsNotFound(err) {
+			t.Errorf("%s: a token was minted for %s: %v", tc.crd, tc.obj.GetName(), err)
+		}
+		// A token Secret it had from before is its still.
+		yes := true
+		kept := &corev1.Secret{ObjectMeta: metav1.ObjectMeta{Namespace: ns, Name: tc.secret, OwnerReferences: []metav1.OwnerReference{{
+			APIVersion: v1alpha1.GroupVersion.String(), Kind: tc.kind, Name: tc.obj.GetName(), UID: tc.obj.GetUID(), Controller: &yes,
+		}}}, Data: map[string][]byte{"token": []byte("old")}}
+		e.create(kept)
+		e.stays(tc.obj, metav1.ConditionFalse, "InvalidName")
+		if err := e.c.Get(ctx, client.ObjectKeyFromObject(kept), &corev1.Secret{}); err != nil {
+			t.Errorf("%s: its token Secret: %v", tc.crd, err)
+		}
+	}
+}

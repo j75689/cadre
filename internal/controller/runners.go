@@ -1,13 +1,10 @@
 package controller
 
 import (
-	"cmp"
 	"context"
 	"fmt"
-	"slices"
 	"strings"
 
-	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	builderctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/builder"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -36,32 +33,6 @@ func (r *runnerReconciler) setup(mgr ctrl.Manager) error {
 		Named("runner").WithOptions(r.options()).Complete(r)
 }
 
-// sharing maps an object naming a ServiceAccount, a Runner or an
-// AgentAccess, to the others of its kind in its namespace naming the same
-// one: saOf is its index function, and list lists them.
-func sharing[T any, P interface {
-	*T
-	client.Object
-}](c client.Reader, saOf func(client.Object) []string, list func(context.Context, client.Reader, string, string) ([]T, error)) handler.MapFunc {
-	return func(ctx context.Context, o client.Object) []reconcile.Request {
-		sa := saOf(o)
-		if len(sa) == 0 {
-			return nil
-		}
-		others, err := list(ctx, c, o.GetNamespace(), sa[0])
-		if err != nil {
-			return nil
-		}
-		var reqs []reconcile.Request
-		for i := range others {
-			if other := P(&others[i]); other.GetName() != o.GetName() {
-				reqs = append(reqs, reconcile.Request{NamespacedName: client.ObjectKeyFromObject(other)})
-			}
-		}
-		return reqs
-	}
-}
-
 // sharers are the Runners in ns naming the ServiceAccount sa. Every reader
 // that decides which holds it lists them here, and decides with holder,
 // from their specs alone: no status, so no lag after an edit.
@@ -71,29 +42,6 @@ func sharers(ctx context.Context, c client.Reader, ns, sa string) ([]v1alpha1.Ru
 		return nil, fmt.Errorf("list runners: %w", err)
 	}
 	return list.Items, nil
-}
-
-// inUse is the message of a Runner or an AgentAccess (kind), and of an
-// Agent on a Runner, whose ServiceAccount another of its kind holds.
-func inUse(kind, sa, holder string) string {
-	return fmt.Sprintf("ServiceAccount %s is %s %s's, the oldest %s naming it (then by name); give this %s a ServiceAccount of its own", sa, kind, holder, kind, kind)
-}
-
-// holder is the one of objs, the Runners or the AgentAccesses naming a
-// ServiceAccount, that holds it: the oldest, then by name, so that every
-// reader picks the same one.
-func holder[T any, P interface {
-	*T
-	client.Object
-}](objs []T) P {
-	if len(objs) == 0 {
-		return nil
-	}
-	h := slices.MinFunc(objs, func(a, b T) int {
-		pa, pb := P(&a), P(&b)
-		return cmp.Or(pa.GetCreationTimestamp().Compare(pb.GetCreationTimestamp().Time), strings.Compare(pa.GetName(), pb.GetName()))
-	})
-	return &h
 }
 
 func (r *runnerReconciler) Reconcile(ctx context.Context, req reconcile.Request) (reconcile.Result, error) {
@@ -114,7 +62,7 @@ func (r *runnerReconciler) Reconcile(ctx context.Context, req reconcile.Request)
 		if err := r.deleteToken(ctx, r.tokenOwner(&rn)); err != nil {
 			return reconcile.Result{}, err
 		}
-		changed := setToken(r.tokenOwner(&rn), "", false)
+		changed := setToken(r.tokenOwner(&rn), "")
 		// One ServiceAccount is one Runner's: a runner authenticated as it
 		// claims with that Runner's labels, so a second Runner naming it
 		// would take work it could never be given.
@@ -127,17 +75,17 @@ func (r *runnerReconciler) Reconcile(ctx context.Context, req reconcile.Request)
 		}
 		return reconcile.Result{RequeueAfter: r.resync}, r.writeStatus(ctx, &rn, &rn.Status.ConfigStatus, true, "ServiceAccount", "", changed)
 	}
-	hash, minted, problem, err := r.ensureToken(ctx, r.tokenOwner(&rn))
+	hash, problem, err := r.ensureToken(ctx, r.tokenOwner(&rn))
 	if err != nil {
 		return reconcile.Result{}, err
 	}
 	if problem != "" {
 		// Whatever the Secret holds now, the old token is no longer what
 		// it holds: refuse every token until the Secret is fixed.
-		changed := setToken(r.tokenOwner(&rn), "", false)
+		changed := setToken(r.tokenOwner(&rn), "")
 		return reconcile.Result{RequeueAfter: r.resync}, r.writeStatus(ctx, &rn, &rn.Status.ConfigStatus, false, "SecretNotOwned", problem, changed)
 	}
-	changed := setToken(r.tokenOwner(&rn), hash, minted)
+	changed := setToken(r.tokenOwner(&rn), hash)
 	return reconcile.Result{RequeueAfter: r.resync}, r.writeStatus(ctx, &rn, &rn.Status.ConfigStatus, true, "TokenMinted", "", changed)
 }
 
@@ -175,8 +123,6 @@ type runners struct {
 	builtin string
 }
 
-const saPrefix = "system:serviceaccount:"
-
 func (a runners) Authenticate(ctx context.Context, tok string) (runner.Identity, error) {
 	if strings.Count(tok, ".") == 1 {
 		return a.minted.Authenticate(ctx, tok)
@@ -185,8 +131,8 @@ func (a runners) Authenticate(ctx context.Context, tok string) (runner.Identity,
 	if err != nil || id.Name == a.builtin {
 		return id, err
 	}
-	ns, name, ok := strings.Cut(strings.TrimPrefix(id.Name, saPrefix), ":")
-	if !ok || !strings.HasPrefix(id.Name, saPrefix) {
+	ns, name, ok := serviceAccountOf(id.Name)
+	if !ok {
 		return runner.Identity{}, runner.ErrUnauthenticated
 	}
 	list, err := sharers(ctx, a.c, ns, name)
@@ -214,16 +160,14 @@ func (m mintedTokens) Authenticate(ctx context.Context, tok string) (runner.Iden
 	if !ok {
 		return runner.Identity{}, runner.ErrUnauthenticated
 	}
-	var rn v1alpha1.Runner
-	err := m.c.Get(ctx, client.ObjectKey{Namespace: ns, Name: name}, &rn)
-	switch {
-	case apierrors.IsNotFound(err):
-		return runner.Identity{}, runner.ErrUnauthenticated
-	case err != nil:
-		return runner.Identity{}, fmt.Errorf("read runner: %w", err)
-	}
-	if rn.Spec.ServiceAccount != nil || !token.Matches(tok, rn.Status.TokenHash) {
-		return runner.Identity{}, runner.ErrUnauthenticated
+	rn, err := checkMinted(ctx, m.c, "runner", ns, name, tok, runnerToken)
+	if err != nil {
+		return runner.Identity{}, err
 	}
 	return runner.Identity{Name: MintedIdentity(ns, name), Scope: map[string]map[string]string{ns: rn.Spec.Labels}}, nil
+}
+
+// runnerToken is a Runner's ServiceAccount and minted token.
+func runnerToken(rn *v1alpha1.Runner) (*v1alpha1.ServiceAccountRef, *v1alpha1.MintedToken) {
+	return rn.Spec.ServiceAccount, &rn.Status.MintedToken
 }

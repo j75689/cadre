@@ -10,12 +10,10 @@ import (
 	admissionv1 "k8s.io/api/admissionregistration/v1"
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
-	apiextensionsv1 "k8s.io/apiextensions-apiserver/pkg/apis/apiextensions/v1"
 	"k8s.io/apimachinery/pkg/api/equality"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/util/intstr"
 	"k8s.io/client-go/util/retry"
 	"k8s.io/utils/ptr"
@@ -406,46 +404,10 @@ func TestAManagedToolServersInvalidName(t *testing.T) {
 	ctx := context.Background()
 	const ns = "team-names"
 	e.create(&corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: ns}}, &v1alpha1.Team{ObjectMeta: meta2(ns, v1alpha1.TeamName)})
-	scheme := runtime.NewScheme()
-	if err := apiextensionsv1.AddToScheme(scheme); err != nil {
-		t.Fatal(err)
-	}
-	crds, err := client.New(e.cfg, client.Options{Scheme: scheme})
-	if err != nil {
-		t.Fatal(err)
-	}
-	// lift takes the ToolServer CRD's name rule off, or puts it back.
-	var rule apiextensionsv1.ValidationRule
-	lift := func(off bool) {
-		t.Helper()
-		var def apiextensionsv1.CustomResourceDefinition
-		if err := crds.Get(ctx, client.ObjectKey{Name: "toolservers.cadre.dev"}, &def); err != nil {
-			t.Fatal(err)
-		}
-		schema := def.Spec.Versions[0].Schema.OpenAPIV3Schema
-		var kept apiextensionsv1.ValidationRules
-		for _, r := range schema.XValidations {
-			if strings.Contains(r.Rule, "oldSelf.hasValue()") {
-				rule = r
-			} else {
-				kept = append(kept, r)
-			}
-		}
-		if !off {
-			kept = append(kept, rule)
-		}
-		schema.XValidations = kept
-		if err := crds.Update(ctx, &def); err != nil {
-			t.Fatal(err)
-		}
-	}
-	lift(true)
+	e.liftNameRule("toolservers.cadre.dev", true)
 	ts := &v1alpha1.ToolServer{ObjectMeta: meta2(ns, "2fa-tools"), Spec: v1alpha1.ToolServerSpec{Managed: &v1alpha1.ManagedServer{Image: "example.test/search:1.0", Port: 8080}}}
-	eventually(t, 10*time.Second, func() (bool, string) {
-		err := e.c.Create(ctx, ts.DeepCopy())
-		return err == nil, fmt.Sprint(err)
-	})
-	lift(false)
+	e.createDespiteTheRule(ts)
+	e.liftNameRule("toolservers.cadre.dev", false)
 	// Its URL from before, as a reconcile from before the rule left it.
 	const url = "http://2fa-tools.team-names.svc:8080/mcp"
 	if err := retry.RetryOnConflict(retry.DefaultRetry, func() error {

@@ -68,7 +68,7 @@ func (r *agentAccessReconciler) Reconcile(ctx context.Context, req reconcile.Req
 		if err := r.deleteToken(ctx, r.tokenOwner(&aa)); err != nil {
 			return reconcile.Result{}, err
 		}
-		changed := setToken(r.tokenOwner(&aa), "", false)
+		changed := setToken(r.tokenOwner(&aa), "")
 		// One ServiceAccount is one AgentAccess's: an agent authenticated
 		// as it acts as that AgentAccess, with its role.
 		list, err := accessSharers(ctx, r.client, aa.Namespace, sa.Name)
@@ -80,16 +80,16 @@ func (r *agentAccessReconciler) Reconcile(ctx context.Context, req reconcile.Req
 		}
 		return reconcile.Result{RequeueAfter: r.resync}, r.writeStatus(ctx, &aa, &aa.Status.ConfigStatus, true, "ServiceAccount", "", changed)
 	}
-	hash, minted, problem, err := r.ensureToken(ctx, r.tokenOwner(&aa))
+	hash, problem, err := r.ensureToken(ctx, r.tokenOwner(&aa))
 	if err != nil {
 		return reconcile.Result{}, err
 	}
 	if problem != "" {
 		// Whatever the Secret holds now, the old token is no longer what
 		// it holds: refuse every token until the Secret is fixed.
-		changed := setToken(r.tokenOwner(&aa), "", false)
+		changed := setToken(r.tokenOwner(&aa), "")
 		return reconcile.Result{RequeueAfter: r.resync}, r.writeStatus(ctx, &aa, &aa.Status.ConfigStatus, false, "SecretNotOwned", problem, changed)
 	}
-	changed := setToken(r.tokenOwner(&aa), hash, minted)
+	changed := setToken(r.tokenOwner(&aa), hash)
 	return reconcile.Result{RequeueAfter: r.resync}, r.writeStatus(ctx, &aa, &aa.Status.ConfigStatus, true, "TokenMinted", "", changed)
 }
