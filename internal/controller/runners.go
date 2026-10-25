@@ -60,17 +60,34 @@ func (r *runnerReconciler) sharing(ctx context.Context, o client.Object) []recon
 	if !ok || rn.Spec.ServiceAccount == nil {
 		return nil
 	}
-	var list v1alpha1.RunnerList
-	if err := r.client.List(ctx, &list, client.InNamespace(rn.Namespace), client.MatchingFields{indexRunnerSA: rn.Spec.ServiceAccount.Name}); err != nil {
+	others, err := sharers(ctx, r.client, rn.Namespace, rn.Spec.ServiceAccount.Name)
+	if err != nil {
 		return nil
 	}
 	var reqs []reconcile.Request
-	for _, other := range list.Items {
+	for _, other := range others {
 		if other.Name != rn.Name {
 			reqs = append(reqs, reconcile.Request{NamespacedName: client.ObjectKeyFromObject(&other)})
 		}
 	}
 	return reqs
+}
+
+// sharers are the Runners in ns naming the ServiceAccount sa. Every reader
+// that decides which holds it lists them here, and decides with holder,
+// from their specs alone: no status, so no lag after an edit.
+func sharers(ctx context.Context, c client.Reader, ns, sa string) ([]v1alpha1.Runner, error) {
+	var list v1alpha1.RunnerList
+	if err := c.List(ctx, &list, client.InNamespace(ns), client.MatchingFields{indexRunnerSA: sa}); err != nil {
+		return nil, fmt.Errorf("list runners: %w", err)
+	}
+	return list.Items, nil
+}
+
+// inUse is the message of a Runner, and of an Agent on it, whose
+// ServiceAccount another Runner holds.
+func inUse(sa, holder string) string {
+	return fmt.Sprintf("ServiceAccount %s is Runner %s's, the oldest Runner naming it (then by name); give this Runner a ServiceAccount of its own", sa, holder)
 }
 
 // holder is the Runner of runners that holds their ServiceAccount: the
@@ -103,13 +120,12 @@ func (r *runnerReconciler) Reconcile(ctx context.Context, req reconcile.Request)
 		// One ServiceAccount is one Runner's: a runner authenticated as it
 		// claims with that Runner's labels, so a second Runner naming it
 		// would take work it could never be given.
-		var list v1alpha1.RunnerList
-		if err := r.client.List(ctx, &list, client.InNamespace(rn.Namespace), client.MatchingFields{indexRunnerSA: rn.Spec.ServiceAccount.Name}); err != nil {
+		list, err := sharers(ctx, r.client, rn.Namespace, rn.Spec.ServiceAccount.Name)
+		if err != nil {
 			return reconcile.Result{}, err
 		}
-		if h := holder(list.Items); h != nil && h.Name != rn.Name {
-			msg := fmt.Sprintf("ServiceAccount %s is Runner %s's, an older Runner naming it; give this Runner a ServiceAccount of its own", rn.Spec.ServiceAccount.Name, h.Name)
-			return reconcile.Result{RequeueAfter: r.resync}, r.writeStatus(ctx, &rn, &rn.Status.ConfigStatus, false, "ServiceAccountInUse", msg, changed)
+		if h := holder(list); h != nil && h.Name != rn.Name {
+			return reconcile.Result{RequeueAfter: r.resync}, r.writeStatus(ctx, &rn, &rn.Status.ConfigStatus, false, "ServiceAccountInUse", inUse(rn.Spec.ServiceAccount.Name, h.Name), changed)
 		}
 		return reconcile.Result{RequeueAfter: r.resync}, r.writeStatus(ctx, &rn, &rn.Status.ConfigStatus, true, "ServiceAccount", "", changed)
 	}
@@ -251,21 +267,15 @@ func (a runners) Authenticate(ctx context.Context, tok string) (runner.Identity,
 	if !ok || !strings.HasPrefix(id.Name, saPrefix) {
 		return runner.Identity{}, runner.ErrUnauthenticated
 	}
-	var list v1alpha1.RunnerList
-	if err := a.c.List(ctx, &list, client.InNamespace(ns), client.MatchingFields{indexRunnerSA: name}); err != nil {
-		return runner.Identity{}, fmt.Errorf("list runners: %w", err)
+	list, err := sharers(ctx, a.c, ns, name)
+	if err != nil {
+		return runner.Identity{}, err
 	}
-	// The Runner holding the ServiceAccount, and only while it is Ready:
-	// another naming it is refused (ServiceAccountInUse), and so is one
-	// not yet seen by the reconciler.
-	var ready []v1alpha1.Runner
-	for _, rn := range list.Items {
-		if isReady(&rn, rn.Status.ConfigStatus) {
-			ready = append(ready, rn)
-		}
-	}
+	// The labels of the Runner holding the ServiceAccount, decided from the
+	// specs as the Runner reconciler decides it: another Runner naming the
+	// account gives nothing.
 	id.Scope = map[string]map[string]string{}
-	if h := holder(ready); h != nil {
+	if h := holder(list); h != nil {
 		id.Scope[h.Namespace] = h.Spec.Labels
 	}
 	return id, nil

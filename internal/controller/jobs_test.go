@@ -17,6 +17,7 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	eventsv1 "k8s.io/api/events/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
+	"k8s.io/apimachinery/pkg/api/meta"
 	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/client-go/rest"
@@ -687,8 +688,8 @@ func TestARefusedJobMark(t *testing.T) {
 }
 
 // A Runner naming a ServiceAccount an older Runner names is not Ready, and
-// an Agent whose Jobs would run as it is not Ready either: its Jobs could
-// never claim.
+// an Agent whose Jobs would run as it is not Ready either, for the same
+// reason: its Jobs could never claim.
 func TestARunnerSharingAServiceAccount(t *testing.T) {
 	e := startJobs(t)
 	second := &v1alpha1.Runner{ObjectMeta: meta2(jobsNS, "jobs-too"), Spec: v1alpha1.RunnerSpec{
@@ -701,7 +702,10 @@ func TestARunnerSharingAServiceAccount(t *testing.T) {
 	agent.Spec.Runtime.Job.RunnerRef = "jobs-too"
 	e.create(first, agent)
 	e.ready(first, metav1.ConditionTrue, "Resolved")
-	e.ready(agent, metav1.ConditionFalse, "RunnerNotReady")
+	e.ready(agent, metav1.ConditionFalse, "ServiceAccountInUse")
+	if c := meta.FindStatusCondition(agent.Status.Conditions, v1alpha1.ConditionReady); !strings.Contains(c.Message, "Runner jobs's") {
+		t.Errorf("the Agent's message %q does not name the Runner holding the account", c.Message)
+	}
 
 	// The older Runner gone, the other holds the account, and its Agent
 	// goes Ready.

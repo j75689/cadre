@@ -313,8 +313,8 @@ func (r *jobReconciler) refused(ctx context.Context, agent *v1alpha1.Agent, acti
 		log.FromContext(ctx).Error(err, "cadre-server may not change Jobs here; bind config/rbac/workloads.yaml", "namespace", agent.Namespace, "action", action)
 		return
 	}
-	// A namespace going away refuses everything, Events too: said once at
-	// Info, not as an error on every requeue until it is gone.
+	// A namespace going away refuses everything, Events too: said at Info on
+	// each requeue until it is gone, not as an error.
 	if apierrors.HasStatusCause(err, corev1.NamespaceTerminatingCause) {
 		log.FromContext(ctx).Info("the namespace is being deleted; no Job is changed in it", "namespace", agent.Namespace, "agent", agent.Name, "action", action)
 		return
