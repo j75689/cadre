@@ -53,6 +53,9 @@ auth:
     scopes: "openid profile email groups"
     usernameClaim: email
     groupsClaim: groups
+    # offlineAccess lets cadre login ask for offline_access, and keep a
+    # refresh token, where the provider offers it.
+    offlineAccess: true
     # clientSecret names the Secret key holding clientId's secret.
     clientSecret:
       secretName: ""

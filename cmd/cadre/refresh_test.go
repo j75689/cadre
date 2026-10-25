@@ -18,9 +18,16 @@ import (
 	"github.com/j75689/cadre/internal/storage/memory"
 )
 
-// refreshEnv is a server with logins against idp, its user logged in with
-// cadre login.
+// refreshEnv is a server with logins against idp, letting the CLI keep a
+// refresh token, its user logged in with cadre login.
 func refreshEnv(t *testing.T, idp *oidctest.Provider) string {
+	t.Helper()
+	return refreshEnvWith(t, idp, true)
+}
+
+// refreshEnvWith is refreshEnv, the server saying offline whether the CLI
+// may keep a refresh token.
+func refreshEnvWith(t *testing.T, idp *oidctest.Provider, offline bool) string {
 	t.Helper()
 	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
 	m := manager.New(memory.NewBackend().Open(), manager.Config{})
@@ -30,6 +37,7 @@ func refreshEnv(t *testing.T, idp *oidctest.Provider) string {
 	authn, err := auth.NewOIDC(context.Background(), auth.Config{
 		Issuer: idp.URL, ClientID: oidctest.ClientID, ClientSecret: oidctest.ClientSecret, CLIClientID: oidctest.CLIClientID,
 		Scopes: []string{"openid", "email"}, UsernameClaim: "email", PublicURL: srv.URL, SessionKey: []byte(strings.Repeat("k", 32)), Log: log,
+		OfflineAccess: offline,
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -56,7 +64,7 @@ func refreshEnv(t *testing.T, idp *oidctest.Provider) string {
 }
 
 // expire makes the kept ID token about to expire, as an hour later would.
-func expire(t *testing.T, server string) credential {
+func expire(t *testing.T, server string) {
 	t.Helper()
 	creds, err := loadCredentials()
 	if err != nil {
@@ -68,7 +76,6 @@ func expire(t *testing.T, server string) credential {
 	if err := creds.save(); err != nil {
 		t.Fatal(err)
 	}
-	return c
 }
 
 func kept(t *testing.T, server string) credential {
@@ -117,10 +124,14 @@ func TestLoginRefreshes(t *testing.T) {
 // A refresh the provider refuses, or one that comes back as another user,
 // drops the refresh token: the login is then as one without, and expired.
 func TestRefreshRefused(t *testing.T) {
-	for name, refuse := range map[string]func(*oidctest.Provider){
-		"revoked":      func(idp *oidctest.Provider) { idp.RevokeAll() },
-		"another user": func(idp *oidctest.Provider) { idp.SetClaim("sub", "user-2") },
+	for name, tc := range map[string]struct {
+		refuse func(*oidctest.Provider)
+		want   string // the reason the message gives
+	}{
+		"revoked":      {func(idp *oidctest.Provider) { idp.RevokeAll() }, "invalid_grant"},
+		"another user": {func(idp *oidctest.Provider) { idp.SetClaim("sub", "user-2") }, "its ID token is another user's"},
 	} {
+		refuse, want := tc.refuse, tc.want
 		t.Run(name, func(t *testing.T) {
 			idp := oidctest.New(t)
 			idp.SetOffline(true)
@@ -133,7 +144,7 @@ func TestRefreshRefused(t *testing.T) {
 			if err := creds.save(); err != nil {
 				t.Fatal(err)
 			}
-			if _, err := run("--server", server, "-n", "team-a", "task", "list"); err == nil || !strings.Contains(err.Error(), "expired; run cadre login") {
+			if _, err := run("--server", server, "-n", "team-a", "task", "list"); err == nil || !strings.Contains(err.Error(), "the provider refused to refresh the login: "+want) || !strings.Contains(err.Error(), "run cadre login") {
 				t.Fatalf("after a refused refresh: %v", err)
 			}
 			if k := kept(t, server); k.RefreshToken != "" || k.IDToken != c.IDToken {
@@ -157,34 +168,110 @@ func TestNoRefreshWithoutOffline(t *testing.T) {
 	}
 }
 
-// Another cadre refreshing the same login first, the provider rotating the
-// refresh token: the one that loses takes the login the other kept.
+// A refresh the provider could not answer (throttling here) keeps the
+// refresh token: a command goes on with the ID token while it lasts, and
+// once it has expired says what failed, not to log in again.
+func TestRefreshUnanswered(t *testing.T) {
+	idp := oidctest.New(t)
+	idp.SetOffline(true)
+	server := refreshEnv(t, idp)
+	tok := kept(t, server).RefreshToken
+	idp.SetRefreshStatus(http.StatusTooManyRequests)
+	expire(t, server) // 30 s left: within the margin, not expired
+	if _, err := run("--server", server, "-n", "team-a", "task", "list"); err != nil {
+		t.Fatalf("a command while the token lasts: %v", err)
+	}
+	if _, err := run("--server", server, "auth", "token"); err == nil || strings.Contains(err.Error(), "run cadre login") {
+		t.Fatalf("auth token, which wants a minute: %v", err)
+	}
+	creds, _ := loadCredentials()
+	c := creds[serverKey(server)]
+	c.Expires = time.Now().Add(-time.Second)
+	creds[serverKey(server)] = c
+	if err := creds.save(); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := run("--server", server, "-n", "team-a", "task", "list"); err == nil || strings.Contains(err.Error(), "run cadre login") || !strings.Contains(err.Error(), "refresh the login") {
+		t.Fatalf("once expired: %v", err)
+	}
+	if k := kept(t, server); k.RefreshToken != tok {
+		t.Fatalf("the refresh token was dropped: %+v", k)
+	}
+	// Once the provider answers again, it refreshes.
+	idp.SetRefreshStatus(0)
+	if _, err := run("--server", server, "-n", "team-a", "task", "list"); err != nil || idp.Refreshes() != 1 {
+		t.Fatalf("after: %v, %d refreshes", err, idp.Refreshes())
+	}
+}
+
+// Two cadres refreshing one login at once, the provider rotating the
+// refresh token: the lock lets one refresh, and the other takes what it
+// kept, so neither has to log in again.
 func TestRefreshRace(t *testing.T) {
 	idp := oidctest.New(t)
 	idp.SetOffline(true)
 	server := refreshEnv(t, idp)
-	stale := expire(t, server)
+	expire(t, server)
 	orig := beforeRefresh
 	t.Cleanup(func() { beforeRefresh = orig })
-	beforeRefresh = func() {
-		beforeRefresh = func() {}
-		// The other cadre's refresh: a new login kept, the old refresh
-		// token used up.
-		other, err := refresh(context.Background(), stale)
-		if err != nil {
-			t.Errorf("the other refresh: %v", err)
-			return
-		}
-		creds, _ := loadCredentials()
-		creds[serverKey(server)] = other
-		if err := creds.save(); err != nil {
-			t.Error(err)
-		}
+	beforeRefresh = func() { time.Sleep(200 * time.Millisecond) } // the other comes in meanwhile
+	type result struct {
+		c   credential
+		err error
 	}
-	out, err := run("--server", server, "auth", "token")
-	if k := kept(t, server); err != nil || strings.TrimSpace(out) != k.IDToken || k.RefreshToken == "" || k.RefreshToken == stale.RefreshToken ||
-		!k.Expires.After(time.Now().Add(time.Minute)) || idp.Refreshes() != 1 {
-		t.Fatalf("the race: %q, %v; kept %+v", out, err, k)
+	results := make(chan result, 2)
+	for range 2 {
+		go func() {
+			c, _, err := currentLogin(context.Background(), server)
+			results <- result{c, err}
+		}()
+	}
+	a, b := <-results, <-results
+	k := kept(t, server)
+	if a.err != nil || b.err != nil || idp.Refreshes() != 1 || k.RefreshToken == "" || a.c.RefreshToken != k.RefreshToken || b.c.RefreshToken != k.RefreshToken {
+		t.Fatalf("%+v, %+v; %d refreshes; kept %+v", a, b, idp.Refreshes(), k)
+	}
+}
+
+// A login logged out while a refresh waits for the lock stays logged out:
+// the refresh finds it gone and writes nothing.
+func TestLogoutDuringARefresh(t *testing.T) {
+	idp := oidctest.New(t)
+	idp.SetOffline(true)
+	server := refreshEnv(t, idp)
+	expire(t, server)
+	unlock, err := lockCredentials()
+	if err != nil {
+		t.Fatal(err)
+	}
+	done := make(chan bool, 1)
+	go func() {
+		_, ok, _ := currentLogin(context.Background(), server)
+		done <- ok
+	}()
+	time.Sleep(100 * time.Millisecond) // it has read the login, and waits for the lock
+	creds, _ := loadCredentials()
+	delete(creds, serverKey(server))
+	if err := creds.save(); err != nil {
+		t.Fatal(err)
+	}
+	unlock()
+	if ok := <-done; ok {
+		t.Error("the refresh found a login logged out")
+	}
+	if creds, _ := loadCredentials(); len(creds) != 0 || idp.Refreshes() != 0 {
+		t.Fatalf("after: %v, %d refreshes", creds, idp.Refreshes())
+	}
+}
+
+// The server has the say: with --oidc-offline-access=false the CLI asks
+// for no refresh token, even where the provider offers one.
+func TestOfflineAccessOptOut(t *testing.T) {
+	idp := oidctest.New(t)
+	idp.SetOffline(true)
+	server := refreshEnvWith(t, idp, false)
+	if k := kept(t, server); k.RefreshToken != "" {
+		t.Fatalf("kept %+v", k)
 	}
 }
 

@@ -40,6 +40,9 @@ type Config struct {
 	// without a secret. ID tokens for either are accepted.
 	ClientID, ClientSecret, CLIClientID string
 	Scopes                              []string
+	// OfflineAccess lets cadre login ask for offline_access, so a person
+	// gets a refresh token where the provider offers one.
+	OfflineAccess bool
 	// UsernameClaim names a user; GroupsClaim lists their groups.
 	UsernameClaim, GroupsClaim string
 	// PublicURL is where browsers reach cadre-server: the callback is
@@ -205,7 +208,7 @@ const notReady = "logins are not ready: cadre-server cannot reach the OIDC provi
 
 // Info implements Authenticator.
 func (o *OIDC) Info() Info {
-	return Info{Mode: ModeOIDC, Issuer: o.cfg.Issuer, ClientID: o.cfg.ClientID, CLIClientID: o.cfg.CLIClientID, Scopes: o.cfg.Scopes}
+	return Info{Mode: ModeOIDC, Issuer: o.cfg.Issuer, ClientID: o.cfg.ClientID, CLIClientID: o.cfg.CLIClientID, Scopes: o.cfg.Scopes, OfflineAccess: o.cfg.OfflineAccess}
 }
 
 // session is what the session cookie holds.

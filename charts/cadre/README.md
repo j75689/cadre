@@ -43,6 +43,7 @@ chart in the repository has `appVersion` `main`, the images built from main.
 | `auth.mode` | `oidc` | `none` lets anyone act as anyone: local development only |
 | `auth.oidc.issuer`, `auth.oidc.clientId` | | required with `oidc` |
 | `auth.oidc.clientSecret.secretName` | | a Secret holding the client's secret, under `auth.oidc.clientSecret.key` |
+| `auth.oidc.offlineAccess` | `true` | let `cadre login` ask for `offline_access` and keep a refresh token, where the provider offers it |
 | `auth.admins.users`, `auth.admins.groups` | | admin on every team; the only ones who may create teams |
 | `storage.s3.bucket` | | required |
 | `storage.s3.credentialsSecret` | | a Secret with `access-key` and `secret-key`; without it the AWS default chain |

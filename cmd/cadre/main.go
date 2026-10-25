@@ -71,33 +71,33 @@ func newRoot() *cobra.Command {
 }
 
 // client talks to the server, with the ID token cadre login stored for it,
-// if any, refreshed first if it is about to expire and it can be. One that
-// has expired fails every request with a pointer to cadre login, and a
-// refresh that could not be made with what failed.
+// if any, refreshed first if it is about to expire and it can be. A
+// refresh that could not be made is no matter while the token still
+// lasts; once it has expired, every request fails, saying why: run cadre
+// login, with the provider's reason if it refused the refresh.
 func (g *globals) client() *client.Client {
 	c, ok, err := currentLogin(context.Background(), g.server)
+	var refused *refusedError
 	switch {
-	case err != nil && ok:
-		return client.New(g.server, &http.Client{Transport: failing{err}})
-	case err != nil || !ok:
+	case !ok:
+		if err != nil {
+			return client.New(g.server, &http.Client{Transport: failing{err}})
+		}
 		return client.New(g.server, nil)
-	case !time.Now().Before(c.Expires):
-		return client.New(g.server, &http.Client{Transport: expired{g.server}})
+	case time.Now().Before(c.Expires):
+		return client.New(g.server, &http.Client{Transport: client.Bearer(c.IDToken, nil)})
+	case errors.As(err, &refused):
+		return client.New(g.server, &http.Client{Transport: failing{fmt.Errorf("your login to %s expired, and %w; run cadre login", g.server, err)}})
+	case err != nil:
+		return client.New(g.server, &http.Client{Transport: failing{err}})
 	}
-	return client.New(g.server, &http.Client{Transport: client.Bearer(c.IDToken, nil)})
+	return client.New(g.server, &http.Client{Transport: failing{fmt.Errorf("your login to %s expired; run cadre login", g.server)}})
 }
 
 // failing refuses to send a request, for err.
 type failing struct{ err error }
 
 func (f failing) RoundTrip(*http.Request) (*http.Response, error) { return nil, f.err }
-
-// expired refuses to send a request with a login that has run out.
-type expired struct{ server string }
-
-func (e expired) RoundTrip(*http.Request) (*http.Response, error) {
-	return nil, fmt.Errorf("your login to %s expired; run cadre login", e.server)
-}
 
 func envOr(key, def string) string {
 	if v := os.Getenv(key); v != "" {

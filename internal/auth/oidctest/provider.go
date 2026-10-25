@@ -53,6 +53,7 @@ type Provider struct {
 	refresh         map[string]string
 	revoked         []string
 	refreshes       int
+	refreshStatus   int // when set, every refresh is answered with it
 }
 
 type grant struct {
@@ -201,6 +202,11 @@ func (p *Provider) newRefresh(client string) string {
 // one used is refused from then on.
 func (p *Provider) refreshGrant(w http.ResponseWriter, client, tok string) {
 	p.mu.Lock()
+	if status := p.refreshStatus; status != 0 {
+		p.mu.Unlock()
+		http.Error(w, http.StatusText(status), status)
+		return
+	}
 	owner, ok := p.refresh[tok]
 	delete(p.refresh, tok)
 	if ok {
@@ -259,6 +265,14 @@ func (p *Provider) Refreshes() int {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	return p.refreshes
+}
+
+// SetRefreshStatus makes every refresh answered with status, as a provider
+// throttling or behind a proxy would; 0 answers them again.
+func (p *Provider) SetRefreshStatus(status int) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	p.refreshStatus = status
 }
 
 // RevokeAll revokes every refresh token, as a provider ending a session

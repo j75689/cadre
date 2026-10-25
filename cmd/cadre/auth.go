@@ -1,6 +1,7 @@
 package main
 
 import (
+	"errors"
 	"fmt"
 	"time"
 
@@ -25,7 +26,11 @@ func newAuthCmd(g *globals) *cobra.Command {
 		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			cred, ok, err := currentLogin(cmd.Context(), g.server)
-			if err != nil {
+			var refused *refusedError
+			switch {
+			case errors.As(err, &refused):
+				return fmt.Errorf("the login for %s expires within a minute, and %w; run cadre login", g.server, err)
+			case err != nil:
 				return err
 			}
 			switch {
