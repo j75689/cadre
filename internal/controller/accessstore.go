@@ -2,12 +2,15 @@ package controller
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"slices"
 	"strings"
 
+	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/client-go/tools/events"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	v1alpha1 "github.com/j75689/cadre/api/v1alpha1"
@@ -23,13 +26,16 @@ import (
 // whether it makes or edits, and writes go to the API server. Its answers
 // map to the store's errors, so the API answers them as it does the
 // board's.
-func AgentAccessStore(c client.Client, fresh client.Reader) api.AgentAccessStore {
-	return accessStore{c: c, fresh: fresh}
+// A rotated token is told with a Normal Event on its AgentAccess, through
+// events, naming who rotated it.
+func AgentAccessStore(c client.Client, fresh client.Reader, events events.EventRecorder) api.AgentAccessStore {
+	return accessStore{c: c, fresh: fresh, events: events}
 }
 
 type accessStore struct {
-	c     client.Client
-	fresh client.Reader
+	c      client.Client
+	fresh  client.Reader
+	events events.EventRecorder
 }
 
 func (s accessStore) ListAgentAccesses(ctx context.Context, ns string) ([]v1alpha1.AgentAccess, error) {
@@ -64,6 +70,26 @@ func (s accessStore) UpdateAgentAccess(ctx context.Context, aa *v1alpha1.AgentAc
 
 func (s accessStore) DeleteAgentAccess(ctx context.Context, ns, name string) error {
 	return storeError("delete", name, s.c.Delete(ctx, &v1alpha1.AgentAccess{ObjectMeta: metav1.ObjectMeta{Namespace: ns, Name: name}}))
+}
+
+func (s accessStore) RotateAgentAccessToken(ctx context.Context, ns, name, by string) (string, error) {
+	aa, err := s.GetAgentAccess(ctx, ns, name)
+	if err != nil {
+		return "", err
+	}
+	if aa.Spec.ServiceAccount != nil {
+		return "", fmt.Errorf("AgentAccess %s authenticates as ServiceAccount %s: it has no minted token: %w", name, aa.Spec.ServiceAccount.Name, storage.ErrInvalid)
+	}
+	o := tokenOwner{obj: aa, kind: "AgentAccess", secret: AccessTokenSecretName(name), label: v1alpha1.LabelAgentAccess, status: &aa.Status.MintedToken}
+	tok, err := rotateToken(ctx, s.c, s.fresh, o)
+	switch {
+	case errors.Is(err, ErrNotOwned):
+		return "", fmt.Errorf("%s; delete it to have a token minted: %w", err.Error(), storage.ErrInvalid)
+	case err != nil:
+		return "", storeError("rotate the token of", name, err)
+	}
+	s.events.Eventf(aa, nil, corev1.EventTypeNormal, "TokenRotated", "RotateToken", "token rotated by %s", by)
+	return tok, nil
 }
 
 // storeError is the API server's answer to verb on AgentAccess name as the

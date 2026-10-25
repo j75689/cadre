@@ -10,6 +10,7 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/runtime/schema"
+	"k8s.io/client-go/tools/events"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 	"sigs.k8s.io/controller-runtime/pkg/client/interceptor"
@@ -44,7 +45,7 @@ func TestAccessStoreReadsFresh(t *testing.T) {
 			return cluster.Delete(ctx, obj, opts...)
 		},
 	}).Build()
-	s := AgentAccessStore(lagging, cluster)
+	s := AgentAccessStore(lagging, cluster, events.NewFakeRecorder(10))
 	aa := &v1alpha1.AgentAccess{ObjectMeta: metav1.ObjectMeta{Namespace: "team-a", Name: "bot"}, Spec: v1alpha1.AgentAccessSpec{Role: "member"}}
 	if err := s.CreateAgentAccess(ctx, aa); err != nil {
 		t.Fatal(err)

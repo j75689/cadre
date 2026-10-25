@@ -231,6 +231,14 @@ func (c *Client) PutAgentAccess(ctx context.Context, ns, name string, req api.Ag
 	return &view, err
 }
 
+// RotateAgentAccessToken mints a new token for AgentAccess name, replacing
+// its last, and returns it: the only time it is shown.
+func (c *Client) RotateAgentAccessToken(ctx context.Context, ns, name string) (*api.AgentAccessToken, error) {
+	var tok api.AgentAccessToken
+	_, err := c.do(ctx, http.MethodPost, nsPath(ns)+"/agentaccesses/"+url.PathEscape(name)+"/token", nil, &tok)
+	return &tok, err
+}
+
 // DeleteAgentAccess deletes AgentAccess name, revoking its access.
 func (c *Client) DeleteAgentAccess(ctx context.Context, ns, name string) error {
 	_, err := c.do(ctx, http.MethodDelete, nsPath(ns)+"/agentaccesses/"+url.PathEscape(name), nil, nil)

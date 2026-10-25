@@ -13,7 +13,7 @@ import (
 
 func newAgentAccessCmd(g *globals) *cobra.Command {
 	cmd := &cobra.Command{Use: "agentaccess", Short: "Let agents outside Cadre use the team's board (team admins)"}
-	cmd.AddCommand(newAgentAccessSet(g), newAgentAccessList(g), newAgentAccessDelete(g))
+	cmd.AddCommand(newAgentAccessSet(g), newAgentAccessList(g), newAgentAccessToken(g), newAgentAccessDelete(g))
 	return cmd
 }
 
@@ -90,6 +90,27 @@ func newAgentAccessList(g *globals) *cobra.Command {
 				outf(w, "%s\t%s\t%s\t%s\t%s\n", aa.Name, aa.Spec.Role, sa, ready, orDash(aa.TokenSecret))
 			}
 			return w.Flush()
+		},
+	}
+}
+
+// newAgentAccessToken mints a new token and prints it, on stdout alone, so
+// it can go straight where the agent reads it.
+func newAgentAccessToken(g *globals) *cobra.Command {
+	return &cobra.Command{
+		Use:   "token NAME",
+		Short: "Mint a new token for an AgentAccess and print it, once; the last one stops working",
+		Long: "Mint a new token for an AgentAccess without a ServiceAccount and print it on stdout. It is shown this once: " +
+			"the API never serves it again, and the token it replaces stops working at once.",
+		Args: cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			tok, err := g.client().RotateAgentAccessToken(cmd.Context(), g.namespace, args[0])
+			if err != nil {
+				return err
+			}
+			outln(cmd.OutOrStdout(), tok.Token)
+			outf(cmd.ErrOrStderr(), "agentaccess %s: a new token, kept in the Secret %s; the last one no longer works\n", args[0], tok.TokenSecret)
+			return nil
 		},
 	}
 }

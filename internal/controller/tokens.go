@@ -2,6 +2,7 @@ package controller
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"time"
 
@@ -16,7 +17,7 @@ import (
 	"github.com/j75689/cadre/internal/token"
 )
 
-// +kubebuilder:rbac:groups="",resources=secrets,verbs=create;delete
+// +kubebuilder:rbac:groups="",resources=secrets,verbs=create;update;delete
 
 // An object without a ServiceAccount, a Runner or an AgentAccess,
 // authenticates with a token Cadre mints (see internal/token) into a Secret
@@ -88,19 +89,63 @@ func (b base) ensureToken(ctx context.Context, o tokenOwner) (hash, problem stri
 	if err != nil {
 		return "", "", err
 	}
-	s = corev1.Secret{
-		ObjectMeta: metav1.ObjectMeta{Name: key.Name, Namespace: key.Namespace, Labels: map[string]string{o.label: o.obj.GetName()}},
-		Type:       corev1.SecretTypeOpaque,
-		Data:       map[string][]byte{tokenKey: []byte(tok)},
-	}
-	if err := controllerutil.SetControllerReference(o.obj, &s, b.client.Scheme()); err != nil {
-		return "", "", err
-	}
-	if err := b.client.Create(ctx, &s); err != nil {
+	if err := createToken(ctx, b.client, o, tok); err != nil {
 		return "", "", err // a concurrent create is redone on the requeue
 	}
 	return hash, "", nil
 }
+
+// createToken creates o's token Secret holding tok, labelled with o's name
+// and owned by o.
+func createToken(ctx context.Context, c client.Client, o tokenOwner, tok string) error {
+	s := &corev1.Secret{
+		ObjectMeta: metav1.ObjectMeta{Name: o.secret, Namespace: o.obj.GetNamespace(), Labels: map[string]string{o.label: o.obj.GetName()}},
+		Type:       corev1.SecretTypeOpaque,
+		Data:       map[string][]byte{tokenKey: []byte(tok)},
+	}
+	if err := controllerutil.SetControllerReference(o.obj, s, c.Scheme()); err != nil {
+		return err
+	}
+	return c.Create(ctx, s)
+}
+
+// rotateToken mints a new token for o into its Secret, replacing what it
+// held, and writes its hash into o's status, conditionally on o's version:
+// what the reconciler does when the Secret is deleted, done at once, so it
+// then finds nothing to do. The old token stops when the status changes.
+// The Secret, read fresh, is written first, as ensureToken does: a status
+// write that is lost is redone from the Secret on the next reconcile. A
+// Secret of that name o does not own is ErrNotOwned.
+func rotateToken(ctx context.Context, c client.Client, fresh client.Reader, o tokenOwner) (string, error) {
+	tok, hash, err := token.Mint(o.obj.GetNamespace(), o.obj.GetName())
+	if err != nil {
+		return "", err
+	}
+	var s corev1.Secret
+	switch err := fresh.Get(ctx, client.ObjectKey{Namespace: o.obj.GetNamespace(), Name: o.secret}, &s); {
+	case apierrors.IsNotFound(err):
+		if err := createToken(ctx, c, o, tok); err != nil {
+			return "", err
+		}
+	case err != nil:
+		return "", err
+	case !ownedBy(&s, o.obj):
+		return "", fmt.Errorf("the Secret %s is not this %s's token: %w", o.secret, o.kind, ErrNotOwned)
+	default:
+		s.Data = map[string][]byte{tokenKey: []byte(tok)}
+		if err := c.Update(ctx, &s); err != nil {
+			return "", err
+		}
+	}
+	setToken(o, hash)
+	if err := c.Status().Update(ctx, o.obj); err != nil {
+		return "", err
+	}
+	return tok, nil
+}
+
+// ErrNotOwned means a Secret of a token's name is not its owner's.
+var ErrNotOwned = errors.New("not the owner's token")
 
 // invalidName is why name cannot be a Runner's or an AgentAccess's (kind),
 // or "": it names and labels their token Secret, so it is a DNS label. The

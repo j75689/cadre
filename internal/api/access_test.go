@@ -24,9 +24,10 @@ import (
 // fakeAccesses keeps AgentAccesses as the cluster would: versioned, the
 // CRD refusing an admin role, and each with a minted token's hash.
 type fakeAccesses struct {
-	mu   sync.Mutex
-	objs map[string]*v1alpha1.AgentAccess
-	rv   int
+	mu        sync.Mutex
+	objs      map[string]*v1alpha1.AgentAccess
+	rv        int
+	rotatedBy []string
 }
 
 // tokenHash is what every fake AgentAccess holds as its token's hash: no
@@ -92,6 +93,24 @@ func (f *fakeAccesses) UpdateAgentAccess(_ context.Context, aa *v1alpha1.AgentAc
 	return f.write(aa)
 }
 
+// mintedToken is what the fake mints: it may be in the rotate's answer,
+// and in no other.
+const mintedToken = "dGVhbS1hL2JvdA.minted-by-the-fake"
+
+func (f *fakeAccesses) RotateAgentAccessToken(_ context.Context, ns, name, by string) (string, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	aa, ok := f.objs[ns+"/"+name]
+	switch {
+	case !ok:
+		return "", storage.ErrNotFound
+	case aa.Spec.ServiceAccount != nil:
+		return "", fmt.Errorf("it authenticates as a ServiceAccount: %w", storage.ErrInvalid)
+	}
+	f.rotatedBy = append(f.rotatedBy, by)
+	return mintedToken, nil
+}
+
 func (f *fakeAccesses) DeleteAgentAccess(_ context.Context, ns, name string) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
@@ -143,6 +162,10 @@ func TestAgentAccessRoutes(t *testing.T) {
 		{"a stranger may not list", stranger, "GET", path, "", 403, "no role there"},
 		{"an agent, a member, may not list", "bot.member", "GET", path, "", 403, "you are a member"},
 		{"another team's", admin, "GET", "/namespaces/team-b/agentaccesses", "", 403, "no role there"},
+		{"an admin rotates a token", admin, "POST", path + "/bot/token", "", 200, `"token":"` + mintedToken + `"`},
+		{"a member may not rotate one", member, "POST", path + "/bot/token", "", 403, "no_role"},
+		{"rotating one there is not", admin, "POST", path + "/none/token", "", 404, "not_found"},
+		{"rotating a ServiceAccount's", admin, "POST", path + "/ci/token", "", 400, "ServiceAccount"},
 		{"an admin deletes one", admin, "DELETE", path + "/ci", "", 204, ""},
 		{"deleting it again", admin, "DELETE", path + "/ci", "", 404, ""},
 	} {
@@ -156,10 +179,20 @@ func TestAgentAccessRoutes(t *testing.T) {
 	if err := json.Unmarshal([]byte(out), &list); err != nil || len(list.Items) != 1 || list.Items[0].Name != "bot" || list.Items[0].Reason != "Pending" {
 		t.Errorf("list %s", out)
 	}
+	rotates := 0
 	for _, b := range bodies {
 		if strings.Contains(b, tokenHash) || strings.Contains(b, "tokenHash") {
 			t.Errorf("a response carries the token's hash: %s", b)
 		}
+		if strings.Contains(b, mintedToken) {
+			rotates++
+		}
+	}
+	if rotates != 1 {
+		t.Errorf("the minted token is in %d answers, want the rotate's alone", rotates)
+	}
+	if len(store.rotatedBy) != 1 || store.rotatedBy[0] != "lead@example.test" {
+		t.Errorf("rotated by %v, want the admin", store.rotatedBy)
 	}
 }
 

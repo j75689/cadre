@@ -3,6 +3,7 @@ package controller_test
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"io"
 	"log/slog"
 	"net/http"
@@ -13,6 +14,7 @@ import (
 
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/client-go/tools/events"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	v1alpha1 "github.com/j75689/cadre/api/v1alpha1"
@@ -37,9 +39,10 @@ func TestAgentAccessesThroughTheAPI(t *testing.T) {
 	// With logins, as AgentAccesses are served only then: every request
 	// is a bootstrap admin's.
 	root := &auth.Identity{Username: "root@example.test"}
+	recorder := events.NewFakeRecorder(10)
 	api.NewServer(manager.New(memory.NewBackend().Open(), manager.Config{}), slog.New(slog.NewTextHandler(io.Discard, nil)),
 		api.WithAccess(auth.ModeOIDC, &authz.Policy{AdminUsers: []string{root.Username}}),
-		api.WithAgentAccesses(controller.AgentAccessStore(e.c, e.c))).Register(mux)
+		api.WithAgentAccesses(controller.AgentAccessStore(e.c, e.c, recorder))).Register(mux)
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		mux.ServeHTTP(w, r.WithContext(auth.WithIdentity(r.Context(), root)))
 	}))
@@ -94,15 +97,59 @@ func TestAgentAccessesThroughTheAPI(t *testing.T) {
 		_, out := do("GET", "", "")
 		return strings.Contains(out, `"ready":true`) && strings.Contains(out, `"tokenSecret":"bot.access-token"`), out
 	})
+	// Rotating: a new token, in this one answer; the Secret and the status
+	// have it at once, so the old one stops and the reconciler finds
+	// nothing to do; an Event names who rotated it.
+	code, out = do("POST", "/bot/token", "")
+	var rotated api.AgentAccessToken
+	if err := json.Unmarshal([]byte(out), &rotated); code != http.StatusOK || err != nil || rotated.Token == "" || rotated.Token == tok || rotated.TokenSecret != "bot.access-token" {
+		t.Fatalf("rotate: %d %s", code, out)
+	}
+	agents := controller.AgentAccesses(e.c, e.c, nil, nil)
+	if _, err := agents.Authenticate(ctx, rotated.Token); err != nil {
+		t.Errorf("the new token: %v", err)
+	}
+	if _, err := agents.Authenticate(ctx, tok); !errors.Is(err, auth.ErrUnauthenticated) {
+		t.Errorf("the old token: %v", err)
+	}
+	time.Sleep(time.Second) // a few resyncs
+	var s corev1.Secret
+	var aa v1alpha1.AgentAccess
+	if err := errors.Join(e.c.Get(ctx, client.ObjectKey{Namespace: ns, Name: "bot.access-token"}, &s), e.c.Get(ctx, client.ObjectKey{Namespace: ns, Name: "bot"}, &aa)); err != nil ||
+		string(s.Data["token"]) != rotated.Token || aa.Status.TokenHash != token.Hash(rotated.Token) {
+		t.Fatalf("after the rotation: Secret %q, hash %q, %v", s.Data["token"], aa.Status.TokenHash, err)
+	}
+	select {
+	case ev := <-recorder.Events:
+		if !strings.Contains(ev, "TokenRotated") || !strings.Contains(ev, "rotated by root@example.test") || strings.Contains(ev, rotated.Token) {
+			t.Errorf("event %q", ev)
+		}
+	default:
+		t.Error("no Event for the rotation")
+	}
+	// A ServiceAccount's has no token to rotate.
+	if code, _ := do("PUT", "/ci", `{"spec":{"role":"viewer","serviceAccount":{"name":"ci"}}}`); code != http.StatusCreated {
+		t.Fatalf("make ci: %d", code)
+	}
+	if code, out := do("POST", "/ci/token", ""); code != http.StatusBadRequest || !strings.Contains(out, "ServiceAccount") {
+		t.Errorf("rotating a ServiceAccount's: %d %s", code, out)
+	}
 	if code, _ := do("DELETE", "/bot", ""); code != http.StatusNoContent {
 		t.Errorf("delete: %d", code)
 	}
 	if code, _ := do("DELETE", "/bot", ""); code != http.StatusNotFound {
 		t.Errorf("delete again: %d", code)
 	}
+	shown := 0
 	for _, b := range bodies {
-		if strings.Contains(b, tok) || strings.Contains(b, token.Hash(tok)) {
-			t.Fatalf("an answer carries the token or its hash: %s", b)
+		if strings.Contains(b, tok) || strings.Contains(b, token.Hash(tok)) || strings.Contains(b, token.Hash(rotated.Token)) {
+			t.Fatalf("an answer carries a token minted by the reconciler, or a hash: %s", b)
 		}
+		if strings.Contains(b, rotated.Token) {
+			shown++
+		}
+	}
+	if shown != 1 {
+		t.Errorf("the rotated token is in %d answers, want the rotate's alone", shown)
 	}
 }
