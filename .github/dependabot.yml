@@ -4,7 +4,27 @@ updates:
     directory: /
     schedule:
       interval: weekly
+    groups:
+      # The Kubernetes modules move together: client-go, api and
+      # apimachinery share a version, and controller-runtime follows them.
+      kubernetes:
+        patterns:
+          - "k8s.io/*"
+          - "sigs.k8s.io/*"
+      go:
+        patterns:
+          - "*"
+        exclude-patterns:
+          - "k8s.io/*"
+          - "sigs.k8s.io/*"
+        update-types:
+          - minor
+          - patch
   - package-ecosystem: github-actions
     directory: /
     schedule:
       interval: weekly
+    groups:
+      actions:
+        patterns:
+          - "*"
