@@ -17,6 +17,7 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	eventsv1 "k8s.io/api/events/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
+	"k8s.io/apimachinery/pkg/api/meta"
 	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/client-go/rest"
@@ -659,15 +660,14 @@ func TestARefusedJobMark(t *testing.T) {
 		RestartPolicy: corev1.RestartPolicyNever, Containers: []corev1.Container{{Name: "c", Image: "example.test/probe:v1"}},
 	}}}}
 	e.create(probe)
+	t.Cleanup(func() { _ = e.c.Delete(ctx, probe) })
 	eventually(t, 10*time.Second, func() (bool, string) {
 		patch := client.MergeFrom(probe.DeepCopy())
 		probe.Annotations = map[string]string{"probe": time.Now().Format(time.RFC3339Nano)}
 		err := e.c.Patch(ctx, probe, patch, client.DryRunAll)
-		return apierrors.IsForbidden(err), fmt.Sprintf("a probe update gave %v", err)
+		// This policy's refusal, not any 403.
+		return apierrors.IsForbidden(err) && strings.Contains(err.Error(), "Jobs are not annotated here"), fmt.Sprintf("a probe update gave %v", err)
 	})
-	if err := e.c.Delete(ctx, probe); err != nil {
-		t.Fatal(err)
-	}
 
 	agent := jobAgent("marked", 1)
 	e.create(agent)
@@ -685,4 +685,33 @@ func TestARefusedJobMark(t *testing.T) {
 		}
 		return false, "no PatchJob refusal"
 	})
+}
+
+// A Runner naming a ServiceAccount an older Runner names is not Ready, and
+// an Agent whose Jobs would run as it is not Ready either, for the same
+// reason: its Jobs could never claim.
+func TestARunnerSharingAServiceAccount(t *testing.T) {
+	e := startJobs(t)
+	second := &v1alpha1.Runner{ObjectMeta: meta2(jobsNS, "jobs-too"), Spec: v1alpha1.RunnerSpec{
+		ServiceAccount: &v1alpha1.ServiceAccountRef{Name: "job-runner"}, Labels: map[string]string{"pool": "jobs", "zone": "b"},
+	}}
+	e.create(second)
+	e.ready(second, metav1.ConditionFalse, "ServiceAccountInUse")
+	first := jobAgent("first", 1)
+	agent := jobAgent("second", 1)
+	agent.Spec.Runtime.Job.RunnerRef = "jobs-too"
+	e.create(first, agent)
+	e.ready(first, metav1.ConditionTrue, "Resolved")
+	e.ready(agent, metav1.ConditionFalse, "ServiceAccountInUse")
+	if c := meta.FindStatusCondition(agent.Status.Conditions, v1alpha1.ConditionReady); !strings.Contains(c.Message, "Runner jobs's") {
+		t.Errorf("the Agent's message %q does not name the Runner holding the account", c.Message)
+	}
+
+	// The older Runner gone, the other holds the account, and its Agent
+	// goes Ready.
+	if err := e.c.Delete(context.Background(), &v1alpha1.Runner{ObjectMeta: meta2(jobsNS, "jobs")}); err != nil {
+		t.Fatal(err)
+	}
+	e.ready(second, metav1.ConditionTrue, "ServiceAccount")
+	e.ready(agent, metav1.ConditionTrue, "Resolved")
 }

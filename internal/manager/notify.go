@@ -215,7 +215,8 @@ func (m *Manager) DeliverNotifications(ctx context.Context) error {
 	})
 }
 
-// notifyTask sends a task's pending notifications and acks the ones done.
+// notifyTask sends a task's pending notifications and acks the ones
+// notifyItem says to.
 // A server without Notifiers has nobody to tell: it acks them.
 func (m *Manager) notifyTask(ctx context.Context, key storage.Key) error {
 	t, err := m.store.GetTask(ctx, key)
@@ -247,26 +248,26 @@ func (m *Manager) notifyTask(ctx context.Context, key storage.Key) error {
 	for i := range all {
 		byName[all[i].Name] = &all[i]
 	}
-	var done []string
+	var ack []string
 	var dropped []func()
 	var errs []error
 	for _, it := range t.Status.Outbox {
 		if it.Kind != v1alpha1.OutboxNotify || it.Notify == nil {
 			continue
 		}
-		ok, drop, err := m.notifyItem(ctx, key, it, byName)
+		toAck, drop, err := m.notifyItem(ctx, key, it, byName)
 		if err != nil {
 			errs = append(errs, fmt.Errorf("notification %s: %w", it.ID, err))
 		}
-		if ok {
-			done = append(done, it.ID)
+		if toAck {
+			ack = append(ack, it.ID)
 		}
 		if drop != nil {
 			dropped = append(dropped, drop)
 		}
 	}
-	if len(done) > 0 {
-		if _, err := m.transition(ctx, key, task.AckOutbox{IDs: done}); err != nil {
+	if len(ack) > 0 {
+		if _, err := m.transition(ctx, key, task.AckOutbox{IDs: ack}); err != nil {
 			return errors.Join(append(errs, err)...)
 		}
 		// A dropped notification is told of once it is gone for good.
@@ -288,7 +289,7 @@ func (m *Manager) sendingElsewhere(n *v1alpha1.Notification) bool {
 // nothing pending, or it outlived NotifyTTL, in which case drop says so
 // once it is. An item every Notifier took is removed by the very write
 // that records it (task.NotifyDelivered), and needs no ack.
-func (m *Manager) notifyItem(ctx context.Context, key storage.Key, it v1alpha1.OutboxItem, byName map[string]*v1alpha1.Notifier) (done bool, drop func(), err error) {
+func (m *Manager) notifyItem(ctx context.Context, key storage.Key, it v1alpha1.OutboxItem, byName map[string]*v1alpha1.Notifier) (ack bool, drop func(), err error) {
 	// The read that found it decides whether there is anything to try:
 	// nothing pending, or nobody pending Ready, costs no write.
 	pending := pendingOf(it.Notify, byName)

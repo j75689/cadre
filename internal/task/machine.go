@@ -316,7 +316,9 @@ func (ReserveItem) kind() Kind { return KindReserve }
 // it. Gone are the item's Notifiers that no longer exist, which count as
 // having taken it. Once every Notifier of the item has, the item is
 // removed in the same write: the record and the ack are one, so no ack can
-// be lost after the record and none is needed.
+// be lost after the record and none is needed. An item with no Notifiers
+// (no to) is never removed this way: the manager writes none, and one is
+// acked as having nobody to tell, as a server without Notifiers does.
 type NotifyDelivered struct {
 	ID   string
 	To   []string
@@ -654,8 +656,12 @@ func Apply(t *v1alpha1.Task, ev Event, now time.Time) (Result, error) {
 	return res, nil
 }
 
-// taken reports whether every Notifier of n took it, or is gone.
+// taken reports whether every Notifier of n took it, or is gone. One with
+// no Notifiers is not taken: a bare turn's end must not remove it.
 func taken(n *v1alpha1.Notification, gone []string) bool {
+	if len(n.To) == 0 {
+		return false
+	}
 	for _, to := range n.To {
 		if !slices.Contains(n.Delivered, to) && !slices.Contains(gone, to) {
 			return false

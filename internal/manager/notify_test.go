@@ -596,9 +596,11 @@ func TestNotifyNotReadyCostsNoWrite(t *testing.T) {
 	}
 }
 
-// Finished by another server since it was read: nothing is sent, and
-// nothing is left to ack.
-func TestNotifyFinishedMeanwhile(t *testing.T) {
+// Finished by another server since it was read: the claim finds the item
+// gone (task.ErrNotifyGone), so nothing is sent and nothing is left to ack.
+// The turn that finds an item still there with nothing pending is
+// TestNotifyTakenItemLeftByAnOlderServer.
+func TestNotifyFinishedBeforeTheClaim(t *testing.T) {
 	rec := newReceiver(t)
 	e, _ := notifyEnv(t, notifier("hook", rec.URL, nil, v1alpha1.NotifyQuestion))
 	key := e.addTask(t, "x", v1alpha1.AssigneeAgent)

@@ -313,9 +313,10 @@ func (r *jobReconciler) refused(ctx context.Context, agent *v1alpha1.Agent, acti
 		log.FromContext(ctx).Error(err, "cadre-server may not change Jobs here; bind config/rbac/workloads.yaml", "namespace", agent.Namespace, "action", action)
 		return
 	}
-	// A namespace going away refuses everything, Events too: nothing to
-	// report, and no error to log on every requeue until it is gone.
+	// A namespace going away refuses everything, Events too: said at Info on
+	// each requeue until it is gone, not as an error.
 	if apierrors.HasStatusCause(err, corev1.NamespaceTerminatingCause) {
+		log.FromContext(ctx).Info("the namespace is being deleted; no Job is changed in it", "namespace", agent.Namespace, "agent", agent.Name, "action", action)
 		return
 	}
 	log.FromContext(ctx).Error(err, "the API server refused a Job", "namespace", agent.Namespace, "agent", agent.Name, "action", action)
@@ -332,9 +333,11 @@ const eventNoteMax = 1024
 var forbiddenPrefix = regexp.MustCompile(`^[a-z0-9.]+ "[^"]*" is forbidden: `)
 
 // refusalNote is the note of a JobRefused Event: the reason, without the
-// object's name, cut to fit an Event. client-go aggregates an Agent's
-// refusals of one action into one Event whatever their notes, and that
-// Event keeps the note of the first cause seen.
+// object's name, cut to fit an Event. While nothing else writes the Agent,
+// client-go aggregates its refusals of one action into one Event whatever
+// their notes, and that Event keeps the note of the first cause seen; the
+// Event's key carries the Agent's resourceVersion, so a write to its spec
+// or status starts a new one.
 func refusalNote(err error) string {
 	note := "the API server refused a Job: " + forbiddenPrefix.ReplaceAllString(err.Error(), "")
 	if len(note) <= eventNoteMax {

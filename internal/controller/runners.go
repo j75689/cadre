@@ -1,8 +1,10 @@
 package controller
 
 import (
+	"cmp"
 	"context"
 	"fmt"
+	"slices"
 	"strings"
 	"time"
 
@@ -13,6 +15,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/builder"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
+	"sigs.k8s.io/controller-runtime/pkg/handler"
 	ctrl "sigs.k8s.io/controller-runtime/pkg/manager"
 	"sigs.k8s.io/controller-runtime/pkg/predicate"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
@@ -44,7 +47,59 @@ type runnerReconciler struct{ base }
 func (r *runnerReconciler) setup(mgr ctrl.Manager) error {
 	return builderctrl.NewControllerManagedBy(mgr).
 		For(&v1alpha1.Runner{}, builder.WithPredicates(predicate.GenerationChangedPredicate{})).
+		// The Runners sharing a ServiceAccount decide which holds it: one
+		// made, changed or deleted brings back the others.
+		Watches(&v1alpha1.Runner{}, handler.EnqueueRequestsFromMapFunc(r.sharing), builder.WithPredicates(predicate.GenerationChangedPredicate{})).
 		Named("runner").WithOptions(r.options()).Complete(r)
+}
+
+// sharing maps a Runner to the others in its namespace naming the same
+// ServiceAccount.
+func (r *runnerReconciler) sharing(ctx context.Context, o client.Object) []reconcile.Request {
+	rn, ok := o.(*v1alpha1.Runner)
+	if !ok || rn.Spec.ServiceAccount == nil {
+		return nil
+	}
+	others, err := sharers(ctx, r.client, rn.Namespace, rn.Spec.ServiceAccount.Name)
+	if err != nil {
+		return nil
+	}
+	var reqs []reconcile.Request
+	for _, other := range others {
+		if other.Name != rn.Name {
+			reqs = append(reqs, reconcile.Request{NamespacedName: client.ObjectKeyFromObject(&other)})
+		}
+	}
+	return reqs
+}
+
+// sharers are the Runners in ns naming the ServiceAccount sa. Every reader
+// that decides which holds it lists them here, and decides with holder,
+// from their specs alone: no status, so no lag after an edit.
+func sharers(ctx context.Context, c client.Reader, ns, sa string) ([]v1alpha1.Runner, error) {
+	var list v1alpha1.RunnerList
+	if err := c.List(ctx, &list, client.InNamespace(ns), client.MatchingFields{indexRunnerSA: sa}); err != nil {
+		return nil, fmt.Errorf("list runners: %w", err)
+	}
+	return list.Items, nil
+}
+
+// inUse is the message of a Runner, and of an Agent on it, whose
+// ServiceAccount another Runner holds.
+func inUse(sa, holder string) string {
+	return fmt.Sprintf("ServiceAccount %s is Runner %s's, the oldest Runner naming it (then by name); give this Runner a ServiceAccount of its own", sa, holder)
+}
+
+// holder is the Runner of runners that holds their ServiceAccount: the
+// oldest, then by name, so that every reader picks the same one.
+func holder(runners []v1alpha1.Runner) *v1alpha1.Runner {
+	if len(runners) == 0 {
+		return nil
+	}
+	h := slices.MinFunc(runners, func(a, b v1alpha1.Runner) int {
+		return cmp.Or(a.CreationTimestamp.Compare(b.CreationTimestamp.Time), strings.Compare(a.Name, b.Name))
+	})
+	return &h
 }
 
 func (r *runnerReconciler) Reconcile(ctx context.Context, req reconcile.Request) (reconcile.Result, error) {
@@ -62,6 +117,16 @@ func (r *runnerReconciler) Reconcile(ctx context.Context, req reconcile.Request)
 			return reconcile.Result{}, err
 		}
 		changed := r.setToken(&rn, "", false)
+		// One ServiceAccount is one Runner's: a runner authenticated as it
+		// claims with that Runner's labels, so a second Runner naming it
+		// would take work it could never be given.
+		list, err := sharers(ctx, r.client, rn.Namespace, rn.Spec.ServiceAccount.Name)
+		if err != nil {
+			return reconcile.Result{}, err
+		}
+		if h := holder(list); h != nil && h.Name != rn.Name {
+			return reconcile.Result{RequeueAfter: r.resync}, r.writeStatus(ctx, &rn, &rn.Status.ConfigStatus, false, "ServiceAccountInUse", inUse(rn.Spec.ServiceAccount.Name, h.Name), changed)
+		}
 		return reconcile.Result{RequeueAfter: r.resync}, r.writeStatus(ctx, &rn, &rn.Status.ConfigStatus, true, "ServiceAccount", "", changed)
 	}
 	hash, minted, problem, err := r.ensureToken(ctx, &rn)
@@ -202,13 +267,16 @@ func (a runners) Authenticate(ctx context.Context, tok string) (runner.Identity,
 	if !ok || !strings.HasPrefix(id.Name, saPrefix) {
 		return runner.Identity{}, runner.ErrUnauthenticated
 	}
-	var list v1alpha1.RunnerList
-	if err := a.c.List(ctx, &list, client.InNamespace(ns), client.MatchingFields{indexRunnerSA: name}); err != nil {
-		return runner.Identity{}, fmt.Errorf("list runners: %w", err)
+	list, err := sharers(ctx, a.c, ns, name)
+	if err != nil {
+		return runner.Identity{}, err
 	}
+	// The labels of the Runner holding the ServiceAccount, decided from the
+	// specs as the Runner reconciler decides it: another Runner naming the
+	// account gives nothing.
 	id.Scope = map[string]map[string]string{}
-	for _, rn := range list.Items {
-		id.Scope[rn.Namespace] = rn.Spec.Labels
+	if h := holder(list); h != nil {
+		id.Scope[h.Namespace] = h.Spec.Labels
 	}
 	return id, nil
 }

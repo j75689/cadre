@@ -50,12 +50,15 @@ func setupIndexes(mgr ctrl.Manager) error {
 	}); err != nil {
 		return err
 	}
-	return idx.IndexField(context.Background(), &v1alpha1.Runner{}, indexRunnerSA, func(o client.Object) []string {
-		if sa := o.(*v1alpha1.Runner).Spec.ServiceAccount; sa != nil {
-			return []string{sa.Name}
-		}
-		return nil
-	})
+	return idx.IndexField(context.Background(), &v1alpha1.Runner{}, indexRunnerSA, runnerSA)
+}
+
+// runnerSA indexes a Runner by the ServiceAccount it names.
+func runnerSA(o client.Object) []string {
+	if sa := o.(*v1alpha1.Runner).Spec.ServiceAccount; sa != nil {
+		return []string{sa.Name}
+	}
+	return nil
 }
 
 type modelProviderReconciler struct{ base }
@@ -240,6 +243,16 @@ func (r *agentReconciler) resolveJob(ctx context.Context, agent *v1alpha1.Agent,
 		return false, "RunnerNotFound", fmt.Sprintf("Runner %s does not exist", job.RunnerRef), nil
 	case rn.Spec.ServiceAccount == nil:
 		return false, "RunnerOutsideTheCluster", fmt.Sprintf("Runner %s has no serviceAccount for the Jobs to run as", job.RunnerRef), nil
+	}
+	// Its Jobs run as the Runner's ServiceAccount, which claims with the
+	// labels of the Runner holding it: decided from the specs, as
+	// Authenticate does, so an edit to a Runner never flaps the Agent.
+	sharing, err := sharers(ctx, r.client, agent.Namespace, rn.Spec.ServiceAccount.Name)
+	if err != nil {
+		return false, "", "", err
+	}
+	if h := holder(sharing); h != nil && h.Name != rn.Name {
+		return false, "ServiceAccountInUse", fmt.Sprintf("Runner %s: %s", rn.Name, inUse(rn.Spec.ServiceAccount.Name, h.Name)), nil
 	}
 	for k, v := range agent.Spec.Runtime.Selector {
 		if rn.Spec.Labels[k] != v {
