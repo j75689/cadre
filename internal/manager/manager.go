@@ -9,6 +9,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"slices"
 	"sync"
 	"time"
 
@@ -173,9 +174,13 @@ func (m *Manager) transition(ctx context.Context, key storage.Key, ev task.Event
 // A claim is recognised by its run id, which only that claim can have
 // written: comparing whole statuses would mistake a live claim for a lost
 // one as soon as anything else touched the task, such as the dispatcher
-// acking an outbox item, and its slot would be given back. Other events
-// compare the whole status; a wrong "not landed" there only costs the
-// caller a retry.
+// acking an outbox item, and its slot would be given back. A drop of a
+// notification (task.NotifyDelivered with Drop) landed when its item is
+// gone, whoever removed it: told of twice beats never told, as a whole
+// status changed since would have it. The price is a wrong Event when the
+// drop was in fact refused and another server's record of the last
+// delivery removed the item. Other events compare the whole
+// status; a wrong "not landed" there only costs the caller a retry.
 func (m *Manager) landed(ctx context.Context, key storage.Key, ev task.Event, status *v1alpha1.TaskStatus) (*v1alpha1.Task, bool, error) {
 	cur, err := m.store.GetTask(ctx, key)
 	if err != nil {
@@ -183,6 +188,9 @@ func (m *Manager) landed(ctx context.Context, key storage.Key, ev task.Event, st
 	}
 	if c, ok := ev.(task.Claim); ok {
 		return cur, cur.Status.Run != nil && cur.Status.Run.ID == c.RunID, nil
+	}
+	if d, ok := ev.(task.NotifyDelivered); ok && d.Drop {
+		return cur, !slices.ContainsFunc(cur.Status.Outbox, func(it v1alpha1.OutboxItem) bool { return it.ID == d.ID }), nil
 	}
 	return cur, equality.Semantic.DeepEqual(&cur.Status, status), nil
 }

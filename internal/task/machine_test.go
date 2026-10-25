@@ -729,6 +729,31 @@ func TestNotifyClaim(t *testing.T) {
 	}
 }
 
+// A drop removes the item whoever has taken it, and once: a second drop
+// finds nothing to remove, and says so. It does not cut another server's
+// live turn short.
+func TestNotifyDrop(t *testing.T) {
+	const id = "01JB0000000000000000000001"
+	tk := taskIn(v1alpha1.PhaseWaiting, step)
+	tk.Status.Outbox = []v1alpha1.OutboxItem{
+		{ID: id, Kind: v1alpha1.OutboxNotify, Notify: &v1alpha1.Notification{Event: v1alpha1.NotifyQuestion, To: []string{"a", "b"}, SendingBy: "s1"}},
+		item("01JB0000000000000000000002"),
+	}
+	// Not under another server's live turn: s1 is sending it.
+	until := metav1.NewTime(now.Add(time.Minute))
+	tk.Status.Outbox[0].Notify.SendingUntil = &until
+	wantErr(t, tk, NotifyDelivered{ID: id, By: "s2", Drop: true}, ErrNotifySending)
+	tk.Status = apply(t, tk, NotifyDelivered{ID: id, By: "s1", Drop: true}).Status
+	if len(tk.Status.Outbox) != 1 || tk.Status.Outbox[0].ID != "01JB0000000000000000000002" {
+		t.Fatalf("outbox after the drop %+v, want the other item only", tk.Status.Outbox)
+	}
+	wantErr(t, tk, NotifyDelivered{ID: id, By: "s2", Drop: true}, ErrNotifyGone)
+	// A record that is not a drop, of an item already gone, changes nothing.
+	if got := apply(t, tk, NotifyDelivered{ID: id, To: []string{"a"}, By: "s2"}).Status.Outbox; len(got) != 1 {
+		t.Errorf("outbox %+v", got)
+	}
+}
+
 func TestNotifyClaimOnAGoneItem(t *testing.T) {
 	tk := taskIn(v1alpha1.PhaseDone, step)
 	if _, err := Apply(tk, NotifyClaim{ID: "01JB0000000000000000000009", By: "s1", Until: time.Now().Add(time.Minute)}, time.Now()); !errors.Is(err, ErrNotifyGone) {
