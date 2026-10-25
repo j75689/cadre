@@ -26,8 +26,9 @@ import (
 type Server struct {
 	m      *manager.Manager
 	log    *slog.Logger
-	mode   string        // auth.ModeOIDC or auth.ModeNone
-	policy *authz.Policy // nil: everyone may do anything
+	mode   string           // auth.ModeOIDC or auth.ModeNone
+	policy *authz.Policy    // nil: everyone may do anything
+	access AgentAccessStore // nil: AgentAccesses are not served
 }
 
 // Option adjusts NewServer.
@@ -50,6 +51,11 @@ func NewServer(m *manager.Manager, log *slog.Logger, opts ...Option) *Server {
 		// With logins and no roles everyone would be an admin who has
 		// no name: a wiring mistake.
 		panic("api: WithAccess with logins needs a policy")
+	}
+	if s.policy == nil {
+		// Without logins everyone may do anything, and AgentAccesses
+		// made then would be live credentials once logins are on.
+		s.access = nil
 	}
 	return s
 }
@@ -82,6 +88,13 @@ func (s *Server) Register(mux *http.ServeMux) {
 		{"GET " + Base + "/namespaces/{ns}/agents", authz.Read, s.listAgents},
 	} {
 		mux.HandleFunc(route.pattern, s.guard(route.action, route.h))
+	}
+	if s.access != nil {
+		const accesses = Base + "/namespaces/{ns}/agentaccesses"
+		mux.HandleFunc("GET "+accesses, s.guard(authz.ManageAccess, s.listAgentAccesses))
+		mux.HandleFunc("GET "+accesses+"/{name}", s.guard(authz.ManageAccess, s.getAgentAccess))
+		mux.HandleFunc("PUT "+accesses+"/{name}", s.guard(authz.ManageAccess, s.putAgentAccess))
+		mux.HandleFunc("DELETE "+accesses+"/{name}", s.guard(authz.ManageAccess, s.deleteAgentAccess))
 	}
 	mux.HandleFunc("GET "+Base+"/teams", s.listTeams)
 	mux.HandleFunc("GET "+Base+"/me", s.me)
@@ -518,18 +531,26 @@ func (s *Server) listAgents(w http.ResponseWriter, r *http.Request) {
 	httpjson.Write(w, http.StatusOK, AgentList{Items: items})
 }
 
-// summarize says whether a can take work. A Ready condition decided for an
-// older spec says nothing about this one.
+// summarize says whether a can take work.
 func summarize(a *v1alpha1.Agent) AgentSummary {
-	out := AgentSummary{Name: a.Name, Ready: a.Status.ReadyFor(a.Generation)}
-	c := meta.FindStatusCondition(a.Status.Conditions, v1alpha1.ConditionReady)
-	switch {
-	case c == nil || c.ObservedGeneration != a.Generation || a.Status.ObservedGeneration != a.Generation:
-		out.Reason, out.Message = "Pending", "its current spec has not been checked yet"
-	case !out.Ready:
-		out.Reason, out.Message = c.Reason, c.Message
-	}
+	out := AgentSummary{Name: a.Name}
+	out.Ready, out.Reason, out.Message = readiness(a.Status, a.Generation)
 	return out
+}
+
+// readiness is whether a configuration resource of generation gen is Ready
+// for it, and if not why. A Ready condition decided for an older spec says
+// nothing about this one: that is Pending.
+func readiness(st v1alpha1.ConfigStatus, gen int64) (ready bool, reason, message string) {
+	ready = st.ReadyFor(gen)
+	c := meta.FindStatusCondition(st.Conditions, v1alpha1.ConditionReady)
+	switch {
+	case c == nil || c.ObservedGeneration != gen || st.ObservedGeneration != gen:
+		return ready, "Pending", "its current spec has not been checked yet"
+	case !ready:
+		return ready, c.Reason, c.Message
+	}
+	return ready, "", ""
 }
 
 // listTeams lists the Teams the caller has a role on: every one, without

@@ -32,9 +32,8 @@ const tokenKey = "token"
 func TokenSecretName(runner string) string { return runner + "-token" }
 
 // AccessTokenSecretName is the Secret an AgentAccess's minted token is kept
-// in. It has a dot, which no Runner's or AgentAccess's name has, so it is
-// never a Runner's.
-func AccessTokenSecretName(access string) string { return access + ".access-token" }
+// in: v1alpha1's, which the CLI names too.
+func AccessTokenSecretName(access string) string { return v1alpha1.AccessTokenSecretName(access) }
 
 // tokenOwner is an object Cadre mints a token for.
 type tokenOwner struct {

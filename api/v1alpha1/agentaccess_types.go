@@ -6,6 +6,11 @@ import metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 // so the Secrets can be found.
 const LabelAgentAccess = "cadre.dev/agentaccess"
 
+// AccessTokenSecretName is the Secret an AgentAccess's minted token is kept
+// in. It has a dot, which no Runner's or AgentAccess's name has, so it is
+// never a Runner's, <name>-token.
+func AccessTokenSecretName(access string) string { return access + ".access-token" }
+
 // AgentRole is the role an AgentAccess acts with on its Team's board: at
 // most member, so an agent can never manage the Team.
 // +kubebuilder:validation:Enum=member;viewer

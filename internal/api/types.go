@@ -4,6 +4,8 @@
 package api
 
 import (
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+
 	v1alpha1 "github.com/j75689/cadre/api/v1alpha1"
 	"github.com/j75689/cadre/internal/manager"
 )
@@ -99,6 +101,35 @@ type AgentSummary struct {
 type TeamRequest struct {
 	v1alpha1.TeamSpec
 	ResourceVersion string `json:"resourceVersion,omitempty"`
+}
+
+// AgentAccessRequest makes an AgentAccess, or edits one: its spec,
+// replaced whole. An edit carries the resourceVersion of the AgentAccess it
+// was made from, and fails with 409 conflict if it changed since; without
+// one, the request makes it, and is 409 already_exists if there is one.
+type AgentAccessRequest struct {
+	ResourceVersion string                   `json:"resourceVersion,omitempty"`
+	Spec            v1alpha1.AgentAccessSpec `json:"spec"`
+}
+
+// AgentAccessList is a namespace's AgentAccesses, by name.
+type AgentAccessList struct {
+	Items []AgentAccessView `json:"items"`
+}
+
+// AgentAccessView is an AgentAccess as the API shows it: its spec, whether
+// it is Ready for it and if not why, and where a minted token is kept. The
+// token is never shown, nor its hash: it is read from the Secret, by
+// whoever may read Secrets in the namespace.
+type AgentAccessView struct {
+	Name            string                   `json:"name"`
+	ResourceVersion string                   `json:"resourceVersion"`
+	Spec            v1alpha1.AgentAccessSpec `json:"spec"`
+	Ready           bool                     `json:"ready"`
+	Reason          string                   `json:"reason,omitempty"`
+	Message         string                   `json:"message,omitempty"`
+	TokenSecret     string                   `json:"tokenSecret,omitempty"`
+	MintedAt        *metav1.Time             `json:"mintedAt,omitempty"`
 }
 
 // TeamList lists every Team.

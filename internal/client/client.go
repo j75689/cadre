@@ -209,6 +209,34 @@ func (c *Client) GetTeam(ctx context.Context, ns string) (*v1alpha1.Team, error)
 	return &team, err
 }
 
+// ListAgentAccesses lists a namespace's AgentAccesses, for its admins.
+func (c *Client) ListAgentAccesses(ctx context.Context, ns string) (*api.AgentAccessList, error) {
+	var list api.AgentAccessList
+	_, err := c.do(ctx, http.MethodGet, nsPath(ns)+"/agentaccesses", nil, &list)
+	return &list, err
+}
+
+// GetAgentAccess reads AgentAccess name, for its namespace's admins.
+func (c *Client) GetAgentAccess(ctx context.Context, ns, name string) (*api.AgentAccessView, error) {
+	var view api.AgentAccessView
+	_, err := c.do(ctx, http.MethodGet, nsPath(ns)+"/agentaccesses/"+url.PathEscape(name), nil, &view)
+	return &view, err
+}
+
+// PutAgentAccess makes AgentAccess name, or edits it from the version
+// req.ResourceVersion names.
+func (c *Client) PutAgentAccess(ctx context.Context, ns, name string, req api.AgentAccessRequest) (*api.AgentAccessView, error) {
+	var view api.AgentAccessView
+	_, err := c.do(ctx, http.MethodPut, nsPath(ns)+"/agentaccesses/"+url.PathEscape(name), req, &view)
+	return &view, err
+}
+
+// DeleteAgentAccess deletes AgentAccess name, revoking its access.
+func (c *Client) DeleteAgentAccess(ctx context.Context, ns, name string) error {
+	_, err := c.do(ctx, http.MethodDelete, nsPath(ns)+"/agentaccesses/"+url.PathEscape(name), nil, nil)
+	return err
+}
+
 // UpdateTeam replaces the spec of a namespace's Team with req's, from the
 // version req.ResourceVersion names.
 func (c *Client) UpdateTeam(ctx context.Context, ns string, req api.TeamRequest) (*v1alpha1.Team, error) {
