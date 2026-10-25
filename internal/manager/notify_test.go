@@ -450,7 +450,7 @@ func TestNotifyAfterAnotherServer(t *testing.T) {
 	if _, err := e.m.transition(ctx, key, task.NotifyDelivered{ID: stale.ID, To: []string{"a"}}); err != nil {
 		t.Fatal(err)
 	}
-	if _, _, err := e.m.notifyItem(ctx, key, stale, byName); err != nil {
+	if _, err := e.m.notifyItem(ctx, key, stale, byName); err != nil {
 		t.Fatal(err)
 	}
 	if na, nb := len(a.deliveries()), len(b.deliveries()); na != 0 || nb != 1 {
@@ -460,7 +460,7 @@ func TestNotifyAfterAnotherServer(t *testing.T) {
 	if _, err := e.m.transition(ctx, key, task.AckOutbox{IDs: []string{stale.ID}}); err != nil {
 		t.Fatal(err)
 	}
-	if done, _, err := e.m.notifyItem(ctx, key, stale, byName); err != nil || done {
+	if done, err := e.m.notifyItem(ctx, key, stale, byName); err != nil || done {
 		t.Errorf("a gone item: done %v, %v", done, err)
 	}
 	if na, nb := len(a.deliveries()), len(b.deliveries()); na != 0 || nb != 1 {
@@ -707,7 +707,7 @@ func TestNotifyFinishedBeforeTheClaim(t *testing.T) {
 		t.Fatalf("the record of the last Notifier left %+v", items)
 	}
 	nfs, _ := e.m.cfg.Notifiers.ListNotifiers(ctx, ns)
-	ack, _, err := e.m.notifyItem(ctx, key, stale, map[string]*v1alpha1.Notifier{"hook": &nfs[0]})
+	ack, err := e.m.notifyItem(ctx, key, stale, map[string]*v1alpha1.Notifier{"hook": &nfs[0]})
 	if err != nil || ack || len(rec.deliveries()) != 0 {
 		t.Fatalf("ack %v, %v, %d deliveries", ack, err, len(rec.deliveries()))
 	}
@@ -732,7 +732,7 @@ func TestNotifyTakenItemLeftByAnOlderServer(t *testing.T) {
 		t.Fatal(err)
 	}
 	nfs, _ := e.m.cfg.Notifiers.ListNotifiers(ctx, ns)
-	ack, _, err := e.m.notifyItem(ctx, key, stale, map[string]*v1alpha1.Notifier{"hook": &nfs[0]})
+	ack, err := e.m.notifyItem(ctx, key, stale, map[string]*v1alpha1.Notifier{"hook": &nfs[0]})
 	if err != nil || ack || len(rec.deliveries()) != 0 {
 		t.Fatalf("ack %v, %v, %d deliveries", ack, err, len(rec.deliveries()))
 	}
@@ -741,9 +741,9 @@ func TestNotifyTakenItemLeftByAnOlderServer(t *testing.T) {
 	}
 }
 
-// A dropped notification is told of only once the drop is written; the
-// turn ends either way.
-func TestNotifyDropIsToldAfterTheAck(t *testing.T) {
+// A dropped notification is told of only once the drop is written: a
+// failed drop removes nothing and tells nothing, and a later pass drops it.
+func TestNotifyDropIsToldAfterItsWrite(t *testing.T) {
 	bad := newReceiver(t)
 	bad.answer(http.StatusBadGateway)
 	e, recorded := notifyEnv(t, notifier("dead", bad.URL, nil, v1alpha1.NotifyQuestion))
@@ -757,8 +757,8 @@ func TestNotifyDropIsToldAfterTheAck(t *testing.T) {
 			t.Errorf("told of a drop that did not happen: %s", r)
 		}
 	}
-	if n := notifyItems(e.get(t, key))[0].Notify; n.SendingBy != "" {
-		t.Errorf("the turn outlived a failed drop: %+v", n)
+	if items := notifyItems(e.get(t, key)); len(items) != 1 {
+		t.Errorf("a failed drop removed the item: %+v", items)
 	}
 	e.m.store = e.store
 	if err := e.m.DeliverNotifications(ctx); err != nil {
@@ -766,6 +766,56 @@ func TestNotifyDropIsToldAfterTheAck(t *testing.T) {
 	}
 	if last := (*recorded)[len(*recorded)-1]; !strings.HasPrefix(last, "warn team-a/x NotificationDropped") {
 		t.Errorf("recorded %v", *recorded)
+	}
+}
+
+// afterWrite runs then, once, after the first status write through it.
+type afterWrite struct {
+	storage.Driver
+	n    *int
+	then func()
+}
+
+func (a afterWrite) UpdateTaskStatus(ctx context.Context, t *v1alpha1.Task) error {
+	err := a.Driver.UpdateTaskStatus(ctx, t)
+	if *a.n++; *a.n == 1 {
+		a.then()
+	}
+	return err
+}
+
+// Two servers dropping one expired notification tell of it once: the one
+// whose write removed it. The first claims it, its turn runs out, and the
+// second claims and drops it in one more write; the first's drop then
+// finds it gone, and writes nothing.
+func TestNotifyDropIsToldOnce(t *testing.T) {
+	rec := newReceiver(t)
+	e, recorded := notifyEnv(t, notifier("hook", rec.URL, nil, v1alpha1.NotifyQuestion))
+	key := e.addTask(t, "x", v1alpha1.AssigneeAgent)
+	e.question(t, key)
+	e.clock.add(NotifyTTL + time.Minute)
+	var first, second int
+	other := New(countWrites{e.store, &second}, e.m.cfg, WithClock(e.clock.now))
+	e.m.store = afterWrite{e.store, &first, func() {
+		e.clock.add(notifyTurn(1) + time.Second)
+		if err := other.DeliverNotifications(ctx); err != nil {
+			t.Error(err)
+		}
+	}}
+	if err := e.m.DeliverNotifications(ctx); err != nil {
+		t.Fatal(err)
+	}
+	var told int
+	for _, r := range *recorded {
+		if strings.Contains(r, "NotificationDropped") {
+			told++
+		}
+	}
+	if told != 1 || first != 1 || second != 2 || len(rec.deliveries()) != 0 {
+		t.Errorf("told %d times; writes: first %d, second %d; %d deliveries", told, first, second, len(rec.deliveries()))
+	}
+	if items := notifyItems(e.get(t, key)); len(items) != 0 {
+		t.Errorf("items %+v", items)
 	}
 }
 
