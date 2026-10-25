@@ -72,7 +72,7 @@ type (
 		Phase     []v1alpha1.Phase `json:"phase,omitempty" jsonschema:"only tasks in these phases: Todo, Running, Waiting, Review, Done, Cancelled, Failed"`
 		Parent    string           `json:"parent,omitempty" jsonschema:"only the subtasks of this task, by name"`
 		Offset    int              `json:"offset,omitempty"`
-		Limit     int              `json:"limit,omitempty" jsonschema:"at most this many, 50 by default and 500 at most"`
+		Limit     int              `json:"limit,omitempty" jsonschema:"at most this many, 100 by default and 500 at most"`
 	}
 	boardListOut struct {
 		Tasks  []v1alpha1.Task `json:"tasks"`

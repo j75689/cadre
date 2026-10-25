@@ -267,6 +267,11 @@ func TestBoardReads(t *testing.T) {
 		}
 	}
 
+	// A reply the task's phase does not take says why, as the API does.
+	if res := call("reply", map[string]any{"namespace": ns, "task": "x", "body": "too soon"}, nil); !res.IsError || !strings.Contains(text(res), "reply to a Todo task") {
+		t.Errorf("reply to a task not waiting: %s", text(res))
+	}
+
 	var created v1alpha1.Task
 	call("create_task", map[string]any{"namespace": ns, "title": "labelled", "labels": []string{"bug"}}, &created)
 	if len(created.Spec.Labels) != 1 || created.Spec.Labels[0] != "bug" {

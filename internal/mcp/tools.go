@@ -10,7 +10,6 @@ import (
 	"github.com/j75689/cadre/internal/httpjson"
 	"github.com/j75689/cadre/internal/manager"
 	"github.com/j75689/cadre/internal/storage"
-	"github.com/j75689/cadre/internal/task"
 )
 
 // Messages a tool answers with when it cannot act. They are tool errors
@@ -199,7 +198,9 @@ func failure(log *slog.Logger, err error, run bool) *sdk.CallToolResult {
 		r.Meta = sdk.Meta{MetaRunEnded: true}
 		return r
 	case code == httpjson.CodeInvalidTransition:
-		msg = "Not allowed in the task's phase: " + task.ErrInvalidTransition.Error()
+		// The reason says what to do, as an Answer to a task waiting for
+		// an approval says to approve or deny it.
+		msg = "Not allowed in the task's phase: " + err.Error()
 	case code == httpjson.CodeInvalid:
 		msg = "Invalid call: " + err.Error()
 	case code == httpjson.CodeNotFound:
