@@ -668,3 +668,40 @@ func testLogKeys(t *testing.T, s *suite) {
 		t.Fatalf("keys of a malformed stream: %v", err)
 	}
 }
+
+// A Team's spec is written conditionally on the version, and leaves its
+// status alone; another driver reads both back.
+func testTeamSpecWritesLeaveStatusAlone(t *testing.T, s *suite) {
+	d := s.open()
+	team := &v1alpha1.Team{ObjectMeta: metav1.ObjectMeta{Name: v1alpha1.TeamName, Namespace: s.ns}, Spec: v1alpha1.TeamSpec{DisplayName: "Backend", MaxConcurrentRuns: 1}}
+	if err := d.CreateTeam(s.ctx, team); err != nil {
+		t.Fatalf("create team: %v", err)
+	}
+	if err := s.writeTeam(d, func(cur *v1alpha1.Team) (v1alpha1.TeamStatus, error) {
+		st := cur.Status
+		st.NextNumber = 7
+		return st, nil
+	}); err != nil {
+		t.Fatalf("team status write: %v", err)
+	}
+	stale := s.team(d)
+	edit := stale.DeepCopy()
+	edit.Spec.DisplayName = "Platform"
+	edit.Spec.Roles = []v1alpha1.TeamRole{{Role: v1alpha1.RoleAdmin, Subjects: []v1alpha1.RoleSubject{{Kind: v1alpha1.SubjectUser, Name: "alice@example.test"}}}}
+	edit.Status.NextNumber = 99 // not written by a spec write
+	if err := d.UpdateTeamSpec(s.ctx, edit); err != nil {
+		t.Fatalf("team spec write: %v", err)
+	}
+	got := s.team(s.open())
+	if got.Spec.DisplayName != "Platform" || len(got.Spec.Roles) != 1 || got.Spec.Roles[0].Subjects[0].Name != "alice@example.test" || got.Status.NextNumber != 7 {
+		t.Errorf("team: spec %+v, status %+v; want the spec written and the status untouched", got.Spec, got.Status)
+	}
+	// A write from the version read before it conflicts.
+	stale.Spec.DisplayName = "lost"
+	if err := d.UpdateTeamSpec(s.ctx, stale); !errors.Is(err, storage.ErrConflict) {
+		t.Errorf("a spec write from a stale version: %v, want ErrConflict", err)
+	}
+	if got := s.team(d); got.Spec.DisplayName != "Platform" {
+		t.Errorf("display name %q after a refused write", got.Spec.DisplayName)
+	}
+}

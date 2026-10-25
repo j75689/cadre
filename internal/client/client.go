@@ -196,6 +196,21 @@ func (c *Client) InitTeam(ctx context.Context, ns string, req api.TeamRequest) (
 	return &team, err
 }
 
+// GetTeam reads a namespace's Team, as the caller may see it.
+func (c *Client) GetTeam(ctx context.Context, ns string) (*v1alpha1.Team, error) {
+	var team v1alpha1.Team
+	_, err := c.do(ctx, http.MethodGet, nsPath(ns)+"/team", nil, &team)
+	return &team, err
+}
+
+// UpdateTeam replaces the spec of a namespace's Team with req's, from the
+// version req.ResourceVersion names.
+func (c *Client) UpdateTeam(ctx context.Context, ns string, req api.TeamRequest) (*v1alpha1.Team, error) {
+	var team v1alpha1.Team
+	_, err := c.do(ctx, http.MethodPut, nsPath(ns)+"/team", req, &team)
+	return &team, err
+}
+
 // ListTeams lists every Team.
 func (c *Client) ListTeams(ctx context.Context) (*api.TeamList, error) {
 	var out api.TeamList

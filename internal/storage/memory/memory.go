@@ -242,6 +242,26 @@ func (d *Driver) UpdateTeamStatus(_ context.Context, team *v1alpha1.Team) error 
 	return nil
 }
 
+// UpdateTeamSpec implements storage.Objects.
+func (d *Driver) UpdateTeamSpec(_ context.Context, team *v1alpha1.Team) error {
+	d.b.mu.Lock()
+	defer d.b.mu.Unlock()
+	cur, ok := d.b.teams[team.Namespace]
+	if !ok {
+		return notFound("team", storage.Key{Namespace: team.Namespace, Name: v1alpha1.TeamName})
+	}
+	if cur.ResourceVersion != team.ResourceVersion {
+		return fmt.Errorf("team %s: %w", team.Namespace, storage.ErrConflict)
+	}
+	stored := cur.DeepCopy()
+	team.Spec.DeepCopyInto(&stored.Spec)
+	stored.ResourceVersion = d.b.nextVersion()
+	d.b.teams[team.Namespace] = stored
+	team.ResourceVersion = stored.ResourceVersion
+	team.Status = *stored.Status.DeepCopy()
+	return nil
+}
+
 // Append implements storage.Log.
 func (d *Driver) Append(_ context.Context, stream, key string, data []byte) error {
 	if err := errors.Join(storage.ValidateStream(stream), storage.ValidateKey(key)); err != nil {

@@ -28,6 +28,7 @@ const (
 	CodeInvalidTransition = "invalid_transition" // 409: not allowed from the task's phase
 	CodeInProgress        = "in_progress"        // 409: being done by another request
 	CodeEntryPending      = "entry_pending"      // 409: the entry waited on is not in the thread yet
+	CodeConflict          = "conflict"           // 409: the object changed since it was read; read it again
 	CodeUnauthenticated   = "unauthenticated"    // 401: a valid credential is required
 	CodeForbidden         = "forbidden"          // 403: not this caller's to do
 	CodeNoRole            = "no_role"            // 403: the caller's role on the team does not allow it
@@ -119,6 +120,8 @@ func Classify(err error) string {
 		return CodeInProgress
 	case errors.Is(err, manager.ErrEntryPending):
 		return CodeEntryPending
+	case errors.Is(err, manager.ErrTeamChanged):
+		return CodeConflict
 	case errors.Is(err, task.ErrForbidden):
 		return CodeForbidden
 	case errors.Is(err, manager.ErrInvalid), errors.Is(err, task.ErrInvalidEvent),
@@ -154,6 +157,8 @@ func Fail(w http.ResponseWriter, log *slog.Logger, err error) {
 		WriteError(w, http.StatusBadRequest, code, err.Error())
 	case CodeEntryPending:
 		WriteError(w, http.StatusConflict, code, manager.ErrEntryPending.Error())
+	case CodeConflict:
+		WriteError(w, http.StatusConflict, code, manager.ErrTeamChanged.Error())
 	case CodeForbidden:
 		WriteError(w, http.StatusForbidden, code, task.ErrForbidden.Error())
 	case CodeInProgress:

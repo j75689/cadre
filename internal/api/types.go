@@ -4,6 +4,8 @@
 package api
 
 import (
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+
 	v1alpha1 "github.com/j75689/cadre/api/v1alpha1"
 	"github.com/j75689/cadre/internal/manager"
 )
@@ -92,10 +94,21 @@ type AgentSummary struct {
 	Message string `json:"message,omitempty"`
 }
 
-// TeamRequest opts a namespace in.
+// TeamRequest opts a namespace in, or edits its Team: its spec, replaced
+// whole. An edit carries the resourceVersion of the Team it was made from,
+// and fails with 409 conflict if the Team changed since; without one, the
+// request creates the Team, and is 409 already_exists if there is one.
 type TeamRequest struct {
-	DisplayName       string `json:"displayName,omitempty"`
-	MaxConcurrentRuns int32  `json:"maxConcurrentRuns,omitempty"`
+	DisplayName       string              `json:"displayName,omitempty"`
+	MaxConcurrentRuns int32               `json:"maxConcurrentRuns,omitempty"`
+	ArchiveAfter      *metav1.Duration    `json:"archiveAfter,omitempty"`
+	Roles             []v1alpha1.TeamRole `json:"roles,omitempty"`
+	ResourceVersion   string              `json:"resourceVersion,omitempty"`
+}
+
+// Spec is the Team spec r asks for.
+func (r TeamRequest) Spec() v1alpha1.TeamSpec {
+	return v1alpha1.TeamSpec{DisplayName: r.DisplayName, MaxConcurrentRuns: r.MaxConcurrentRuns, ArchiveAfter: r.ArchiveAfter, Roles: r.Roles}
 }
 
 // TeamList lists every Team.
