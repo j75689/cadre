@@ -6,23 +6,29 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	corev1 "k8s.io/api/core/v1"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/apimachinery/pkg/runtime/schema"
 	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
 	"k8s.io/client-go/tools/events"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
+	"sigs.k8s.io/controller-runtime/pkg/client/interceptor"
 
 	v1alpha1 "github.com/j75689/cadre/api/v1alpha1"
+	"github.com/j75689/cadre/internal/api"
 	"github.com/j75689/cadre/internal/storage"
 	"github.com/j75689/cadre/internal/token"
 )
 
-// rotateEnv is AgentAccess bot in team-a with a minted token, its Secret
-// holding another key beside the token, in a fake cluster.
-func rotateEnv(t *testing.T) (client.Client, *events.FakeRecorder, string) {
+// rotateEnv is AgentAccess bot in team-a, a Team's namespace, with a
+// minted token, its Secret holding another key beside the token, in a fake
+// cluster, its calls through funcs.
+func rotateEnv(t *testing.T, funcs ...interceptor.Funcs) (client.Client, *events.FakeRecorder, string) {
 	t.Helper()
 	scheme := runtime.NewScheme()
 	if err := clientgoscheme.AddToScheme(scheme); err != nil {
@@ -41,8 +47,17 @@ func rotateEnv(t *testing.T) (client.Client, *events.FakeRecorder, string) {
 	sec := &corev1.Secret{ObjectMeta: metav1.ObjectMeta{Namespace: "team-a", Name: "bot.access-token", OwnerReferences: []metav1.OwnerReference{
 		{APIVersion: v1alpha1.GroupVersion.String(), Kind: "AgentAccess", Name: "bot", UID: "bot-uid", Controller: &yes},
 	}}, Data: map[string][]byte{tokenKey: []byte(old), "note": []byte("kept by an operator")}}
-	c := fake.NewClientBuilder().WithScheme(scheme).WithObjects(aa, sec).WithStatusSubresource(&v1alpha1.AgentAccess{}).Build()
-	return c, events.NewFakeRecorder(10), old
+	team := &v1alpha1.Team{ObjectMeta: metav1.ObjectMeta{Namespace: "team-a", Name: v1alpha1.TeamName}}
+	b := fake.NewClientBuilder().WithScheme(scheme).WithObjects(aa, sec, team).WithStatusSubresource(&v1alpha1.AgentAccess{})
+	if len(funcs) > 0 {
+		b = b.WithInterceptorFuncs(funcs[0])
+	}
+	return b.Build(), events.NewFakeRecorder(10), old
+}
+
+// store is the API's store on c, its rotations' hooks settable.
+func store(c client.Client, rec *events.FakeRecorder) accessStore {
+	return AgentAccessStore(c, c, rec).(accessStore)
 }
 
 func live(t *testing.T, c client.Client) (secretToken, statusHash, note string) {
@@ -59,8 +74,9 @@ func live(t *testing.T, c client.Client) (secretToken, statusHash, note string) 
 // A rotation replaces the token, and only it, and its hash: the token it
 // answers with is the live one, and an Event names who rotated it.
 func TestRotate(t *testing.T) {
+	t.Parallel()
 	c, rec, old := rotateEnv(t)
-	tok, err := AgentAccessStore(c, c, rec).RotateAgentAccessToken(context.Background(), "team-a", "bot", "lead@example.test")
+	tok, err := store(c, rec).RotateAgentAccessToken(context.Background(), "team-a", "bot", "lead@example.test")
 	if err != nil || tok == old {
 		t.Fatalf("rotate: %q, %v", tok, err)
 	}
@@ -75,11 +91,12 @@ func TestRotate(t *testing.T) {
 // Two rotations at once, both having read the Secret: the Secret's version
 // lets one through, and the other is a conflict; the one answered is live.
 func TestRotateTwiceAtOnce(t *testing.T) {
+	t.Parallel()
 	c, rec, _ := rotateEnv(t)
 	var both sync.WaitGroup
 	both.Add(2)
-	afterSecretRead = func() { both.Done(); both.Wait() }
-	t.Cleanup(func() { afterSecretRead = func() {} })
+	s := store(c, rec)
+	s.rot.afterSecretRead = func() { both.Done(); both.Wait() }
 	type result struct {
 		tok string
 		err error
@@ -87,7 +104,7 @@ func TestRotateTwiceAtOnce(t *testing.T) {
 	results := make(chan result, 2)
 	for range 2 {
 		go func() {
-			tok, err := AgentAccessStore(c, c, rec).RotateAgentAccessToken(context.Background(), "team-a", "bot", "someone")
+			tok, err := s.RotateAgentAccessToken(context.Background(), "team-a", "bot", "someone")
 			results <- result{tok, err}
 		}()
 	}
@@ -111,9 +128,11 @@ func TestRotateTwiceAtOnce(t *testing.T) {
 // writes, from the new Secret: the rotation is done all the same, and says
 // so, Event included.
 func TestRotateWithAResyncBetween(t *testing.T) {
+	t.Parallel()
 	c, rec, _ := rotateEnv(t)
-	beforeStatusWrite = func() {
-		beforeStatusWrite = func() {}
+	s := store(c, rec)
+	s.rot.beforeStatusWrite = func() {
+		s.rot.beforeStatusWrite = nil
 		var sec corev1.Secret
 		var aa v1alpha1.AgentAccess
 		if err := errors.Join(c.Get(context.Background(), client.ObjectKey{Namespace: "team-a", Name: "bot.access-token"}, &sec),
@@ -126,8 +145,7 @@ func TestRotateWithAResyncBetween(t *testing.T) {
 			t.Error(err)
 		}
 	}
-	t.Cleanup(func() { beforeStatusWrite = func() {} })
-	tok, err := AgentAccessStore(c, c, rec).RotateAgentAccessToken(context.Background(), "team-a", "bot", "lead@example.test")
+	tok, err := s.RotateAgentAccessToken(context.Background(), "team-a", "bot", "lead@example.test")
 	if err != nil {
 		t.Fatalf("rotate: %v", err)
 	}
@@ -147,15 +165,16 @@ func TestRotateWithAResyncBetween(t *testing.T) {
 // A Secret deleted by hand while a rotation runs is a conflict naming the
 // Secret, not the AgentAccess not found.
 func TestRotateWithTheSecretGone(t *testing.T) {
+	t.Parallel()
 	c, rec, _ := rotateEnv(t)
-	afterSecretRead = func() {
-		afterSecretRead = func() {}
+	s := store(c, rec)
+	s.rot.afterSecretRead = func() {
+		s.rot.afterSecretRead = nil
 		if err := c.Delete(context.Background(), &corev1.Secret{ObjectMeta: metav1.ObjectMeta{Namespace: "team-a", Name: "bot.access-token"}}); err != nil {
 			t.Error(err)
 		}
 	}
-	t.Cleanup(func() { afterSecretRead = func() {} })
-	_, err := AgentAccessStore(c, c, rec).RotateAgentAccessToken(context.Background(), "team-a", "bot", "someone")
+	_, err := s.RotateAgentAccessToken(context.Background(), "team-a", "bot", "someone")
 	if !errors.Is(err, storage.ErrConflict) || errors.Is(err, storage.ErrNotFound) || !strings.Contains(err.Error(), "token Secret bot.access-token") {
 		t.Fatalf("rotate: %v", err)
 	}
@@ -164,9 +183,80 @@ func TestRotateWithTheSecretGone(t *testing.T) {
 // One the reconciler would not mint for, its name made before the rule,
 // gets no token through the API either.
 func TestRotateAnInvalidName(t *testing.T) {
+	t.Parallel()
 	c, rec, _ := rotateEnv(t)
-	_, err := AgentAccessStore(c, c, rec).RotateAgentAccessToken(context.Background(), "team-a", "bot.v2", "someone")
+	_, err := store(c, rec).RotateAgentAccessToken(context.Background(), "team-a", "bot.v2", "someone")
 	if !errors.Is(err, storage.ErrInvalid) || !strings.Contains(err.Error(), "DNS labels") {
+		t.Fatalf("rotate: %v", err)
+	}
+}
+
+// A second rotation made, whole, while the first waits to write the
+// status: the first, its token no longer the Secret's, is a conflict, and
+// leaves the second's hash in place, so the second's token works.
+func TestRotateOvertaken(t *testing.T) {
+	t.Parallel()
+	c, rec, _ := rotateEnv(t)
+	first := store(c, rec)
+	var second string
+	first.rot.beforeStatusWrite = func() {
+		var err error
+		if second, err = store(c, rec).RotateAgentAccessToken(context.Background(), "team-a", "bot", "other"); err != nil {
+			t.Errorf("the second rotation: %v", err)
+		}
+	}
+	if _, err := first.RotateAgentAccessToken(context.Background(), "team-a", "bot", "someone"); !errors.Is(err, storage.ErrConflict) {
+		t.Fatalf("the first rotation: %v, want a conflict", err)
+	}
+	if secret, hash, _ := live(t, c); secret != second || hash != token.Hash(second) {
+		t.Fatalf("after: Secret %q, hash %q, want the second's %q", secret, hash, second)
+	}
+}
+
+// A status others keep changing, past statusWait: a conflict that says the
+// new token is in the Secret, and the old one stops within a minute.
+func TestRotateStatusKeepsChanging(t *testing.T) {
+	t.Parallel()
+	gr := schema.GroupResource{Group: "cadre.dev", Resource: "agentaccesses"}
+	c, rec, _ := rotateEnv(t, interceptor.Funcs{SubResourceUpdate: func(context.Context, client.Client, string, client.Object, ...client.SubResourceUpdateOption) error {
+		return apierrors.NewConflict(gr, "bot", errors.New("changed"))
+	}})
+	start := time.Now()
+	_, err := store(c, rec).RotateAgentAccessToken(context.Background(), "team-a", "bot", "someone")
+	if !errors.Is(err, storage.ErrConflict) || !strings.Contains(err.Error(), "the new token is in the Secret bot.access-token") || !strings.Contains(err.Error(), "stops within a minute") {
+		t.Fatalf("rotate: %v", err)
+	}
+	if took := time.Since(start); took < statusWait || took > 3*statusWait {
+		t.Errorf("gave up after %s, want about %s", took, statusWait)
+	}
+}
+
+// cadre-server refused the Secret's write: a missing verb on Secrets, not
+// on AgentAccesses.
+func TestRotateSecretsForbidden(t *testing.T) {
+	t.Parallel()
+	gr := schema.GroupResource{Resource: "secrets"}
+	c, rec, _ := rotateEnv(t, interceptor.Funcs{Update: func(ctx context.Context, c client.WithWatch, obj client.Object, opts ...client.UpdateOption) error {
+		if _, ok := obj.(*corev1.Secret); ok {
+			return apierrors.NewForbidden(gr, obj.GetName(), errors.New("no"))
+		}
+		return c.Update(ctx, obj, opts...)
+	}})
+	_, err := store(c, rec).RotateAgentAccessToken(context.Background(), "team-a", "bot", "someone")
+	if !errors.Is(err, api.ErrNotPermitted) || !strings.Contains(err.Error(), "update secrets") {
+		t.Fatalf("rotate: %v", err)
+	}
+}
+
+// No token is minted outside a Team's namespace, as the reconciler mints
+// none there.
+func TestRotateWithoutATeam(t *testing.T) {
+	t.Parallel()
+	c, rec, _ := rotateEnv(t)
+	if err := c.Delete(context.Background(), &v1alpha1.Team{ObjectMeta: metav1.ObjectMeta{Namespace: "team-a", Name: v1alpha1.TeamName}}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store(c, rec).RotateAgentAccessToken(context.Background(), "team-a", "bot", "someone"); !errors.Is(err, storage.ErrInvalid) || !strings.Contains(err.Error(), "has no Team") {
 		t.Fatalf("rotate: %v", err)
 	}
 }

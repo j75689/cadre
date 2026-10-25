@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strings"
 	"time"
 
 	corev1 "k8s.io/api/core/v1"
@@ -36,6 +37,15 @@ func TokenSecretName(runner string) string { return runner + "-token" }
 // AccessTokenSecretName is the Secret an AgentAccess's minted token is kept
 // in: v1alpha1's, which the CLI names too.
 func AccessTokenSecretName(access string) string { return v1alpha1.AccessTokenSecretName(access) }
+
+// resource is the owner's API resource, for errors.
+func (o tokenOwner) resource() string {
+	k := strings.ToLower(o.kind)
+	if strings.HasSuffix(k, "s") {
+		return k + "es"
+	}
+	return k + "s"
+}
 
 // tokenOwner is an object Cadre mints a token for.
 type tokenOwner struct {
@@ -133,20 +143,43 @@ func createToken(ctx context.Context, c client.Client, o tokenOwner, tok string)
 	return c.Create(ctx, s)
 }
 
-// rotateToken mints a new token for o into its Secret, replacing what it
-// held, and writes its hash into o's status: what the reconciler does when
-// the Secret is deleted, done at once, so it then finds nothing to do. The
-// old token stops when the status changes.
+// A rotator mints a new token for a token owner into its Secret, replacing
+// what it held, and writes its hash into the owner's status: what the
+// reconciler does when the Secret is deleted, done at once, so it then
+// finds nothing to do. The old token stops when the status changes.
 //
 // The Secret, read fresh, is the fence: it is written first, conditionally
 // on the version read, so of two rotations at once one wins and the other
 // is a conflict, and a lost status write is redone from it by the
-// reconciler. The status write then converges on it: on a conflict o is
-// read again, through fresh, into o.obj, and is done if it holds the hash
-// already (the reconciler took it from the Secret), or written again, three
-// tries at most. Last, the Secret must still hold the token: another
-// rotation may have replaced it since. Every lost race is ErrConflict.
-func rotateToken(ctx context.Context, c client.Client, fresh client.Reader, o tokenOwner) (string, error) {
+// reconciler. The status write then converges on it, retried with a short
+// backoff for statusWait: on a conflict the owner and its Secret are read
+// again, fresh; if the Secret no longer holds the token another rotation
+// won, and this one is a conflict; if the status holds the hash already
+// (the reconciler took it from the Secret) it is done. Last, the Secret
+// must still hold the token. Every lost race is ErrConflict.
+type rotator struct {
+	c     client.Client
+	fresh client.Reader
+	// Test hooks, after the Secret is read and before the status is
+	// written; nil in production.
+	afterSecretRead, beforeStatusWrite func()
+}
+
+// statusWait bounds how long a rotation keeps writing a status others
+// keep changing.
+const statusWait = 2 * time.Second
+
+// opError is an API server's answer to verb on resource, for the caller to
+// tell a token's Secret from its owner.
+type opError struct {
+	resource, verb string
+	err            error
+}
+
+func (e *opError) Error() string { return e.verb + " " + e.resource + ": " + e.err.Error() }
+func (e *opError) Unwrap() error { return e.err }
+
+func (r rotator) rotate(ctx context.Context, o tokenOwner) (string, error) {
 	tok, hash, err := token.Mint(o.obj.GetNamespace(), o.obj.GetName())
 	if err != nil {
 		return "", err
@@ -154,58 +187,86 @@ func rotateToken(ctx context.Context, c client.Client, fresh client.Reader, o to
 	// What it answers names the Secret only: the API server's own words
 	// stay here.
 	meanwhile := fmt.Errorf("the token Secret %s changed meanwhile, rotated or edited by someone else: ask them for the token, or rotate it again: %w", o.secret, storage.ErrConflict)
-	sec, err := ownedSecret(ctx, fresh, o)
-	if err != nil {
-		return "", err
+	holds := func() (bool, error) {
+		cur, err := ownedSecret(ctx, r.fresh, o)
+		if err != nil {
+			return false, wrapOp("secrets", "get", err)
+		}
+		return cur != nil && string(cur.Data[tokenKey]) == tok, nil
 	}
-	afterSecretRead()
+	sec, err := ownedSecret(ctx, r.fresh, o)
+	if err != nil {
+		return "", wrapOp("secrets", "get", err)
+	}
+	if r.afterSecretRead != nil {
+		r.afterSecretRead()
+	}
+	verb := "update"
 	if sec == nil {
-		err = createToken(ctx, c, o, tok)
+		verb = "create"
+		err = createToken(ctx, r.c, o, tok)
 	} else {
 		if sec.Data == nil {
 			sec.Data = map[string][]byte{}
 		}
 		sec.Data[tokenKey] = []byte(tok) // the other keys stay as they are
-		err = c.Update(ctx, sec)
+		err = r.c.Update(ctx, sec)
 	}
 	switch {
 	case apierrors.IsConflict(err), apierrors.IsAlreadyExists(err), apierrors.IsNotFound(err):
 		return "", meanwhile
 	case err != nil:
-		return "", err
+		return "", &opError{"secrets", verb, err}
 	}
-	beforeStatusWrite()
+	if r.beforeStatusWrite != nil {
+		r.beforeStatusWrite()
+	}
 	key := client.ObjectKeyFromObject(o.obj)
-	for try := 0; ; try++ {
-		if o.status.TokenHash == hash {
-			break
-		}
+	deadline := time.Now().Add(statusWait)
+	for pause := 20 * time.Millisecond; o.status.TokenHash != hash; pause = min(2*pause, 200*time.Millisecond) {
 		setToken(o, hash)
-		err := c.Status().Update(ctx, o.obj)
-		if err == nil {
-			break
+		err := r.c.Status().Update(ctx, o.obj)
+		switch {
+		case err == nil:
+			continue // the status has the hash: the loop ends
+		case !apierrors.IsConflict(err):
+			return "", &opError{o.resource(), "update the status of", err}
+		case time.Now().After(deadline):
+			return "", fmt.Errorf("the new token is in the Secret %s, but the %s kept changing while its hash was written: the old token stops within a minute, when the reconciler takes the new one's hash from the Secret: %w", o.secret, o.kind, storage.ErrConflict)
 		}
-		if !apierrors.IsConflict(err) || try == 2 {
-			if apierrors.IsConflict(err) {
-				return "", fmt.Errorf("the %s kept changing while its token was rotated; try again: %w", o.kind, storage.ErrConflict)
-			}
-			return "", err
+		select {
+		case <-ctx.Done():
+			return "", ctx.Err()
+		case <-time.After(pause):
 		}
-		if err := fresh.Get(ctx, key, o.obj); err != nil {
+		if err := r.fresh.Get(ctx, key, o.obj); err != nil {
+			return "", &opError{o.resource(), "get", err}
+		}
+		switch ok, err := holds(); {
+		case err != nil:
 			return "", err
+		case !ok:
+			return "", meanwhile // another rotation won: its hash stands
 		}
 	}
-	switch cur, err := ownedSecret(ctx, fresh, o); {
+	switch ok, err := holds(); {
 	case err != nil:
 		return "", err
-	case cur == nil || string(cur.Data[tokenKey]) != tok:
+	case !ok:
 		return "", meanwhile
 	}
 	return tok, nil
 }
 
-// Test hooks: a rotation's Secret read and its status write.
-var afterSecretRead, beforeStatusWrite = func() {}, func() {}
+// wrapOp is err, from verb on resource, as an *opError, unless it is not
+// the API server's answer.
+func wrapOp(resource, verb string, err error) error {
+	var notOwned *notOwnedError
+	if errors.As(err, &notOwned) {
+		return err
+	}
+	return &opError{resource, verb, err}
+}
 
 // ErrNotOwned means a Secret of a token's name is not its owner's.
 var ErrNotOwned = errors.New("not the owner's token")
