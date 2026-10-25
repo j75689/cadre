@@ -204,7 +204,7 @@ func (s *Server) listTasks(w http.ResponseWriter, r *http.Request) {
 		httpjson.WriteError(w, http.StatusBadRequest, httpjson.CodeInvalid, err.Error())
 		return
 	}
-	for _, name := range []string{"parent", "offset", "limit"} {
+	for _, name := range []string{"parent", "number", "offset", "limit"} {
 		if n := len(query[name]); n > 1 {
 			httpjson.WriteError(w, http.StatusBadRequest, httpjson.CodeInvalid, fmt.Sprintf("%s given %d times: at most once", name, n))
 			return
@@ -222,10 +222,21 @@ func (s *Server) listTasks(w http.ResponseWriter, r *http.Request) {
 	if q.Limit, ok = intParam(w, query, "limit"); !ok {
 		return
 	}
+	if v := query.Get("number"); v != "" {
+		n, err := strconv.ParseInt(v, 10, 64)
+		if err != nil || n < 1 {
+			httpjson.WriteError(w, http.StatusBadRequest, httpjson.CodeInvalid, "number must be a task number, an integer of at least 1")
+			return
+		}
+		q.Number = n
+	}
 	// The response says which limit applied.
 	q.Limit = ClampLimit(q.Limit)
-	items, err := s.m.ListTasks(r.Context(), q)
-	if err != nil {
+	items, err := s.tasks(r.Context(), q)
+	switch {
+	case err != nil && r.Context().Err() != nil:
+		return // the caller went away during a lookup's wait: nobody to answer
+	case err != nil:
 		httpjson.Fail(w, s.log, err)
 		return
 	}
@@ -233,6 +244,25 @@ func (s *Server) listTasks(w http.ResponseWriter, r *http.Request) {
 		items = []v1alpha1.Task{}
 	}
 	httpjson.Write(w, http.StatusOK, TaskList{Items: items, Offset: q.Offset, Limit: q.Limit})
+}
+
+// tasks answers a list query. One by number is the task the Task Manager
+// finds by it, which allows for the index's lag, with the query's other
+// filters and its page applied: zero tasks or one.
+func (s *Server) tasks(ctx context.Context, q storage.Query) ([]v1alpha1.Task, error) {
+	if q.Number == 0 {
+		return s.m.ListTasks(ctx, q)
+	}
+	t, err := s.m.TaskByNumber(ctx, q.Namespace, q.Number)
+	switch {
+	case errors.Is(err, storage.ErrNotFound):
+		return nil, nil
+	case err != nil:
+		return nil, err
+	case !q.Matches(t):
+		return nil, nil
+	}
+	return storage.Page(q, []v1alpha1.Task{*t}), nil
 }
 
 // ValidatePhases refuses a phase that is not a Task's, naming the ones

@@ -38,7 +38,8 @@ func CompareTasks(a, b *v1alpha1.Task) int {
 // Matches reports whether t is selected by q.
 func (q Query) Matches(t *v1alpha1.Task) bool {
 	return t.Namespace == q.Namespace && (len(q.Phases) == 0 || slices.Contains(q.Phases, t.Status.Phase)) &&
-		(q.Parent == "" || t.Spec.ParentRef != nil && t.Spec.ParentRef.Name == q.Parent)
+		(q.Parent == "" || t.Spec.ParentRef != nil && t.Spec.ParentRef.Name == q.Parent) &&
+		(q.Number == 0 || t.Status.Number == q.Number)
 }
 
 // Page applies q's offset and limit to sorted results. q must be valid.

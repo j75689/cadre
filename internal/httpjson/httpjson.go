@@ -120,7 +120,7 @@ func Classify(err error) string {
 		return CodeInProgress
 	case errors.Is(err, manager.ErrEntryPending):
 		return CodeEntryPending
-	case errors.Is(err, manager.ErrTeamChanged):
+	case errors.Is(err, manager.ErrTeamChanged), errors.Is(err, manager.ErrAmbiguous):
 		return CodeConflict
 	case errors.Is(err, task.ErrForbidden):
 		return CodeForbidden
@@ -158,7 +158,11 @@ func Fail(w http.ResponseWriter, log *slog.Logger, err error) {
 	case CodeEntryPending:
 		WriteError(w, http.StatusConflict, code, manager.ErrEntryPending.Error())
 	case CodeConflict:
-		WriteError(w, http.StatusConflict, code, manager.ErrTeamChanged.Error())
+		msg := manager.ErrTeamChanged.Error()
+		if a := (*manager.AmbiguousNumber)(nil); errors.As(err, &a) {
+			msg = a.Error() // names the tasks, which the caller may see
+		}
+		WriteError(w, http.StatusConflict, code, msg)
 	case CodeForbidden:
 		WriteError(w, http.StatusForbidden, code, task.ErrForbidden.Error())
 	case CodeInProgress:

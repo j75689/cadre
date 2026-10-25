@@ -2,6 +2,7 @@ package mcp
 
 import (
 	"context"
+	"errors"
 	"log/slog"
 
 	sdk "github.com/modelcontextprotocol/go-sdk/mcp"
@@ -207,6 +208,14 @@ func failure(log *slog.Logger, err error, run bool) *sdk.CallToolResult {
 		msg = "Not found."
 	case code == httpjson.CodeAlreadyExists:
 		msg = "Already exists."
+	case errors.Is(err, manager.ErrAmbiguous):
+		// Its own message names the tasks; what wraps it stays here.
+		var a *manager.AmbiguousNumber
+		if errors.As(err, &a) {
+			msg = a.Error()
+		} else {
+			msg = manager.ErrAmbiguous.Error()
+		}
 	case code == httpjson.CodeEntryPending:
 		msg = manager.ErrEntryPending.Error()
 	default:
