@@ -78,7 +78,30 @@ func TestTaskLifeFromTheCLI(t *testing.T) {
 		}
 	}
 
-	mustContain(t, cadre(t, srv.URL, "team", "init", "--max-concurrent-runs", "2"), "team team-a ready, 2 concurrent runs")
+	mustContain(t, cadre(t, srv.URL, "team", "init", "--max-concurrent-runs", "2", "--role", "admin=user:lead@example.test"), "team team-a ready, 2 concurrent runs")
+	// set changes what it is told to, and its roles replace the Team's.
+	mustContain(t, cadre(t, srv.URL, "team", "set", "--display-name", "Team A", "--archive-after", "720h",
+		"--role", "admin=user:lead@example.test", "--role", "member=group:backend,user:dev@example.test", "--role", "admin=group:platform"),
+		"team team-a updated: 2 concurrent runs, 2 roles")
+	team, err := m.LiveTeam(ctx, "team-a")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if s := team.Spec; s.DisplayName != "Team A" || s.MaxConcurrentRuns != 2 || s.ArchiveAfter.Duration != 720*time.Hour ||
+		len(s.Roles) != 2 || s.Roles[0].Role != "admin" || len(s.Roles[0].Subjects) != 2 || len(s.Roles[1].Subjects) != 2 {
+		t.Fatalf("team spec %+v", s)
+	}
+	// 0 clears archiving; the run cap, not given, stays.
+	mustContain(t, cadre(t, srv.URL, "team", "set", "--archive-after", "0"), "team team-a updated: 2 concurrent runs, 2 roles")
+	if team, err := m.LiveTeam(ctx, "team-a"); err != nil || team.Spec.ArchiveAfter != nil || team.Spec.MaxConcurrentRuns != 2 {
+		t.Fatalf("after --archive-after 0: %+v, %v", team, err)
+	}
+	if err := cadreFails(t, srv.URL, "team", "set", "--role", "owner"); !strings.Contains(err.Error(), "want role=") {
+		t.Fatalf("a role without subjects: %v", err)
+	}
+	if err := cadreFails(t, srv.URL, "team", "set", "--role", "owner=user:x"); !strings.Contains(err.Error(), "not admin, member or viewer") {
+		t.Fatalf("a role that does not exist: %v", err)
+	}
 	mustContain(t, cadre(t, srv.URL, "task", "create", "Fix the flaky login test", "--name", "fix-login", "--agent", "coder", "-p", "high"), "created #1 fix-login")
 	mustContain(t, cadre(t, srv.URL, "task", "comment", "#1", "-m", "it fails on Mondays"), "comment 1 on fix-login")
 

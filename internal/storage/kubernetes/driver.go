@@ -227,6 +227,15 @@ func (d *Driver) UpdateTeamStatus(ctx context.Context, team *v1alpha1.Team) erro
 	return mapError(d.client.Status().Update(ctx, team), "update team "+team.Namespace)
 }
 
+// UpdateTeamSpec implements storage.Objects: an update of the Team, whose
+// status the API server leaves alone, as it is a subresource.
+func (d *Driver) UpdateTeamSpec(ctx context.Context, team *v1alpha1.Team) error {
+	if team.ResourceVersion == "" {
+		return fmt.Errorf("update team %s: no resourceVersion: %w", team.Namespace, storage.ErrConflict)
+	}
+	return mapError(d.client.Update(ctx, team), "update team "+team.Namespace)
+}
+
 // ListTeams implements storage.Index from the informer cache.
 func (d *Driver) ListTeams(ctx context.Context) ([]v1alpha1.Team, error) {
 	list := &v1alpha1.TeamList{}

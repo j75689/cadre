@@ -77,7 +77,8 @@ func (s *Server) Register(mux *http.ServeMux) {
 		{"GET " + one + "/runs/{run}/events", authz.Read, s.events},
 		// Creating a Team needs a bootstrap admin: nobody has a role on a
 		// team that does not exist.
-		{"PUT " + Base + "/namespaces/{ns}/team", authz.ManageTeam, s.initTeam},
+		{"GET " + Base + "/namespaces/{ns}/team", authz.Read, s.getTeam},
+		{"PUT " + Base + "/namespaces/{ns}/team", authz.ManageTeam, s.putTeam},
 		{"GET " + Base + "/namespaces/{ns}/agents", authz.Read, s.listAgents},
 	} {
 		mux.HandleFunc(route.pattern, s.guard(route.action, route.h))
@@ -330,17 +331,93 @@ func (s *Server) events(w http.ResponseWriter, r *http.Request) {
 	httpjson.Write(w, http.StatusOK, Events{Items: items})
 }
 
-func (s *Server) initTeam(w http.ResponseWriter, r *http.Request) {
-	var req TeamRequest
-	if !httpjson.Decode(w, r, &req) {
-		return
-	}
-	team, err := s.m.InitTeam(r.Context(), r.PathValue("ns"), v1alpha1.TeamSpec{DisplayName: req.DisplayName, MaxConcurrentRuns: req.MaxConcurrentRuns})
+// getTeam answers a namespace's Team, as GET /teams shows it to the caller.
+func (s *Server) getTeam(w http.ResponseWriter, r *http.Request) {
+	team, err := s.m.LiveTeam(r.Context(), r.PathValue("ns"))
 	if err != nil {
 		httpjson.Fail(w, s.log, err)
 		return
 	}
-	httpjson.Write(w, http.StatusCreated, team)
+	httpjson.Write(w, http.StatusOK, s.project(r.Context(), team))
+}
+
+// putTeam creates a namespace's Team, for a bootstrap admin (the guard
+// lets nobody else through where there is none), or replaces the spec of
+// the one there, for an admin of it, from the version the request read. A
+// request without a version is a creation: on an existing Team it is 409
+// already_exists, as cadre team init has always been told.
+func (s *Server) putTeam(w http.ResponseWriter, r *http.Request) {
+	var req TeamRequest
+	if !httpjson.Decode(w, r, &req) {
+		return
+	}
+	ns := r.PathValue("ns")
+	cur, err := s.m.LiveTeam(r.Context(), ns)
+	switch {
+	case errors.Is(err, storage.ErrNotFound) && req.ResourceVersion != "":
+		// An edit of a Team deleted since it was read: not a creation.
+		httpjson.Fail(w, s.log, fmt.Errorf("team %s is gone: %w", ns, manager.ErrTeamChanged))
+		return
+	case errors.Is(err, storage.ErrNotFound):
+		team, err := s.m.InitTeam(r.Context(), ns, req.TeamSpec)
+		if err != nil {
+			httpjson.Fail(w, s.log, err)
+			return
+		}
+		httpjson.Write(w, http.StatusCreated, team)
+		return
+	case err != nil:
+		httpjson.Fail(w, s.log, err)
+		return
+	case req.ResourceVersion == "":
+		httpjson.Fail(w, s.log, fmt.Errorf("team %s: %w", ns, storage.ErrAlreadyExists))
+		return
+	}
+	spec := req.TeamSpec
+	if err := manager.ValidateTeamSpec(&spec); err != nil {
+		httpjson.Fail(w, s.log, err)
+		return
+	}
+	if s.orphans(cur, spec.Roles) {
+		httpjson.WriteError(w, http.StatusBadRequest, httpjson.CodeInvalid,
+			"the Team would have no admin, and no bootstrap admin is set to give it one back: keep an admin role")
+		return
+	}
+	team, err := s.m.UpdateTeam(r.Context(), cur, spec, req.ResourceVersion)
+	if err != nil {
+		httpjson.Fail(w, s.log, err)
+		return
+	}
+	// As the edit left the caller: an admin who gave the role away sees
+	// what anyone else does.
+	httpjson.Write(w, http.StatusOK, s.project(r.Context(), team))
+}
+
+// orphans reports whether roles would leave a Team that has an admin with
+// none, where no bootstrap admin is set who could give it one back.
+func (s *Server) orphans(cur *v1alpha1.Team, roles []v1alpha1.TeamRole) bool {
+	if s.policy == nil || len(s.policy.AdminUsers) > 0 || len(s.policy.AdminGroups) > 0 {
+		return false
+	}
+	hasAdmin := func(roles []v1alpha1.TeamRole) bool {
+		return slices.ContainsFunc(roles, func(r v1alpha1.TeamRole) bool { return r.Role == v1alpha1.RoleAdmin && len(r.Subjects) > 0 })
+	}
+	return hasAdmin(cur.Spec.Roles) && !hasAdmin(roles)
+}
+
+// project is t as the caller may see it: its roles, status, annotations and
+// fields' owners only for an admin of it, since the roles show in all of
+// them (kubectl apply keeps the last spec in an annotation).
+func (s *Server) project(ctx context.Context, t *v1alpha1.Team) *v1alpha1.Team {
+	if s.policy == nil {
+		return t
+	}
+	id, _ := auth.FromContext(ctx)
+	if role, _ := s.policy.Role(id, t); role < authz.Admin {
+		t.Spec.Roles, t.Status = nil, v1alpha1.TeamStatus{}
+		t.Annotations, t.ManagedFields = nil, nil
+	}
+	return t
 }
 
 func (s *Server) listAgents(w http.ResponseWriter, r *http.Request) {
@@ -383,17 +460,10 @@ func (s *Server) listTeams(w http.ResponseWriter, r *http.Request) {
 		id, _ := auth.FromContext(r.Context())
 		visible := items[:0]
 		for _, t := range items {
-			role, ok := s.policy.Role(id, &t)
-			if !ok {
+			if _, ok := s.policy.Role(id, &t); !ok {
 				continue
 			}
-			if role < authz.Admin {
-				// The roles show in the spec, in what kubectl apply
-				// keeps of the last spec, and in the fields' owners.
-				t.Spec.Roles, t.Status = nil, v1alpha1.TeamStatus{}
-				t.Annotations, t.ManagedFields = nil, nil
-			}
-			visible = append(visible, t)
+			visible = append(visible, *s.project(r.Context(), &t))
 		}
 		items = visible
 	}

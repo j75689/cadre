@@ -92,10 +92,13 @@ type AgentSummary struct {
 	Message string `json:"message,omitempty"`
 }
 
-// TeamRequest opts a namespace in.
+// TeamRequest opts a namespace in, or edits its Team: its spec, replaced
+// whole. An edit carries the resourceVersion of the Team it was made from,
+// and fails with 409 conflict if the Team changed since; without one, the
+// request creates the Team, and is 409 already_exists if there is one.
 type TeamRequest struct {
-	DisplayName       string `json:"displayName,omitempty"`
-	MaxConcurrentRuns int32  `json:"maxConcurrentRuns,omitempty"`
+	v1alpha1.TeamSpec
+	ResourceVersion string `json:"resourceVersion,omitempty"`
 }
 
 // TeamList lists every Team.

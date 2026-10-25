@@ -66,6 +66,9 @@ type Objects interface {
 	CreateTeam(ctx context.Context, team *v1alpha1.Team) error
 	// UpdateTeamStatus writes status only, conditionally on the version.
 	UpdateTeamStatus(ctx context.Context, team *v1alpha1.Team) error
+	// UpdateTeamSpec writes spec only, conditionally on the version: status
+	// is left as it is, and a stale version fails with ErrConflict.
+	UpdateTeamSpec(ctx context.Context, team *v1alpha1.Team) error
 }
 
 // Entry is one log entry.

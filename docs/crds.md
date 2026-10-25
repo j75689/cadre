@@ -61,7 +61,7 @@ Three roles:
 | --- | --- |
 | `viewer` | read: list and get tasks, their threads, runs and events, the team's agents, and the Team |
 | `member` | what a viewer may, and create tasks, comment, reply, approve or deny tool calls, cancel tasks |
-| `admin` | what a member may; editing the Team through the API is to come (#71), so today an admin's extra powers are the Team's own, edited with kubectl or GitOps |
+| `admin` | what a member may, and editing the Team (its display name, run cap, archiving and roles) through the API, `cadre team set`, as well as with kubectl or GitOps; the only one who sees the Team's roles |
 
 | Field | Rule |
 | --- | --- |
