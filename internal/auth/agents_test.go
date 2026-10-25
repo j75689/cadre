@@ -87,6 +87,26 @@ func TestBearerRouting(t *testing.T) {
 	}
 }
 
+// A token's iss is the issuer's as the verifier decides it: Google's ID
+// tokens say accounts.google.com without the scheme, and are ID tokens
+// still, never sent on as an agent's.
+func TestSameIssuer(t *testing.T) {
+	for _, c := range []struct {
+		configured, iss string
+		same            bool
+	}{
+		{"https://idp.example.test", "https://idp.example.test", true},
+		{"https://accounts.google.com", "accounts.google.com", true},
+		{"https://accounts.google.com", "https://accounts.google.com", true},
+		{"https://idp.example.test", "idp.example.test", false},
+		{"https://idp.example.test", "https://kubernetes.default.svc", false},
+	} {
+		if got := auth.SameIssuer(c.configured, c.iss); got != c.same {
+			t.Errorf("%s, %s: %v", c.configured, c.iss, got)
+		}
+	}
+}
+
 // Without Agents, an agent's token is refused like any other.
 func TestBearerWithoutAgents(t *testing.T) {
 	s := start(t)

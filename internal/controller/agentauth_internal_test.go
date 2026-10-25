@@ -65,6 +65,24 @@ func TestMintedAgentToken(t *testing.T) {
 			t.Errorf("%s: %v", name, err)
 		}
 	}
+	// The cache answers first: what it does not have, or holds with
+	// another hash, is refused without a read of the API server.
+	var freshReads atomic.Int32
+	fresh := fake.NewClientBuilder().WithScheme(scheme).WithObjects(bot.DeepCopy()).WithInterceptorFuncs(interceptor.Funcs{
+		Get: func(ctx context.Context, c client.WithWatch, key client.ObjectKey, obj client.Object, opts ...client.GetOption) error {
+			freshReads.Add(1)
+			return c.Get(ctx, key, obj, opts...)
+		}}).Build()
+	stale := fake.NewClientBuilder().WithScheme(scheme).WithIndex(&v1alpha1.AgentAccess{}, indexSA, accessSA).Build()
+	if _, err := AgentAccesses(stale, fresh, nil, nil).Authenticate(ctx, tok); !errors.Is(err, auth.ErrUnauthenticated) || freshReads.Load() != 0 {
+		t.Fatalf("not in the cache: %v, %d fresh reads", err, freshReads.Load())
+	}
+	// In the cache but gone from the API server: refused at once.
+	gone := fake.NewClientBuilder().WithScheme(scheme).Build()
+	if _, err := AgentAccesses(c, gone, nil, nil).Authenticate(ctx, tok); !errors.Is(err, auth.ErrUnauthenticated) {
+		t.Fatalf("deleted, the cache not knowing yet: %v", err)
+	}
+
 	// One that names a ServiceAccount takes no minted token, whatever its
 	// status says.
 	bot.Spec.ServiceAccount = &v1alpha1.ServiceAccountRef{Name: "bot"}

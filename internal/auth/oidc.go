@@ -518,6 +518,7 @@ func (o *OIDC) serveBearer(w http.ResponseWriter, r *http.Request, next http.Han
 			return
 		}
 		if id, _, _, err = o.verify(r.Context(), d, tok); err != nil {
+			o.cfg.Log.Debug("a bearer ID token was refused", "err", err)
 			err = ErrUnauthenticated
 		}
 	case o.cfg.Agents == nil:
@@ -568,10 +569,22 @@ func (o *OIDC) tokenKind(tok string) string {
 	if json.Unmarshal(payload, &claims) != nil {
 		return ""
 	}
-	if claims.Issuer == o.cfg.Issuer {
+	if sameIssuer(o.cfg.Issuer, claims.Issuer) {
 		return kindIDToken
 	}
 	return kindAgent
+}
+
+// googleIssuer is the one issuer go-oidc's verifier also accepts in
+// another form: Google's ID tokens may say accounts.google.com, without
+// the scheme.
+const googleIssuer = "https://accounts.google.com"
+
+// sameIssuer reports whether a token's iss is the configured issuer's, as
+// the verifier will decide it: so a token it would verify as an ID token
+// is always routed to it.
+func sameIssuer(configured, iss string) bool {
+	return iss == configured || configured == googleIssuer && iss == "accounts.google.com"
 }
 
 // Wrap implements Authenticator. Under base, every route but base/auth
