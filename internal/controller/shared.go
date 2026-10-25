@@ -87,18 +87,18 @@ func serviceAccountOf(username string) (ns, name string, ok bool) {
 // returns it if tok is its: it names no ServiceAccount, and holds tok's
 // hash, as tokenOf says them. Every refusal is runner.ErrUnauthenticated,
 // so a caller learns nothing about which part was wrong; any other error
-// is a read that failed.
+// is a read that failed, said as reading kind (runner, say).
 func checkMinted[T any, P interface {
 	*T
 	client.Object
-}](ctx context.Context, r client.Reader, ns, name, tok string, tokenOf func(P) (*v1alpha1.ServiceAccountRef, *v1alpha1.MintedToken)) (P, error) {
+}](ctx context.Context, r client.Reader, kind, ns, name, tok string, tokenOf func(P) (*v1alpha1.ServiceAccountRef, *v1alpha1.MintedToken)) (P, error) {
 	obj := P(new(T))
 	err := r.Get(ctx, client.ObjectKey{Namespace: ns, Name: name}, obj)
 	switch {
 	case apierrors.IsNotFound(err):
 		return nil, runner.ErrUnauthenticated
 	case err != nil:
-		return nil, fmt.Errorf("read %T: %w", obj, err)
+		return nil, fmt.Errorf("read %s: %w", kind, err)
 	}
 	if sa, st := tokenOf(obj); sa != nil || !token.Matches(tok, st.TokenHash) {
 		return nil, runner.ErrUnauthenticated

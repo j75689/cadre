@@ -277,7 +277,11 @@ func (e *env) liftNameRule(crd string, off bool) {
 		}
 	}
 	if !off {
-		kept = append(kept, e.lifted[crd])
+		rule, ok := e.lifted[crd]
+		if !ok {
+			e.t.Fatalf("%s: the name rule was not lifted, so there is none to put back", crd)
+		}
+		kept = append(kept, rule)
 	}
 	schema.XValidations = kept
 	if err := crds.Update(ctx, &def); err != nil {

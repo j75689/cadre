@@ -102,12 +102,12 @@ func (m mintedAccess) Authenticate(ctx context.Context, tok string) (runner.Iden
 	}
 	// The cache answers first: a lagging one is seconds behind a mint at
 	// worst, and refuses it for the moment a refusal is remembered.
-	if _, err := checkMinted(ctx, m.cache, ns, name, tok, accessToken); err != nil {
+	if _, err := checkMinted(ctx, m.cache, "agent access", ns, name, tok, accessToken); err != nil {
 		return runner.Identity{}, err
 	}
 	ctx, cancel := context.WithTimeout(ctx, freshReadTimeout)
 	defer cancel()
-	aa, err := checkMinted(ctx, m.fresh, ns, name, tok, accessToken)
+	aa, err := checkMinted(ctx, m.fresh, "agent access", ns, name, tok, accessToken)
 	if err != nil {
 		return runner.Identity{}, err
 	}

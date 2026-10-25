@@ -160,7 +160,7 @@ func (m mintedTokens) Authenticate(ctx context.Context, tok string) (runner.Iden
 	if !ok {
 		return runner.Identity{}, runner.ErrUnauthenticated
 	}
-	rn, err := checkMinted(ctx, m.c, ns, name, tok, runnerToken)
+	rn, err := checkMinted(ctx, m.c, "runner", ns, name, tok, runnerToken)
 	if err != nil {
 		return runner.Identity{}, err
 	}

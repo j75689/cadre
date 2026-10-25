@@ -59,7 +59,7 @@ func setToken(o tokenOwner, hash string) bool {
 	}
 	if hash == "" {
 		st.MintedAt = nil
-	} else if st.TokenHash != hash || st.MintedAt == nil {
+	} else if st.TokenHash != hash {
 		st.MintedAt = &metav1.Time{Time: time.Now().UTC().Truncate(time.Second)}
 	}
 	st.TokenSecret, st.TokenHash = secret, hash

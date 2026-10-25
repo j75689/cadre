@@ -52,7 +52,9 @@ type MintedToken struct {
 	// +optional
 	TokenHash string `json:"tokenHash,omitempty"`
 
-	// MintedAt is when the current token was minted.
+	// MintedAt is when the status first held the current token's hash:
+	// when Cadre minted it, or took it from the Secret, where a token
+	// written by hand is taken as a new one.
 	// +optional
 	MintedAt *metav1.Time `json:"mintedAt,omitempty"`
 }

@@ -152,7 +152,10 @@ spec:
                 - type
                 x-kubernetes-list-type: map
               mintedAt:
-                description: MintedAt is when the current token was minted.
+                description: |-
+                  MintedAt is when the status first held the current token's hash:
+                  when Cadre minted it, or took it from the Secret, where a token
+                  written by hand is taken as a new one.
                 format: date-time
                 type: string
               observedGeneration:
