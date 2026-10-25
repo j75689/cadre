@@ -1,6 +1,5 @@
 # A v* tag releases the commit it names, once that commit is on main and
-# main's CI passed on it (the checks, the install in kind and the publish of
-# main): then the three images (publish.yml, tagged vX.Y.Z, vX.Y and
+# main's CI passed on it (the checks and the install in kind): then the three images (publish.yml, tagged vX.Y.Z, vX.Y and
 # latest), then the chart, at the tag without its v and with appVersion the
 # tag, to oci://ghcr.io/<owner>/charts/cadre, and the GitHub release with
 # install.yaml. Nothing CI ran is run again. Tags are independent: one run
@@ -19,8 +18,8 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
-  # What the header promises: the tagged commit is on main, and main's CI
-  # passed on it.
+  # What the header promises: the tagged commit is on main, and main's
+  # checks and install in kind passed on it.
   on-main:
     name: The tag is on main, and passed CI there
     runs-on: ubuntu-latest
@@ -35,13 +34,21 @@ jobs:
         run: |
           git merge-base --is-ancestor "$GITHUB_SHA" origin/main ||
             { echo "::error::$GITHUB_REF_NAME ($GITHUB_SHA) is not on main: tag a commit of main"; exit 1; }
+      # The checks and the install in kind, job by job: main's publish of a
+      # commit may be cancelled when a newer one lands (publish.yml), which
+      # makes the run cancelled while the commit passed everything else.
       - name: Check main's CI passed on it
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          passed=$(gh run list --repo "$GITHUB_REPOSITORY" --workflow ci.yml --commit "$GITHUB_SHA" --branch main --status success --json databaseId --jq length)
-          [ "$passed" -gt 0 ] ||
-            { echo "::error::main's CI has not passed on $GITHUB_SHA: wait for it, then re-run this workflow (a tag pushed with its commit races main's CI)"; exit 1; }
+          run=$(gh run list --repo "$GITHUB_REPOSITORY" --workflow ci.yml --commit "$GITHUB_SHA" --branch main --limit 1 --json databaseId --jq '.[0].databaseId // empty')
+          passed=false
+          if [ -n "$run" ]; then
+            passed=$(gh run view "$run" --repo "$GITHUB_REPOSITORY" --json jobs \
+              --jq '[.jobs[] | select(.name | test("^(fmt|lint|test|web|chart|e2e) / "))] | (length >= 6 and all(.conclusion == "success"))')
+          fi
+          [ "$passed" = true ] ||
+            { echo "::error::main's checks and install in kind have not passed on $GITHUB_SHA: wait for main's CI, then re-run this workflow (a tag pushed with its commit races main's CI)"; exit 1; }
 
   publish:
     needs: on-main
@@ -64,7 +71,10 @@ jobs:
           go-version-file: go.mod
           # Go here only installs helm, and nothing once bin/tools is warm.
           cache: false
+      # helm, as chart.yml's job installs it on main.
       - uses: ./.github/actions/tools-cache
+        with:
+          job: chart
       - name: Package the chart and render install.yaml
         run: make chart-dist RELEASE="$GITHUB_REF_NAME"
       - name: Find the package and install.yaml

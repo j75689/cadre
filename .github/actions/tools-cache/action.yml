@@ -4,13 +4,23 @@ description: >-
   pins. Each job installs only the tools it uses, and jobs run in parallel:
   one key for all would be saved by whichever finished first, without the
   others' tools.
+inputs:
+  job:
+    description: >-
+      The job whose cache to use, by default this one. A job that runs only
+      on tags names a job of main's, whose cache a tag run can see: a tag
+      sees its own ref's caches and main's only.
+    required: false
+    default: ""
 runs:
   using: composite
   steps:
     - name: Tool versions
       id: tools
       shell: bash
-      run: echo "key=tools-${{ github.job }}-${{ runner.os }}-$(grep -E '^[A-Z0-9_]+_VERSION +:=' Makefile | tr -d ' ' | sort | tr '\n' '-')" >> "$GITHUB_OUTPUT"
+      env:
+        JOB: ${{ inputs.job || github.job }}
+      run: echo "key=tools-$JOB-${{ runner.os }}-$(grep -E '^[A-Z0-9_]+_VERSION +:=' Makefile | tr -d ' ' | sort | tr '\n' '-')" >> "$GITHUB_OUTPUT"
     - name: Cache tools
       uses: actions/cache@v6
       with:
