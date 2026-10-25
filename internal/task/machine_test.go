@@ -529,12 +529,16 @@ func TestThreadAdvanced(t *testing.T) {
 
 func TestTeam(t *testing.T) {
 	team := &v1alpha1.Team{Spec: v1alpha1.TeamSpec{MaxConcurrentRuns: 2}}
-	n, s := ClaimNumber(team)
+	if n, _ := ClaimNumber(team, 7); n != 7 {
+		t.Fatalf("a counter starting at 7 gave %d", n)
+	}
+	n, s := ClaimNumber(team, 0)
 	team.Status = s
 	if n != 1 || team.Status.NextNumber != 2 {
 		t.Fatalf("first number %d, next %d", n, team.Status.NextNumber)
 	}
-	if n, _ = ClaimNumber(team); n != 2 {
+	// A started counter goes on, wherever the caller would start one.
+	if n, _ = ClaimNumber(team, 7); n != 2 {
 		t.Fatalf("second number %d", n)
 	}
 

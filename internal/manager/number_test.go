@@ -176,3 +176,99 @@ func TestTaskByNumberAmbiguous(t *testing.T) {
 		t.Fatalf("#3 shared: %v", err)
 	}
 }
+
+// A Team made again in a namespace whose tasks outlived the old one goes on
+// numbering above them: no number is given twice.
+func TestRecreatedTeamResumesNumbering(t *testing.T) {
+	e, idx := lagging(t)
+	for i := range 5 {
+		if _, err := e.m.CreateTask(ctx, ns, fmt.Sprintf("old-%d", i), v1alpha1.TaskSpec{Title: "old"}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	resetTeam(t, e)
+	before := len(idx.reads())
+	created, err := e.m.CreateTask(ctx, ns, "new", v1alpha1.TaskSpec{Title: "new"})
+	if err != nil || created.Status.Number != 6 {
+		t.Fatalf("the first task of the Team made again: %+v, %v; want #6", created, err)
+	}
+	if reads := idx.reads()[before:]; len(reads) != 1 {
+		t.Fatalf("index reads %+v, want one", reads)
+	}
+	// The counter has started: the next one reads nothing more.
+	before = len(idx.reads())
+	if next, err := e.m.CreateTask(ctx, ns, "newer", v1alpha1.TaskSpec{Title: "newer"}); err != nil || next.Status.Number != 7 {
+		t.Fatalf("the second: %+v, %v; want #7", next, err)
+	}
+	if reads := idx.reads()[before:]; len(reads) != 0 {
+		t.Fatalf("index reads %+v, want none", reads)
+	}
+	if got, err := e.m.TaskByNumber(ctx, ns, 3); err != nil || got.Name != "old-2" {
+		t.Fatalf("#3: %+v, %v", got, err)
+	}
+	// A new Team in an empty namespace starts at 1.
+	fresh, _ := lagging(t)
+	if first, err := fresh.m.CreateTask(ctx, ns, "first", v1alpha1.TaskSpec{Title: "first"}); err != nil || first.Status.Number != 1 {
+		t.Fatalf("a new Team's first task: %+v, %v", first, err)
+	}
+}
+
+// resetTeam is a Team made again: its status, the counter with it, starts
+// empty.
+func resetTeam(t *testing.T, e *env) {
+	t.Helper()
+	team, err := e.store.GetTeam(ctx, ns)
+	if err != nil {
+		t.Fatal(err)
+	}
+	team.Status = v1alpha1.TeamStatus{}
+	if err := e.store.UpdateTeamStatus(ctx, team); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// A task applied with kubectl after the Team is made again is numbered by
+// the numbering loop above the old tasks too.
+func TestRecreatedTeamNumbersAppliedTasks(t *testing.T) {
+	e, _ := lagging(t)
+	for i := range 3 {
+		if _, err := e.m.CreateTask(ctx, ns, fmt.Sprintf("old-%d", i), v1alpha1.TaskSpec{Title: "old"}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	resetTeam(t, e)
+	applied := &v1alpha1.Task{Spec: v1alpha1.TaskSpec{Title: "applied"}}
+	applied.Namespace, applied.Name = ns, "applied"
+	if err := e.store.CreateTask(ctx, applied); err != nil {
+		t.Fatal(err)
+	}
+	if err := e.m.NumberNew(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if got, err := e.store.GetTask(ctx, storage.Key{Namespace: ns, Name: "applied"}); err != nil || got.Status.Number != 4 {
+		t.Fatalf("the applied task: %+v, %v; want #4", got.Status, err)
+	}
+}
+
+// The window: a task the index does not show when the counter resumes, one
+// numbered just before the Team went say, has its number given again. #N
+// then names neither task: it is refused as ambiguous.
+func TestRecreatedTeamMissesAndRefuses(t *testing.T) {
+	e, idx := lagging(t)
+	for i := range 3 {
+		if _, err := e.m.CreateTask(ctx, ns, fmt.Sprintf("old-%d", i), v1alpha1.TaskSpec{Title: "old"}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	// #3 is not in the index yet when the counter starts again.
+	idx.hide("old-2", time.Now().Add(200*time.Millisecond))
+	resetTeam(t, e)
+	created, err := e.m.CreateTask(ctx, ns, "new", v1alpha1.TaskSpec{Title: "new"})
+	if err != nil || created.Status.Number != 3 {
+		t.Fatalf("the first task of the Team made again: %+v, %v; want #3, shared", created, err)
+	}
+	time.Sleep(300 * time.Millisecond) // the index catches up
+	if got, err := e.m.TaskByNumber(ctx, ns, 3); !errors.Is(err, ErrAmbiguous) || got != nil {
+		t.Fatalf("#3: %+v, %v; want ErrAmbiguous", got, err)
+	}
+}

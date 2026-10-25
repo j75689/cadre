@@ -13,12 +13,14 @@ import (
 // already running.
 var ErrNoSlot = errors.New("team has no free run slot")
 
-// ClaimNumber takes the next task number from the Team's counter. The caller
-// writes the returned status with a conditional write before using the number.
-func ClaimNumber(team *v1alpha1.Team) (int64, v1alpha1.TeamStatus) {
+// ClaimNumber takes the next task number from the Team's counter. A counter
+// that has not started starts at start (1 at least): the caller decides
+// where. The caller writes the returned status with a conditional write
+// before using the number.
+func ClaimNumber(team *v1alpha1.Team, start int64) (int64, v1alpha1.TeamStatus) {
 	s := team.Status
 	if s.NextNumber < 1 {
-		s.NextNumber = 1
+		s.NextNumber = max(start, 1)
 	}
 	n := s.NextNumber
 	s.NextNumber++
