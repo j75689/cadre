@@ -2,6 +2,7 @@ package controller
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"strings"
 	"sync"
@@ -213,8 +214,9 @@ func TestRotateOvertaken(t *testing.T) {
 	}
 }
 
-// A status others keep changing, past statusWait: a conflict that says the
-// new token is in the Secret, and the old one stops within a minute.
+// A status others keep changing, past the backoff: a conflict that says
+// the new token is in the Secret, unshown, and the old one works until the
+// reconciler's next pass; the rotation took effect, so its Event is there.
 func TestRotateStatusKeepsChanging(t *testing.T) {
 	t.Parallel()
 	gr := schema.GroupResource{Group: "cadre.dev", Resource: "agentaccesses"}
@@ -223,11 +225,19 @@ func TestRotateStatusKeepsChanging(t *testing.T) {
 	}})
 	start := time.Now()
 	_, err := store(c, rec).RotateAgentAccessToken(context.Background(), "team-a", "bot", "someone")
-	if !errors.Is(err, storage.ErrConflict) || !strings.Contains(err.Error(), "the new token is in the Secret bot.access-token") || !strings.Contains(err.Error(), "stops within a minute") {
+	if !errors.Is(err, storage.ErrConflict) || !strings.Contains(err.Error(), "the new token is in the Secret bot.access-token") || !strings.Contains(err.Error(), "the reconciler's next pass") {
 		t.Fatalf("rotate: %v", err)
 	}
-	if took := time.Since(start); took < statusWait || took > 3*statusWait {
-		t.Errorf("gave up after %s, want about %s", took, statusWait)
+	if took := time.Since(start); took < time.Second || took > 6*time.Second {
+		t.Errorf("gave up after %s, want about 2s", took)
+	}
+	select {
+	case ev := <-rec.Events:
+		if !strings.Contains(ev, "TokenRotated") || !strings.Contains(ev, "next pass") {
+			t.Errorf("event %q", ev)
+		}
+	default:
+		t.Error("no Event for a rotation that took effect")
 	}
 }
 
@@ -257,6 +267,85 @@ func TestRotateWithoutATeam(t *testing.T) {
 		t.Fatal(err)
 	}
 	if _, err := store(c, rec).RotateAgentAccessToken(context.Background(), "team-a", "bot", "someone"); !errors.Is(err, storage.ErrInvalid) || !strings.Contains(err.Error(), "has no Team") {
+		t.Fatalf("rotate: %v", err)
+	}
+}
+
+// The status read again with its hash gone, cleared by the reconciler
+// say: an answer that leaves tokenHash out must not leave this rotation's
+// hash in place of it. The rotation writes it again, and the live status
+// holds it.
+func TestRotateRereadsTheStatusWhole(t *testing.T) {
+	t.Parallel()
+	gr := schema.GroupResource{Group: "cadre.dev", Resource: "agentaccesses"}
+	var once sync.Once
+	c, rec, _ := rotateEnv(t, interceptor.Funcs{
+		// As a real client reads: JSON decoded into the object as it is,
+		// so what the answer leaves out (an empty tokenHash) stays.
+		Get: func(ctx context.Context, c client.WithWatch, key client.ObjectKey, obj client.Object, opts ...client.GetOption) error {
+			aa, ok := obj.(*v1alpha1.AgentAccess)
+			if !ok {
+				return c.Get(ctx, key, obj, opts...)
+			}
+			var cur v1alpha1.AgentAccess
+			if err := c.Get(ctx, key, &cur, opts...); err != nil {
+				return err
+			}
+			data, err := json.Marshal(&cur)
+			if err != nil {
+				return err
+			}
+			return json.Unmarshal(data, aa)
+		},
+		SubResourceUpdate: func(ctx context.Context, c client.Client, sub string, obj client.Object, opts ...client.SubResourceUpdateOption) error {
+			conflicted := false
+			once.Do(func() {
+				conflicted = true
+				// The reconciler clears the hash, as for a Secret it does
+				// not own, between the read and this write.
+				var aa v1alpha1.AgentAccess
+				if err := c.Get(ctx, client.ObjectKeyFromObject(obj), &aa); err != nil {
+					t.Error(err)
+					return
+				}
+				aa.Status.TokenHash, aa.Status.TokenSecret = "", ""
+				if err := c.SubResource("status").Update(ctx, &aa); err != nil {
+					t.Error(err)
+				}
+			})
+			if conflicted {
+				return apierrors.NewConflict(gr, obj.GetName(), errors.New("changed"))
+			}
+			return c.SubResource(sub).Update(ctx, obj, opts...)
+		}})
+	tok, err := store(c, rec).RotateAgentAccessToken(context.Background(), "team-a", "bot", "someone")
+	if err != nil {
+		t.Fatalf("rotate: %v", err)
+	}
+	if secret, hash, _ := live(t, c); secret != tok || hash != token.Hash(tok) {
+		t.Fatalf("after: Secret %q, hash %q: the live status must hold the hash", secret, hash)
+	}
+}
+
+// An AgentAccess switched to a ServiceAccount while the rotation waits to
+// write its hash takes no minted token: the rotation is refused, not
+// answered with a token checkMinted would refuse.
+func TestRotateSwitchedToAServiceAccount(t *testing.T) {
+	t.Parallel()
+	c, rec, _ := rotateEnv(t)
+	s := store(c, rec)
+	s.rot.beforeStatusWrite = func() {
+		var aa v1alpha1.AgentAccess
+		if err := c.Get(context.Background(), client.ObjectKey{Namespace: "team-a", Name: "bot"}, &aa); err != nil {
+			t.Error(err)
+			return
+		}
+		aa.Spec.ServiceAccount = &v1alpha1.ServiceAccountRef{Name: "bot"}
+		if err := c.Update(context.Background(), &aa); err != nil {
+			t.Error(err)
+		}
+	}
+	if _, err := s.RotateAgentAccessToken(context.Background(), "team-a", "bot", "someone"); !errors.Is(err, storage.ErrInvalid) || !strings.Contains(err.Error(), "switched to a ServiceAccount meanwhile") {
 		t.Fatalf("rotate: %v", err)
 	}
 }

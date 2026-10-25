@@ -33,7 +33,9 @@ import (
 // A rotated token is told with a Normal Event on its AgentAccess, through
 // events, naming who rotated it.
 func AgentAccessStore(c client.Client, fresh client.Reader, events events.EventRecorder) api.AgentAccessStore {
-	return accessStore{c: c, fresh: fresh, events: events, rot: rotator{c: c, fresh: fresh}}
+	return accessStore{c: c, fresh: fresh, events: events, rot: rotator{c: c, fresh: fresh, stillMinted: func(o client.Object) bool {
+		return o.(*v1alpha1.AgentAccess).Spec.ServiceAccount == nil
+	}}}
 }
 
 type accessStore struct {
@@ -93,11 +95,12 @@ func (s accessStore) RotateAgentAccessToken(ctx context.Context, ns, name, by st
 	if msg := invalidName("AgentAccess", name); msg != "" {
 		return "", fmt.Errorf("%s: %w", msg, storage.ErrInvalid)
 	}
-	switch err := s.c.Get(ctx, client.ObjectKey{Namespace: ns, Name: v1alpha1.TeamName}, &v1alpha1.Team{}); {
-	case apierrors.IsNotFound(err):
-		return "", fmt.Errorf("namespace %s has no Team, and no token is minted outside one: %w", ns, storage.ErrInvalid)
+	// Fresh, as the AgentAccess is: a Team made a moment ago counts.
+	switch ok, err := hasTeam(ctx, s.fresh, ns); {
 	case err != nil:
-		return "", storeErrorOn("teams", "get", name, err)
+		return "", storeErrorOn("teams", "get", v1alpha1.TeamName, err)
+	case !ok:
+		return "", fmt.Errorf("namespace %s has no Team, and no token is minted outside one: %w", ns, storage.ErrInvalid)
 	}
 	aa, err := s.GetAgentAccess(ctx, ns, name)
 	if err != nil {
@@ -108,7 +111,14 @@ func (s accessStore) RotateAgentAccessToken(ctx context.Context, ns, name, by st
 	}
 	tok, err := s.rot.rotate(ctx, accessTokenOwner(aa))
 	var op *opError
+	var written *writtenError
 	switch {
+	case errors.As(err, &written):
+		// It took effect: told as a rotation; why its hash is not written
+		// is logged here, the API server's words not answered.
+		log.FromContext(ctx).Error(written.Err, "a rotated token's hash could not be written", "namespace", ns, "agentAccess", name)
+		s.events.Eventf(aa, nil, corev1.EventTypeNormal, "TokenRotated", "RotateToken", "token rotated by %s; its hash is written on the reconciler's next pass", by)
+		return "", err
 	case errors.Is(err, ErrNotOwned):
 		return "", fmt.Errorf("%w; delete it to have a token minted: %w", err, storage.ErrInvalid)
 	case errors.Is(err, storage.ErrConflict):

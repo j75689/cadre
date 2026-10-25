@@ -53,7 +53,7 @@ func (r *agentAccessReconciler) tokenOwner(aa *v1alpha1.AgentAccess) tokenOwner 
 // accessTokenOwner is aa's minted token, for the reconciler and the API's
 // rotation alike.
 func accessTokenOwner(aa *v1alpha1.AgentAccess) tokenOwner {
-	return tokenOwner{obj: aa, kind: "AgentAccess", secret: AccessTokenSecretName(aa.Name), label: v1alpha1.LabelAgentAccess, status: &aa.Status.MintedToken}
+	return tokenOwner{obj: aa, kind: "AgentAccess", resource: "agentaccesses", secret: AccessTokenSecretName(aa.Name), label: v1alpha1.LabelAgentAccess, status: &aa.Status.MintedToken}
 }
 
 func (r *agentAccessReconciler) Reconcile(ctx context.Context, req reconcile.Request) (reconcile.Result, error) {

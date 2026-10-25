@@ -4,13 +4,14 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"strings"
+	"reflect"
 	"time"
 
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/util/validation"
+	"k8s.io/apimachinery/pkg/util/wait"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
 
@@ -38,22 +39,15 @@ func TokenSecretName(runner string) string { return runner + "-token" }
 // in: v1alpha1's, which the CLI names too.
 func AccessTokenSecretName(access string) string { return v1alpha1.AccessTokenSecretName(access) }
 
-// resource is the owner's API resource, for errors.
-func (o tokenOwner) resource() string {
-	k := strings.ToLower(o.kind)
-	if strings.HasSuffix(k, "s") {
-		return k + "es"
-	}
-	return k + "s"
-}
-
 // tokenOwner is an object Cadre mints a token for.
 type tokenOwner struct {
-	obj    client.Object
-	kind   string // Runner, say: for messages
-	secret string // the Secret's name
-	label  string // the Secret's label naming obj
-	status *v1alpha1.MintedToken
+	obj  client.Object
+	kind string // Runner, say: for messages
+	// resource is its API resource, agentaccesses say: for errors.
+	resource string
+	secret   string // the Secret's name
+	label    string // the Secret's label naming obj
+	status   *v1alpha1.MintedToken
 }
 
 // setToken puts hash (none when empty) in the owner's status, and reports
@@ -152,22 +146,28 @@ func createToken(ctx context.Context, c client.Client, o tokenOwner, tok string)
 // on the version read, so of two rotations at once one wins and the other
 // is a conflict, and a lost status write is redone from it by the
 // reconciler. The status write then converges on it, retried with a short
-// backoff for statusWait: on a conflict the owner and its Secret are read
-// again, fresh; if the Secret no longer holds the token another rotation
-// won, and this one is a conflict; if the status holds the hash already
-// (the reconciler took it from the Secret) it is done. Last, the Secret
-// must still hold the token. Every lost race is ErrConflict.
+// backoff (statusBackoff): on a conflict the owner is read again,
+// fresh, into an object of its own, and its Secret too; if the owner no
+// longer takes a minted token, the rotation is refused; if the Secret no
+// longer holds the token another rotation won, and this one is a conflict;
+// if the status holds the hash already (the reconciler took it from the
+// Secret) it is done. Last, the Secret must still hold the token.
 type rotator struct {
 	c     client.Client
 	fresh client.Reader
+	// stillMinted reports whether the owner, as read again, still takes
+	// a minted token.
+	stillMinted func(client.Object) bool
 	// Test hooks, after the Secret is read and before the status is
 	// written; nil in production.
 	afterSecretRead, beforeStatusWrite func()
 }
 
-// statusWait bounds how long a rotation keeps writing a status others
-// keep changing.
-const statusWait = 2 * time.Second
+// statusBackoff is how a rotation keeps writing a status others keep
+// changing: eight tries, from 20 ms apart and doubling, about two and a
+// half seconds in all. No Cap: wait.Backoff ends the steps once one
+// reaches it.
+var statusBackoff = wait.Backoff{Duration: 20 * time.Millisecond, Factor: 2, Steps: 8}
 
 // opError is an API server's answer to verb on resource, for the caller to
 // tell a token's Secret from its owner.
@@ -178,6 +178,22 @@ type opError struct {
 
 func (e *opError) Error() string { return e.verb + " " + e.resource + ": " + e.err.Error() }
 func (e *opError) Unwrap() error { return e.err }
+
+// writtenError is a rotation that wrote its token into the Secret but not
+// its hash into the status: the token is in the Secret, unshown, and the
+// old one keeps working until the reconciler's next pass takes the new
+// one's hash from the Secret. It did take effect, so it is told as a
+// rotation; it is ErrConflict, and Err is what stopped it.
+type writtenError struct {
+	Secret, Kind string
+	Err          error
+}
+
+func (e *writtenError) Error() string {
+	return fmt.Sprintf("the new token is in the Secret %s, but its hash could not be written to the %s: the old token keeps working until the reconciler's next pass, which takes the new one's hash from the Secret; the new one is not shown, so rotate again to get one", e.Secret, e.Kind)
+}
+func (e *writtenError) Is(target error) bool { return target == storage.ErrConflict }
+func (e *writtenError) Unwrap() error        { return e.Err }
 
 func (r rotator) rotate(ctx context.Context, o tokenOwner) (string, error) {
 	tok, hash, err := token.Mint(o.obj.GetNamespace(), o.obj.GetName())
@@ -201,57 +217,76 @@ func (r rotator) rotate(ctx context.Context, o tokenOwner) (string, error) {
 	if r.afterSecretRead != nil {
 		r.afterSecretRead()
 	}
-	verb := "update"
 	if sec == nil {
-		verb = "create"
-		err = createToken(ctx, r.c, o, tok)
+		switch err := createToken(ctx, r.c, o, tok); {
+		case apierrors.IsAlreadyExists(err):
+			// The reconciler's first mint, at the same moment.
+			return "", fmt.Errorf("the token was just minted into the Secret %s; try again: %w", o.secret, storage.ErrConflict)
+		case apierrors.IsNotFound(err):
+			return "", fmt.Errorf("the namespace %s is gone: %w", o.obj.GetNamespace(), storage.ErrInvalid)
+		case err != nil:
+			return "", &opError{"secrets", "create", err}
+		}
 	} else {
 		if sec.Data == nil {
 			sec.Data = map[string][]byte{}
 		}
 		sec.Data[tokenKey] = []byte(tok) // the other keys stay as they are
-		err = r.c.Update(ctx, sec)
+		switch err := r.c.Update(ctx, sec); {
+		case apierrors.IsConflict(err), apierrors.IsNotFound(err):
+			return "", meanwhile
+		case err != nil:
+			return "", &opError{"secrets", "update", err}
+		}
 	}
-	switch {
-	case apierrors.IsConflict(err), apierrors.IsAlreadyExists(err), apierrors.IsNotFound(err):
-		return "", meanwhile
-	case err != nil:
-		return "", &opError{"secrets", verb, err}
-	}
+	// From here on the Secret holds the token: a failure is told as such.
+	written := func(err error) error { return &writtenError{Secret: o.secret, Kind: o.kind, Err: err} }
 	if r.beforeStatusWrite != nil {
 		r.beforeStatusWrite()
 	}
-	key := client.ObjectKeyFromObject(o.obj)
-	deadline := time.Now().Add(statusWait)
-	for pause := 20 * time.Millisecond; o.status.TokenHash != hash; pause = min(2*pause, 200*time.Millisecond) {
+	var lost error // someone else's doing: not this rotation's to tell
+	err = wait.ExponentialBackoffWithContext(ctx, statusBackoff, func(ctx context.Context) (bool, error) {
+		if o.status.TokenHash == hash {
+			return true, nil
+		}
 		setToken(o, hash)
 		err := r.c.Status().Update(ctx, o.obj)
 		switch {
 		case err == nil:
-			continue // the status has the hash: the loop ends
+			return true, nil
 		case !apierrors.IsConflict(err):
-			return "", &opError{o.resource(), "update the status of", err}
-		case time.Now().After(deadline):
-			return "", fmt.Errorf("the new token is in the Secret %s, but the %s kept changing while its hash was written: the old token stops within a minute, when the reconciler takes the new one's hash from the Secret: %w", o.secret, o.kind, storage.ErrConflict)
+			return false, &opError{o.resource, "update the status of", err}
 		}
-		select {
-		case <-ctx.Done():
-			return "", ctx.Err()
-		case <-time.After(pause):
+		// Read into an object of its own: decoding into this one would
+		// keep what the answer leaves out, the hash this rotation set.
+		cur := o.obj.DeepCopyObject().(client.Object)
+		reflect.ValueOf(cur).Elem().Set(reflect.Zero(reflect.TypeOf(cur).Elem()))
+		if err := r.fresh.Get(ctx, client.ObjectKeyFromObject(o.obj), cur); err != nil {
+			return false, &opError{o.resource, "get", err}
 		}
-		if err := r.fresh.Get(ctx, key, o.obj); err != nil {
-			return "", &opError{o.resource(), "get", err}
+		reflect.ValueOf(o.obj).Elem().Set(reflect.ValueOf(cur).Elem())
+		if r.stillMinted != nil && !r.stillMinted(o.obj) {
+			lost = fmt.Errorf("the %s was switched to a ServiceAccount meanwhile: it takes no minted token: %w", o.kind, storage.ErrInvalid)
+			return false, lost
 		}
 		switch ok, err := holds(); {
 		case err != nil:
-			return "", err
+			return false, err
 		case !ok:
-			return "", meanwhile // another rotation won: its hash stands
+			lost = meanwhile // another rotation won: its hash stands
+			return false, lost
 		}
+		return false, nil
+	})
+	switch {
+	case lost != nil:
+		return "", lost
+	case err != nil:
+		return "", written(err)
 	}
 	switch ok, err := holds(); {
 	case err != nil:
-		return "", err
+		return "", written(err)
 	case !ok:
 		return "", meanwhile
 	}
