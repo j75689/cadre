@@ -78,7 +78,9 @@ func nonEmpty(s string) *string {
 	return &s
 }
 
-func (l *objectLog) streamPrefix(stream string) string { return l.prefix + stream + "/" }
+func (l *objectLog) streamPrefix(stream string) string {
+	return l.prefix + stream + "/" + storage.EntrySegment + "/"
+}
 
 // conditionalRetries bounds retries of S3's 409 ConditionalRequestConflict,
 // which means a concurrent conditional write was in flight and the request
@@ -127,9 +129,11 @@ func (l *objectLog) Append(ctx context.Context, stream, key string, data []byte)
 }
 
 // taken explains a 412 on Append. Usually the key holds an entry. But a store
-// backed by a filesystem also answers 412 when the key is the directory of a
-// nested stream, and then no entry exists: reporting ErrAlreadyExists would
-// make an idempotent caller drop the entry silently.
+// backed by a filesystem also answers 412 when the key is a directory, and
+// then no entry exists: reporting ErrAlreadyExists would make an idempotent
+// caller drop the entry silently. The layout (storage.EntrySegment) keeps
+// Cadre's own streams from ever making one; this guards against an object
+// written there by anything else.
 func (l *objectLog) taken(ctx context.Context, stream, key, objKey string) error {
 	var err error
 	for attempt := 0; ; attempt++ {
@@ -140,8 +144,8 @@ func (l *objectLog) taken(ctx context.Context, stream, key, objKey string) error
 		case err == nil:
 			return fmt.Errorf("log %s entry %s: %w", stream, key, storage.ErrAlreadyExists)
 		case errors.As(err, &missing) || code == "NotFound" || code == "NoSuchKey":
-			return fmt.Errorf("log %s entry %s: the key is the path of a nested stream %s/%s/, not an entry: %w",
-				stream, key, stream, key, storage.ErrStreamCollision)
+			return fmt.Errorf("log %s entry %s: the key's path is a directory, not an entry: %w",
+				stream, key, storage.ErrStreamCollision)
 		}
 		// A transient failure: an ordinary race for a key must not turn
 		// into an error because the check could not be made at once.

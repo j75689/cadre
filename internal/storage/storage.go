@@ -86,10 +86,12 @@ type KeyInfo struct {
 // Log is the append-only log: threads, run history, audit. A stream is a
 // sequence of immutable entries ordered by key.
 //
-// Layout rule: a stream must never be nested under a path that is an entry
-// of another stream (stream "a/runs" with entry "R1" rules out a stream
-// "a/runs/R1/..."). Object stores backed by a filesystem, such as SeaweedFS,
-// cannot hold a file and a directory of the same name.
+// Layout: a driver that keeps entries at paths puts a stream's entries
+// under the reserved segment EntrySegment, <stream>/~e/<key>, and no stream
+// name may use it, so a stream and an entry never share a path whatever the
+// names. Object stores backed by a filesystem, such as SeaweedFS, cannot
+// hold a file and a directory of the same name: without it, stream "a/runs"
+// with entry "R1" would rule out a stream "a/runs/R1/...".
 type Log interface {
 	// Append writes one entry. It fails with ErrAlreadyExists if the key is
 	// taken, so concurrent appenders racing for a key get exactly one winner
@@ -114,13 +116,23 @@ type Log interface {
 // ErrInvalidName is returned by Log methods for a malformed stream or key.
 var ErrInvalidName = errors.New("invalid log stream or key")
 
+// EntrySegment is the path segment a stream's entries live under, which no
+// stream name may use (see Log). Its "~" is outside every alphabet a
+// stream's segments are made of (DNS-1123 names, ULIDs, base64url, digits),
+// so no namespace, task, run or path can equal it.
+const EntrySegment = "~e"
+
 // ValidateStream checks a stream name: one or more non-empty segments
-// separated by "/". Streams nest by name ("ns/t/thread" and
-// "ns/t/thread/files" are two streams), but Read on one never returns the
-// other's entries.
+// separated by "/", none of them EntrySegment. Streams nest by name
+// ("ns/t/thread" and "ns/t/thread/files" are two streams), but Read on one
+// never returns the other's entries.
 func ValidateStream(stream string) error {
-	if stream == "" || slices.Contains(strings.Split(stream, "/"), "") {
+	segments := strings.Split(stream, "/")
+	if stream == "" || slices.Contains(segments, "") {
 		return fmt.Errorf("stream %q: %w", stream, ErrInvalidName)
+	}
+	if slices.Contains(segments, EntrySegment) {
+		return fmt.Errorf("stream %q: the segment %q is where entries live: %w", stream, EntrySegment, ErrInvalidName)
 	}
 	return nil
 }
