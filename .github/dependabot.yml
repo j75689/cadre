@@ -26,8 +26,12 @@ updates:
         update-types:
           - minor
           - patch
+  # The workflows and the composite actions: Dependabot scans a directory's
+  # workflows and its own action.yml only, so each action is listed.
   - package-ecosystem: github-actions
-    directory: /
+    directories:
+      - /
+      - /.github/actions/tools-cache
     schedule:
       interval: weekly
     groups:

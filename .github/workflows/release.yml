@@ -1,10 +1,10 @@
-# A v* tag releases the commit it names: the same checks as a pull request,
-# then the three images (publish.yml, tagged vX.Y.Z, vX.Y and latest), then
-# the chart, at the tag without its v and with appVersion the tag, to
-# oci://ghcr.io/<owner>/charts/cadre, and the GitHub release with
-# install.yaml. The install in kind (e2e.yml) is not run again: the commit
-# was tested on main before it was tagged. Tags are independent: one run per
-# tag, none dropped.
+# A v* tag releases the commit it names, once that commit is on main and
+# main's CI passed on it (the checks, the install in kind and the publish of
+# main): then the three images (publish.yml, tagged vX.Y.Z, vX.Y and
+# latest), then the chart, at the tag without its v and with appVersion the
+# tag, to oci://ghcr.io/<owner>/charts/cadre, and the GitHub release with
+# install.yaml. Nothing CI ran is run again. Tags are independent: one run
+# per tag, none dropped.
 name: Release
 
 on:
@@ -19,22 +19,14 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
-  fmt:
-    uses: ./.github/workflows/fmt.yml
-  lint:
-    uses: ./.github/workflows/lint.yml
-  test:
-    uses: ./.github/workflows/test.yml
-  web:
-    uses: ./.github/workflows/web.yml
-  chart:
-    uses: ./.github/workflows/chart.yml
-
-  # What the header promises: the tagged commit is on main, where the
-  # install in kind ran on it.
+  # What the header promises: the tagged commit is on main, and main's CI
+  # passed on it.
   on-main:
-    name: The tag is on main
+    name: The tag is on main, and passed CI there
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      actions: read
     steps:
       - uses: actions/checkout@v7
         with:
@@ -43,9 +35,16 @@ jobs:
         run: |
           git merge-base --is-ancestor "$GITHUB_SHA" origin/main ||
             { echo "::error::$GITHUB_REF_NAME ($GITHUB_SHA) is not on main: tag a commit of main"; exit 1; }
+      - name: Check main's CI passed on it
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          passed=$(gh run list --repo "$GITHUB_REPOSITORY" --workflow ci.yml --commit "$GITHUB_SHA" --branch main --status success --json databaseId --jq length)
+          [ "$passed" -gt 0 ] ||
+            { echo "::error::main's CI has not passed on $GITHUB_SHA: wait for it, then re-run this workflow (a tag pushed with its commit races main's CI)"; exit 1; }
 
   publish:
-    needs: [on-main, fmt, lint, test, web, chart]
+    needs: on-main
     uses: ./.github/workflows/publish.yml
     permissions:
       contents: read
