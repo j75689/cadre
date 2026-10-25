@@ -7,10 +7,16 @@ updates:
     groups:
       # The Kubernetes modules move together: client-go, api and
       # apimachinery share a version, and controller-runtime follows them.
+      # Patches only: a minor comes by hand with the controller-runtime
+      # built against it. An indirect module (k8s.io/apiextensions-apiserver,
+      # through controller-runtime) is never bumped by Dependabot: move it to
+      # the same patch in go.mod by hand.
       kubernetes:
         patterns:
           - "k8s.io/*"
           - "sigs.k8s.io/*"
+        update-types:
+          - patch
       go:
         patterns:
           - "*"
