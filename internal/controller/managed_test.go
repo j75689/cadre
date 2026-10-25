@@ -3,6 +3,7 @@ package controller_test
 import (
 	"context"
 	"fmt"
+	"strings"
 	"testing"
 	"time"
 
@@ -11,6 +12,7 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/equality"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
+	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/util/intstr"
 	"k8s.io/client-go/util/retry"
@@ -263,6 +265,7 @@ func TestAManagedToolServersReadinessProbe(t *testing.T) {
 	for i, asked := range []*corev1.Probe{
 		nil,
 		health,
+		{ProbeHandler: corev1.ProbeHandler{HTTPGet: &corev1.HTTPGetAction{Port: intstr.FromInt32(8081)}}},
 		{ProbeHandler: corev1.ProbeHandler{GRPC: &corev1.GRPCAction{Port: 8081}}},
 		{ProbeHandler: corev1.ProbeHandler{Exec: &corev1.ExecAction{Command: []string{"true"}}}, PeriodSeconds: 3},
 	} {
@@ -323,6 +326,28 @@ func TestAManagedToolServersReadinessProbe(t *testing.T) {
 		})
 		e.makeAvailable(ns, "probed")
 		e.ready(ts, metav1.ConditionTrue, "Available")
+	}
+
+	// A probe the CRD admits but a Pod may not have is reported, not
+	// retried in silence; fixed, it rolls out.
+	for _, scheme := range []corev1.URIScheme{"FTP", corev1.URISchemeHTTPS} {
+		if err := retry.RetryOnConflict(retry.DefaultRetry, func() error {
+			if err := e.c.Get(ctx, client.ObjectKeyFromObject(ts), ts); err != nil {
+				return err
+			}
+			ts.Spec.Managed.ReadinessProbe = &corev1.Probe{ProbeHandler: corev1.ProbeHandler{HTTPGet: &corev1.HTTPGetAction{Port: intstr.FromInt32(8081), Scheme: scheme}}}
+			return e.c.Update(ctx, ts)
+		}); err != nil {
+			t.Fatal(err)
+		}
+		if scheme == "FTP" {
+			e.ready(ts, metav1.ConditionFalse, "InvalidSpec")
+			if c := meta.FindStatusCondition(ts.Status.Conditions, v1alpha1.ConditionReady); !strings.Contains(c.Message, "scheme") {
+				t.Errorf("message %q does not say what is refused", c.Message)
+			}
+			continue
+		}
+		e.ready(ts, metav1.ConditionFalse, "Deploying")
 	}
 }
 

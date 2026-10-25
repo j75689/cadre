@@ -7,9 +7,11 @@ import (
 	"testing"
 	"time"
 
+	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
+	"k8s.io/apimachinery/pkg/util/intstr"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	v1alpha1 "github.com/j75689/cadre/api/v1alpha1"
@@ -76,8 +78,15 @@ func TestConfigCRDs(t *testing.T) {
 		"unknown permission": {v1alpha1.ToolServerSpec{URL: "https://x", Permissions: map[string]v1alpha1.Permission{"*": "maybe"}}, false},
 		"unknown transport":  {v1alpha1.ToolServerSpec{URL: "https://x", Transport: "stdio"}, false},
 		"managed port of 0":  {v1alpha1.ToolServerSpec{Managed: &v1alpha1.ManagedServer{Image: "i"}}, false},
-		"managed with auth":  {v1alpha1.ToolServerSpec{Managed: &v1alpha1.ManagedServer{Image: "i", Port: 1}, Auth: &v1alpha1.ToolServerAuth{SecretRef: v1alpha1.SecretKeyRef{Name: "s", Key: "k"}}}, false},
-		"managed bad path":   {v1alpha1.ToolServerSpec{Managed: &v1alpha1.ManagedServer{Image: "i", Port: 1, Path: "mcp"}}, false},
+		"readiness probe": {v1alpha1.ToolServerSpec{Managed: &v1alpha1.ManagedServer{Image: "i", Port: 1, ReadinessProbe: &corev1.Probe{
+			ProbeHandler: corev1.ProbeHandler{HTTPGet: &corev1.HTTPGetAction{Path: "/healthz", Port: intstr.FromInt32(1)}}}}}, true},
+		"probe without a handler": {v1alpha1.ToolServerSpec{Managed: &v1alpha1.ManagedServer{Image: "i", Port: 1, ReadinessProbe: &corev1.Probe{PeriodSeconds: 5}}}, false},
+		"probe with two handlers": {v1alpha1.ToolServerSpec{Managed: &v1alpha1.ManagedServer{Image: "i", Port: 1, ReadinessProbe: &corev1.Probe{ProbeHandler: corev1.ProbeHandler{
+			TCPSocket: &corev1.TCPSocketAction{Port: intstr.FromInt32(1)}, Exec: &corev1.ExecAction{Command: []string{"true"}}}}}}, false},
+		"probe with a termination grace period": {v1alpha1.ToolServerSpec{Managed: &v1alpha1.ManagedServer{Image: "i", Port: 1, ReadinessProbe: &corev1.Probe{
+			ProbeHandler: corev1.ProbeHandler{TCPSocket: &corev1.TCPSocketAction{Port: intstr.FromInt32(1)}}, TerminationGracePeriodSeconds: new(int64)}}}, false},
+		"managed with auth": {v1alpha1.ToolServerSpec{Managed: &v1alpha1.ManagedServer{Image: "i", Port: 1}, Auth: &v1alpha1.ToolServerAuth{SecretRef: v1alpha1.SecretKeyRef{Name: "s", Key: "k"}}}, false},
+		"managed bad path":  {v1alpha1.ToolServerSpec{Managed: &v1alpha1.ManagedServer{Image: "i", Port: 1, Path: "mcp"}}, false},
 	} {
 		expect(t, c, "ToolServer "+name, &v1alpha1.ToolServer{ObjectMeta: meta(), Spec: tc.spec}, tc.valid)
 	}

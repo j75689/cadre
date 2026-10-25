@@ -201,6 +201,7 @@ spec:
 | ModelProvider | `project`, `location` | required for `vertex`, forbidden otherwise |
 | ToolServer | `url`, `managed` | exactly one of them |
 | ToolServer | `managed.path` | the MCP endpoint's path, starting with `/`; default `/mcp` |
+| ToolServer | `managed.readinessProbe` | exactly one of `exec`, `httpGet`, `tcpSocket` and `grpc`, and no `terminationGracePeriodSeconds`; a probe the API server still refuses for a Pod makes the ToolServer not Ready with `InvalidSpec` |
 | ToolServer | `auth` | not with `managed`: a managed server is reached unauthenticated in the cluster |
 | ToolServer | `transport` | `streamable_http`, the default |
 | ToolServer | `auth.header`, `auth.prefix` | the request header carrying the Secret's value and what goes before it; default `Authorization` and `Bearer `, an empty prefix for a bare key such as `X-API-Key` |

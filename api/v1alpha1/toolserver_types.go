@@ -65,6 +65,8 @@ type ManagedServer struct {
 
 	// ReadinessProbe replaces the server container's default readiness
 	// probe, a TCP connect to Port, for a server with a health endpoint.
+	// +kubebuilder:validation:XValidation:rule="[has(self.exec), has(self.httpGet), has(self.tcpSocket), has(self.grpc)].filter(x, x).size() == 1",message="set exactly one of exec, httpGet, tcpSocket and grpc"
+	// +kubebuilder:validation:XValidation:rule="!has(self.terminationGracePeriodSeconds)",message="a readiness probe takes no terminationGracePeriodSeconds"
 	// +optional
 	ReadinessProbe *corev1.Probe `json:"readinessProbe,omitempty"`
 }

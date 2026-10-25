@@ -67,6 +67,10 @@ func (r *toolServerReconciler) reconcileManaged(ctx context.Context, ts *v1alpha
 		return notReady("Forbidden", forbiddenWorkloads)
 	case errors.As(err, &taken):
 		return notReady("NameTaken", taken.Error())
+	case apierrors.IsInvalid(err):
+		// A spec the CRD admits that the Deployment's does not, such as a
+		// readinessProbe a Pod may not have: retrying cannot help.
+		return notReady("InvalidSpec", "the API server refuses what it runs as: "+err.Error())
 	case err != nil:
 		return reconcile.Result{}, err
 	}
@@ -181,9 +185,11 @@ func (r *toolServerReconciler) ensureDeployment(ctx context.Context, ts *v1alpha
 // HTTP defines no health endpoint). The fields the API server defaults are
 // set to its defaults, so that the probe compares equal to the one read back.
 func readinessProbe(m *v1alpha1.ManagedServer) *corev1.Probe {
-	p := &corev1.Probe{ProbeHandler: corev1.ProbeHandler{TCPSocket: &corev1.TCPSocketAction{Port: intstr.FromInt32(m.Port)}}}
+	var p *corev1.Probe
 	if m.ReadinessProbe != nil {
 		p = m.ReadinessProbe.DeepCopy()
+	} else {
+		p = &corev1.Probe{ProbeHandler: corev1.ProbeHandler{TCPSocket: &corev1.TCPSocketAction{Port: intstr.FromInt32(m.Port)}}}
 	}
 	for _, f := range []struct {
 		field *int32

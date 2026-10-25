@@ -273,6 +273,12 @@ spec:
                         format: int32
                         type: integer
                     type: object
+                    x-kubernetes-validations:
+                    - message: set exactly one of exec, httpGet, tcpSocket and grpc
+                      rule: '[has(self.exec), has(self.httpGet), has(self.tcpSocket),
+                        has(self.grpc)].filter(x, x).size() == 1'
+                    - message: a readiness probe takes no terminationGracePeriodSeconds
+                      rule: '!has(self.terminationGracePeriodSeconds)'
                 required:
                 - image
                 - port
