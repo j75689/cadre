@@ -177,7 +177,9 @@ func (m *Manager) transition(ctx context.Context, key storage.Key, ev task.Event
 // acking an outbox item, and its slot would be given back. A drop of a
 // notification (task.NotifyDelivered with Drop) landed when its item is
 // gone, whoever removed it: told of twice beats never told, as a whole
-// status changed since would have it. Other events compare the whole
+// status changed since would have it. The price is a wrong Event when the
+// drop was in fact refused and another server's record of the last
+// delivery removed the item. Other events compare the whole
 // status; a wrong "not landed" there only costs the caller a retry.
 func (m *Manager) landed(ctx context.Context, key storage.Key, ev task.Event, status *v1alpha1.TaskStatus) (*v1alpha1.Task, bool, error) {
 	cur, err := m.store.GetTask(ctx, key)

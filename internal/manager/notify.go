@@ -340,9 +340,10 @@ func (m *Manager) notifyItem(ctx context.Context, key storage.Key, it v1alpha1.O
 	notMissing := func(name string) bool { return !slices.Contains(missing, name) }
 	gone, unseen = slices.DeleteFunc(gone, notMissing), slices.DeleteFunc(unseen, notMissing)
 	// endTurn records who took it, and ends this server's turn; once all
-	// have, the same write removes the item, as a drop does. A turn another
-	// server finished, or is sending under (a drop past this server's own
-	// turn), is left to it: ok is whether this write took effect.
+	// have, the same write removes the item, as a drop does. An item
+	// another server finished is left alone, and so, for a drop only (the
+	// guard is the drop's, in task.NotifyDelivered), is one another server
+	// is sending under a live turn: ok is whether this write took effect.
 	endTurn := func(took []string, drop bool) (ok bool, err error) {
 		_, err = m.transition(ctx, key, task.NotifyDelivered{ID: it.ID, To: took, By: m.id, Gone: gone, Drop: drop})
 		if errors.Is(err, task.ErrNotifyGone) || errors.Is(err, task.ErrNotifySending) {
