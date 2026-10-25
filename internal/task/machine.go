@@ -319,11 +319,15 @@ func (ReserveItem) kind() Kind { return KindReserve }
 // be lost after the record and none is needed. An item with no Notifiers
 // (no to) is never removed this way: the manager writes none, and one is
 // acked as having nobody to tell, as a server without Notifiers does.
+// Drop removes the item whoever has taken it, as one not taken in time:
+// a drop that finds no item to remove is ErrNotifyGone, so of servers
+// dropping one item, only the one whose write removed it tells of it.
 type NotifyDelivered struct {
 	ID   string
 	To   []string
 	By   string
 	Gone []string
+	Drop bool
 }
 
 func (NotifyDelivered) kind() Kind { return KindDelivered }
@@ -588,11 +592,13 @@ func Apply(t *v1alpha1.Task, ev Event, now time.Time) (Result, error) {
 		}
 
 	case NotifyDelivered:
+		found := false
 		for i := range s.Outbox {
 			n := s.Outbox[i].Notify
 			if s.Outbox[i].ID != ev.ID || n == nil {
 				continue
 			}
+			found = true
 			for _, to := range ev.To {
 				if !slices.Contains(n.Delivered, to) {
 					n.Delivered = append(n.Delivered, to)
@@ -603,8 +609,11 @@ func Apply(t *v1alpha1.Task, ev Event, now time.Time) (Result, error) {
 				n.SendingBy, n.SendingUntil = "", nil
 			}
 		}
+		if ev.Drop && !found {
+			return Result{}, ErrNotifyGone
+		}
 		s.Outbox = slices.DeleteFunc(s.Outbox, func(it v1alpha1.OutboxItem) bool {
-			return it.ID == ev.ID && it.Notify != nil && taken(it.Notify, ev.Gone)
+			return it.ID == ev.ID && it.Notify != nil && (ev.Drop || taken(it.Notify, ev.Gone))
 		})
 
 	case NotifyClaim:
