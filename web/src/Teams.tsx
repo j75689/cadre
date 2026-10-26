@@ -1,4 +1,4 @@
-import { useState, type FormEvent, type ReactNode } from "react";
+import { useRef, useState, type FormEvent, type ReactNode } from "react";
 import { Link, useNavigate } from "react-router";
 import { APIError, putTeam } from "./api";
 import { roleOf, useIdentityDetails } from "./Identity";
@@ -20,20 +20,29 @@ export function validNamespace(ns: string): string {
 }
 
 // CreateTeam makes a namespace a team, for a bootstrap admin: a PUT of
-// its Team without a version creates it, then the board opens.
-function CreateTeam() {
+// its Team without a version creates it, then the board opens. autoFocus
+// puts the caret in the Namespace field, for a form the caller just opened.
+function CreateTeam({ autoFocus = false }: { autoFocus?: boolean }) {
   const { retry } = useTeams();
   const navigate = useNavigate();
   const [ns, setNs] = useState("");
   const [displayName, setDisplayName] = useState("");
   const [error, setError] = useState<ReactNode>("");
+  // nsInvalid is whether error is about the namespace, so the field is
+  // marked invalid and described by it.
+  const [nsInvalid, setNsInvalid] = useState(false);
   const [busy, setBusy] = useState(false);
+  const nsField = useRef<HTMLInputElement>(null);
   const submit = async (e: FormEvent) => {
     e.preventDefault();
     const name = ns.trim();
     const invalid = validNamespace(name);
     setError(invalid);
-    if (invalid) return;
+    setNsInvalid(!!invalid);
+    if (invalid) {
+      nsField.current?.focus();
+      return;
+    }
     setBusy(true);
     try {
       await putTeam(name, { displayName: displayName.trim() || undefined });
@@ -46,6 +55,16 @@ function CreateTeam() {
             {name} already has a Team. <Link to={teamPath(name)}>Open it</Link>
           </>,
         );
+      } else if (err instanceof APIError && err.status === 404) {
+        // The server's message is a bare "not found": the namespace
+        // isn't in the cluster.
+        setError(
+          <>
+            There is no namespace {name} in the cluster. Create it first (<code>kubectl create namespace {name}</code>), then create the team.
+          </>,
+        );
+        setNsInvalid(true);
+        nsField.current?.focus();
       } else {
         setError((err as Error).message);
       }
@@ -53,11 +72,20 @@ function CreateTeam() {
     }
   };
   return (
-    <form className="card form" onSubmit={submit} noValidate aria-labelledby="create-team">
+    <form id="create-team-form" className="card form" onSubmit={submit} noValidate aria-labelledby="create-team">
       <h2 id="create-team">Create a team</h2>
       <label className="field">
         Namespace
-        <input value={ns} onChange={(e) => setNs(e.target.value)} className="mono" required aria-describedby="namespace-help" />
+        <input
+          ref={nsField}
+          value={ns}
+          onChange={(e) => setNs(e.target.value)}
+          className="mono"
+          required
+          autoFocus={autoFocus}
+          aria-invalid={nsInvalid}
+          aria-describedby={nsInvalid ? "namespace-help create-team-error" : "namespace-help"}
+        />
         <span id="namespace-help" className="help">
           The Kubernetes namespace the team's tasks and agents live in.
         </span>
@@ -71,7 +99,7 @@ function CreateTeam() {
         </Button>
       </div>
       {error && (
-        <p className="inline-error" role="alert">
+        <p id="create-team-error" className="inline-error" role="alert">
           {error}
         </p>
       )}
@@ -91,14 +119,14 @@ export function Teams() {
       <div className="page-head">
         <Heading>Teams</Heading>
         {me?.admin && teams && teams.length > 0 && (
-          <Button icon="plus" aria-expanded={creating} onClick={() => setCreating((c) => !c)}>
+          <Button icon="plus" aria-expanded={creating} aria-controls="create-team-form" onClick={() => setCreating((c) => !c)}>
             New team
           </Button>
         )}
       </div>
       {creating && teams && teams.length > 0 && (
         <div className="form-page team-create">
-          <CreateTeam />
+          <CreateTeam autoFocus />
         </div>
       )}
       {error && (

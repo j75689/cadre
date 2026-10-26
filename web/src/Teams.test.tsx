@@ -62,7 +62,12 @@ describe("Teams, with no team yet", () => {
     const puts = at(true);
     fireEvent.change(await screen.findByLabelText(/^Namespace/), { target: { value: "Team_X" } });
     fireEvent.click(screen.getByRole("button", { name: "Create team" }));
-    expect(screen.getByRole("alert").textContent).toMatch(/lower-case/);
+    const alert = screen.getByRole("alert");
+    expect(alert.textContent).toMatch(/lower-case/);
+    const field = screen.getByLabelText(/^Namespace/);
+    expect(field.getAttribute("aria-invalid")).toBe("true");
+    expect(field.getAttribute("aria-describedby")).toBe(`namespace-help ${alert.id}`);
+    expect(document.activeElement).toBe(field);
     expect(puts).toHaveLength(0);
     expect(screen.getByTestId("where").textContent).toBe("/");
   });
@@ -76,18 +81,31 @@ describe("Teams, with no team yet", () => {
     expect(screen.getByRole("link", { name: "Open it" }).getAttribute("href")).toBe("/t/x");
   });
 
+  it("says when the namespace isn't in the cluster", async () => {
+    at(true, () => json({ error: { code: "not_found", message: "not found" } }, 404));
+    fireEvent.change(await screen.findByLabelText(/^Namespace/), { target: { value: "x" } });
+    fireEvent.click(screen.getByRole("button", { name: "Create team" }));
+    expect((await screen.findByRole("alert")).textContent).toBe(
+      "There is no namespace x in the cluster. Create it first (kubectl create namespace x), then create the team.",
+    );
+    const field = screen.getByLabelText(/^Namespace/);
+    expect(field.getAttribute("aria-invalid")).toBe("true");
+    expect(document.activeElement).toBe(field);
+  });
+
   it("shows the server's other errors under the form", async () => {
     at(true, () => json({ error: { code: "forbidden", message: "only a bootstrap admin can create a Team" } }, 403));
     fireEvent.change(await screen.findByLabelText(/^Namespace/), { target: { value: "x" } });
     fireEvent.click(screen.getByRole("button", { name: "Create team" }));
     expect((await screen.findByRole("alert")).textContent).toBe("only a bootstrap admin can create a Team");
+    expect(screen.getByLabelText(/^Namespace/).getAttribute("aria-invalid")).toBe("false");
     expect(screen.getByRole("button", { name: "Create team" }).hasAttribute("disabled")).toBe(false);
   });
 
   it("shows anyone else the cadre team init hint, and no form", async () => {
     at(false);
     expect(await screen.findByText("cadre team init -n <namespace>")).toBeTruthy();
-    expect(screen.queryByRole("form")).toBeNull();
+    expect(screen.queryByRole("form", { name: "Create a team" })).toBeNull();
     expect(screen.queryByLabelText(/^Namespace/)).toBeNull();
   });
 });
@@ -108,6 +126,7 @@ describe("Teams, with teams", () => {
     expect(screen.queryByRole("form", { name: "Create a team" })).toBeNull();
     fireEvent.click(toggle);
     expect(toggle.getAttribute("aria-expanded")).toBe("true");
-    expect(screen.getByRole("form", { name: "Create a team" })).toBeTruthy();
+    expect(screen.getByRole("form", { name: "Create a team" }).id).toBe(toggle.getAttribute("aria-controls"));
+    expect(document.activeElement).toBe(screen.getByLabelText(/^Namespace/));
   });
 });
