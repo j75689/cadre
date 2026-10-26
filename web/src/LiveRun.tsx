@@ -46,7 +46,8 @@ export function LiveRun({ ns, name, run, linked, ready }: { ns: string; name: st
         </span>
         {events && (
           <span className="live-run-totals">
-            {n(t.inputTokens)} in · {n(t.outputTokens)} out · context {n(t.contextTokens)}
+            {n(t.inputTokens)} in · {n(t.outputTokens)} out
+            {t.contextTokens > 0 && <> · context {n(t.contextTokens)}</>}
             {Boolean(t.cacheReadInputTokens || t.cacheCreationInputTokens) && (
               <>
                 {" "}

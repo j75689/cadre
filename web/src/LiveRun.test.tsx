@@ -71,6 +71,13 @@ describe("LiveRun", () => {
     expect(card.querySelector("[aria-live], [role=status]")).toBeNull();
   });
 
+  it("leaves the context out until an event reports it", async () => {
+    serveEvents([event(1, { inputTokens: 100, outputTokens: 10 })]);
+    renderLive();
+    const totals = await screen.findByText(/^100 in · 10 out/);
+    expect(totals.textContent).toBe("100 in · 10 out");
+  });
+
   it("says when there is no event yet", async () => {
     serveEvents([]);
     renderLive();
