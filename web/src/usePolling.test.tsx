@@ -72,7 +72,7 @@ describe("usePolling", () => {
     expect(starts.map((s) => s - t0)).toEqual([0, 1000, 2000, 3000]);
   });
 
-  it("starts the next load when a load longer than the interval ends, not before", async () => {
+  it("waits a fifth of the interval after a load longer than the interval, never overlapping", async () => {
     const t0 = Date.now();
     const starts: number[] = [];
     let open = 0;
@@ -87,9 +87,9 @@ describe("usePolling", () => {
         }, 1500);
       });
     renderHook(() => usePolling(load, 1000, []));
-    await vi.advanceTimersByTimeAsync(3100);
-    // A timer of 0 fires a millisecond on.
-    expect(starts.map((s) => Math.round((s - t0) / 10) * 10)).toEqual([0, 1500, 3000]);
+    await vi.advanceTimersByTimeAsync(3500);
+    // Each load ends 1500ms after it starts; the next starts 200ms later.
+    expect(starts.map((s) => s - t0)).toEqual([0, 1700, 3400]);
     expect(most).toBe(1);
   });
 });
