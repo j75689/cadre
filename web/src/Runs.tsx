@@ -10,8 +10,9 @@ import { Loading, Skeleton } from "./ui/Skeleton";
 // Runs lists a task's ended runs, read again when current (the run in
 // progress and the phase) changes: a run is in the list once it is not the
 // current one any more. Expanding one reads its events once; the run named
-// by open (any case) is expanded, and scrolled to once ready.
-export function Runs({ ns, name, current, open = "", ready }: { ns: string; name: string; current: string; open?: string; ready: boolean }) {
+// by open (any case) is expanded, and scrolled to once ready. onRead is
+// told after each read, whether it worked or not.
+export function Runs({ ns, name, current, open = "", ready, onRead }: { ns: string; name: string; current: string; open?: string; ready: boolean; onRead?: () => void }) {
   const [runs, setRuns] = useState<RunRecord[] | null>(null);
   const [error, setError] = useState("");
   const [retry, setRetry] = useState(0);
@@ -21,12 +22,16 @@ export function Runs({ ns, name, current, open = "", ready }: { ns: string; name
       (r) => {
         setRuns(r.items);
         setError("");
+        onRead?.();
       },
       (e) => {
-        if (!controller.signal.aborted) setError((e as Error).message);
+        if (controller.signal.aborted) return;
+        setError((e as Error).message);
+        onRead?.();
       },
     );
     return () => controller.abort();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [ns, name, current, retry]);
   return (
     <section className="card runs" aria-label="Runs">

@@ -391,6 +391,38 @@ describe("A link to a run", () => {
     expect(scroll).toHaveBeenCalledWith({ block: "start" });
   });
 
+  it("scrolls to the run in progress once the subtasks above it have been read too", async () => {
+    const scroll = vi.fn();
+    Element.prototype.scrollIntoView = scroll;
+    const calls = runServer();
+    const serve = globalThis.fetch;
+    let answer = () => {};
+    vi.stubGlobal("fetch", (url: string) =>
+      url.includes("parent=") ? new Promise<Response>((r) => (answer = () => r(serve(url) as unknown as Response))) : serve(url),
+    );
+    renderAt(current);
+    expect(await screen.findByRole("region", { name: "Run in progress" })).toBeTruthy();
+    await rowOf("r1");
+    await vi.waitFor(() => expect(calls.some((c) => c.includes("/thread"))).toBe(true));
+    await act(() => vi.advanceTimersByTimeAsync(10));
+    expect(scroll).not.toHaveBeenCalled();
+    await act(async () => answer());
+    await vi.waitFor(() => expect(scroll).toHaveBeenCalledTimes(1));
+    expect(scroll).toHaveBeenCalledWith({ block: "start" });
+  });
+
+  it("scrolls to the run in progress after a failed read of the subtasks", async () => {
+    const scroll = vi.fn();
+    Element.prototype.scrollIntoView = scroll;
+    runServer();
+    const serve = globalThis.fetch;
+    vi.stubGlobal("fetch", (url: string) => (url.includes("parent=") ? Promise.reject(new TypeError("offline")) : serve(url)));
+    renderAt(current);
+    await screen.findByText(/Could not load the subtasks/);
+    await vi.waitFor(() => expect(scroll).toHaveBeenCalledTimes(1));
+    expect(scroll).toHaveBeenCalledWith({ block: "start" });
+  });
+
   it("scrolls the run in progress only as far as it takes when its link on the page is clicked", async () => {
     const scroll = vi.fn();
     Element.prototype.scrollIntoView = scroll;

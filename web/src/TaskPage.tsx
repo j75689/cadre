@@ -29,9 +29,14 @@ export function TaskPage() {
   const team = useTeamName(ns);
   const [task, setTask] = useState<Task | null>(null);
   const [entries, setEntries] = useState<ThreadEntry[]>([]);
-  // threadRead is set once the thread has been read: a linked run is
-  // scrolled to after, as under 800 px the thread is above it.
+  // A linked run is scrolled to once the thread, the subtasks and the runs
+  // have first been read (or failed to be): under 800 px the thread and the
+  // subtasks are above it, and the runs make the page long enough to bring
+  // it to the top.
   const [threadRead, setThreadRead] = useState(false);
+  const [subtasksRead, setSubtasksRead] = useState(false);
+  const [runsRead, setRunsRead] = useState(false);
+  const ready = threadRead && subtasksRead && runsRead;
   const lastSeq = useRef(0);
   const [error, setError] = useState("");
   // refresh restarts polling at once, after a conflict.
@@ -54,7 +59,6 @@ export function TaskPage() {
           append(page.items);
           if (page.items.length < threadPage) break;
         }
-        setThreadRead(true);
         setError("");
       } catch (e) {
         if (signal.aborted) return;
@@ -62,6 +66,7 @@ export function TaskPage() {
         if (e instanceof APIError && e.status === 404) setTask(null);
         setError(String((e as Error).message));
       }
+      setThreadRead(true);
     },
     5000,
     [ns, name, refresh],
@@ -137,17 +142,17 @@ export function TaskPage() {
                 </div>
               </section>
               <Composer task={task} onTask={setTask} onRefresh={onRefresh} waitingTool={waitedCall?.name ?? waitedCall?.tool} />
-              <Subtasks ns={ns} name={name} />
+              <Subtasks ns={ns} name={name} onRead={() => setSubtasksRead(true)} />
             </div>
             <aside className="stack" aria-label="About the task">
               <Details task={task} />
               <RunEnded run={liveRun?.id} />
               {liveRun && (
-                <LiveRun key={liveRun.id} ns={ns} name={name} run={liveRun} linked={liveRun.id.toLowerCase() === linkedRun.toLowerCase()} ready={threadRead} />
+                <LiveRun key={liveRun.id} ns={ns} name={name} run={liveRun} linked={liveRun.id.toLowerCase() === linkedRun.toLowerCase()} ready={ready} />
               )}
               {/* A run ends when the current run goes away or is replaced; the
                   count catches one that started and ended between reads. */}
-              <Runs ns={ns} name={name} current={`${task.status?.run?.id ?? ""}/${task.status?.phase ?? ""}/${task.status?.runs?.count ?? 0}`} open={linkedRun} ready={threadRead} />
+              <Runs ns={ns} name={name} current={`${task.status?.run?.id ?? ""}/${task.status?.phase ?? ""}/${task.status?.runs?.count ?? 0}`} open={linkedRun} ready={ready} onRead={() => setRunsRead(true)} />
             </aside>
           </div>
         </>
