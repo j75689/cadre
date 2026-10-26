@@ -160,6 +160,7 @@ describe("AccessDetail", () => {
     expect(card.getByText("SecretMissing")).toBeTruthy();
     expect(card.getByText("secret minted-token not found")).toBeTruthy();
     expect(card.getByText(/never shown again/)).toBeTruthy();
+    expect(card.getByText("kubectl -n a get secret minted-token -o jsonpath='{.data.token}' | base64 -d")).toBeTruthy();
     expect(card.getByText("Minted")).toBeTruthy();
     const crumbs = within(screen.getByRole("navigation", { name: "Breadcrumb" }));
     expect(crumbs.getByRole("link", { name: "Agent access" }).getAttribute("href")).toBe("/t/a/settings/access");
@@ -171,6 +172,13 @@ describe("AccessDetail", () => {
     expect(card.getByText("Token not minted yet")).toBeTruthy();
     expect(card.getByText("Not ready")).toBeTruthy();
     expect(card.queryByText("Minted")).toBeNull();
+    expect(card.queryByText(/never shown again/)).toBeNull();
+  });
+
+  it("does not point a ServiceAccount's access at a leftover Secret", async () => {
+    open("/t/a/settings/access/bot", admin, () => json(access({ spec: { role: "member", serviceAccount: { name: "ci" } }, tokenSecret: "bot.access-token" })));
+    const card = within(await screen.findByRole("region", { name: "AgentAccess" }));
+    expect(card.getByText("ci")).toBeTruthy();
     expect(card.queryByText(/never shown again/)).toBeNull();
   });
 

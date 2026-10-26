@@ -367,7 +367,8 @@ function AccessCard({ ns, name }: { ns: string; name: string }) {
           </dl>
           {access.tokenSecret && !access.spec.serviceAccount && (
             <p className="hint card-body">
-              The token is never shown again after it is minted; read it from Secret <code>{access.tokenSecret}</code> with kubectl.
+              The token is never shown again after it is minted; read it from Secret <code>{access.tokenSecret}</code>, key <code>token</code>, with{" "}
+              <code>{`kubectl -n ${ns} get secret ${access.tokenSecret} -o jsonpath='{.data.token}' | base64 -d`}</code>.
             </p>
           )}
         </section>
