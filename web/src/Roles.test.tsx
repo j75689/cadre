@@ -80,6 +80,7 @@ describe("roles", () => {
       },
     );
     at("/t/a/tasks/x");
+    fireEvent.click(await screen.findByRole("button", { name: "Comment instead" }));
     fireEvent.change(await screen.findByLabelText("Comment"), { target: { value: "hi" } });
     fireEvent.click(screen.getByRole("button", { name: "Comment" }));
     expect(await screen.findByText(/you are a viewer/)).toBeTruthy();
@@ -104,10 +105,78 @@ describe("roles", () => {
       () => json({ error: { code: "forbidden", message: "a change made with a session cookie must come from this site" } }, 403),
     );
     at("/t/a/tasks/x");
+    fireEvent.click(await screen.findByRole("button", { name: "Comment instead" }));
     fireEvent.change(await screen.findByLabelText("Comment"), { target: { value: "hi" } });
     fireEvent.click(screen.getByRole("button", { name: "Comment" }));
     expect(await screen.findByText(/must come from this site/)).toBeTruthy();
     expect(reads.filter((u) => u.endsWith("/me")).length).toBe(1);
     expect(screen.getByRole("button", { name: "Comment" })).toBeTruthy();
+  });
+
+  it("keep a refused cancel's reason when the button goes, said once", async () => {
+    let role = "member";
+    server(
+      () => oidc({ a: role }),
+      () => {
+        role = "viewer";
+        return json({ error: { code: "no_role", message: "to cancel a task in a needs the member role; you are a viewer" } }, 403);
+      },
+    );
+    // The second read of /me waits until let go, so the moment between
+    // the refusal and the role read again can be looked at.
+    const inner = globalThis.fetch;
+    let reads = 0;
+    let release: () => void = () => {};
+    const held = new Promise<void>((r) => (release = r));
+    vi.stubGlobal("fetch", async (url: string, init?: RequestInit) => {
+      if (url.endsWith("/me") && ++reads > 1) await held;
+      return inner(url, init);
+    });
+    const alerts = () => screen.queryAllByRole("alert").filter((a) => /to cancel a task/.test(a.textContent ?? ""));
+    at("/t/a/tasks/x");
+    fireEvent.click(await screen.findByRole("button", { name: "Cancel task" }));
+    fireEvent.click(screen.getByRole("button", { name: "Yes, cancel it" }));
+    await vi.waitFor(() => expect(alerts().length).toBeGreaterThan(0));
+    expect(alerts()).toHaveLength(1);
+    const said = alerts()[0];
+    release();
+    expect(await screen.findByText("You are a viewer of a.")).toBeTruthy();
+    expect(screen.queryByRole("button", { name: "Cancel task" })).toBeNull();
+    // The same element: not said again when the button goes.
+    expect(alerts()).toHaveLength(1);
+    expect(alerts()[0]).toBe(said);
+  });
+
+  it("keep a refused comment's reason in the one alert as the composer goes", async () => {
+    let role = "member";
+    server(
+      () => oidc({ a: role }),
+      () => {
+        role = "viewer";
+        return json({ error: { code: "no_role", message: "to comment on a needs the member role; you are a viewer" } }, 403);
+      },
+    );
+    const inner = globalThis.fetch;
+    let reads = 0;
+    let release: () => void = () => {};
+    const held = new Promise<void>((r) => (release = r));
+    vi.stubGlobal("fetch", async (url: string, init?: RequestInit) => {
+      if (url.endsWith("/me") && ++reads > 1) await held;
+      return inner(url, init);
+    });
+    const alerts = () => screen.queryAllByRole("alert").filter((a) => /to comment on a/.test(a.textContent ?? ""));
+    at("/t/a/tasks/x");
+    fireEvent.click(await screen.findByRole("button", { name: "Comment instead" }));
+    fireEvent.change(await screen.findByLabelText("Comment"), { target: { value: "hi" } });
+    fireEvent.click(screen.getByRole("button", { name: "Comment" }));
+    await vi.waitFor(() => expect(alerts().length).toBeGreaterThan(0));
+    expect(alerts()).toHaveLength(1);
+    const said = alerts()[0];
+    release();
+    // The forms go; the card stays, holding the reason.
+    await vi.waitFor(() => expect(screen.queryByLabelText("Comment")).toBeNull());
+    expect(screen.getByRole("region", { name: "Actions" }).contains(said)).toBe(true);
+    expect(alerts()).toHaveLength(1);
+    expect(alerts()[0]).toBe(said);
   });
 });

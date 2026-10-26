@@ -1,12 +1,23 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { Link, useParams } from "react-router";
-import { listTasks, phases, type Phase, type Task } from "./api";
-import { RoleLine, useRole } from "./Identity";
+import { listTasks, phases, terminalPhases, type Phase, type Task } from "./api";
+import { RoleLine, useIdentityDetails, useRole } from "./Identity";
 import { can } from "./roles";
+import { useTeamName } from "./teamList";
+import { assigneeIcon, Meta, phaseTone, Pills, PriorityChip, RoleBadge } from "./ui/Badge";
+import { Banner } from "./ui/Banner";
+import { Button, ButtonLink } from "./ui/Button";
+import { Icon } from "./ui/Icon";
+import { Heading, useTitle } from "./ui/Page";
+import { Loading, Skeleton, SkeletonCard } from "./ui/Skeleton";
+import { ago } from "./ui/Time";
 import { usePolling } from "./usePolling";
 
 // pageSize is one "load more" of a column.
 export const pageSize = 50;
+
+// pollMs is how often the board is read again.
+const pollMs = 5000;
 
 export interface Column {
   phase: Phase;
@@ -32,40 +43,75 @@ async function loadColumn(ns: string, phase: Phase, pages: number, signal: Abort
 export function Board() {
   const { ns = "" } = useParams();
   const role = useRole(ns);
+  const { mode } = useIdentityDetails();
+  const name = useTeamName(ns);
   const [columns, setColumns] = useState<Column[] | null>(null);
   const [pages, setPages] = useState<Record<string, number>>({});
   const [error, setError] = useState("");
   const [search, setSearch] = useState("");
+  const [updated, setUpdated] = useState<Date | null>(null);
+  // retry reads the board again at once, after a failed first read.
+  const [retry, setRetry] = useState(0);
+  useTitle(name);
   usePolling(
     async (signal) => {
       try {
         const next = await Promise.all(phases.map((ph) => loadColumn(ns, ph, pages[ph] ?? 1, signal)));
         setColumns(next);
+        setUpdated(new Date());
         setError("");
       } catch (e) {
         if (!signal.aborted) setError(String((e as Error).message));
       }
     },
-    5000,
-    [ns, pages],
+    pollMs,
+    [ns, pages, retry],
   );
+  const board = `/t/${encodeURIComponent(ns)}`;
+  const total = columns?.reduce((n, c) => n + c.tasks.length, 0) ?? 0;
+  const shown = columns?.reduce((n, c) => n + c.tasks.filter((t) => matches(t, search)).length, 0) ?? 0;
   return (
-    <main className="board">
-      <header className="board-header">
-        <h1>{ns}</h1>
-        {can(role, "work") && (
-          <Link className="new" to={`/t/${encodeURIComponent(ns)}/new`}>
-            New task
-          </Link>
-        )}
-        <label className="search">
-          Search the loaded page{" "}
-          <input type="search" value={search} onChange={(e) => setSearch(e.target.value)} placeholder="title, label, assignee, #number" />
-        </label>
-      </header>
-      <RoleLine ns={ns} />
-      {error && <p className="error">Could not load the board: {error}</p>}
-      {columns === null && !error && <p>Loading…</p>}
+    <main id="main" className="board">
+      <div className="toolbar">
+        <div className="toolbar-title">
+          <Heading>{name}</Heading>
+          {mode === "oidc" && role && <RoleBadge role={role} />}
+        </div>
+        {columns && <LiveStatus updated={updated} error={error} />}
+        <div className="toolbar-end">
+          <div className="search" role="search">
+            <Icon name="search" />
+            <label htmlFor="board-search" className="sr-only">
+              Search the loaded page
+            </label>
+            <input
+              id="board-search"
+              type="search"
+              value={search}
+              onChange={(e) => setSearch(e.target.value)}
+              placeholder="Title, label, assignee, #number"
+            />
+            {search && <Button variant="ghost" small icon="x" aria-label="Clear the search" onClick={() => setSearch("")} />}
+          </div>
+          {search.trim() !== "" && columns && (
+            <span className="search-count">
+              {shown} of {total} shown
+            </span>
+          )}
+          {can(role, "work") && (
+            <ButtonLink variant="primary" icon="plus" to={`${board}/new`}>
+              New task
+            </ButtonLink>
+          )}
+        </div>
+      </div>
+      <div className="board-role">
+        <RoleLine ns={ns} />
+      </div>
+      {error && columns === null && (
+        <Banner onRetry={() => setRetry((n) => n + 1)}>Could not load the board: {error}</Banner>
+      )}
+      {columns === null && !error && <BoardSkeleton />}
       {columns && (
         <Columns
           ns={ns}
@@ -75,6 +121,44 @@ export function Board() {
         />
       )}
     </main>
+  );
+}
+
+// LiveStatus says how fresh the board is, as the poll keeps it. Only a
+// change of state reaches the polite live region, "Up to date" or "Could
+// not refresh: ...", so it is not read out again on every poll; how long
+// ago the board was read is shown beside it, outside the region.
+function LiveStatus({ updated, error }: { updated: Date | null; error: string }) {
+  const [now, setNow] = useState(() => Date.now());
+  useEffect(() => {
+    const t = setInterval(() => setNow(Date.now()), pollMs);
+    return () => clearInterval(t);
+  }, []);
+  return (
+    <p className={error ? "live stale" : "live"}>
+      <span role="status" aria-atomic="true" className={error ? undefined : "sr-only"}>
+        {error ? `Could not refresh: ${error}` : "Up to date"}
+      </span>
+      {!error && updated && <span>Updated {ago(updated, Math.max(now, updated.getTime())) ?? updated.toLocaleString()}</span>}
+    </p>
+  );
+}
+
+function BoardSkeleton() {
+  return (
+    <Loading what="the board" className="columns">
+      {phases.map((phase) => (
+        <div className="column skeleton-column" key={phase} aria-hidden="true">
+          <div className="column-head">
+            <Skeleton width="45%" height={12} />
+          </div>
+          <div className="column-body">
+            <SkeletonCard />
+            <SkeletonCard />
+          </div>
+        </div>
+      ))}
+    </Loading>
   );
 }
 
@@ -92,19 +176,28 @@ export function Columns(props: { ns: string; columns: Column[]; search: string; 
     <div className="columns">
       {props.columns.map((col) => {
         const shown = col.tasks.filter((t) => matches(t, props.search));
+        const terminal = terminalPhases.includes(col.phase);
         return (
-          <section className="column" key={col.phase} aria-label={col.phase}>
-            <h2>
-              {col.phase} <span className="count">{col.tasks.length}{col.more ? "+" : ""}</span>
-            </h2>
-            {shown.map((t) => (
-              <Card key={t.metadata.name} ns={props.ns} task={t} />
-            ))}
-            {col.more && (
-              <button type="button" className="more" onClick={() => props.onMore(col.phase)}>
-                Load more
-              </button>
-            )}
+          <section className={`column ${phaseTone(col.phase)}${terminal ? " terminal" : ""}`} key={col.phase} aria-label={col.phase}>
+            <div className="column-head">
+              <span className="dot" aria-hidden="true" />
+              <h2>{col.phase}</h2>
+              <span className="count-pill">
+                {col.tasks.length}
+                {col.more ? "+" : ""}
+              </span>
+            </div>
+            <div className="column-body">
+              {shown.length === 0 && <p className="column-empty">Nothing here</p>}
+              {shown.map((t) => (
+                <Card key={t.metadata.name} ns={props.ns} task={t} />
+              ))}
+              {col.more && (
+                <Button variant="ghost" small className="btn-block" onClick={() => props.onMore(col.phase)}>
+                  Load more
+                </Button>
+              )}
+            </div>
           </section>
         );
       })}
@@ -117,35 +210,30 @@ export function Columns(props: { ns: string; columns: Column[]; search: string; 
 function Card({ ns, task }: { ns: string; task: Task }) {
   const s = task.spec;
   const tasks = `/t/${encodeURIComponent(ns)}/tasks/`;
+  const phase = task.status?.phase;
+  const waiting = phase === "Waiting" ? task.status?.waiting : undefined;
   return (
-    <article className={`card priority-${s.priority ?? "medium"}`}>
+    <article className={`card task-card${waiting ? " waiting" : ""}`}>
       <div className="card-top">
-        <span className="number">{task.status?.number !== undefined ? `#${task.status.number}` : "new"}</span>
-        <span className="priority">{s.priority ?? "medium"}</span>
+        {phase === "Running" && <span className="dot pulse" aria-label="running" role="img" />}
+        <span className="mono num">{task.status?.number !== undefined ? `#${task.status.number}` : "new"}</span>
+        <PriorityChip priority={s.priority} />
       </div>
       <Link className="title" to={tasks + encodeURIComponent(task.metadata.name)}>
         {s.title}
       </Link>
+      {s.assignee && <Meta icon={assigneeIcon(s.assignee.kind)}>{s.assignee.name}</Meta>}
       {s.parentRef && (
-        <div className="parent">
+        <Meta icon="git-branch" className="parent">
           subtask of <Link to={tasks + encodeURIComponent(s.parentRef.name)}>{s.parentRef.name}</Link>
-        </div>
+        </Meta>
       )}
-      {s.assignee && (
-        <div className="assignee">
-          {s.assignee.kind === "Agent" ? "agent" : "user"} {s.assignee.name}
-        </div>
+      {waiting && (
+        <Meta icon="hourglass" className="waiting-row">
+          Waiting: {waiting.reason}
+        </Meta>
       )}
-      {task.status?.phase === "Waiting" && task.status.waiting && <div className="waiting">waiting: {task.status.waiting.reason}</div>}
-      {s.labels && s.labels.length > 0 && (
-        <div className="labels">
-          {s.labels.map((l) => (
-            <span className="label" key={l}>
-              {l}
-            </span>
-          ))}
-        </div>
-      )}
+      {s.labels && s.labels.length > 0 && <Pills labels={s.labels} />}
     </article>
   );
 }

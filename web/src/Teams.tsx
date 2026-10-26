@@ -1,41 +1,59 @@
-import { useState } from "react";
 import { Link } from "react-router";
-import { listTeams, type Team } from "./api";
-import { useIdentityDetails } from "./Identity";
-import { usePolling } from "./usePolling";
+import { roleOf, useIdentityDetails } from "./Identity";
+import { teamName, useTeams } from "./teamList";
+import { RoleBadge } from "./ui/Badge";
+import { Banner } from "./ui/Banner";
+import { Heading, useTitle } from "./ui/Page";
+import { Loading, Skeleton } from "./ui/Skeleton";
 
+// Teams is the team picker: a card per team the caller may see.
 export function Teams() {
   const { mode, me } = useIdentityDetails();
-  const [teams, setTeams] = useState<Team[] | null>(null);
-  const [error, setError] = useState("");
-  usePolling(
-    async (signal) => {
-      try {
-        const res = await listTeams(signal);
-        setTeams(res.items);
-        setError("");
-      } catch (e) {
-        if (!signal.aborted) setError(String((e as Error).message));
-      }
-    },
-    15000,
-    [],
-  );
+  const { teams, error, retry } = useTeams();
+  useTitle("Teams");
   return (
-    <main className="teams">
-      <h1>Teams</h1>
-      {error && <p className="error">Could not load the teams: {error}</p>}
-      {teams === null && !error && <p>Loading…</p>}
-      {teams?.length === 0 && <p>No Team yet. A namespace becomes a team when it has a Team resource.</p>}
-      <ul>
-        {teams?.map((t) => (
-          <li key={t.metadata.namespace}>
-            <Link to={`/t/${encodeURIComponent(t.metadata.namespace)}`}>{t.spec?.displayName || t.metadata.namespace}</Link>
-            {t.spec?.displayName && <span className="ns"> {t.metadata.namespace}</span>}
-            {mode === "oidc" && <span className="team-role"> {me?.roles?.[t.metadata.namespace] ?? (me?.admin ? "admin" : "")}</span>}
-          </li>
-        ))}
-      </ul>
+    <main id="main" className="page">
+      <div className="page-head">
+        <Heading>Teams</Heading>
+      </div>
+      {error && (
+        <Banner onRetry={retry} className="page-banner">
+          Could not load the teams: {error}
+        </Banner>
+      )}
+      {teams === null && !error && (
+        <Loading what="the teams" className="team-grid">
+          {[0, 1, 2].map((i) => (
+            <div className="card team-card" key={i} aria-hidden="true">
+              <Skeleton width="60%" height={16} />
+              <Skeleton width="35%" height={12} />
+            </div>
+          ))}
+        </Loading>
+      )}
+      {teams?.length === 0 && (
+        <div className="card empty">
+          <p>No team yet. A namespace becomes a team when it has a Team resource:</p>
+          <pre>cadre team init -n &lt;namespace&gt;</pre>
+        </div>
+      )}
+      {teams && teams.length > 0 && (
+        <ul className="team-grid">
+          {teams.map((t) => {
+            const ns = t.metadata.namespace;
+            const role = roleOf(me, ns);
+            return (
+              <li key={ns} className="card team-card">
+                <Link to={`/t/${encodeURIComponent(ns)}`}>{teamName(t)}</Link>
+                <div className="row">
+                  <span className="mono">{ns}</span>
+                  {mode === "oidc" && role && <RoleBadge role={role} />}
+                </div>
+              </li>
+            );
+          })}
+        </ul>
+      )}
     </main>
   );
 }

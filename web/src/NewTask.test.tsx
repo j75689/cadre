@@ -57,9 +57,9 @@ describe("NewTask", () => {
     expect(posts).toHaveLength(0);
 
     fireEvent.change(screen.getByLabelText("Title"), { target: { value: "Write it" } });
-    fireEvent.change(screen.getByLabelText("Kind"), { target: { value: "Agent" } });
+    fireEvent.click(screen.getByRole("radio", { name: "Agent" }));
     expect(await screen.findByRole("option", { name: "coder (not ready: ModelProviderNotFound)" })).toBeTruthy();
-    fireEvent.change(screen.getByLabelText("Agent"), { target: { value: "coder" } });
+    fireEvent.change(screen.getByLabelText("Agent to assign"), { target: { value: "coder" } });
     expect(screen.getByText(/ModelProvider claude does not exist/)).toBeTruthy();
     fireEvent.click(screen.getByRole("button", { name: "Create task" }));
     expect(await screen.findByText("Write it")).toBeTruthy();
@@ -81,7 +81,7 @@ describe("NewTask", () => {
         <App />
       </MemoryRouter>,
     );
-    fireEvent.change(await screen.findByLabelText("Kind"), { target: { value: "Agent" } });
+    fireEvent.click(await screen.findByRole("radio", { name: "Agent" }));
     expect(await screen.findByText(/Could not load the agents: the cache is not synced/)).toBeTruthy();
     expect(screen.queryByText(/no agents/)).toBeNull();
     fireEvent.click(screen.getByRole("button", { name: "Retry" }));

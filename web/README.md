@@ -1,9 +1,10 @@
 # Cadre web UI
 
 The board UI: React, TypeScript and Vite. `npm run build` writes it to
-`../internal/web/dist`, which cadre-server embeds and serves at `/`. Design
-notes live in [docs/architecture.md](../docs/architecture.md#web-ui-and-api);
-this file is how to work on it.
+`../internal/web/dist`, which cadre-server embeds and serves at `/`. What it does is in
+[docs/architecture.md](../docs/architecture.md#web-ui-and-api), and its design
+system (tokens, components, states, accessibility) in
+[docs/web-ui.md](../docs/web-ui.md); this file is how to work on it.
 
 ## Setup
 
@@ -59,3 +60,7 @@ too; go back to it.
   with `vi.stubGlobal`; polling tests use Vitest's fake timers.
 - Dependencies stay few: react, react-dom and react-router at runtime, plain
   CSS, no component kit.
+- Shared pieces are in `src/ui/` (Icon, Badge, Button, Skeleton, Banner,
+  Menu, Time, Page); components use the tokens in `src/styles.css`, never a
+  raw colour. Icons are inline SVG in `src/ui/Icon.tsx`: nothing is fetched
+  at run time, fonts included.

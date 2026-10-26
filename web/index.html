@@ -4,6 +4,19 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>Cadre</title>
+    <script>
+      // The theme, before anything is painted: the one picked in the top
+      // bar (src/theme.ts), or the system's. The stylesheet's dark tokens
+      // follow data-theme alone.
+      (function () {
+        var t = null;
+        try {
+          t = localStorage.getItem("cadre.theme");
+        } catch (e) {}
+        if (t !== "light" && t !== "dark") t = window.matchMedia && matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light";
+        document.documentElement.setAttribute("data-theme", t);
+      })();
+    </script>
   </head>
   <body>
     <div id="root"></div>
