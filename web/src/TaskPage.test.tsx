@@ -221,3 +221,72 @@ describe("Subtasks", () => {
     expect(reads() - before).toBe(2);
   });
 });
+
+describe("A link to a run", () => {
+  const current = "01JRUN0000000000000000000B";
+  const ended = "01JRUN0000000000000000000A";
+
+  // runServer answers for a task running current, with ended in its runs.
+  function runServer() {
+    const calls: string[] = [];
+    vi.stubGlobal("fetch", (url: string) => {
+      calls.push(url);
+      if (url.endsWith("/me")) return json({ mode: "none", admin: true });
+      if (url.endsWith("/runs"))
+        return json({ items: [{ id: ended, mode: "runtime", runner: "r1", reason: "claimed", outcome: "Review", endedAt: "2026-10-25T09:00:00Z" }] });
+      if (url.includes("/events")) return json({ items: [{ runId: "", seq: 1, progress: "working" }] });
+      if (url.includes("/thread") || url.includes("parent=")) return json({ items: [] });
+      return json(task("Running", { run: { id: current, mode: "runtime" }, runs: { count: 2 } }));
+    });
+    return calls;
+  }
+
+  function renderAt(run: string) {
+    render(
+      <MemoryRouter initialEntries={[`/t/a/tasks/x?run=${run}`]}>
+        <App />
+      </MemoryRouter>,
+    );
+  }
+
+  it("opens an ended run and reads its events without a click", async () => {
+    const scroll = vi.fn();
+    Element.prototype.scrollIntoView = scroll;
+    const calls = runServer();
+    renderAt(ended);
+    const row = await screen.findByRole("button", { name: /runtime on r1/ });
+    expect(row.getAttribute("aria-expanded")).toBe("true");
+    await vi.waitFor(() => expect(calls).toContain(`/api/v1/namespaces/a/tasks/x/runs/${ended}/events`));
+    await vi.waitFor(() => expect(row.closest("li")!.textContent).toContain("progress: working"));
+    expect(scroll).toHaveBeenCalledTimes(1);
+    expect(screen.getByRole("link", { name: `Link to run ${ended}` }).getAttribute("href")).toBe(`/t/a/tasks/x?run=${ended}`);
+  });
+
+  it("scrolls to the run in progress once", async () => {
+    const scroll = vi.fn();
+    Element.prototype.scrollIntoView = scroll;
+    runServer();
+    renderAt(current);
+    expect(await screen.findByRole("region", { name: "Run in progress" })).toBeTruthy();
+    await act(() => vi.advanceTimersByTimeAsync(10_000));
+    expect(scroll).toHaveBeenCalledTimes(1);
+    expect((await screen.findByRole("button", { name: /runtime on r1/ })).getAttribute("aria-expanded")).toBe("false");
+  });
+
+  it("matches the run's id in any case", async () => {
+    const calls = runServer();
+    renderAt(ended.toLowerCase());
+    const row = await screen.findByRole("button", { name: /runtime on r1/ });
+    expect(row.getAttribute("aria-expanded")).toBe("true");
+    await vi.waitFor(() => expect(calls).toContain(`/api/v1/namespaces/a/tasks/x/runs/${ended}/events`));
+  });
+
+  it("matches the run in progress in any case", async () => {
+    const scroll = vi.fn();
+    Element.prototype.scrollIntoView = scroll;
+    runServer();
+    renderAt(current.toLowerCase());
+    expect(await screen.findByRole("region", { name: "Run in progress" })).toBeTruthy();
+    await vi.waitFor(() => expect(scroll).toHaveBeenCalledTimes(1));
+  });
+});

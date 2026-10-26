@@ -3,6 +3,8 @@ import { Link, useParams } from "react-router";
 import { APIError, getTask, readThread, type Task, type ThreadEntry } from "./api";
 import { CancelTask, Composer } from "./Actions";
 import { RoleLine } from "./Identity";
+import { params, useParam } from "./links";
+import { LiveRun, RunEnded } from "./LiveRun";
 import { Runs } from "./Runs";
 import { Subtasks } from "./Subtasks";
 import { useTeamName } from "./teamList";
@@ -23,6 +25,7 @@ export const threadPage = 200;
 // start again.
 export function TaskPage() {
   const { ns = "", name = "" } = useParams();
+  const [linkedRun] = useParam(params.run);
   const team = useTeamName(ns);
   const [task, setTask] = useState<Task | null>(null);
   const [entries, setEntries] = useState<ThreadEntry[]>([]);
@@ -66,6 +69,7 @@ export function TaskPage() {
   const onRefresh = () => setRefresh((n) => n + 1);
   const waitingOn = task?.status?.waiting?.threadSeq;
   const waitedCall = entries.find((e) => e.seq === waitingOn)?.call;
+  const liveRun = task?.status?.phase === "Running" && task.status.run?.id ? task.status.run : undefined;
   return (
     <main id="main" className="task-page">
       <nav className="breadcrumb" aria-label="Breadcrumb">
@@ -133,9 +137,13 @@ export function TaskPage() {
             </div>
             <aside className="stack" aria-label="About the task">
               <Details task={task} />
+              <RunEnded run={liveRun?.id} />
+              {liveRun && (
+                <LiveRun key={liveRun.id} ns={ns} name={name} run={liveRun} linked={liveRun.id.toLowerCase() === linkedRun.toLowerCase()} />
+              )}
               {/* A run ends when the current run goes away or is replaced; the
                   count catches one that started and ended between reads. */}
-              <Runs ns={ns} name={name} current={`${task.status?.run?.id ?? ""}/${task.status?.phase ?? ""}/${task.status?.runs?.count ?? 0}`} />
+              <Runs ns={ns} name={name} current={`${task.status?.run?.id ?? ""}/${task.status?.phase ?? ""}/${task.status?.runs?.count ?? 0}`} open={linkedRun} />
             </aside>
           </div>
         </>

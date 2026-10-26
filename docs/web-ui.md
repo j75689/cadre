@@ -128,7 +128,8 @@ The team's URLs and their query parameters are built in `web/src/links.ts` (`tea
     - on the right, "Cancel task" as a danger ghost button, which opens an inline confirmation.
   - **Body:** a grid of `minmax(0, 3fr) minmax(18rem, 1fr)`, stacked under 800 px.
     - The main column holds Description, Thread, the composer and Subtasks.
-    - The side column holds Details and Runs.
+    - The side column holds Details, the run in progress (while Running) and Runs.
+  - `?run=<id>` (any case) opens the page at that run: the run in progress, or an ended run, expanded with its events read. It is scrolled into view once.
 - **New task** (`/t/<ns>/new`): one form card, at most 40rem wide.
   - Labels sit above fields, and inputs are 16 px.
   - Assignee and priority are segmented controls.
@@ -212,7 +213,8 @@ Buttons are disabled while a call is in flight, and the server's error shows und
   - the run in progress (mode, runner, step, attempt, lease);
   - the run count;
   - conditions, each with a check (`True`) or an alert icon, its reason and its message.
-- **Runs:** each run is a row button: a chevron, the id in mono, the mode, runner and reason, and an outcome badge in the outcome's phase hue, with the start and end times under it. Expanding a row shows its events in tabular mono: progress lines and token counts.
+- **Run in progress:** shown while the task is Running. The id in mono links to the run (`?run=<id>`), then the mode, runner and step, and the token totals: "12,345 in · 2,100 out · context 30,120", plus the prompt cache's read and written tokens when there are any. In and out are summed over the events; context is the latest event's, the size of the conversation. Under them the events, as in Runs, read again every 5 s while the tab is visible; "No events yet." until the first. The card goes when the run ends, and Runs reads its list again.
+- **Runs:** each run is a row button: a chevron, the mode, runner and reason, and an outcome badge in the outcome's phase hue, with the start and end times under it. The id in mono sits above the button, a link to the run named "Link to run <id>". Expanding a row shows its events in tabular mono: progress lines and token counts, with the prompt cache's when there are any.
 
 ## States
 
@@ -235,6 +237,6 @@ Buttons are disabled while a call is in flight, and the server's error shows und
   - A Running card's dot is an `img` named "running".
 - **Colour alone:** phase and priority never rely on colour only: a phase is a dot and its name, and a priority is an icon and its word. A wait is an icon and the word "Waiting".
 - **Structure:** one `h1` per page. Landmarks: `header`, `main` (skip-link target), breadcrumb `nav`, and `region`s for the board's columns and the task's cards.
-- **Live regions:** the board has a single polite `role="status"` with `aria-atomic`. Only a change of state reaches it: "Up to date" (visually hidden) or "Could not refresh: <message>". How long ago the board was read ("Updated 12 s ago") is shown beside it, outside the region, so the poll does not make it speak every five seconds. Errors from actions are `role="alert"`.
+- **Live regions:** the board has a single polite `role="status"` with `aria-atomic`. Only a change of state reaches it: "Up to date" (visually hidden) or "Could not refresh: <message>". How long ago the board was read ("Updated 12 s ago") is shown beside it, outside the region, so the poll does not make it speak every five seconds. The run in progress's events are no live region either: a visually hidden polite `role="status"` says "Run ended" when the run goes. Errors from actions are `role="alert"`.
 - **Titles:** `document.title` is "<page> · <team> · Cadre", for example "#12 Fix the build · Platform · Cadre".
 - **Keyboard:** everything a pointer can do is reachable by keyboard: the menu, segmented controls (radios), `<details>`, run rows and the cancel confirmation.

@@ -1850,3 +1850,45 @@ main.board {
     display: none;
   }
 }
+
+/* The run in progress and links to runs */
+
+.live-run-about {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-1) var(--space-2);
+  padding-bottom: var(--space-2);
+  font-size: var(--text-sm);
+}
+
+.live-run-about code {
+  overflow-wrap: anywhere;
+}
+
+.live-run-totals {
+  flex-basis: 100%;
+  color: var(--fg-muted);
+  font-variant-numeric: tabular-nums;
+}
+
+/* An ended run's id sits above its row's button, lined up with the row's
+   text past the chevron. */
+.run-link {
+  display: block;
+  padding: var(--space-3) var(--space-4) 0 calc(var(--space-4) + 16px + var(--space-2));
+  font-size: var(--text-sm);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.run-link + .run-head {
+  padding-top: var(--space-1);
+}
+
+/* A run scrolled to from a link clears the sticky top bar. */
+.live-run,
+.run {
+  scroll-margin-top: calc(var(--topbar) + var(--space-3));
+}

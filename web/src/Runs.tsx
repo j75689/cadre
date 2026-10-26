@@ -1,14 +1,17 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
+import { Link } from "react-router";
 import { listRuns, phases, runEvents, ulidTime, type Phase, type RunEvent, type RunRecord } from "./api";
 import { Badge, phaseTone } from "./ui/Badge";
 import { Banner } from "./ui/Banner";
+import { taskLink } from "./links";
 import { Icon } from "./ui/Icon";
 import { Loading, Skeleton } from "./ui/Skeleton";
 
 // Runs lists a task's ended runs, read again when current (the run in
 // progress and the phase) changes: a run is in the list once it is not the
-// current one any more. Expanding one reads its events once.
-export function Runs({ ns, name, current }: { ns: string; name: string; current: string }) {
+// current one any more. Expanding one reads its events once; the run named
+// by open (any case) is expanded from the start.
+export function Runs({ ns, name, current, open = "" }: { ns: string; name: string; current: string; open?: string }) {
   const [runs, setRuns] = useState<RunRecord[] | null>(null);
   const [error, setError] = useState("");
   const [retry, setRetry] = useState(0);
@@ -41,7 +44,7 @@ export function Runs({ ns, name, current }: { ns: string; name: string; current:
       {runs && runs.length > 0 && (
         <ol className="rows">
           {runs.map((r) => (
-            <Run key={r.id} ns={ns} name={name} run={r} />
+            <Run key={r.id} ns={ns} name={name} run={r} initiallyOpen={open !== "" && r.id.toLowerCase() === open.toLowerCase()} />
           ))}
         </ol>
       )}
@@ -53,14 +56,16 @@ export function Runs({ ns, name, current }: { ns: string; name: string; current:
 // sent the task to (Done, Review, Waiting or Failed).
 const outcomeTone = (outcome: string) => (phases as readonly string[]).includes(outcome) ? phaseTone(outcome as Phase) : undefined;
 
-function Run({ ns, name, run }: { ns: string; name: string; run: RunRecord }) {
+// Run is one ended run. One opened from the start (a link to it) reads its
+// events at once and is scrolled into view, once.
+function Run({ ns, name, run, initiallyOpen }: { ns: string; name: string; run: RunRecord; initiallyOpen: boolean }) {
   const [events, setEvents] = useState<RunEvent[] | null>(null);
-  const [open, setOpen] = useState(false);
+  const [open, setOpen] = useState(initiallyOpen);
   const [error, setError] = useState("");
+  const row = useRef<HTMLLIElement>(null);
+  const linked = useRef(false);
   const started = ulidTime(run.id);
-  const toggle = async () => {
-    setOpen(!open);
-    if (events !== null || open) return;
+  const load = async () => {
     try {
       setEvents((await runEvents(ns, name, run.id)).items);
       setError("");
@@ -68,12 +73,26 @@ function Run({ ns, name, run }: { ns: string; name: string; run: RunRecord }) {
       setError((e as Error).message);
     }
   };
+  useEffect(() => {
+    if (!initiallyOpen || linked.current) return;
+    linked.current = true;
+    row.current?.scrollIntoView?.({ block: "start" });
+    void load();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [initiallyOpen]);
+  const toggle = () => {
+    setOpen(!open);
+    if (events === null && !open) void load();
+  };
   return (
-    <li className="run">
+    <li className="run" ref={row}>
+      {/* The id links to the run, so it sits outside the row's button. */}
+      <Link className="run-link" to={taskLink(ns, name, run.id)} aria-label={`Link to run ${run.id}`}>
+        <code title={run.id}>{run.id}</code>
+      </Link>
       <button type="button" className="run-head" aria-expanded={open} onClick={toggle}>
         <Icon name={open ? "chevron-down" : "chevron-right"} />
         <span className="line">
-          <code title={run.id}>{run.id}</code>
           <span>
             {run.mode} on {run.runnerName || run.runner || "a runner"}: {run.reason}
           </span>
@@ -92,23 +111,49 @@ function Run({ ns, name, run }: { ns: string; name: string; run: RunRecord }) {
             </Loading>
           )}
           {events?.length === 0 && <p className="hint">No events.</p>}
-          {events && events.length > 0 && (
-            <ol>
-              {events.map((e) => (
-                <li key={e.seq}>
-                  #{e.seq} {e.progress ? <>progress: {e.progress}</> : "usage"}
-                  {Boolean(e.inputTokens || e.outputTokens) && (
-                    <span className="muted">
-                      {" "}
-                      {e.inputTokens ?? 0} in, {e.outputTokens ?? 0} out
-                    </span>
-                  )}
-                </li>
-              ))}
-            </ol>
-          )}
+          {events && events.length > 0 && <EventList events={events} />}
         </div>
       )}
     </li>
   );
+}
+
+// EventList is a run's events: progress lines and usage, with the token
+// counts an event has.
+export function EventList({ events }: { events: RunEvent[] }) {
+  return (
+    <ol>
+      {events.map((e) => (
+        <li key={e.seq}>
+          #{e.seq} {e.progress ? <>progress: {e.progress}</> : "usage"}
+          {Boolean(e.inputTokens || e.outputTokens) && (
+            <span className="muted">
+              {" "}
+              {e.inputTokens ?? 0} in, {e.outputTokens ?? 0} out
+            </span>
+          )}
+          {Boolean(e.cacheReadInputTokens || e.cacheCreationInputTokens) && (
+            <span className="muted">
+              {" "}
+              (cache {e.cacheReadInputTokens ?? 0} read, {e.cacheCreationInputTokens ?? 0} written)
+            </span>
+          )}
+        </li>
+      ))}
+    </ol>
+  );
+}
+
+// totals adds up a run's tokens. contextTokens is the size of the
+// conversation after a reply, so it is the latest one, not a sum.
+export function totals(events: RunEvent[]) {
+  const t = { inputTokens: 0, outputTokens: 0, cacheReadInputTokens: 0, cacheCreationInputTokens: 0, contextTokens: 0 };
+  for (const e of events) {
+    t.inputTokens += e.inputTokens ?? 0;
+    t.outputTokens += e.outputTokens ?? 0;
+    t.cacheReadInputTokens += e.cacheReadInputTokens ?? 0;
+    t.cacheCreationInputTokens += e.cacheCreationInputTokens ?? 0;
+    if (e.contextTokens) t.contextTokens = e.contextTokens;
+  }
+  return t;
 }

@@ -1,3 +1,5 @@
+import { useSearchParams } from "react-router";
+
 // The UI's URLs: the team's pages and the query parameters they read, so a
 // link built on one page is the one another page understands.
 
@@ -26,4 +28,21 @@ export function boardLink(ns: string, f: { assignee?: string; phase?: string; vi
 // taskLink is a task's page, opened at one of its runs when run is set.
 export function taskLink(ns: string, name: string, run?: string): string {
   return withQuery(`${teamPath(ns)}/tasks/${encodeURIComponent(name)}`, [[params.run, run]]);
+}
+
+// useParam is a query parameter of the page and its setter. Setting one
+// replaces the history entry, and an empty value deletes the parameter.
+export function useParam(key: string): [string, (value: string) => void] {
+  const [search, setSearch] = useSearchParams();
+  const set = (value: string) =>
+    setSearch(
+      (prev) => {
+        const next = new URLSearchParams(prev);
+        if (value) next.set(key, value);
+        else next.delete(key);
+        return next;
+      },
+      { replace: true },
+    );
+  return [search.get(key) ?? "", set];
 }
