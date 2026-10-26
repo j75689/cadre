@@ -1342,8 +1342,11 @@ main.board {
   }
 }
 
+/* The column is minmax(0, 1fr), so a wide table scrolls inside its card
+   instead of widening the card and the page. */
 .stack {
   display: grid;
+  grid-template-columns: minmax(0, 1fr);
   gap: var(--space-4);
   min-width: 0;
 }
