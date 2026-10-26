@@ -143,8 +143,10 @@ func (m *Manager) RunCreateSubtask(ctx context.Context, key storage.Key, runID s
 	}
 	created := &SubtaskCreated{Name: task.SubtaskName(item)}
 	subKey := storage.Key{Namespace: key.Namespace, Name: created.Name}
-	// This call dispatches and numbers at once: the hints its writes send
-	// are not followed meanwhile.
+	// This call dispatches and numbers at once, so the hints its writes send
+	// are spared the work. A hint worker may still get to the subtask
+	// first (its hint can come before subKey is marked busy); numberTask
+	// numbers it once all the same.
 	defer m.busy(key)()
 	defer m.busy(subKey)()
 	if err := m.dispatchTask(ctx, key); err != nil {

@@ -64,7 +64,14 @@ func (m *Manager) NumberNew(ctx context.Context) error {
 }
 
 // numberTask claims a number from the Team's counter and moves the task to
-// Todo. It is the one numbering path, used by NumberNew and by CreateTask.
+// Todo. It is the one numbering path, used by NumberNew, CreateTask,
+// RunCreateSubtask and the hints. Within this process it numbers a task
+// once: callers of one key take turns, and each reads the task fresh first,
+// returning it as it is if it has been numbered meanwhile. busy and
+// claimHint only spare work; they do not stop a hint claimed before a call
+// marks its key from numbering it too. Across replicas two may still claim
+// a number for one task, and one number then goes unused: numbers are
+// unique, not dense.
 // A counter that has not started, a new Team's or one made again in a
 // namespace whose tasks outlived the old Team, starts above the highest
 // number there. A task numbered in the seconds before the Team was
@@ -72,6 +79,14 @@ func (m *Manager) NumberNew(ctx context.Context) error {
 // missed; its number is then shared, and #N is refused as ambiguous until
 // one is renamed.
 func (m *Manager) numberTask(ctx context.Context, key storage.Key) (*v1alpha1.Task, error) {
+	defer m.lockNumbering(key)()
+	cur, err := m.store.GetTask(ctx, key)
+	if err != nil {
+		return nil, err
+	}
+	if cur.Status.Phase != "" {
+		return cur, nil
+	}
 	var n int64
 	high := int64(-1) // not read yet
 	if err := m.writeTeam(ctx, key.Namespace, func(team *v1alpha1.Team) (v1alpha1.TeamStatus, error) {
@@ -88,6 +103,34 @@ func (m *Manager) numberTask(ctx context.Context, key storage.Key) (*v1alpha1.Ta
 		return nil, err
 	}
 	return m.transition(ctx, key, task.Create{Number: n})
+}
+
+// keyLock is a lock for one task, held by the calls waiting for it.
+type keyLock struct {
+	mu      sync.Mutex
+	holders int
+}
+
+// lockNumbering locks numbering key in this process, and returns the
+// unlock. A key's lock is dropped when no call holds or waits for it.
+func (m *Manager) lockNumbering(key storage.Key) func() {
+	m.numberingMu.Lock()
+	l := m.numbering[key]
+	if l == nil {
+		l = &keyLock{}
+		m.numbering[key] = l
+	}
+	l.holders++
+	m.numberingMu.Unlock()
+	l.mu.Lock()
+	return func() {
+		l.mu.Unlock()
+		m.numberingMu.Lock()
+		if l.holders--; l.holders == 0 {
+			delete(m.numbering, key)
+		}
+		m.numberingMu.Unlock()
+	}
 }
 
 // highestNumber is the highest number of a task in namespace, 0 if none

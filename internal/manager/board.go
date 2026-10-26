@@ -53,8 +53,9 @@ func (m *Manager) CreateTask(ctx context.Context, namespace, name string, spec v
 	}
 	t := &v1alpha1.Task{ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: namespace}, Spec: spec}
 	key := storage.Key{Namespace: namespace, Name: name}
-	// This call numbers the task itself: the hint its creation sends is
-	// not followed meanwhile, so the task gets one number.
+	// This call numbers the task itself, so the hint its creation sends is
+	// spared the work; a hint handled first anyway leaves it numbered, and
+	// numberTask finds it so: one number either way.
 	defer m.busy(key)()
 	if err := m.store.CreateTask(ctx, t); err != nil {
 		return nil, err
