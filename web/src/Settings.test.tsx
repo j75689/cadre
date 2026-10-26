@@ -71,6 +71,14 @@ describe("Settings", () => {
     expect(screen.getByText("0 of 1 in use")).toBeTruthy();
   });
 
+  it("shows an admin the server's defaults for unset limits", async () => {
+    open({ mode: "oidc", name: "dana", roles: { a: "admin" } }, () => json(team({ status: { running: 1 } })));
+    const card = within(await screen.findByRole("region", { name: "Team" }));
+    expect(card.getByText("(default)").parentElement?.textContent).toBe("1 (default)");
+    expect(card.getByText("never")).toBeTruthy();
+    expect(screen.getByText("1 of 1 in use")).toBeTruthy();
+  });
+
   it("shows an admin the limits under --auth=none", async () => {
     open({ mode: "none", admin: true }, () => json(full));
     expect(await screen.findByRole("heading", { name: "Roles" })).toBeTruthy();

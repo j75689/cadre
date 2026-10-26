@@ -12,7 +12,9 @@ import { Loading, Skeleton } from "./ui/Skeleton";
 import { Time } from "./ui/Time";
 import { usePolling } from "./usePolling";
 
-const notSet = <span className="muted">not set</span>;
+// The server runs one task at a time when a Team sets no cap
+// (max(MaxConcurrentRuns, 1) wherever it is checked).
+const defaultMaxRuns = 1;
 
 // Settings shows the namespace's Team. Only its admins are sent the roles
 // and the status (the server's project()), so only they see the limits,
@@ -95,9 +97,9 @@ export function Settings() {
               {admin && (
                 <>
                   <dt>Max concurrent runs</dt>
-                  <dd>{team.spec?.maxConcurrentRuns ?? notSet}</dd>
+                  <dd>{team.spec?.maxConcurrentRuns || <>{defaultMaxRuns} <span className="muted">(default)</span></>}</dd>
                   <dt>Archive after</dt>
-                  <dd>{team.spec?.archiveAfter ? <span className="mono">{team.spec.archiveAfter}</span> : notSet}</dd>
+                  <dd>{team.spec?.archiveAfter ? <span className="mono">{team.spec.archiveAfter}</span> : <span className="muted">never</span>}</dd>
                 </>
               )}
             </dl>
@@ -158,12 +160,12 @@ function RunSlots({ team }: { team: Team }) {
   const ns = team.metadata.namespace;
   const slots = team.status?.slots ?? [];
   const running = team.status?.running ?? 0;
-  const max = team.spec?.maxConcurrentRuns;
+  const max = team.spec?.maxConcurrentRuns || defaultMaxRuns;
   return (
     <section className="card" aria-labelledby="slots">
       <div className="card-head">
         <h2 id="slots">Run slots</h2>
-        <span className="hint">{max !== undefined ? `${running} of ${max} in use` : `${running} in use`}</span>
+        <span className="hint">{running} of {max} in use</span>
       </div>
       {slots.length === 0 ? (
         <p className="hint card-body">No run holds a slot.</p>
