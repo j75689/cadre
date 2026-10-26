@@ -58,4 +58,15 @@ describe("App", () => {
     act(() => nav.go("/t/a/tasks/y"));
     expect(screen.queryByText("Task x")).toBeNull();
   });
+
+  it("shows Not found under the team nav for an unknown team page", () => {
+    vi.stubGlobal("fetch", () => new Promise(() => {}));
+    render(
+      <MemoryRouter initialEntries={["/t/a/nope"]}>
+        <App />
+      </MemoryRouter>,
+    );
+    expect(screen.getByRole("heading", { name: "Not found" })).toBeTruthy();
+    expect(screen.getByRole("navigation", { name: "Team" })).toBeTruthy();
+  });
 });

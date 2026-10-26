@@ -94,6 +94,17 @@ The identity shows:
 
 A skip link to `#main` comes first in the tab order. Each page's `main` has `id="main"`.
 
+#### Team nav
+
+Every team page, `/t/<ns>/...`, has the team nav under the top bar: a `nav` named "Team", 40 px (`--teamnav`), on `--surface`, with a bottom `--line`.
+- It holds the team's tabs, each an icon and a label. For now there is one, **Board**, current on `/t/<ns>` only, not on a task's page.
+- The current tab has `aria-current="page"`, a 2 px `--accent` underline and `--fg` text; the others are `--fg-muted`.
+- A tab can be left out for a role that cannot use it.
+- When the tabs do not fit, they scroll inside the nav; the page never scrolls sideways, down to 320 px.
+- An unknown team page, `/t/<ns>/<anything else>`, shows Not found under the nav.
+
+The team's URLs and their query parameters are built in `web/src/links.ts` (`teamPath`, `boardLink`, `taskLink`), so a link from one page is one another page reads.
+
 ### Pages
 
 - **Teams** (`/`): a card grid of `repeat(auto-fill, minmax(16rem, 1fr))`. Each card shows the display name, the namespace in mono and, with logins, a role badge. The whole card links to the board.
@@ -107,7 +118,7 @@ A skip link to `#main` comes first in the tab order. Each page's `main` has `id=
     - Under 1024 px it snaps, and each column is 80 vw.
     - From 1024 px there are seven columns of `minmax(15rem, 1fr)`.
     - Each column is a `--surface-2` well with a sticky header: a dot in the phase's hue, the name, and a count pill (`50+` while there is more).
-    - The column body scrolls on its own, so headers stay in view. The board fills the viewport below the top bar.
+    - The column body scrolls on its own, so headers stay in view. The board fills the viewport below the top bar and the team nav.
     - Terminal columns (Done, Cancelled, Failed) mute their header.
 - **Task** (`/t/<ns>/tasks/<name>`):
   - **Header:**

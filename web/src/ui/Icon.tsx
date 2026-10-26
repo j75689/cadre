@@ -41,6 +41,14 @@ const shapes = {
   ),
   "chevron-down": <path d="m6 9 6 6 6-6" />,
   "chevron-right": <path d="m9 18 6-6-6-6" />,
+  kanban: (
+    <>
+      <rect width="18" height="18" x="3" y="3" rx="2" />
+      <path d="M8 7v7" />
+      <path d="M12 7v4" />
+      <path d="M16 7v9" />
+    </>
+  ),
   user: (
     <>
       <path d="M19 21v-2a4 4 0 0 0-4-4H9a4 4 0 0 0-4 4v2" />

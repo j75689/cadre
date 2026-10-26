@@ -4,6 +4,7 @@ import { Board } from "./Board";
 import { IdentityBox, IdentityProvider, roleOf, useIdentityDetails } from "./Identity";
 import { NewTask } from "./NewTask";
 import { TaskPage } from "./TaskPage";
+import { TeamLayout } from "./TeamNav";
 import { Teams } from "./Teams";
 import { teamName, TeamsProvider, useTeams } from "./teamList";
 import { applyTheme, loadTheme, nextTheme, saveTheme, systemDark, type Theme } from "./theme";
@@ -164,9 +165,12 @@ export function App() {
         <Routes>
           <Route element={<Layout />}>
             <Route index element={<Teams />} />
-            <Route path="t/:ns" element={<TeamBoard />} />
-            <Route path="t/:ns/new" element={<TeamNewTask />} />
-            <Route path="t/:ns/tasks/:name" element={<OneTask />} />
+            <Route path="t/:ns" element={<TeamLayout />}>
+              <Route index element={<TeamBoard />} />
+              <Route path="new" element={<TeamNewTask />} />
+              <Route path="tasks/:name" element={<OneTask />} />
+              <Route path="*" element={<NotFound />} />
+            </Route>
             <Route path="*" element={<NotFound />} />
           </Route>
         </Routes>

@@ -65,6 +65,7 @@
   --radius-sm: 4px;
   --radius-pill: 999px;
   --topbar: 48px;
+  --teamnav: 40px;
   --ease: 150ms ease;
 }
 
@@ -370,6 +371,52 @@ main {
 .role {
   font-size: var(--text-sm);
   color: var(--fg-muted);
+}
+
+/* Team nav: the team's tabs, under the top bar. They scroll inside the bar
+   when they do not fit, so the page never scrolls sideways. */
+
+.teamnav {
+  display: flex;
+  align-items: stretch;
+  gap: var(--space-1);
+  height: var(--teamnav);
+  padding: 0 var(--space-4);
+  overflow-x: auto;
+  scrollbar-width: none;
+  background: var(--surface);
+  border-bottom: 1px solid var(--line);
+}
+
+.teamnav-tab {
+  display: inline-flex;
+  flex: none;
+  align-items: center;
+  gap: var(--space-2);
+  padding: 0 var(--space-3);
+  border-bottom: 2px solid transparent;
+  color: var(--fg-muted);
+  font-size: var(--text-md);
+  font-weight: 500;
+  text-decoration: none;
+  white-space: nowrap;
+  transition:
+    border-color var(--ease),
+    color var(--ease);
+}
+
+.teamnav-tab:hover {
+  color: var(--fg);
+}
+
+.teamnav-tab[aria-current="page"] {
+  border-bottom-color: var(--accent);
+  color: var(--fg);
+}
+
+/* Inside the bar, so the scroller does not clip the ring. */
+.teamnav-tab:focus-visible {
+  outline-offset: -2px;
 }
 
 /* Controls */
@@ -942,7 +989,7 @@ textarea {
 main.board {
   display: flex;
   flex-direction: column;
-  height: calc(100dvh - var(--topbar));
+  height: calc(100dvh - var(--topbar) - var(--teamnav));
   padding: 0;
 }
 
