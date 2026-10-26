@@ -1,4 +1,4 @@
-import { cleanup, fireEvent, render, screen, within } from "@testing-library/react";
+import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { MemoryRouter } from "react-router";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { App } from "./App";
@@ -95,6 +95,7 @@ describe("Settings", () => {
     expect(card.queryByText("Max concurrent runs")).toBeNull();
     expect(screen.queryByRole("heading", { name: "Roles" })).toBeNull();
     expect(screen.queryByRole("heading", { name: "Run slots" })).toBeNull();
+    expect(screen.queryByRole("button", { name: "Edit" })).toBeNull();
   });
 
   it("says when the namespace has no Team", async () => {
@@ -130,5 +131,149 @@ describe("Settings", () => {
     expect(tab.getAttribute("href")).toBe("/t/a/settings");
     expect(nav.getByRole("link", { name: "Board" }).getAttribute("aria-current")).toBeNull();
     await screen.findByRole("heading", { name: "Roles" });
+  });
+});
+
+// edit opens team a's settings as an admin and the Team card's form. The
+// Team's reads and PUTs are answered in turn, the last one repeated; sent
+// holds the PUTs' bodies.
+async function edit(reads: (() => Promise<Response>)[], puts: (() => Promise<Response>)[] = []) {
+  const sent: Record<string, unknown>[] = [];
+  let n = 0;
+  vi.stubGlobal("fetch", (url: string, init?: RequestInit) => {
+    if (url.endsWith("/me")) return json({ mode: "oidc", name: "dana", roles: { a: "admin" } });
+    if (url.endsWith("/namespaces/a/team") && init?.method === "PUT") {
+      sent.push(JSON.parse(String(init.body)));
+      return puts[Math.min(sent.length - 1, puts.length - 1)]();
+    }
+    if (url.endsWith("/namespaces/a/team")) return reads[Math.min(n++, reads.length - 1)]();
+    return json({ items: [] });
+  });
+  render(
+    <MemoryRouter initialEntries={["/t/a/settings"]}>
+      <App />
+    </MemoryRouter>,
+  );
+  fireEvent.click(await screen.findByRole("button", { name: "Edit" }));
+  const form = within(screen.getByRole("form", { name: "Edit the team" }));
+  return { form, sent, reads: () => n };
+}
+
+const conflict = () => json({ error: { code: "conflict", message: "the Team of a changed since it was read" } }, 409);
+
+describe("Editing the Team", () => {
+  it("saves the whole spec from the version read, and shows the saved values", async () => {
+    const after = team({ metadata: { name: "team", namespace: "a", resourceVersion: "8" }, spec: { ...full.spec, displayName: "Team B", maxConcurrentRuns: 3, archiveAfter: "30m0s" } });
+    const { form, sent } = await edit([() => json(full)], [() => json(after)]);
+    const name = form.getByLabelText("Display name");
+    await waitFor(() => expect(document.activeElement).toBe(name));
+    fireEvent.change(name, { target: { value: "Team B" } });
+    fireEvent.change(form.getByLabelText(/^Max concurrent runs/), { target: { value: "3" } });
+    fireEvent.change(form.getByLabelText(/^Archive after/), { target: { value: "30m" } });
+    fireEvent.click(form.getByRole("button", { name: "Save" }));
+
+    const card = within(screen.getByRole("region", { name: "Team" }));
+    expect(await card.findByText("Team B")).toBeTruthy();
+    expect(card.getByText("3")).toBeTruthy();
+    expect(card.getByText("30m0s")).toBeTruthy();
+    expect(card.getByRole("status").textContent).toBe("Saved");
+    expect(sent).toEqual([{ displayName: "Team B", maxConcurrentRuns: 3, archiveAfter: "30m", roles: full.spec!.roles, resourceVersion: "7" }]);
+    await waitFor(() => expect(document.activeElement).toBe(card.getByRole("button", { name: "Edit" })));
+  });
+
+  it("edits the roles and their subjects", async () => {
+    const { form, sent } = await edit([() => json(full)], [() => json(full)]);
+    const viewer = within(form.getByRole("group", { name: "Role 2" }));
+    fireEvent.click(viewer.getByRole("button", { name: "Remove subject 1" }));
+    fireEvent.click(viewer.getByRole("button", { name: "Add subject" }));
+    fireEvent.click(viewer.getAllByRole("radio", { name: "group" })[1]);
+    fireEvent.change(viewer.getByLabelText("Name of subject 2"), { target: { value: " sre " } });
+    fireEvent.click(form.getByRole("button", { name: "Add role" }));
+    const added = within(form.getByRole("group", { name: "Role 3" }));
+    fireEvent.change(added.getByLabelText("Role"), { target: { value: "member" } });
+    fireEvent.change(added.getByLabelText("Name of subject 1"), { target: { value: "kim" } });
+    fireEvent.click(form.getByRole("button", { name: "Save" }));
+    await screen.findByText("Saved");
+    expect(sent[0].roles).toEqual([
+      { role: "admin", subjects: [{ kind: "user", name: "dana" }] },
+      { role: "viewer", subjects: [{ kind: "user", name: "lee" }, { kind: "group", name: "sre" }] },
+      { role: "member", subjects: [{ kind: "user", name: "kim" }] },
+    ]);
+  });
+
+  it("keeps the edits after a 409, shows the current Team, and saves again from its version", async () => {
+    const theirs = team({ metadata: { name: "team", namespace: "a", resourceVersion: "9" }, spec: { ...full.spec, displayName: "Team C" } });
+    const { form, sent, reads } = await edit([() => json(full), () => json(theirs)], [conflict, () => json(theirs)]);
+    fireEvent.change(form.getByLabelText("Display name"), { target: { value: "Team B" } });
+    fireEvent.click(form.getByRole("button", { name: "Save" }));
+
+    const alert = await form.findByText(/Someone else changed the team/);
+    expect(alert.textContent).toMatch(/the Team of a changed since it was read/);
+    await waitFor(() => expect(document.activeElement).toBe(alert.closest("[role=alert]")));
+    expect(reads()).toBe(2);
+    expect((form.getByLabelText("Display name") as HTMLInputElement).value).toBe("Team B");
+    const current = within(await form.findByRole("region", { name: "Current" }));
+    expect(current.getByText("Team C")).toBeTruthy();
+
+    fireEvent.click(form.getByRole("button", { name: "Save" }));
+    await screen.findByText("Saved");
+    expect(sent.map((b) => b.resourceVersion)).toEqual(["7", "9"]);
+    expect(sent[1].displayName).toBe("Team B");
+  });
+
+  it("cannot save a Team deleted since it was read", async () => {
+    const { form } = await edit([() => json(full), () => json({ error: { code: "not_found", message: "no Team in a" } }, 404)], [conflict]);
+    fireEvent.click(form.getByRole("button", { name: "Save" }));
+    expect(await form.findByText(/nothing to save to/)).toBeTruthy();
+    expect((form.getByRole("button", { name: "Save" }) as HTMLButtonElement).disabled).toBe(true);
+  });
+
+  it("says why the server refused, after the roles", async () => {
+    const refused = () => json({ error: { code: "invalid", message: "the Team would have no admin, and no bootstrap admin is set to give it one back: keep an admin role" } }, 400);
+    const { form, sent } = await edit([() => json(full)], [refused]);
+    fireEvent.click(within(form.getByRole("group", { name: "Role 1" })).getByRole("button", { name: "Remove role" }));
+    fireEvent.click(form.getByRole("button", { name: "Save" }));
+    const alert = await form.findByRole("alert");
+    expect(alert.textContent).toMatch(/keep an admin role/);
+    expect(alert.previousElementSibling).toBe(form.getByRole("group", { name: "Roles" }));
+    await waitFor(() => expect(document.activeElement).toBe(alert));
+    expect(sent).toHaveLength(1);
+  });
+
+  it("checks a duration before sending it", async () => {
+    const { form, sent } = await edit([() => json(full)]);
+    fireEvent.change(form.getByLabelText(/^Archive after/), { target: { value: "a week" } });
+    fireEvent.click(form.getByRole("button", { name: "Save" }));
+    expect(form.getByRole("alert").textContent).toMatch(/duration such as 168h/);
+    expect(sent).toHaveLength(0);
+  });
+
+  it("warns about a Team managed by GitOps, and saves only once confirmed", async () => {
+    const applied = team({ ...full, metadata: { ...full.metadata, annotations: { "kubectl.kubernetes.io/last-applied-configuration": "{}" } } });
+    const { form, sent } = await edit([() => json(applied)], [() => json(applied)]);
+    expect(form.getByText(/This Team looks managed by GitOps \(it was last written by kubectl apply\)/)).toBeTruthy();
+    const save = form.getByRole("button", { name: "Save" });
+    fireEvent.click(save);
+    const confirm = within(form.getByRole("group", { name: "Save anyway?" }));
+    fireEvent.click(confirm.getByRole("button", { name: "Keep editing" }));
+    expect(form.queryByRole("group", { name: "Save anyway?" })).toBeNull();
+    await waitFor(() => expect(document.activeElement).toBe(save));
+    expect(sent).toHaveLength(0);
+
+    fireEvent.click(save);
+    fireEvent.click(within(form.getByRole("group", { name: "Save anyway?" })).getByRole("button", { name: "Save anyway" }));
+    await screen.findByText("Saved");
+    expect(sent).toHaveLength(1);
+  });
+
+  it("goes back to the details on Cancel, with the focus on Edit", async () => {
+    const { form, sent } = await edit([() => json(full)]);
+    fireEvent.change(form.getByLabelText("Display name"), { target: { value: "Team B" } });
+    fireEvent.click(form.getByRole("button", { name: "Cancel" }));
+    expect(screen.queryByRole("form", { name: "Edit the team" })).toBeNull();
+    const card = within(screen.getByRole("region", { name: "Team" }));
+    expect(card.getByText("Team A")).toBeTruthy();
+    await waitFor(() => expect(document.activeElement).toBe(card.getByRole("button", { name: "Edit" })));
+    expect(sent).toHaveLength(0);
   });
 });

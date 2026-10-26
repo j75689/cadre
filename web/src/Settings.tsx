@@ -4,9 +4,11 @@ import { APIError, getTeam, type Team } from "./api";
 import { RoleLine, useRole } from "./Identity";
 import { taskLink, teamPath } from "./links";
 import { can } from "./roles";
+import { TeamForm } from "./TeamForm";
 import { useTeamName } from "./teamList";
 import { RoleBadge } from "./ui/Badge";
 import { Banner } from "./ui/Banner";
+import { Button } from "./ui/Button";
 import { Heading, useTitle } from "./ui/Page";
 import { Loading, Skeleton } from "./ui/Skeleton";
 import { Time } from "./ui/Time";
@@ -31,6 +33,15 @@ export function Settings() {
   const [forbidden, setForbidden] = useState(false);
   // retry reads the Team again after a failed read.
   const [retry, setRetry] = useState(0);
+  // editing is the Team card's form, for an admin. left is whether the
+  // form was closed, so the Edit button that comes back takes the focus.
+  const [editing, setEditing] = useState(false);
+  const [left, setLeft] = useState(false);
+  const [saved, setSaved] = useState(false);
+  const leave = () => {
+    setEditing(false);
+    setLeft(true);
+  };
   useTitle("Settings", name);
   usePolling(
     async (signal) => {
@@ -92,21 +103,49 @@ export function Settings() {
           <section className="card" aria-labelledby="team">
             <div className="card-head">
               <h2 id="team">Team</h2>
-            </div>
-            <dl className="details card-body">
-              <dt>Display name</dt>
-              <dd>{team.spec?.displayName || <span className="muted">{ns}</span>}</dd>
-              <dt>Namespace</dt>
-              <dd className="mono">{team.metadata.namespace}</dd>
-              {admin && (
-                <>
-                  <dt>Max concurrent runs</dt>
-                  <dd>{team.spec?.maxConcurrentRuns || <>{defaultMaxRuns} <span className="muted">(default)</span></>}</dd>
-                  <dt>Archive after</dt>
-                  <dd>{team.spec?.archiveAfter ? <span className="mono">{team.spec.archiveAfter}</span> : <span className="muted">never</span>}</dd>
-                </>
+              <span role="status" className="hint team-saved">
+                {saved && "Saved"}
+              </span>
+              {admin && !editing && (
+                <Button
+                  small
+                  icon="settings"
+                  autoFocus={left}
+                  onClick={() => {
+                    setSaved(false);
+                    setEditing(true);
+                  }}
+                >
+                  Edit
+                </Button>
               )}
-            </dl>
+            </div>
+            {editing ? (
+              <TeamForm
+                team={team}
+                onSaved={(t) => {
+                  setTeam(t);
+                  setSaved(true);
+                  leave();
+                }}
+                onCancel={leave}
+              />
+            ) : (
+              <dl className="details card-body">
+                <dt>Display name</dt>
+                <dd>{team.spec?.displayName || <span className="muted">{ns}</span>}</dd>
+                <dt>Namespace</dt>
+                <dd className="mono">{team.metadata.namespace}</dd>
+                {admin && (
+                  <>
+                    <dt>Max concurrent runs</dt>
+                    <dd>{team.spec?.maxConcurrentRuns || <>{defaultMaxRuns} <span className="muted">(default)</span></>}</dd>
+                    <dt>Archive after</dt>
+                    <dd>{team.spec?.archiveAfter ? <span className="mono">{team.spec.archiveAfter}</span> : <span className="muted">never</span>}</dd>
+                  </>
+                )}
+              </dl>
+            )}
             {!admin && role !== undefined && <p className="hint card-body">This page shows a team's limits, roles and run slots to its admins only.</p>}
           </section>
           {admin && <Roles team={team} />}
