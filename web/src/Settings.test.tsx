@@ -63,6 +63,14 @@ describe("Settings", () => {
     expect(slots.getByText("01JRUN")).toBeTruthy();
   });
 
+  // An idle Team comes without slots (omitempty), and often without roles.
+  it("shows an admin a Team without roles or slots", async () => {
+    open({ mode: "oidc", name: "dana", roles: { a: "admin" } }, () => json(team({ spec: { maxConcurrentRuns: 1 }, status: {} })));
+    expect(await screen.findByText("No roles are given on this team.")).toBeTruthy();
+    expect(screen.getByText("No run holds a slot.")).toBeTruthy();
+    expect(screen.getByText("0 of 1 in use")).toBeTruthy();
+  });
+
   it("shows an admin the limits under --auth=none", async () => {
     open({ mode: "none", admin: true }, () => json(full));
     expect(await screen.findByRole("heading", { name: "Roles" })).toBeTruthy();
