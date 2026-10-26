@@ -934,6 +934,10 @@ textarea {
   list-style: none;
 }
 
+.team-create {
+  margin-bottom: var(--space-4);
+}
+
 .team-card {
   position: relative;
   display: grid;
