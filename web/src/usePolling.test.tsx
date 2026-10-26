@@ -92,4 +92,30 @@ describe("usePolling", () => {
     expect(starts.map((s) => s - t0)).toEqual([0, 1700, 3400]);
     expect(most).toBe(1);
   });
+
+  it("waits a fifth of the interval after a load that ends less than that before the next is due", async () => {
+    const t0 = Date.now();
+    const starts: number[] = [];
+    const load = () =>
+      new Promise<void>((resolve) => {
+        starts.push(Date.now());
+        setTimeout(resolve, 3500);
+      });
+    renderHook(() => usePolling(load, 4000, []));
+    await vi.advanceTimersByTimeAsync(9000);
+    // Each ends at start + 3500; start + 4000 is less than 800ms after.
+    expect(starts.map((s) => s - t0)).toEqual([0, 4300, 8600]);
+  });
+
+  it("keeps the interval after a load that fails", async () => {
+    const t0 = Date.now();
+    const starts: number[] = [];
+    const load = async () => {
+      starts.push(Date.now());
+      throw new Error("boom");
+    };
+    renderHook(() => usePolling(load, 4000, []));
+    await vi.advanceTimersByTimeAsync(9000);
+    expect(starts.map((s) => s - t0)).toEqual([0, 4000, 8000]);
+  });
 });
