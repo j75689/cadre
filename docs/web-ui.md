@@ -129,7 +129,7 @@ The team's URLs and their query parameters are built in `web/src/links.ts` (`tea
   - **Body:** a grid of `minmax(0, 3fr) minmax(18rem, 1fr)`, stacked under 800 px.
     - The main column holds Description, Thread, the composer and Subtasks.
     - The side column holds Details, the run in progress (while Running) and Runs.
-  - `?run=<id>` (any case) opens the page at that run: the run in progress, or an ended run, expanded with its events read. It is scrolled into view once each time it is linked, after the thread has been read (under 800 px the thread is above it): on load, to the top; from a run's link on the page, or by Back and Forward, only as far as it takes, so the id of a run already in view does not move the page. On Back and Forward it is scrolled again after the browser has put the entry's scroll position back.
+  - `?run=<id>` (any case) opens the page at that run: the run in progress, or an ended run, expanded with its events read. It is scrolled into view once each time it is linked, after the thread has been read (under 800 px the thread is above it): on load, to the top; from a run's link on the page, or by Back and Forward, only as far as it takes, so the id of a run already in view does not move the page. On Back and Forward it is scrolled again after the browser has put the entry's scroll position back. A linked run closed with its button opens again when its link is clicked.
 - **New task** (`/t/<ns>/new`): one form card, at most 40rem wide.
   - Labels sit above fields, and inputs are 16 px.
   - Assignee and priority are segmented controls.

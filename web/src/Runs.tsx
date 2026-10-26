@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState, type RefObject } from "react";
-import { Link, useNavigationType } from "react-router";
+import { Link, useLocation, useNavigationType } from "react-router";
 import { listRuns, phases, runEvents, ulidTime, type Phase, type RunEvent, type RunRecord } from "./api";
 import { Badge, phaseTone } from "./ui/Badge";
 import { Banner } from "./ui/Banner";
@@ -86,13 +86,15 @@ export function useLinkScroll(el: RefObject<HTMLElement | null>, linked: boolean
 }
 
 // Run is one ended run. While it is linked (?run=<id>) it is open, its
-// events read, and it is scrolled into view (useLinkScroll).
+// events read, and it is scrolled into view (useLinkScroll). Its own link
+// clicked again opens it again after it was closed.
 function Run({ ns, name, run, linked, ready }: { ns: string; name: string; run: RunRecord; linked: boolean; ready: boolean }) {
+  const { key } = useLocation();
   const [events, setEvents] = useState<RunEvent[] | null>(null);
   const [open, setOpen] = useState(linked);
-  const [wasLinked, setWasLinked] = useState(linked);
-  if (linked !== wasLinked) {
-    setWasLinked(linked);
+  const [seen, setSeen] = useState({ linked, key });
+  if (linked !== seen.linked || key !== seen.key) {
+    setSeen({ linked, key });
     if (linked) setOpen(true);
   }
   const [error, setError] = useState("");

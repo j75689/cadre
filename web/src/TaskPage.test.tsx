@@ -348,6 +348,17 @@ describe("A link to a run", () => {
     expect(calls.filter((c) => c.endsWith(`/runs/${ended}/events`))).toHaveLength(1);
   });
 
+  it("opens a linked run closed with its button when its link is clicked again", async () => {
+    runServer();
+    renderAt(ended);
+    const row = await rowOf("r1");
+    expect(row.getAttribute("aria-expanded")).toBe("true");
+    fireEvent.click(row);
+    expect(row.getAttribute("aria-expanded")).toBe("false");
+    fireEvent.click(screen.getByRole("link", { name: `Run ${ended}` }));
+    expect(row.getAttribute("aria-expanded")).toBe("true");
+  });
+
   it("keeps the focus on a run's link: the page is the same", async () => {
     runServer();
     renderAt("");
