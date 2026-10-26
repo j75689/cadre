@@ -2,7 +2,10 @@
 # main's CI passed on it (the checks and the install in kind): then the three images (publish.yml, tagged vX.Y.Z, vX.Y and
 # latest), then the chart, at the tag without its v and with appVersion the
 # tag, to oci://ghcr.io/<owner>/charts/cadre, and the GitHub release with
-# install.yaml. Nothing CI ran is run again. Tags are independent: one run
+# install.yaml and the cadre CLI's archives for darwin, linux and windows
+# with their checksums. hack/install.sh is not attached: a copy on an old
+# release would install the latest anyway, so the one on main is the one
+# the README pipes. Nothing CI ran is run again. Tags are independent: one run
 # per tag, none dropped.
 name: Release
 
@@ -58,7 +61,7 @@ jobs:
       packages: write
 
   release:
-    name: Release the chart and install.yaml
+    name: Release the chart, install.yaml and the CLI
     needs: publish
     runs-on: ubuntu-latest
     permissions:
@@ -69,7 +72,8 @@ jobs:
       - uses: actions/setup-go@v7
         with:
           go-version-file: go.mod
-          # Go here only installs helm, and nothing once bin/tools is warm.
+          # Go here installs helm, nothing once bin/tools is warm, and
+          # cross-compiles the CLI once.
           cache: false
       # helm, as chart.yml's job installs it on main.
       - uses: ./.github/actions/tools-cache
@@ -85,6 +89,11 @@ jobs:
           read -r pkg yaml <<< "$paths"
           echo "pkg=$pkg" >> "$GITHUB_OUTPUT"
           echo "yaml=$yaml" >> "$GITHUB_OUTPUT"
+      - name: Build the CLI's archives and checksums
+        run: make cli-dist RELEASE="$GITHUB_REF_NAME"
+      - name: Find the CLI's archives and checksums
+        id: cli
+        run: echo "files=$(make -s print-cli-dist RELEASE="$GITHUB_REF_NAME")" >> "$GITHUB_OUTPUT"
       - name: Push the chart
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -95,19 +104,22 @@ jobs:
           printf '%s' "$GITHUB_TOKEN" | "$helm" registry login ghcr.io -u "$GITHUB_ACTOR" --password-stdin
           "$helm" push "$PKG" "oci://ghcr.io/${OWNER,,}/charts"
       # The release may exist already: made in the UI with its tag, or by an
-      # earlier attempt of this job. A tag whose version (before any +build)
-      # has a - (v1.0.0-rc.1) is a pre-release.
+      # earlier attempt of this job. A tag with a - (v1.0.0-rc.1) is a
+      # pre-release; one with a +build never gets here (make cli-dist).
       - name: Create or update the GitHub release
         shell: bash
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           YAML: ${{ steps.dist.outputs.yaml }}
+          CLI: ${{ steps.cli.outputs.files }}
         run: |
+          read -r -a cli <<< "$CLI"
+          assets=("$YAML" "${cli[@]}")
           pre=()
-          case "${GITHUB_REF_NAME%%+*}" in *-*) pre=(--prerelease) ;; esac
+          case "$GITHUB_REF_NAME" in *-*) pre=(--prerelease) ;; esac
           if gh release view "$GITHUB_REF_NAME" > /dev/null 2>&1; then
-            gh release upload "$GITHUB_REF_NAME" "$YAML" --clobber
+            gh release upload "$GITHUB_REF_NAME" "${assets[@]}" --clobber
             if [ ${#pre[@]} -gt 0 ]; then gh release edit "$GITHUB_REF_NAME" --prerelease; fi
           else
-            gh release create "$GITHUB_REF_NAME" "$YAML" --verify-tag --generate-notes --title "$GITHUB_REF_NAME" "${pre[@]}"
+            gh release create "$GITHUB_REF_NAME" "${assets[@]}" --verify-tag --generate-notes --title "$GITHUB_REF_NAME" "${pre[@]}"
           fi

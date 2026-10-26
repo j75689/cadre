@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"os"
 	"os/user"
+	"runtime/debug"
 	"time"
 
 	"github.com/spf13/cobra"
@@ -28,6 +29,21 @@ type globals struct {
 // version is set at build time with -ldflags "-X main.version=...".
 var version = "dev"
 
+// buildVersion is the version to print: the one set at build time, else
+// the module's version Go recorded, which is all a go install of the
+// module has (v1.2.3 from a tag, a pseudo-version from a commit), else
+// "dev". A version set empty (git describe in a tarball) is not set, and a
+// build from a checkout records "(devel)", which says no more.
+func buildVersion(set string, info func() (*debug.BuildInfo, bool)) string {
+	if set != "dev" && set != "" {
+		return set
+	}
+	if bi, ok := info(); ok && bi.Main.Version != "" && bi.Main.Version != "(devel)" {
+		return bi.Main.Version
+	}
+	return "dev"
+}
+
 func main() {
 	if err := newRoot().Execute(); err != nil {
 		fmt.Fprintln(os.Stderr, "cadre:", err)
@@ -37,10 +53,11 @@ func main() {
 
 func newRoot() *cobra.Command {
 	g := &globals{}
+	shown := buildVersion(version, debug.ReadBuildInfo)
 	root := &cobra.Command{
 		Use:           "cadre",
 		Short:         "Work with a Cadre board",
-		Version:       version,
+		Version:       shown,
 		SilenceUsage:  true,
 		SilenceErrors: true,
 	}
@@ -65,7 +82,7 @@ func newRoot() *cobra.Command {
 		Use:   "version",
 		Short: "Print the version",
 		Args:  cobra.NoArgs,
-		Run:   func(cmd *cobra.Command, _ []string) { outln(cmd.OutOrStdout(), version) },
+		Run:   func(cmd *cobra.Command, _ []string) { outln(cmd.OutOrStdout(), shown) },
 	})
 	return root
 }
