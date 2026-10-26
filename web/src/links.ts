@@ -39,6 +39,10 @@ let pending: URLSearchParams | undefined;
 // useParam is a query parameter of the page and its setter, the same while
 // the query is. Setting one replaces the history entry, and an empty value
 // deletes the parameter. Sets in one event all apply.
+//
+// An effect that sets a parameter must check its value first: the setter
+// changes whenever the query does, so the effect runs again after every
+// navigation, and setting unchecked would undo the user's choice.
 export function useParam(key: string): [string, (value: string) => void] {
   const [search, setSearch] = useSearchParams();
   // The setter follows setSearch, not a ref updated in an effect: a child's
