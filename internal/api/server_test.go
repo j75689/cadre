@@ -124,6 +124,33 @@ func TestBoardThroughTheAPI(t *testing.T) {
 	}
 }
 
+// A run's events are served while it is still in progress, not only from
+// history once it ends: the live run viewer relies on it.
+func TestEventsOfARunInProgress(t *testing.T) {
+	c, _ := start(t)
+	if _, err := c.InitTeam(ctx, ns, api.TeamRequest{}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := c.CreateTask(ctx, ns, "fix-login", v1alpha1.TaskSpec{Title: "Fix login", Assignee: agent()}); err != nil {
+		t.Fatal(err)
+	}
+	claim, err := c.Claim(ctx, runner.ClaimRequest{Runner: "r", Labels: map[string]string{v1alpha1.LabelRuntime: string(v1alpha1.RuntimeBuiltin)}})
+	if err != nil || claim == nil {
+		t.Fatalf("claim: %+v, %v", claim, err)
+	}
+	ref := runner.TaskRef{Namespace: ns, Name: claim.Task.Name}
+	if err := c.Event(ctx, runner.EventsRequest{Task: ref, RunID: claim.RunID, Seq: 1, Progress: "reading"}); err != nil {
+		t.Fatal(err)
+	}
+
+	for _, id := range []string{claim.RunID, strings.ToLower(claim.RunID)} {
+		events, err := c.Events(ctx, ns, "fix-login", id)
+		if err != nil || len(events.Items) != 1 {
+			t.Fatalf("events of run %s: %+v, %v", id, events, err)
+		}
+	}
+}
+
 func TestAPIRejectsBadInput(t *testing.T) {
 	c, m, base := startURL(t)
 	if _, err := m.InitTeam(ctx, ns, v1alpha1.TeamSpec{}); err != nil {
