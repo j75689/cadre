@@ -2030,3 +2030,12 @@ main.board {
   margin: 0;
   font-size: var(--text-md);
 }
+
+.team-form .changed {
+  color: var(--waiting-fg);
+}
+
+.confirm-warning {
+  border-color: var(--waiting-dot);
+  background: var(--waiting-soft);
+}

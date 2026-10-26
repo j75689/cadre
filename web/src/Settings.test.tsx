@@ -208,10 +208,10 @@ describe("Editing the Team", () => {
     fireEvent.click(form.getByRole("button", { name: "Save" }));
 
     const alert = await form.findByText(/Someone else changed the team/);
-    expect(alert.textContent).toMatch(/the Team of a changed since it was read/);
+    expect(alert.textContent).toMatch(/Saving again replaces their values/);
     await waitFor(() => expect(document.activeElement).toBe(alert.closest("[role=alert]")));
     expect(reads()).toBe(2);
-    expect((form.getByLabelText("Display name") as HTMLInputElement).value).toBe("Team B");
+    expect((form.getByLabelText(/^Display name/) as HTMLInputElement).value).toBe("Team B");
     const current = within(await form.findByRole("region", { name: "Current" }));
     expect(current.getByText("Team C")).toBeTruthy();
 
@@ -219,6 +219,41 @@ describe("Editing the Team", () => {
     await screen.findByText("Saved");
     expect(sent.map((b) => b.resourceVersion)).toEqual(["7", "9"]);
     expect(sent[1].displayName).toBe("Team B");
+  });
+
+  it("marks the fields someone else changed, unless the form holds their value", async () => {
+    const theirs = team({
+      metadata: { name: "team", namespace: "a", resourceVersion: "9" },
+      spec: { displayName: "Team C", maxConcurrentRuns: 5, archiveAfter: "30m0s", roles: [full.spec!.roles![0]] },
+    });
+    const { form, sent } = await edit([() => json(full), () => json(theirs)], [conflict, () => json(theirs)]);
+    fireEvent.change(form.getByLabelText("Display name"), { target: { value: "Team B" } });
+    fireEvent.change(form.getByLabelText(/^Archive after/), { target: { value: "30m" } });
+    fireEvent.click(form.getByRole("button", { name: "Save" }));
+    await form.findByRole("region", { name: "Current" });
+
+    const note = (label: RegExp) => {
+      const ids = form.getByLabelText(label).getAttribute("aria-describedby") ?? "";
+      return ids.split(" ").map((id) => document.getElementById(id)?.textContent).find((t) => t?.startsWith("Changed by someone else"));
+    };
+    expect(note(/^Display name/)).toBe("Changed by someone else: Team C");
+    expect(note(/^Max concurrent runs/)).toBe("Changed by someone else: 5");
+    expect(note(/^Archive after/)).toBeUndefined(); // 30m is 30m0s
+    const roles = form.getByRole("group", { name: "Roles" });
+    expect(document.getElementById(roles.getAttribute("aria-describedby")!)?.textContent).toBe("Changed by someone else: admin: user:dana");
+
+    fireEvent.click(form.getByRole("button", { name: "Save" }));
+    await screen.findByText("Saved");
+    expect(sent[1]).toMatchObject({ displayName: "Team B", maxConcurrentRuns: 2, archiveAfter: "30m", roles: full.spec!.roles });
+  });
+
+  it("shows another 409 as the error it is, not as someone else's change", async () => {
+    const exists = () => json({ error: { code: "already_exists", message: "team a: already exists" } }, 409);
+    const { form, reads } = await edit([() => json(full)], [exists]);
+    fireEvent.click(form.getByRole("button", { name: "Save" }));
+    expect((await form.findByRole("alert")).textContent).toBe("team a: already exists");
+    expect(form.queryByText(/Someone else changed the team/)).toBeNull();
+    expect(reads()).toBe(1);
   });
 
   it("saves from the version it opened with, even after a newer read", async () => {
@@ -255,11 +290,52 @@ describe("Editing the Team", () => {
 
   it("checks a duration before sending it", async () => {
     const { form, sent } = await edit([() => json(full)]);
-    fireEvent.change(form.getByLabelText(/^Archive after/), { target: { value: "a week" } });
-    fireEvent.click(form.getByRole("button", { name: "Save" }));
-    expect(form.getByRole("alert").textContent).toMatch(/duration such as 168h/);
+    for (const v of ["a week", "0s", "-1h"]) {
+      fireEvent.change(form.getByLabelText(/^Archive after/), { target: { value: v } });
+      fireEvent.click(form.getByRole("button", { name: "Save" }));
+      expect(form.getByRole("alert").textContent).toMatch(/duration longer than 0, such as 168h/);
+    }
     expect(sent).toHaveLength(0);
   });
+
+  it("leaves archive-after out when it is cleared", async () => {
+    const { form, sent } = await edit([() => json(full)], [() => json(full)]);
+    fireEvent.change(form.getByLabelText(/^Archive after/), { target: { value: "" } });
+    fireEvent.click(form.getByRole("button", { name: "Save" }));
+    await screen.findByText("Saved");
+    expect("archiveAfter" in sent[0]).toBe(false);
+  });
+
+  it("does not save a cap the browser could not read", async () => {
+    const { form, sent } = await edit([() => json(full)]);
+    const max = form.getByLabelText(/^Max concurrent runs/) as HTMLInputElement;
+    // What a browser reports for 1e: an empty value, and badInput.
+    Object.defineProperty(max, "validity", { value: { badInput: true } });
+    fireEvent.change(max, { target: { value: "" } });
+    fireEvent.click(form.getByRole("button", { name: "Save" }));
+    expect(form.getByRole("alert").textContent).toMatch(/Max concurrent runs is a whole number/);
+    expect(sent).toHaveLength(0);
+  });
+
+  it("checks the roles before sending them, numbered as the form shows them", async () => {
+    const { form, sent } = await edit([() => json(full)]);
+    fireEvent.click(form.getByRole("button", { name: "Add role" }));
+    fireEvent.click(form.getByRole("button", { name: "Save" }));
+    expect(form.getByRole("alert").textContent).toBe("Role 3, subject 1 needs a name.");
+
+    fireEvent.click(within(form.getByRole("group", { name: "Role 3" })).getByRole("button", { name: "Remove subject 1" }));
+    fireEvent.click(form.getByRole("button", { name: "Save" }));
+    expect(form.getByRole("alert").textContent).toBe("Role 3 needs at least one subject.");
+    expect(sent).toHaveLength(0);
+  });
+
+  it("numbers the roles of a server refusal as the form shows them", async () => {
+    const refused = () => json({ error: { code: "invalid", message: "roles[1].subjects[0]: a group needs a name: invalid" } }, 400);
+    const { form } = await edit([() => json(full)], [refused]);
+    fireEvent.click(form.getByRole("button", { name: "Save" }));
+    expect((await form.findByRole("alert")).textContent).toBe("Role 2, subject 1: a group needs a name: invalid");
+  });
+
 
   it("warns about a Team managed by GitOps, and saves only once confirmed", async () => {
     const applied = team({ ...full, metadata: { ...full.metadata, annotations: { "kubectl.kubernetes.io/last-applied-configuration": "{}" } } });

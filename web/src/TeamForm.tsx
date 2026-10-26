@@ -5,15 +5,43 @@ import { Banner } from "./ui/Banner";
 import { Button } from "./ui/Button";
 import { Segmented } from "./ui/Segmented";
 
-// A Go duration, as time.ParseDuration takes it, without a sign.
-const duration = /^(\d+(\.\d+)?(ns|us|µs|ms|s|m|h))+$/;
+// A Go duration, as time.ParseDuration takes it, without a minus: the
+// server takes positive ones only.
+const duration = /^\+?((\d+\.?\d*|\.\d+)(ns|us|µs|μs|ms|s|m|h))+$/;
+const nanos: Record<string, number> = { ns: 1, us: 1e3, µs: 1e3, μs: 1e3, ms: 1e6, s: 1e9, m: 60e9, h: 3600e9 };
 
-// validate checks what the form can before the server does.
+// durationOf is a duration in whole nanoseconds, as Go counts it, or
+// undefined when it is not one.
+export function durationOf(v: string): number | undefined {
+  if (!duration.test(v)) return undefined;
+  let n = 0;
+  for (const [, num, unit] of v.matchAll(/(\d+\.?\d*|\.\d+)(ns|us|µs|μs|ms|s|m|h)/g)) n += Math.floor(Number(num) * nanos[unit]);
+  return n;
+}
+
+// The largest cap the server's int32 takes.
+const maxInt32 = 2147483647;
+
+// validate checks what the form can before the server does, numbering
+// roles and subjects as the form shows them. A number field the browser
+// could not read holds NaN.
 export function validate(d: TeamSpec): string {
   const max = d.maxConcurrentRuns;
-  if (max !== undefined && (!Number.isInteger(max) || max < 0)) return "Max concurrent runs is a whole number, 0 or more.";
-  if (d.archiveAfter && !duration.test(d.archiveAfter.trim())) return "Archive after is a duration such as 168h or 30m.";
+  if (max !== undefined && (!Number.isInteger(max) || max < 0 || max > maxInt32)) return `Max concurrent runs is a whole number, from 0 to ${maxInt32}.`;
+  const after = d.archiveAfter?.trim();
+  if (after && !((durationOf(after) ?? 0) > 0)) return "Archive after is a duration longer than 0, such as 168h or 30m.";
+  for (const [i, r] of (d.roles ?? []).entries()) {
+    if (r.subjects.length === 0) return `Role ${i + 1} needs at least one subject.`;
+    const j = r.subjects.findIndex((s) => !s.name.trim());
+    if (j >= 0) return `Role ${i + 1}, subject ${j + 1} needs a name.`;
+  }
   return "";
+}
+
+// formIndexes numbers the roles and subjects of a server message as the
+// form does: roles[1].subjects[0] is Role 2, subject 1.
+export function formIndexes(msg: string): string {
+  return msg.replace(/roles\[(\d+)\](?:\.subjects\[(\d+)\])?/g, (_, i: string, j?: string) => `Role ${Number(i) + 1}${j ? `, subject ${Number(j) + 1}` : ""}`);
 }
 
 // toSpec is the whole spec, as the PUT replaces it: an unset cap goes as
@@ -33,15 +61,50 @@ function draftOf(t: Team): TeamSpec {
   return { ...s, roles: (s.roles ?? []).map((r) => ({ role: r.role, subjects: r.subjects.map((x) => ({ ...x })) })) };
 }
 
+type Field = "displayName" | "maxConcurrentRuns" | "archiveAfter" | "roles";
+
+// same says, per field, what a spec would save, so that 168h and 168h0m0s
+// or an empty cap and 1 compare equal.
+const same: Record<Field, (s: TeamSpec) => string> = {
+  displayName: (s) => s.displayName?.trim() ?? "",
+  maxConcurrentRuns: (s) => String(s.maxConcurrentRuns || 1),
+  archiveAfter: (s) => {
+    const a = s.archiveAfter?.trim() ?? "";
+    return String(durationOf(a) ?? a);
+  },
+  roles: (s) => JSON.stringify(toSpec(s).roles),
+};
+
+// shown is a field of a Team's spec as "Current" shows it.
+function shown(s: TeamSpec, f: Field): string {
+  switch (f) {
+    case "displayName":
+      return s.displayName || "none";
+    case "maxConcurrentRuns":
+      return String(s.maxConcurrentRuns || 1);
+    case "archiveAfter":
+      return s.archiveAfter || "never";
+    case "roles":
+      return (s.roles ?? []).map((r) => `${r.role}: ${r.subjects.map((x) => `${x.kind}:${x.name}`).join(", ")}`).join("; ") || "none";
+  }
+}
+
+// ids joins the ids of an aria-describedby, leaving out the unset ones.
+const ids = (...xs: (string | false)[]) => xs.filter(Boolean).join(" ") || undefined;
+
 // TeamForm edits a Team's spec. The draft is made once, from the Team the
 // form opened with; the page's reads do not touch it. A save carries the
 // version of base, the Team the draft was last checked against: after a
-// 409 that is the Team read again, shown as "Current" above the form.
-export function TeamForm({ team, onSaved, onCancel }: { team: Team; onSaved: (t: Team) => void; onCancel: () => void }) {
+// 409 that is the Team read again, shown as "Current" above the form, and
+// each field someone else changed since the form opened is marked, unless
+// the form already holds their value. onSaved gets the Team saved and the
+// spec sent.
+export function TeamForm({ team, onSaved, onCancel }: { team: Team; onSaved: (t: Team, sent: TeamSpec) => void; onCancel: () => void }) {
   const ns = team.metadata.namespace;
+  const [opened] = useState(team);
   const [base, setBase] = useState(team);
   const [draft, setDraft] = useState(() => draftOf(team));
-  const [conflict, setConflict] = useState("");
+  const [conflict, setConflict] = useState(false);
   // stale is whether base was read again after a 409, so it is shown.
   const [stale, setStale] = useState(false);
   // deleted is a 409 after which the Team could not be found: there is
@@ -52,6 +115,11 @@ export function TeamForm({ team, onSaved, onCancel }: { team: Team; onSaved: (t:
   const [confirming, setConfirming] = useState(false);
   const [confirmed, setConfirmed] = useState(false);
   const gitops = managedByGitOps(base.metadata);
+  // changed is whether someone else changed field f since the form opened,
+  // to a value the form does not hold.
+  const changed = (f: Field) =>
+    stale && !deleted && same[f](base.spec ?? {}) !== same[f](opened.spec ?? {}) && same[f](base.spec ?? {}) !== same[f](draft);
+  const note = (f: Field) => changed(f) && `changed-${f}`;
   const errorRef = useRef<HTMLParagraphElement>(null);
   const conflictRef = useRef<HTMLDivElement>(null);
   const saveRef = useRef<HTMLButtonElement>(null);
@@ -80,14 +148,15 @@ export function TeamForm({ team, onSaved, onCancel }: { team: Team; onSaved: (t:
       return;
     }
     setConfirming(false);
-    setConflict("");
+    setConflict(false);
     setBusy(true);
+    const spec = toSpec(draft);
     try {
-      onSaved(await putTeam(ns, toSpec(draft), base.metadata.resourceVersion));
+      onSaved(await putTeam(ns, spec, base.metadata.resourceVersion), spec);
       return;
     } catch (err) {
-      if (err instanceof APIError && err.status === 409) {
-        setConflict(err.message);
+      if (err instanceof APIError && err.code === "conflict") {
+        setConflict(true);
         try {
           setBase(await getTeam(ns));
           setStale(true);
@@ -96,7 +165,7 @@ export function TeamForm({ team, onSaved, onCancel }: { team: Team; onSaved: (t:
           else setError(`Could not read the team again: ${(read as Error).message}`);
         }
       } else {
-        setError((err as Error).message);
+        setError(formIndexes((err as Error).message));
       }
     }
     setBusy(false);
@@ -108,26 +177,33 @@ export function TeamForm({ team, onSaved, onCancel }: { team: Team; onSaved: (t:
         e.preventDefault();
         void save(false);
       }}
-      noValidate aria-label="Edit the team">
+      noValidate
+      aria-label="Edit the team"
+      aria-describedby={gitops ? "team-gitops" : undefined}>
       {conflict && (
         <div ref={conflictRef} tabIndex={-1} role="alert">
           <Banner className="banner-warning">
-            {conflict}.{" "}
             {deleted
-              ? "The Team is gone, so there is nothing to save to."
-              : "Someone else changed the team. Their current values are shown below; your edits are kept. Check them and save again."}
+              ? "The Team was deleted since it was read, so there is nothing to save to."
+              : "Someone else changed the team since it was read. Their current values are shown below, and the fields they changed are marked. Saving again replaces their values with the ones in the form."}
           </Banner>
         </div>
       )}
       {gitops && (
-        <Banner className="banner-warning">
+        <Banner className="banner-warning" icon="git-branch" id="team-gitops">
           This Team looks managed by GitOps ({gitops}). A change here drifts from Git and may be reverted by the next sync.
         </Banner>
       )}
       {stale && !deleted && <Current team={base} />}
       <label className="field">
         Display name
-        <input value={draft.displayName ?? ""} onChange={(e) => setDraft((d) => ({ ...d, displayName: e.target.value }))} autoFocus />
+        <input
+          value={draft.displayName ?? ""}
+          onChange={(e) => setDraft((d) => ({ ...d, displayName: e.target.value }))}
+          aria-describedby={ids(note("displayName"))}
+          autoFocus
+        />
+        {changed("displayName") && <Changed field="displayName" spec={base.spec ?? {}} />}
       </label>
       <label className="field">
         Max concurrent runs
@@ -135,13 +211,18 @@ export function TeamForm({ team, onSaved, onCancel }: { team: Team; onSaved: (t:
           type="number"
           min={0}
           step={1}
-          value={draft.maxConcurrentRuns ?? ""}
-          onChange={(e) => setDraft((d) => ({ ...d, maxConcurrentRuns: e.target.value === "" ? undefined : Number(e.target.value) }))}
-          aria-describedby="max-runs-help"
+          value={Number.isNaN(draft.maxConcurrentRuns) ? "" : (draft.maxConcurrentRuns ?? "")}
+          onChange={(e) => {
+            // A number the browser cannot read, such as 1e, is "" too.
+            const v = e.target.validity.badInput ? NaN : e.target.value === "" ? undefined : Number(e.target.value);
+            setDraft((d) => ({ ...d, maxConcurrentRuns: v }));
+          }}
+          aria-describedby={ids("max-runs-help", note("maxConcurrentRuns"))}
         />
         <span id="max-runs-help" className="help">
           How many of the team's tasks run at once. Empty or 0 is saved as 1.
         </span>
+        {changed("maxConcurrentRuns") && <Changed field="maxConcurrentRuns" spec={base.spec ?? {}} />}
       </label>
       <label className="field">
         Archive after
@@ -149,14 +230,16 @@ export function TeamForm({ team, onSaved, onCancel }: { team: Team; onSaved: (t:
           className="mono"
           value={draft.archiveAfter ?? ""}
           onChange={(e) => setDraft((d) => ({ ...d, archiveAfter: e.target.value }))}
-          aria-describedby="archive-after-help"
+          aria-describedby={ids("archive-after-help", note("archiveAfter"))}
         />
         <span id="archive-after-help" className="help">
           A duration such as 168h or 30m. Empty: never.
         </span>
+        {changed("archiveAfter") && <Changed field="archiveAfter" spec={base.spec ?? {}} />}
       </label>
-      <fieldset>
+      <fieldset aria-describedby={ids(note("roles"))}>
         <legend>Roles</legend>
+        {changed("roles") && <Changed field="roles" spec={base.spec ?? {}} />}
         {roles.length === 0 && <p className="help">No roles are given on this team.</p>}
         {roles.map((r, i) => (
           <fieldset key={i} className="role-edit">
@@ -225,7 +308,7 @@ export function TeamForm({ team, onSaved, onCancel }: { team: Team; onSaved: (t:
         <Button onClick={onCancel}>Cancel</Button>
       </div>
       {confirming && (
-        <div className="confirm" role="group" aria-label="Save anyway?">
+        <div className="confirm confirm-warning" role="group" aria-label="Save anyway?">
           <p>Save anyway? Git still holds the old values.</p>
           <div className="buttons">
             <Button
@@ -252,6 +335,15 @@ export function TeamForm({ team, onSaved, onCancel }: { team: Team; onSaved: (t:
         </div>
       )}
     </form>
+  );
+}
+
+// Changed marks a field someone else changed, with their value.
+function Changed({ field, spec }: { field: Field; spec: TeamSpec }) {
+  return (
+    <span id={`changed-${field}`} className="help changed">
+      Changed by someone else: <span className="mono">{shown(spec, field)}</span>
+    </span>
   );
 }
 
