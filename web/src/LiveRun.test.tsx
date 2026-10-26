@@ -41,13 +41,13 @@ function renderLive(linked = false) {
 }
 
 describe("LiveRun", () => {
-  it("reads the events every five seconds while the page is visible", async () => {
+  it("reads the events every four seconds while the page is visible", async () => {
     let visibility: DocumentVisibilityState = "visible";
     vi.spyOn(document, "visibilityState", "get").mockImplementation(() => visibility);
     const reads = serveEvents([]);
     renderLive();
-    await act(() => vi.advanceTimersByTimeAsync(10_000));
-    expect(reads.map((t) => Math.round(t / 1000))).toEqual([0, 5, 10]);
+    await act(() => vi.advanceTimersByTimeAsync(8000));
+    expect(reads.map((t) => Math.round(t / 1000))).toEqual([0, 4, 8]);
     visibility = "hidden";
     document.dispatchEvent(new Event("visibilitychange"));
     await act(() => vi.advanceTimersByTimeAsync(20_000));

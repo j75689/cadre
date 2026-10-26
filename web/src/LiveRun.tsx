@@ -6,10 +6,11 @@ import { EventList, totals } from "./Runs";
 import { Loading, Skeleton } from "./ui/Skeleton";
 import { usePolling } from "./usePolling";
 
-// LiveRun is the run in progress: its events, read again every five seconds
-// while the page is visible, and its token totals. The list is no live
-// region, so a screen reader is not read each poll; RunEnded says when the
-// run ends. A linked run (?run=<id>) is scrolled into view once.
+// LiveRun is the run in progress: its events, read again every four seconds
+// while the page is visible (so an event shows within five while a read
+// takes up to one), and its token totals. The list is no live region, so a
+// screen reader is not read each poll; RunEnded says when the run ends. A
+// linked run (?run=<id>) is scrolled into view once.
 export function LiveRun({ ns, name, run, linked }: { ns: string; name: string; run: NonNullable<TaskStatus["run"]>; linked: boolean }) {
   const [events, setEvents] = useState<RunEvent[] | null>(null);
   const [error, setError] = useState("");
@@ -24,7 +25,7 @@ export function LiveRun({ ns, name, run, linked }: { ns: string; name: string; r
         if (!signal.aborted) setError((e as Error).message);
       }
     },
-    5000,
+    4000,
     [ns, name, run.id],
   );
   useEffect(() => {
