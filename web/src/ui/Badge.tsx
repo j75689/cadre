@@ -40,6 +40,8 @@ export function PriorityChip({ priority, always = false }: { priority?: string; 
 
 // ReadyBadge is whether a resource can take work, as an icon and its word:
 // Ready, Pending while its current spec is unchecked, otherwise Not ready.
+// The reason "Pending" is the contract with readiness() in
+// internal/api/server.go.
 export function ReadyBadge({ ready, reason }: { ready: boolean; reason?: string }) {
   const [tone, icon, word]: [string, IconName, string] = ready
     ? ["tone-done", "check", "Ready"]

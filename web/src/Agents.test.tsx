@@ -37,7 +37,8 @@ describe("Agents", () => {
     const [, ready, pending, notReady] = rows.map((r) => within(r));
     expect(ready.getByText("bot-1")).toBeTruthy();
     expect(ready.getByText("Ready")).toBeTruthy();
-    expect(pending.getAllByText("Pending")).toHaveLength(2);
+    // The badge says Pending; the Reason cell does not repeat it.
+    expect(pending.getAllByText("Pending")).toHaveLength(1);
     expect(pending.getByText("its current spec has not been checked yet")).toBeTruthy();
     expect(notReady.getByText("Not ready")).toBeTruthy();
     expect(notReady.getByText("SecretMissing")).toBeTruthy();

@@ -1870,13 +1870,11 @@ main.board {
   padding: var(--space-2) var(--space-3);
   border-bottom: 1px solid var(--line);
   text-align: left;
+  vertical-align: top;
   white-space: nowrap;
 }
 
 .table th {
-  position: sticky;
-  top: 0;
-  background: var(--surface);
   color: var(--fg-muted);
   font-size: var(--text-sm);
   font-weight: 600;

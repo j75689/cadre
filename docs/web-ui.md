@@ -121,7 +121,7 @@ The team's URLs and their query parameters are built in `web/src/links.ts` (`tea
     - The column body scrolls on its own, so headers stay in view. The board fills the viewport below the top bar and the team nav.
     - Terminal columns (Done, Cancelled, Failed) mute their header.
 - **Agents** (`/t/<ns>/agents`): the team's Agent resources and whether each can take work, read every 15 s. It is health only, so every role sees it.
-  - A table in a horizontal-scroll region named "Agents": Agent (mono), Status (the ready badge), Reason (muted), Message, and Tasks, a link to the board filtered to the tasks assigned to the agent (`boardLink(ns, { assignee })`).
+  - A table in a horizontal-scroll region named "Agents": Agent (mono), Status (the ready badge), Reason (muted, empty while Pending, which the badge says), Message, and Tasks, a link to the board with the agent as the assignee (`boardLink(ns, { assignee })`). The board does not filter by `?assignee=` yet (P1.8), so it still shows every task.
   - With no agents: "This team has no agents. Agents are Agent resources in the namespace, applied with kubectl or GitOps."
   - An error that stops the read shows the banner with Retry.
 - **Task** (`/t/<ns>/tasks/<name>`):
@@ -162,7 +162,8 @@ Shared pieces live in `web/src/ui/`.
 
 A list of resources is a `.table` inside a `.table-wrap`: the wrapper scrolls sideways (`tabindex="0"`, `role="region"` and an `aria-label`), so the page never does, down to 320 px.
 - Full width, tabular numbers, a 1 px `--line` under each row but the last.
-- The header is sticky; its cells are left-aligned, 13 px, weight 600, `--fg-muted`.
+- Header cells are left-aligned, 13 px, weight 600, `--fg-muted`. The header does not stick: the wrapper is the scroll container, so a sticky header would never move.
+- Cells align to the top, so a row with a wrapped cell reads from its first line.
 - Cells keep to one line; a `.table-text` cell, such as a message, wraps at 16rem or wider.
 
 ### Board cards

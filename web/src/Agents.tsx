@@ -75,7 +75,8 @@ export function Agents() {
                   <td>
                     <ReadyBadge ready={a.ready} reason={a.reason} />
                   </td>
-                  <td className="muted">{a.reason}</td>
+                  {/* The badge already says Pending (readiness() in internal/api/server.go). */}
+                  <td className="muted">{a.reason === "Pending" ? "" : a.reason}</td>
                   <td className="table-text">{a.message}</td>
                   <td>
                     <Link to={boardLink(ns, { assignee: a.name })} aria-label={`Tasks of ${a.name}`}>
