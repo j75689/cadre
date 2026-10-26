@@ -1,4 +1,4 @@
-import { useRef, useState, type FormEvent, type ReactNode } from "react";
+import { useEffect, useRef, useState, type FormEvent, type ReactNode } from "react";
 import { Link, useNavigate } from "react-router";
 import { APIError, putTeam } from "./api";
 import { roleOf, useIdentityDetails } from "./Identity";
@@ -33,6 +33,14 @@ function CreateTeam({ autoFocus = false }: { autoFocus?: boolean }) {
   const [nsInvalid, setNsInvalid] = useState(false);
   const [busy, setBusy] = useState(false);
   const nsField = useRef<HTMLInputElement>(null);
+  const errorRef = useRef<HTMLParagraphElement>(null);
+  // A server error that isn't about the namespace takes the focus, as
+  // the button that had it is disabled during the request: the alert says
+  // what went wrong and, for a 409, holds the link to the team. A submit
+  // clears error first, so each failure sets it anew.
+  useEffect(() => {
+    if (error && !nsInvalid) errorRef.current?.focus();
+  }, [error, nsInvalid]);
   const submit = async (e: FormEvent) => {
     e.preventDefault();
     const name = ns.trim();
@@ -99,7 +107,7 @@ function CreateTeam({ autoFocus = false }: { autoFocus?: boolean }) {
         </Button>
       </div>
       {error && (
-        <p id="create-team-error" className="inline-error" role="alert">
+        <p ref={errorRef} id="create-team-error" className="inline-error" role="alert" tabIndex={-1}>
           {error}
         </p>
       )}

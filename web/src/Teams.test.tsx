@@ -79,6 +79,7 @@ describe("Teams, with no team yet", () => {
     const alert = await screen.findByRole("alert");
     expect(alert.textContent).toBe("x already has a Team. Open it");
     expect(screen.getByRole("link", { name: "Open it" }).getAttribute("href")).toBe("/t/x");
+    expect(document.activeElement).toBe(alert);
   });
 
   it("says when the namespace isn't in the cluster", async () => {
@@ -100,6 +101,18 @@ describe("Teams, with no team yet", () => {
     expect((await screen.findByRole("alert")).textContent).toBe("only a bootstrap admin can create a Team");
     expect(screen.getByLabelText(/^Namespace/).getAttribute("aria-invalid")).toBe("false");
     expect(screen.getByRole("button", { name: "Create team" }).hasAttribute("disabled")).toBe(false);
+    expect(document.activeElement).toBe(screen.getByRole("alert"));
+  });
+
+  it("keeps focus on the error after a server failure", async () => {
+    at(true, () => json({ error: { code: "internal", message: "etcd is down" } }, 500));
+    fireEvent.change(await screen.findByLabelText(/^Namespace/), { target: { value: "x" } });
+    const button = screen.getByRole("button", { name: "Create team" });
+    button.focus();
+    fireEvent.click(button);
+    const alert = await screen.findByRole("alert");
+    expect(alert.textContent).toBe("etcd is down");
+    expect(document.activeElement).toBe(alert);
   });
 
   it("shows anyone else the cadre team init hint, and no form", async () => {
