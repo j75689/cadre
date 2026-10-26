@@ -56,8 +56,10 @@ export function Board() {
   const [view, setView] = useParam(params.view);
   // Any view but the list is the board.
   const list = view === "list";
-  // An unknown phase reads as all of them; it is left in the URL, not set.
-  const phase = phases.find((ph) => ph === phaseParam);
+  // The phase matches in any case, so "?phase=todo" reads Todo and the
+  // select can clear it. An unknown phase reads as all of them; it is left
+  // in the URL, not set.
+  const phase = phases.find((ph) => ph.toLowerCase() === phaseParam.toLowerCase());
   const read = phase ? [phase] : phases;
   const [updated, setUpdated] = useState<Date | null>(null);
   // retry reads the board again at once, after a failed first read.
@@ -224,7 +226,9 @@ function BoardSkeleton() {
 }
 
 // matches is the client-side search and assignee filter over what is
-// loaded. The assignee, when set, is matched exactly.
+// loaded. The assignee, when set, is matched exactly, by name only: a User
+// and an Agent of the same name are one assignee, as in the Agents page's
+// link, which carries only the name.
 export function matches(t: Task, query: string, assignee = ""): boolean {
   if (assignee !== "" && t.spec.assignee?.name !== assignee) return false;
   const q = query.trim().toLowerCase();
