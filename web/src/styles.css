@@ -2012,6 +2012,7 @@ main.board {
 }
 
 .table .access-name {
+  min-width: 8rem;
   max-width: 16rem;
   white-space: normal;
   overflow-wrap: anywhere;
