@@ -10,6 +10,7 @@ type Mode = ReturnType<typeof useIdentityDetails>["mode"];
 // it alone, not the pages under it. show leaves out a tab the role cannot use.
 const items: { to: string; label: string; icon: IconName; end?: boolean; show: (role: Role | undefined, mode: Mode) => boolean }[] = [
   { to: "", label: "Board", icon: "kanban", end: true, show: () => true },
+  { to: "agents", label: "Agents", icon: "bot", show: () => true },
 ];
 
 // TeamNav is the team's tabs, under the top bar on every team page.
