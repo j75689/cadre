@@ -108,6 +108,8 @@ The team's URLs and their query parameters are built in `web/src/links.ts` (`tea
 ### Pages
 
 - **Teams** (`/`): a card grid of `repeat(auto-fill, minmax(16rem, 1fr))`. Each card shows the display name, the namespace in mono and, with logins, a role badge. The whole card links to the board.
+  - **Create a team:** for a bootstrap admin (`me.admin`, which is everyone under `--auth=none`), the empty state is a form card, at most 40rem wide: Namespace (required, mono) and Display name. The namespace is checked before the request as the server checks it: a DNS-1123 label of at most 63 characters. "Create team" PUTs the namespace's Team without a version, which creates it, then the board opens. A namespace that already has a Team says so, with a link to it; a namespace that isn't in the cluster (the server's 404, whose message is just "not found") says to create it first, with the `kubectl create namespace` command; any other error shows under the form in a `role="alert"`. When the error is the namespace's (the check before the request, or the 404), the field is `aria-invalid`, described by the alert, and takes focus. The form is inline on `/`, as the server serves no other top-level route.
+  - With teams, a bootstrap admin also has "New team" in the page head, a toggle (`aria-expanded`) that shows the same form above the grid.
 - **Board** (`/t/<ns>`):
   - **Toolbar:**
     - `h1` (the team's name) with the role badge;
@@ -240,7 +242,7 @@ Buttons are disabled while a call is in flight, and the server's error shows und
 | --- | --- |
 | Loading | Skeletons shaped like the content: three team cards, seven columns of two cards, the task's header and cards, a runs line. Never the word "Loading…" on screen. |
 | Error | An inline banner where the content would be, with Retry where a retry exists. Once the board has loaded, a failed poll keeps its columns and shows the error in the live status: "Could not refresh: <message>". A refused action's reason stays when the role is read again and the action goes, for the composer and for "Cancel task" alike, and it is said once: a refusal for the role is not also shown under the form, and its alert stays the same element as the action it was for goes: the composer's card stays to hold it. |
-| Empty | Says what would fill it: "No team yet", with `cadre team init -n <namespace>` in a code block; "Nothing here" in a column; "Nothing in the thread yet."; "No run has ended yet." |
+| Empty | Says what would fill it: "No team yet", with `cadre team init -n <namespace>` in a code block (for a bootstrap admin, the create form, with the command as the other way); "Nothing here" in a column; "Nothing in the thread yet."; "No run has ended yet." |
 | Not found | A centred card with a link back to Teams. |
 
 ## Accessibility

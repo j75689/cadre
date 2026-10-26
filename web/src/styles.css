@@ -934,6 +934,11 @@ textarea {
   list-style: none;
 }
 
+/* .form-page's margin, later on, would reset the gap above the grid. */
+.form-page.team-create {
+  margin-bottom: var(--space-4);
+}
+
 .team-card {
   position: relative;
   display: grid;
