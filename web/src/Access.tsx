@@ -109,8 +109,9 @@ function AccessPage({ ns, crumbs, title, children }: { ns: string; crumbs: React
 }
 
 // Credential is how an AgentAccess's agent signs in: a ServiceAccount's
-// token, or a token minted into a Secret, and when unless minted is false.
-function Credential({ access, minted = true }: { access: AgentAccess; minted?: boolean }) {
+// token, or a token minted into a Secret, and when unless showMintedAt is
+// false.
+function Credential({ access, showMintedAt = true }: { access: AgentAccess; showMintedAt?: boolean }) {
   const sa = access.spec.serviceAccount?.name;
   if (sa) {
     return (
@@ -123,7 +124,7 @@ function Credential({ access, minted = true }: { access: AgentAccess; minted?: b
   return (
     <>
       Minted token in Secret <code>{access.tokenSecret}</code>
-      {minted && access.mintedAt && (
+      {showMintedAt && access.mintedAt && (
         <span className="muted">
           {" "}
           minted <Time at={access.mintedAt} />
@@ -344,7 +345,7 @@ function AccessCard({ ns, name }: { ns: string; name: string }) {
             </dd>
             <dt>Credential</dt>
             <dd>
-              <Credential access={access} minted={false} />
+              <Credential access={access} showMintedAt={false} />
             </dd>
             <dt>Status</dt>
             <dd>
