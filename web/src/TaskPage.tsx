@@ -3,6 +3,8 @@ import { Link, useParams } from "react-router";
 import { APIError, getTask, readThread, type Task, type ThreadEntry } from "./api";
 import { CancelTask, Composer } from "./Actions";
 import { RoleLine } from "./Identity";
+import { params, useParam } from "./links";
+import { LiveRun, RunEnded } from "./LiveRun";
 import { Runs } from "./Runs";
 import { Subtasks } from "./Subtasks";
 import { useTeamName } from "./teamList";
@@ -23,9 +25,18 @@ export const threadPage = 200;
 // start again.
 export function TaskPage() {
   const { ns = "", name = "" } = useParams();
+  const [linkedRun] = useParam(params.run);
   const team = useTeamName(ns);
   const [task, setTask] = useState<Task | null>(null);
   const [entries, setEntries] = useState<ThreadEntry[]>([]);
+  // A linked run is scrolled to once the thread, the subtasks and the runs
+  // have first been read (or failed to be): under 800 px the thread and the
+  // subtasks are above it, and the runs make the page long enough to bring
+  // it to the top.
+  const [threadRead, setThreadRead] = useState(false);
+  const [subtasksRead, setSubtasksRead] = useState(false);
+  const [runsRead, setRunsRead] = useState(false);
+  const ready = threadRead && subtasksRead && runsRead;
   const lastSeq = useRef(0);
   const [error, setError] = useState("");
   // refresh restarts polling at once, after a conflict.
@@ -55,6 +66,7 @@ export function TaskPage() {
         if (e instanceof APIError && e.status === 404) setTask(null);
         setError(String((e as Error).message));
       }
+      setThreadRead(true);
     },
     5000,
     [ns, name, refresh],
@@ -66,6 +78,7 @@ export function TaskPage() {
   const onRefresh = () => setRefresh((n) => n + 1);
   const waitingOn = task?.status?.waiting?.threadSeq;
   const waitedCall = entries.find((e) => e.seq === waitingOn)?.call;
+  const liveRun = task?.status?.phase === "Running" && task.status.run?.id ? task.status.run : undefined;
   return (
     <main id="main" className="task-page">
       <nav className="breadcrumb" aria-label="Breadcrumb">
@@ -129,13 +142,17 @@ export function TaskPage() {
                 </div>
               </section>
               <Composer task={task} onTask={setTask} onRefresh={onRefresh} waitingTool={waitedCall?.name ?? waitedCall?.tool} />
-              <Subtasks ns={ns} name={name} />
+              <Subtasks ns={ns} name={name} onRead={() => setSubtasksRead(true)} />
             </div>
             <aside className="stack" aria-label="About the task">
               <Details task={task} />
+              <RunEnded run={liveRun?.id} />
+              {liveRun && (
+                <LiveRun key={liveRun.id} ns={ns} name={name} run={liveRun} linked={liveRun.id.toLowerCase() === linkedRun.toLowerCase()} ready={ready} />
+              )}
               {/* A run ends when the current run goes away or is replaced; the
                   count catches one that started and ended between reads. */}
-              <Runs ns={ns} name={name} current={`${task.status?.run?.id ?? ""}/${task.status?.phase ?? ""}/${task.status?.runs?.count ?? 0}`} />
+              <Runs ns={ns} name={name} current={`${task.status?.run?.id ?? ""}/${task.status?.phase ?? ""}/${task.status?.runs?.count ?? 0}`} open={linkedRun} ready={ready} onRead={() => setRunsRead(true)} />
             </aside>
           </div>
         </>

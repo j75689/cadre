@@ -11,7 +11,8 @@ export const subtaskPage = 50;
 
 // Subtasks lists a task's subtasks, in board order, a page at a time. It
 // polls with the task page and shows nothing for a task without any.
-export function Subtasks({ ns, name }: { ns: string; name: string }) {
+// onRead is told after each read, whether it worked or not.
+export function Subtasks({ ns, name, onRead }: { ns: string; name: string; onRead?: () => void }) {
   const [tasks, setTasks] = useState<Task[] | null>(null);
   const [more, setMore] = useState(false);
   const [pages, setPages] = useState(1);
@@ -32,8 +33,10 @@ export function Subtasks({ ns, name }: { ns: string; name: string }) {
         setMore(full);
         setError("");
       } catch (e) {
-        if (!signal.aborted) setError(String((e as Error).message));
+        if (signal.aborted) return;
+        setError(String((e as Error).message));
       }
+      onRead?.();
     },
     5000,
     [ns, name, pages],

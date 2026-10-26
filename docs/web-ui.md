@@ -134,7 +134,8 @@ The team's URLs and their query parameters are built in `web/src/links.ts` (`tea
     - on the right, "Cancel task" as a danger ghost button, which opens an inline confirmation.
   - **Body:** a grid of `minmax(0, 3fr) minmax(18rem, 1fr)`, stacked under 800 px.
     - The main column holds Description, Thread, the composer and Subtasks.
-    - The side column holds Details and Runs.
+    - The side column holds Details, the run in progress (while Running) and Runs.
+  - `?run=<id>` (any case) opens the page at that run: the run in progress, or an ended run, expanded with its events read. It is scrolled into view once each time it is linked, after the thread, the subtasks and the runs have first been read, or failed to be (under 800 px the thread and the subtasks are above it, and the runs below make the page long enough): on load, to the top, or as near it as the end of the page lets it go; from a run's link on the page, or by Back and Forward, only as far as it takes, so the id of a run already in view does not move the page. On Back and Forward it is scrolled again after the browser has put the entry's scroll position back. A linked run closed with its button opens again when its link is clicked. Event lines wrap anywhere, so a long path or URL does not widen the page.
 - **New task** (`/t/<ns>/new`): one form card, at most 40rem wide.
   - Labels sit above fields, and inputs are 16 px.
   - Assignee and priority are segmented controls.
@@ -165,7 +166,7 @@ Shared pieces live in `web/src/ui/`.
 | `Banner` | An inline error: an alert icon, the message and, where a retry exists, Retry. |
 | `Menu`, `MenuNote` | A menu button. It opens a `role="menu"` list of links and focuses the first item. Arrow keys, Home and End move between items, and Escape closes it and returns focus to the button. A click outside, Tab or a choice also closes it. A line that is not a choice (the teams still loading, or failing to load) is a `MenuNote`: a disabled menu item, so assistive technology reads it; it is not highlighted on hover or focus, and choosing it does nothing. |
 | `Time` | A `<time>`: relative under a day ("just now", "12 s ago", "5 min ago", "3 h ago"), otherwise the full date. The full date is always in its `title`. |
-| `Heading`, `useTitle` | A page's `h1`, which takes focus after a route change, and its document title. |
+| `Heading`, `useTitle` | A page's `h1`, which takes focus after a route change (not after a change of the query only), and its document title. |
 
 ### Tables
 
@@ -234,7 +235,8 @@ Buttons are disabled while a call is in flight, and the server's error shows und
   - the run in progress (mode, runner, step, attempt, lease);
   - the run count;
   - conditions, each with a check (`True`) or an alert icon, its reason and its message.
-- **Runs:** each run is a row button: a chevron, the id in mono, the mode, runner and reason, and an outcome badge in the outcome's phase hue, with the start and end times under it. Expanding a row shows its events in tabular mono: progress lines and token counts.
+- **Run in progress:** shown while the task is Running. The id in mono links to the run (`?run=<id>`), then the mode, runner and step, and the token totals: "12,345 in · 2,100 out · context 30,120", plus the prompt cache's read and written tokens when there are any. In and out are summed over the events; context is the latest event's, the size of the conversation, left out until an event reports it. Under them the events, as in Runs, read again every 4 s, counted from the start of the read before and at least 0.8 s after it ended, while the tab is visible, so an event is shown within 5 s of being written while a read takes up to 1 s; "No events yet." until the first. The card goes when the run ends, and Runs reads its list again.
+- **Runs:** each run is a row button: a chevron, the mode, runner and reason, and an outcome badge in the outcome's phase hue, with the start and end times under it. The id in mono sits above the button, a link to the run named "Run <id>", as wide as the id. Expanding a row shows its events in tabular mono: progress lines and token counts, with the prompt cache's when there are any.
 
 ## States
 
@@ -250,13 +252,13 @@ Buttons are disabled while a call is in flight, and the server's error shows und
 - **Contrast:** text is at 4.5:1 or more in both themes. That includes `--fg-muted` on `--surface`, `--bg` and `--surface-2`, every status `-fg` on `--surface`, `--surface-2` and its `-soft` tint, and text on the accent and on the success and danger buttons. Change a token only after checking it again.
 - **Focus:**
   - Every control and card has a 2 px `--ring` `:focus-visible` outline. A card's ring is drawn by its covering link.
-  - After a route change, focus moves to the new page's `h1` (`tabindex="-1"`). The first page of a visit keeps the browser's focus.
+  - After a route change, focus moves to the new page's `h1` (`tabindex="-1"`). The first page of a visit keeps the browser's focus, and so does a change of the query only (a run linked, Back and Forward between runs), so focus stays where it was and the title is not read again.
 - **Names:**
   - Icon-only controls (theme, clear search) have an `aria-label`.
   - Decorative icons and skeleton blocks are `aria-hidden`.
   - A Running card's dot is an `img` named "running".
 - **Colour alone:** phase and priority never rely on colour only: a phase is a dot and its name, and a priority is an icon and its word. A wait is an icon and the word "Waiting".
 - **Structure:** one `h1` per page. Landmarks: `header`, `main` (skip-link target), breadcrumb `nav`, and `region`s for the board's columns and the task's cards.
-- **Live regions:** the board has a single polite `role="status"` with `aria-atomic`. Only a change of state reaches it: "Up to date" (visually hidden) or "Could not refresh: <message>". How long ago the board was read ("Updated 12 s ago") is shown beside it, outside the region, so the poll does not make it speak every five seconds. Errors from actions are `role="alert"`.
+- **Live regions:** the board has a single polite `role="status"` with `aria-atomic`. Only a change of state reaches it: "Up to date" (visually hidden) or "Could not refresh: <message>". How long ago the board was read ("Updated 12 s ago") is shown beside it, outside the region, so the poll does not make it speak every five seconds. The run in progress's events are no live region either: a visually hidden polite `role="status"` says "Run ended" when the run goes. Errors from actions are `role="alert"`.
 - **Titles:** `document.title` is "<page> · <team> · Cadre", for example "#12 Fix the build · Platform · Cadre".
 - **Keyboard:** everything a pointer can do is reachable by keyboard: the menu, segmented controls (radios), `<details>`, run rows and the cancel confirmation.

@@ -1,5 +1,5 @@
 import { act, cleanup, fireEvent, render, screen } from "@testing-library/react";
-import { MemoryRouter } from "react-router";
+import { MemoryRouter, useNavigate, type NavigateFunction } from "react-router";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { App } from "./App";
 import type { Phase, Task } from "./api";
@@ -219,5 +219,286 @@ describe("Subtasks", () => {
     await act(() => vi.advanceTimersByTimeAsync(5000));
     expect(await screen.findByText(`Step ${subtaskPage + 4}`)).toBeTruthy();
     expect(reads() - before).toBe(2);
+  });
+});
+
+describe("A link to a run", () => {
+  const current = "01JRUN0000000000000000000B";
+  const ended = "01JRUN0000000000000000000A";
+  const other = "01JRUN0000000000000000000C";
+
+  // runServer answers for a task running current, with ended and other in
+  // its runs.
+  function runServer() {
+    const calls: string[] = [];
+    vi.stubGlobal("fetch", (url: string) => {
+      calls.push(url);
+      if (url.endsWith("/me")) return json({ mode: "none", admin: true });
+      if (url.endsWith("/runs"))
+        return json({
+          items: [
+            { id: ended, mode: "runtime", runner: "r1", reason: "claimed", outcome: "Review", endedAt: "2026-10-25T09:00:00Z" },
+            { id: other, mode: "runtime", runner: "r2", reason: "claimed", outcome: "Review", endedAt: "2026-10-25T08:00:00Z" },
+          ],
+        });
+      if (url.includes("/events")) return json({ items: [{ runId: "", seq: 1, progress: "working" }] });
+      if (url.includes("/thread") || url.includes("parent=")) return json({ items: [] });
+      return json(task("Running", { run: { id: current, mode: "runtime" }, runs: { count: 2 } }));
+    });
+    return calls;
+  }
+
+  let navigate: NavigateFunction;
+  function Navigator() {
+    navigate = useNavigate();
+    return null;
+  }
+
+  function renderAt(...runs: string[]) {
+    render(
+      <MemoryRouter initialEntries={runs.map((r) => (r ? `/t/a/tasks/x?run=${r}` : "/t/a/tasks/x"))} initialIndex={runs.length - 1}>
+        <App />
+        <Navigator />
+      </MemoryRouter>,
+    );
+  }
+
+  const rowOf = (runner: string) => screen.findByRole("button", { name: new RegExp(`runtime on ${runner}`) });
+
+  // read waits for the page's first reads of the thread, the subtasks and
+  // the runs: a linked run is scrolled to only once they are done.
+  async function read(calls: string[]) {
+    await vi.waitFor(() => expect(calls.some((c) => c.includes("/thread")) && calls.some((c) => c.includes("parent=")) && calls.some((c) => c.endsWith("/runs"))).toBe(true));
+    await act(() => vi.advanceTimersByTimeAsync(10));
+  }
+
+  it("opens an ended run and reads its events without a click", async () => {
+    const scroll = vi.fn();
+    Element.prototype.scrollIntoView = scroll;
+    const calls = runServer();
+    renderAt(ended);
+    const row = await screen.findByRole("button", { name: /runtime on r1/ });
+    expect(row.getAttribute("aria-expanded")).toBe("true");
+    await vi.waitFor(() => expect(calls).toContain(`/api/v1/namespaces/a/tasks/x/runs/${ended}/events`));
+    await vi.waitFor(() => expect(row.closest("li")!.textContent).toContain("progress: working"));
+    await vi.waitFor(() => expect(scroll).toHaveBeenCalledTimes(1));
+    expect(scroll).toHaveBeenCalledWith({ block: "start" });
+    expect(screen.getByRole("link", { name: `Run ${ended}` }).getAttribute("href")).toBe(`/t/a/tasks/x?run=${ended}`);
+  });
+
+  it("scrolls to the run in progress once", async () => {
+    const scroll = vi.fn();
+    Element.prototype.scrollIntoView = scroll;
+    runServer();
+    renderAt(current);
+    expect(await screen.findByRole("region", { name: "Run in progress" })).toBeTruthy();
+    await act(() => vi.advanceTimersByTimeAsync(10_000));
+    expect(scroll).toHaveBeenCalledTimes(1);
+    expect((await screen.findByRole("button", { name: /runtime on r1/ })).getAttribute("aria-expanded")).toBe("false");
+  });
+
+  it("matches the run's id in any case", async () => {
+    const calls = runServer();
+    renderAt(ended.toLowerCase());
+    const row = await screen.findByRole("button", { name: /runtime on r1/ });
+    expect(row.getAttribute("aria-expanded")).toBe("true");
+    await vi.waitFor(() => expect(calls).toContain(`/api/v1/namespaces/a/tasks/x/runs/${ended}/events`));
+  });
+
+  it("matches the run in progress in any case", async () => {
+    const scroll = vi.fn();
+    Element.prototype.scrollIntoView = scroll;
+    runServer();
+    renderAt(current.toLowerCase());
+    expect(await screen.findByRole("region", { name: "Run in progress" })).toBeTruthy();
+    await vi.waitFor(() => expect(scroll).toHaveBeenCalledTimes(1));
+  });
+
+  it("opens an ended run when its link on the page is clicked", async () => {
+    const scroll = vi.fn();
+    Element.prototype.scrollIntoView = scroll;
+    const calls = runServer();
+    renderAt("");
+    const row = await rowOf("r1");
+    await read(calls);
+    expect(row.getAttribute("aria-expanded")).toBe("false");
+    fireEvent.click(screen.getByRole("link", { name: new RegExp(ended) }));
+    expect(row.getAttribute("aria-expanded")).toBe("true");
+    await vi.waitFor(() => expect(row.closest("li")!.textContent).toContain("progress: working"));
+    // Only as far as it takes: a row in view stays where it is.
+    expect(scroll).toHaveBeenCalledTimes(1);
+    expect(scroll).toHaveBeenCalledWith({ block: "nearest" });
+  });
+
+  it("opens the linked run on Back and Forward, and again after it was closed", async () => {
+    const scroll = vi.fn();
+    Element.prototype.scrollIntoView = scroll;
+    const calls = runServer();
+    renderAt(ended, other);
+    const first = await rowOf("r1");
+    const second = await rowOf("r2");
+    expect(second.getAttribute("aria-expanded")).toBe("true");
+    expect(first.getAttribute("aria-expanded")).toBe("false");
+    await vi.waitFor(() => expect(scroll).toHaveBeenCalledTimes(1));
+    act(() => navigate(-1));
+    expect(first.getAttribute("aria-expanded")).toBe("true");
+    await vi.waitFor(() => expect(first.closest("li")!.textContent).toContain("progress: working"));
+    await act(() => vi.advanceTimersByTimeAsync(1));
+    // Back: as far as it takes, then again once the browser has put the
+    // entry's scroll position back.
+    expect(scroll.mock.calls).toEqual([[{ block: "start" }], [{ block: "nearest" }], [{ block: "nearest" }]]);
+    // Closed, then linked again: it opens again.
+    fireEvent.click(first);
+    expect(first.getAttribute("aria-expanded")).toBe("false");
+    act(() => navigate(1));
+    act(() => navigate(-1));
+    expect(first.getAttribute("aria-expanded")).toBe("true");
+    // Its events were read once.
+    expect(calls.filter((c) => c.endsWith(`/runs/${ended}/events`))).toHaveLength(1);
+  });
+
+  it("opens a linked run closed with its button when its link is clicked again", async () => {
+    runServer();
+    renderAt(ended);
+    const row = await rowOf("r1");
+    expect(row.getAttribute("aria-expanded")).toBe("true");
+    fireEvent.click(row);
+    expect(row.getAttribute("aria-expanded")).toBe("false");
+    fireEvent.click(screen.getByRole("link", { name: `Run ${ended}` }));
+    expect(row.getAttribute("aria-expanded")).toBe("true");
+  });
+
+  it("keeps the focus on a run's link: the page is the same", async () => {
+    runServer();
+    // Back lands on the page's own entry: the router's first one (key
+    // "default") never takes the focus, whatever the page.
+    renderAt(other, "");
+    await rowOf("r1");
+    const link = screen.getByRole("link", { name: `Run ${ended}` });
+    link.focus();
+    fireEvent.click(link);
+    await act(() => vi.advanceTimersByTimeAsync(10));
+    expect(document.activeElement).toBe(link);
+    act(() => navigate(-1));
+    await act(() => vi.advanceTimersByTimeAsync(10));
+    expect(document.activeElement).toBe(link);
+  });
+
+  it("scrolls to a linked run once the thread above it has been read", async () => {
+    const scroll = vi.fn();
+    Element.prototype.scrollIntoView = scroll;
+    runServer();
+    const serve = globalThis.fetch;
+    let answer = () => {};
+    vi.stubGlobal("fetch", (url: string) =>
+      url.includes("/thread") ? new Promise<Response>((r) => (answer = () => r(serve(url) as unknown as Response))) : serve(url),
+    );
+    renderAt(current);
+    expect(await screen.findByRole("region", { name: "Run in progress" })).toBeTruthy();
+    await rowOf("r1");
+    expect(scroll).not.toHaveBeenCalled();
+    await act(async () => answer());
+    await vi.waitFor(() => expect(scroll).toHaveBeenCalledTimes(1));
+    expect(scroll).toHaveBeenCalledWith({ block: "start" });
+  });
+
+  it("scrolls to the run in progress once the subtasks above it have been read too", async () => {
+    const scroll = vi.fn();
+    Element.prototype.scrollIntoView = scroll;
+    const calls = runServer();
+    const serve = globalThis.fetch;
+    let answer = () => {};
+    vi.stubGlobal("fetch", (url: string) =>
+      url.includes("parent=") ? new Promise<Response>((r) => (answer = () => r(serve(url) as unknown as Response))) : serve(url),
+    );
+    renderAt(current);
+    expect(await screen.findByRole("region", { name: "Run in progress" })).toBeTruthy();
+    await rowOf("r1");
+    await vi.waitFor(() => expect(calls.some((c) => c.includes("/thread"))).toBe(true));
+    await act(() => vi.advanceTimersByTimeAsync(10));
+    expect(scroll).not.toHaveBeenCalled();
+    await act(async () => answer());
+    await vi.waitFor(() => expect(scroll).toHaveBeenCalledTimes(1));
+    expect(scroll).toHaveBeenCalledWith({ block: "start" });
+  });
+
+  it("scrolls to the run in progress after a failed read of the subtasks", async () => {
+    const scroll = vi.fn();
+    Element.prototype.scrollIntoView = scroll;
+    runServer();
+    const serve = globalThis.fetch;
+    vi.stubGlobal("fetch", (url: string) => (url.includes("parent=") ? Promise.reject(new TypeError("offline")) : serve(url)));
+    renderAt(current);
+    await screen.findByText(/Could not load the subtasks/);
+    await vi.waitFor(() => expect(scroll).toHaveBeenCalledTimes(1));
+    expect(scroll).toHaveBeenCalledWith({ block: "start" });
+  });
+
+  it("scrolls the run in progress only as far as it takes when its link on the page is clicked", async () => {
+    const scroll = vi.fn();
+    Element.prototype.scrollIntoView = scroll;
+    const calls = runServer();
+    renderAt("");
+    await screen.findByRole("region", { name: "Run in progress" });
+    await read(calls);
+    fireEvent.click(screen.getByRole("link", { name: `Run ${current}` }));
+    expect(scroll).toHaveBeenCalledTimes(1);
+    expect(scroll).toHaveBeenCalledWith({ block: "nearest" });
+    await act(() => vi.advanceTimersByTimeAsync(10_000));
+    expect(scroll).toHaveBeenCalledTimes(1);
+  });
+
+  it("scrolls the run in progress only as far as it takes when its link is clicked before the subtasks are read", async () => {
+    const scroll = vi.fn();
+    Element.prototype.scrollIntoView = scroll;
+    runServer();
+    const serve = globalThis.fetch;
+    let answer = () => {};
+    vi.stubGlobal("fetch", (url: string) =>
+      url.includes("parent=") ? new Promise<Response>((r) => (answer = () => r(serve(url) as unknown as Response))) : serve(url),
+    );
+    renderAt("");
+    await screen.findByRole("region", { name: "Run in progress" });
+    fireEvent.click(screen.getByRole("link", { name: `Run ${current}` }));
+    expect(scroll).not.toHaveBeenCalled();
+    await act(async () => answer());
+    await vi.waitFor(() => expect(scroll).toHaveBeenCalledTimes(1));
+    expect(scroll).toHaveBeenCalledWith({ block: "nearest" });
+    await act(() => vi.advanceTimersByTimeAsync(10_000));
+    expect(scroll).toHaveBeenCalledTimes(1);
+  });
+
+  it("reads a run's events again when its row is opened after a failed read", async () => {
+    const calls = runServer();
+    const serve = globalThis.fetch;
+    let fail = true;
+    vi.stubGlobal("fetch", (url: string) => {
+      if (fail && url.includes("/events")) {
+        calls.push(url);
+        return json({ error: { message: "boom" } }, 500);
+      }
+      return serve(url);
+    });
+    renderAt("");
+    const row = await rowOf("r1");
+    fireEvent.click(row);
+    await vi.waitFor(() => expect(row.closest("li")!.querySelector(".inline-error")).toBeTruthy());
+    fail = false;
+    fireEvent.click(row);
+    fireEvent.click(row);
+    await vi.waitFor(() => expect(row.closest("li")!.textContent).toContain("progress: working"));
+    expect(row.closest("li")!.querySelector(".inline-error")).toBeNull();
+    expect(calls.filter((c) => c.endsWith(`/runs/${ended}/events`))).toHaveLength(2);
+  });
+
+  it("reads a run's events once when its row is closed and opened again quickly", async () => {
+    const calls = runServer();
+    renderAt("");
+    const row = await rowOf("r1");
+    fireEvent.click(row);
+    fireEvent.click(row);
+    fireEvent.click(row);
+    await vi.waitFor(() => expect(row.closest("li")!.textContent).toContain("progress: working"));
+    expect(calls.filter((c) => c.endsWith(`/runs/${ended}/events`))).toHaveLength(1);
   });
 });

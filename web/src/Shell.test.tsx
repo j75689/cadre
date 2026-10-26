@@ -179,6 +179,19 @@ describe("pages", () => {
     expect(document.activeElement).toBe(h1);
   });
 
+  it("move the focus to the h1 on going back to a page through one still loading", async () => {
+    server();
+    const serve = globalThis.fetch;
+    vi.stubGlobal("fetch", (url: string) => (url.endsWith("/tasks/fix") ? new Promise(() => {}) : serve(url)));
+    at("/t/a");
+    const card = await screen.findByRole("link", { name: "Fix the build" });
+    act(() => card.click());
+    // The task is still loading: no h1 yet. Its breadcrumb goes back.
+    act(() => within(screen.getByRole("navigation", { name: "Breadcrumb" })).getByRole("link", { name: "Team A" }).click());
+    const h1 = await screen.findByRole("heading", { level: 1, name: "Team A" });
+    await vi.waitFor(() => expect(document.activeElement).toBe(h1));
+  });
+
   it("offer a skip link to the page's main", async () => {
     server();
     at("/");

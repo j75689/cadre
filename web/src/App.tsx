@@ -13,7 +13,7 @@ import { applyTheme, loadTheme, nextTheme, saveTheme, systemDark, type Theme } f
 import { RoleBadge } from "./ui/Badge";
 import { Button, ButtonLink } from "./ui/Button";
 import { Menu, MenuNote } from "./ui/Menu";
-import { Heading, useTitle } from "./ui/Page";
+import { Heading, useRouteChanges, useTitle } from "./ui/Page";
 
 // A board belongs to one team: another team's is a fresh one, not this one
 // with old columns until the first poll.
@@ -132,6 +132,7 @@ export function ThemeControl() {
 }
 
 function Layout() {
+  useRouteChanges();
   return (
     <>
       <a className="skip-link" href="#main">
