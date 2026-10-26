@@ -115,6 +115,12 @@ describe("Settings", () => {
     expect(reads()).toBe(2);
   });
 
+  it("shows a 403 without Retry", async () => {
+    open({ mode: "oidc", username: "kim" }, () => json({ error: { code: "no_role", message: "you have no role in a" } }, 403));
+    expect(await screen.findByText(/Could not load the team: you have no role in a/)).toBeTruthy();
+    expect(screen.queryByRole("button", { name: "Retry" })).toBeNull();
+  });
+
   it("is the current tab in the team nav", async () => {
     open({ mode: "none", admin: true }, () => json(full));
     const nav = within(screen.getByRole("navigation", { name: "Team" }));

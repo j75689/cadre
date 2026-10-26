@@ -27,6 +27,8 @@ export function Settings() {
   const [team, setTeam] = useState<Team | null>(null);
   const [missing, setMissing] = useState(false);
   const [error, setError] = useState("");
+  // forbidden is a 403: reading again cannot help, so there is no Retry.
+  const [forbidden, setForbidden] = useState(false);
   // retry reads the Team again after a failed read.
   const [retry, setRetry] = useState(0);
   useTitle("Settings", name);
@@ -36,6 +38,7 @@ export function Settings() {
         setTeam(await getTeam(ns, signal));
         setMissing(false);
         setError("");
+        setForbidden(false);
       } catch (e) {
         if (signal.aborted) return;
         if (e instanceof APIError && e.status === 404) {
@@ -45,6 +48,7 @@ export function Settings() {
           return;
         }
         setError(String((e as Error).message));
+        setForbidden(e instanceof APIError && e.status === 403);
       }
     },
     15000,
@@ -66,7 +70,7 @@ export function Settings() {
         <RoleLine ns={ns} />
       </div>
       {error && (
-        <Banner onRetry={() => setRetry((n) => n + 1)}>
+        <Banner onRetry={forbidden ? undefined : () => setRetry((n) => n + 1)}>
           Could not load the team: {error}
         </Banner>
       )}
