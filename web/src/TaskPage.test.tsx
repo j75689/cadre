@@ -361,7 +361,9 @@ describe("A link to a run", () => {
 
   it("keeps the focus on a run's link: the page is the same", async () => {
     runServer();
-    renderAt("");
+    // Back lands on the page's own entry: the router's first one (key
+    // "default") never takes the focus, whatever the page.
+    renderAt(other, "");
     await rowOf("r1");
     const link = screen.getByRole("link", { name: `Run ${ended}` });
     link.focus();
