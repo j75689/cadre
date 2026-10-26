@@ -97,7 +97,7 @@ A skip link to `#main` comes first in the tab order. Each page's `main` has `id=
 #### Team nav
 
 Every team page, `/t/<ns>/...`, has the team nav under the top bar: a `nav` named "Team", 40 px (`--teamnav`), on `--surface`, with a bottom `--line`.
-- It holds the team's tabs, each an icon and a label. For now there is one, **Board**, current on `/t/<ns>` only, not on a task's page.
+- It holds the team's tabs, each an icon and a label, in order: **Board**, current on `/t/<ns>` (with or without a trailing slash) only, not on a task's page; **Agents**, for every role.
 - The current tab has `aria-current="page"`, a 2 px `--accent` underline and `--fg` text; the others are `--fg-muted`.
 - A tab can be left out for a role that cannot use it.
 - When the tabs do not fit, they scroll inside the nav; the page never scrolls sideways, down to 320 px.
@@ -120,6 +120,10 @@ The team's URLs and their query parameters are built in `web/src/links.ts` (`tea
     - Each column is a `--surface-2` well with a sticky header: a dot in the phase's hue, the name, and a count pill (`50+` while there is more).
     - The column body scrolls on its own, so headers stay in view. The board fills the viewport below the top bar and the team nav.
     - Terminal columns (Done, Cancelled, Failed) mute their header.
+- **Agents** (`/t/<ns>/agents`): the team's Agent resources and whether each can take work, read every 15 s. It is health only, so every role sees it.
+  - A table in a horizontal-scroll region named "Agents": Agent (mono), Status (the ready badge), Reason (muted, empty while Pending, which the badge says), Message, and Tasks, a link to the board with the agent as the assignee (`boardLink(ns, { assignee })`). The board does not filter by `?assignee=` yet (P1.8), so it still shows every task.
+  - With no agents: "This team has no agents. Agents are Agent resources in the namespace, applied with kubectl or GitOps."
+  - An error that stops the read shows the banner with Retry.
 - **Task** (`/t/<ns>/tasks/<name>`):
   - **Header:**
     - a breadcrumb: the team, then `#number`;
@@ -144,6 +148,7 @@ Shared pieces live in `web/src/ui/`.
 | `Button`, `ButtonLink` | Variants: primary, secondary, ghost, danger (outline), danger-ghost, danger-solid, success. `small` gives a 28 px control. An icon-only button has an `aria-label`. |
 | `Badge`, `PhaseBadge` | A pill: text in `-fg` on `-soft`. A phase badge has a dot in the phase's hue and the phase's name; a Running one pulses. |
 | `PriorityChip` | Urgent and high as an alert icon and the word, in their hue. Low as muted text. Medium, the default, shows nothing on cards and "medium" where the priority is always shown. |
+| `ReadyBadge` | Whether a resource can take work, as an icon and a word: Ready (done tone, check), Pending while its current spec is unchecked (waiting tone, hourglass), otherwise Not ready (danger tone, alert). |
 | `RoleBadge` | viewer, member or admin (accent tint). |
 | `Pills` | Labels: bordered pills that wrap. |
 | `Meta` | A row of an icon and text: an assignee (bot or user), "subtask of", a wait. |
@@ -152,6 +157,14 @@ Shared pieces live in `web/src/ui/`.
 | `Menu`, `MenuNote` | A menu button. It opens a `role="menu"` list of links and focuses the first item. Arrow keys, Home and End move between items, and Escape closes it and returns focus to the button. A click outside, Tab or a choice also closes it. A line that is not a choice (the teams still loading, or failing to load) is a `MenuNote`: a disabled menu item, so assistive technology reads it; it is not highlighted on hover or focus, and choosing it does nothing. |
 | `Time` | A `<time>`: relative under a day ("just now", "12 s ago", "5 min ago", "3 h ago"), otherwise the full date. The full date is always in its `title`. |
 | `Heading`, `useTitle` | A page's `h1`, which takes focus after a route change, and its document title. |
+
+### Tables
+
+A list of resources is a `.table` inside a `.table-wrap`: the wrapper scrolls sideways (`tabindex="0"`, `role="region"` and an `aria-label`), so the page never does, down to 320 px.
+- Full width, tabular numbers, a 1 px `--line` under each row but the last.
+- Header cells are left-aligned, 13 px, weight 600, `--fg-muted`. The header does not stick: the wrapper is the scroll container, so a sticky header would never move.
+- Cells align to the top, so a row with a wrapped cell reads from its first line.
+- Cells keep to one line; a `.table-text` cell, such as a message, wraps at 16rem or wider.
 
 ### Board cards
 
