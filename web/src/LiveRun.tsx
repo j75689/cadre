@@ -1,8 +1,8 @@
-import { useEffect, useRef, useState } from "react";
+import { useRef, useState } from "react";
 import { Link } from "react-router";
 import { runEvents, type RunEvent, type TaskStatus } from "./api";
 import { taskLink } from "./links";
-import { EventList, totals } from "./Runs";
+import { EventList, totals, useLinkScroll } from "./Runs";
 import { Loading, Skeleton } from "./ui/Skeleton";
 import { usePolling } from "./usePolling";
 
@@ -10,12 +10,13 @@ import { usePolling } from "./usePolling";
 // while the page is visible (so an event shows within five while a read
 // takes up to one), and its token totals. The list is no live region, so a
 // screen reader is not read each poll; RunEnded says when the run ends. A
-// linked run (?run=<id>) is scrolled into view once.
-export function LiveRun({ ns, name, run, linked }: { ns: string; name: string; run: NonNullable<TaskStatus["run"]>; linked: boolean }) {
+// linked run (?run=<id>) is scrolled into view as an ended one is, once
+// ready.
+export function LiveRun({ ns, name, run, linked, ready }: { ns: string; name: string; run: NonNullable<TaskStatus["run"]>; linked: boolean; ready: boolean }) {
   const [events, setEvents] = useState<RunEvent[] | null>(null);
   const [error, setError] = useState("");
   const card = useRef<HTMLElement>(null);
-  const scrolled = useRef(false);
+  useLinkScroll(card, linked, ready);
   usePolling(
     async (signal) => {
       try {
@@ -28,11 +29,6 @@ export function LiveRun({ ns, name, run, linked }: { ns: string; name: string; r
     4000,
     [ns, name, run.id],
   );
-  useEffect(() => {
-    if (!linked || scrolled.current) return;
-    scrolled.current = true;
-    card.current?.scrollIntoView?.({ block: "start" });
-  }, [linked]);
   const t = totals(events ?? []);
   const n = (v: number) => v.toLocaleString();
   return (

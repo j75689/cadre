@@ -334,14 +334,16 @@ describe("A link to a run", () => {
     act(() => navigate(-1));
     expect(first.getAttribute("aria-expanded")).toBe("true");
     await vi.waitFor(() => expect(first.closest("li")!.textContent).toContain("progress: working"));
+    await act(() => vi.advanceTimersByTimeAsync(1));
+    // Back: as far as it takes, then again once the browser has put the
+    // entry's scroll position back.
+    expect(scroll.mock.calls).toEqual([[{ block: "start" }], [{ block: "nearest" }], [{ block: "nearest" }]]);
     // Closed, then linked again: it opens again.
     fireEvent.click(first);
     expect(first.getAttribute("aria-expanded")).toBe("false");
     act(() => navigate(1));
     act(() => navigate(-1));
     expect(first.getAttribute("aria-expanded")).toBe("true");
-    // Scrolled each time a run is linked: other, ended, other, ended.
-    expect(scroll).toHaveBeenCalledTimes(4);
     // Its events were read once.
     expect(calls.filter((c) => c.endsWith(`/runs/${ended}/events`))).toHaveLength(1);
   });
@@ -358,6 +360,35 @@ describe("A link to a run", () => {
     act(() => navigate(-1));
     await act(() => vi.advanceTimersByTimeAsync(10));
     expect(document.activeElement).toBe(link);
+  });
+
+  it("scrolls to a linked run once the thread above it has been read", async () => {
+    const scroll = vi.fn();
+    Element.prototype.scrollIntoView = scroll;
+    runServer();
+    const serve = globalThis.fetch;
+    let answer = () => {};
+    vi.stubGlobal("fetch", (url: string) =>
+      url.includes("/thread") ? new Promise<Response>((r) => (answer = () => r(serve(url) as unknown as Response))) : serve(url),
+    );
+    renderAt(current);
+    expect(await screen.findByRole("region", { name: "Run in progress" })).toBeTruthy();
+    await rowOf("r1");
+    expect(scroll).not.toHaveBeenCalled();
+    await act(async () => answer());
+    await vi.waitFor(() => expect(scroll).toHaveBeenCalledTimes(1));
+    expect(scroll).toHaveBeenCalledWith({ block: "start" });
+  });
+
+  it("scrolls the run in progress only as far as it takes when its link on the page is clicked", async () => {
+    const scroll = vi.fn();
+    Element.prototype.scrollIntoView = scroll;
+    runServer();
+    renderAt("");
+    await screen.findByRole("region", { name: "Run in progress" });
+    fireEvent.click(screen.getByRole("link", { name: `Run ${current}` }));
+    expect(scroll).toHaveBeenCalledTimes(1);
+    expect(scroll).toHaveBeenCalledWith({ block: "nearest" });
   });
 
   it("reads a run's events again when its row is opened after a failed read", async () => {

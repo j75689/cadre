@@ -35,7 +35,7 @@ function serveEvents(events: RunEvent[]) {
 function renderLive(linked = false) {
   return render(
     <MemoryRouter>
-      <LiveRun ns="a" name="x" run={{ id: runId, mode: "runtime", runnerName: "r1", step: 3 }} linked={linked} />
+      <LiveRun ns="a" name="x" run={{ id: runId, mode: "runtime", runnerName: "r1", step: 3 }} linked={linked} ready />
     </MemoryRouter>,
   );
 }

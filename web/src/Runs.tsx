@@ -1,5 +1,5 @@
-import { useEffect, useRef, useState } from "react";
-import { Link } from "react-router";
+import { useEffect, useRef, useState, type RefObject } from "react";
+import { Link, useNavigationType } from "react-router";
 import { listRuns, phases, runEvents, ulidTime, type Phase, type RunEvent, type RunRecord } from "./api";
 import { Badge, phaseTone } from "./ui/Badge";
 import { Banner } from "./ui/Banner";
@@ -10,8 +10,8 @@ import { Loading, Skeleton } from "./ui/Skeleton";
 // Runs lists a task's ended runs, read again when current (the run in
 // progress and the phase) changes: a run is in the list once it is not the
 // current one any more. Expanding one reads its events once; the run named
-// by open (any case) is expanded.
-export function Runs({ ns, name, current, open = "" }: { ns: string; name: string; current: string; open?: string }) {
+// by open (any case) is expanded, and scrolled to once ready.
+export function Runs({ ns, name, current, open = "", ready }: { ns: string; name: string; current: string; open?: string; ready: boolean }) {
   const [runs, setRuns] = useState<RunRecord[] | null>(null);
   const [error, setError] = useState("");
   const [retry, setRetry] = useState(0);
@@ -44,7 +44,7 @@ export function Runs({ ns, name, current, open = "" }: { ns: string; name: strin
       {runs && runs.length > 0 && (
         <ol className="rows">
           {runs.map((r) => (
-            <Run key={r.id} ns={ns} name={name} run={r} linked={open !== "" && r.id.toLowerCase() === open.toLowerCase()} />
+            <Run key={r.id} ns={ns} name={name} run={r} linked={open !== "" && r.id.toLowerCase() === open.toLowerCase()} ready={ready} />
           ))}
         </ol>
       )}
@@ -56,11 +56,38 @@ export function Runs({ ns, name, current, open = "" }: { ns: string; name: strin
 // sent the task to (Done, Review, Waiting or Failed).
 const outcomeTone = (outcome: string) => (phases as readonly string[]).includes(outcome) ? phaseTone(outcome as Phase) : undefined;
 
+// useLinkScroll scrolls el into view once each time it is linked
+// (?run=<id>), once ready: once what is above it has rendered. It goes to
+// the top when the page loads at it, and only as far as it takes later, so
+// clicking the id of a run in view does not move the page. On Back and
+// Forward the browser puts the entry's scroll position back after the
+// page has rendered, in the same task, so it scrolls again in the next.
+export function useLinkScroll(el: RefObject<HTMLElement | null>, linked: boolean, ready: boolean) {
+  const pop = useNavigationType() === "POP";
+  const loaded = useRef(false);
+  const scrolled = useRef(false);
+  useEffect(() => {
+    if (!ready) return;
+    const block = loaded.current ? "nearest" : "start";
+    loaded.current = true;
+    if (!linked) {
+      scrolled.current = false;
+      return;
+    }
+    if (scrolled.current) return;
+    scrolled.current = true;
+    const scroll = () => el.current?.scrollIntoView?.({ block });
+    scroll();
+    if (!pop || block === "start") return;
+    const again = setTimeout(scroll);
+    return () => clearTimeout(again);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [linked, ready]);
+}
+
 // Run is one ended run. While it is linked (?run=<id>) it is open, its
-// events read, and it is scrolled into view once each time it is linked:
-// to the top when the page loads at it, and only as far as it takes later,
-// so clicking the id of a run in view does not move the list.
-function Run({ ns, name, run, linked }: { ns: string; name: string; run: RunRecord; linked: boolean }) {
+// events read, and it is scrolled into view (useLinkScroll).
+function Run({ ns, name, run, linked, ready }: { ns: string; name: string; run: RunRecord; linked: boolean; ready: boolean }) {
   const [events, setEvents] = useState<RunEvent[] | null>(null);
   const [open, setOpen] = useState(linked);
   const [wasLinked, setWasLinked] = useState(linked);
@@ -70,8 +97,7 @@ function Run({ ns, name, run, linked }: { ns: string; name: string; run: RunReco
   }
   const [error, setError] = useState("");
   const row = useRef<HTMLLIElement>(null);
-  const scrolled = useRef(false);
-  const loaded = useRef(false);
+  useLinkScroll(row, linked, ready);
   // asked keeps the events to one read: a row closed and opened again, or
   // linked again, while or after they are read reads none. A failed read
   // can be tried again.
@@ -89,16 +115,9 @@ function Run({ ns, name, run, linked }: { ns: string; name: string; run: RunReco
     }
   };
   useEffect(() => {
-    const block = loaded.current ? "nearest" : "start";
-    loaded.current = true;
-    if (!linked) {
-      scrolled.current = false;
-      return;
-    }
-    if (scrolled.current) return;
-    scrolled.current = true;
-    row.current?.scrollIntoView?.({ block });
-    void load();
+    // load sets state only once the read has answered.
+    // eslint-disable-next-line react-hooks/set-state-in-effect
+    if (linked) void load();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [linked]);
   const toggle = () => {

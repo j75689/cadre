@@ -29,6 +29,9 @@ export function TaskPage() {
   const team = useTeamName(ns);
   const [task, setTask] = useState<Task | null>(null);
   const [entries, setEntries] = useState<ThreadEntry[]>([]);
+  // threadRead is set once the thread has been read: a linked run is
+  // scrolled to after, as under 800 px the thread is above it.
+  const [threadRead, setThreadRead] = useState(false);
   const lastSeq = useRef(0);
   const [error, setError] = useState("");
   // refresh restarts polling at once, after a conflict.
@@ -51,6 +54,7 @@ export function TaskPage() {
           append(page.items);
           if (page.items.length < threadPage) break;
         }
+        setThreadRead(true);
         setError("");
       } catch (e) {
         if (signal.aborted) return;
@@ -139,11 +143,11 @@ export function TaskPage() {
               <Details task={task} />
               <RunEnded run={liveRun?.id} />
               {liveRun && (
-                <LiveRun key={liveRun.id} ns={ns} name={name} run={liveRun} linked={liveRun.id.toLowerCase() === linkedRun.toLowerCase()} />
+                <LiveRun key={liveRun.id} ns={ns} name={name} run={liveRun} linked={liveRun.id.toLowerCase() === linkedRun.toLowerCase()} ready={threadRead} />
               )}
               {/* A run ends when the current run goes away or is replaced; the
                   count catches one that started and ended between reads. */}
-              <Runs ns={ns} name={name} current={`${task.status?.run?.id ?? ""}/${task.status?.phase ?? ""}/${task.status?.runs?.count ?? 0}`} open={linkedRun} />
+              <Runs ns={ns} name={name} current={`${task.status?.run?.id ?? ""}/${task.status?.phase ?? ""}/${task.status?.runs?.count ?? 0}`} open={linkedRun} ready={threadRead} />
             </aside>
           </div>
         </>
