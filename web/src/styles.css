@@ -2022,6 +2022,8 @@ main.board {
   top: 0;
   z-index: 1;
   background: var(--surface);
+  /* A collapsed border stays behind a sticky cell; the shadow moves with it. */
+  box-shadow: inset 0 -1px 0 var(--line);
 }
 
 .task-list .table-text {
