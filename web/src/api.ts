@@ -51,9 +51,75 @@ export interface TaskList {
   limit: number;
 }
 
+export interface ObjectMeta {
+  name: string;
+  namespace: string;
+  resourceVersion?: string;
+  annotations?: Record<string, string>;
+  labels?: Record<string, string>;
+  managedFields?: { manager?: string; operation?: string }[];
+}
+
+export type TeamRoleName = "admin" | "member" | "viewer";
+
+export interface RoleSubject {
+  kind: "user" | "group";
+  name: string;
+}
+
+export interface TeamRole {
+  role: TeamRoleName;
+  subjects: RoleSubject[];
+}
+
+export interface TeamSpec {
+  displayName?: string;
+  maxConcurrentRuns?: number;
+  // archiveAfter is a Go duration, such as "168h0m0s".
+  archiveAfter?: string;
+  roles?: TeamRole[];
+}
+
+// Slot is a run holding one of a Team's maxConcurrentRuns.
+export interface Slot {
+  runId: string;
+  task: string;
+  acquiredAt: string;
+}
+
+// Team is a namespace's Team. Only an admin of it is shown its roles,
+// status, annotations and managedFields.
 export interface Team {
-  metadata: { name: string; namespace: string };
-  spec?: { displayName?: string };
+  metadata: ObjectMeta;
+  spec?: TeamSpec;
+  status?: { running?: number; slots?: Slot[]; nextNumber?: number };
+}
+
+// An agent acts with at most member: it can never manage the Team.
+export type AgentRole = "member" | "viewer";
+
+export interface AgentAccessSpec {
+  role: AgentRole;
+  serviceAccount?: { name: string };
+}
+
+// AgentAccess is an AgentAccess as the API shows it. Its token is never
+// shown: tokenSecret names the Secret it is kept in.
+export interface AgentAccess {
+  name: string;
+  resourceVersion: string;
+  spec: AgentAccessSpec;
+  ready: boolean;
+  reason?: string;
+  message?: string;
+  tokenSecret?: string;
+  mintedAt?: string;
+}
+
+// AgentAccessToken is a token just minted: shown in this answer only.
+export interface AgentAccessToken {
+  token: string;
+  tokenSecret: string;
 }
 
 export interface ToolCall {
@@ -94,6 +160,9 @@ export interface RunEvent {
   progress?: string;
   inputTokens?: number;
   outputTokens?: number;
+  // Prompt-cache tokens, apart from inputTokens.
+  cacheReadInputTokens?: number;
+  cacheCreationInputTokens?: number;
   contextTokens?: number;
 }
 
@@ -156,11 +225,15 @@ async function request<T>(method: string, path: string, body?: unknown, signal?:
     }
     throw new APIError(res.status, message, code);
   }
+  // A DELETE answers 204, with no body to read.
+  if (res.status === 204) return undefined as T;
   return res.json() as Promise<T>;
 }
 
 const get = <T,>(path: string, signal?: AbortSignal) => request<T>("GET", path, undefined, signal);
 const post = <T,>(path: string, body: unknown) => request<T>("POST", path, body);
+const put = <T,>(path: string, body: unknown) => request<T>("PUT", path, body);
+const del = (path: string) => request<void>("DELETE", path);
 
 // Me is who the server takes this browser for: with a login, the user; with
 // --auth=none, nobody, and the UI asks for a name instead.
@@ -220,11 +293,38 @@ export const cancel = (ns: string, name: string) => post<Task>(`${taskPath(ns, n
 
 export const listRuns = (ns: string, name: string, signal?: AbortSignal) => get<{ items: RunRecord[] }>(`${taskPath(ns, name)}/runs`, signal);
 
-export const runEvents = (ns: string, name: string, run: string) =>
-  get<{ items: RunEvent[] }>(`${taskPath(ns, name)}/runs/${encodeURIComponent(run)}/events`);
+export const runEvents = (ns: string, name: string, run: string, signal?: AbortSignal) =>
+  get<{ items: RunEvent[] }>(`${taskPath(ns, name)}/runs/${encodeURIComponent(run)}/events`, signal);
 
 export const listAgents = (ns: string, signal?: AbortSignal) =>
   get<{ items: AgentSummary[] }>(`/namespaces/${encodeURIComponent(ns)}/agents`, signal);
+
+export const getTeam = (ns: string, signal?: AbortSignal) => get<Team>(`/namespaces/${encodeURIComponent(ns)}/team`, signal);
+
+// putTeam replaces a Team's spec, made from the Team at resourceVersion;
+// without one it creates the Team. The spec's fields go beside the version,
+// not under a "spec" key.
+export const putTeam = (ns: string, spec: TeamSpec, resourceVersion?: string) =>
+  put<Team>(`/namespaces/${encodeURIComponent(ns)}/team`, { ...spec, resourceVersion });
+
+const accessPath = (ns: string, name: string) =>
+  `/namespaces/${encodeURIComponent(ns)}/agentaccesses/${encodeURIComponent(name)}`;
+
+export const listAgentAccesses = (ns: string, signal?: AbortSignal) =>
+  get<{ items: AgentAccess[] }>(`/namespaces/${encodeURIComponent(ns)}/agentaccesses`, signal);
+
+export const getAgentAccess = (ns: string, name: string, signal?: AbortSignal) => get<AgentAccess>(accessPath(ns, name), signal);
+
+// putAgentAccess replaces an AgentAccess's spec, made from the one at
+// resourceVersion; without one it creates the AgentAccess.
+export const putAgentAccess = (ns: string, name: string, spec: AgentAccessSpec, resourceVersion?: string) =>
+  put<AgentAccess>(accessPath(ns, name), { spec, resourceVersion });
+
+export const deleteAgentAccess = (ns: string, name: string) => del(accessPath(ns, name));
+
+// rotateAgentAccessToken mints a new token, which stops the last at once.
+export const rotateAgentAccessToken = (ns: string, name: string) =>
+  post<AgentAccessToken>(`${accessPath(ns, name)}/token`, {});
 
 export const createTask = (ns: string, spec: TaskSpec) =>
   post<Task>(`/namespaces/${encodeURIComponent(ns)}/tasks`, { spec });
