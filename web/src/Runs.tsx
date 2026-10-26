@@ -57,7 +57,9 @@ export function Runs({ ns, name, current, open = "" }: { ns: string; name: strin
 const outcomeTone = (outcome: string) => (phases as readonly string[]).includes(outcome) ? phaseTone(outcome as Phase) : undefined;
 
 // Run is one ended run. While it is linked (?run=<id>) it is open, its
-// events read, and it is scrolled into view once each time it is linked.
+// events read, and it is scrolled into view once each time it is linked:
+// to the top when the page loads at it, and only as far as it takes later,
+// so clicking the id of a run in view does not move the list.
 function Run({ ns, name, run, linked }: { ns: string; name: string; run: RunRecord; linked: boolean }) {
   const [events, setEvents] = useState<RunEvent[] | null>(null);
   const [open, setOpen] = useState(linked);
@@ -69,6 +71,7 @@ function Run({ ns, name, run, linked }: { ns: string; name: string; run: RunReco
   const [error, setError] = useState("");
   const row = useRef<HTMLLIElement>(null);
   const scrolled = useRef(false);
+  const loaded = useRef(false);
   // asked keeps the events to one read: a row closed and opened again, or
   // linked again, while or after they are read reads none. A failed read
   // can be tried again.
@@ -86,13 +89,15 @@ function Run({ ns, name, run, linked }: { ns: string; name: string; run: RunReco
     }
   };
   useEffect(() => {
+    const block = loaded.current ? "nearest" : "start";
+    loaded.current = true;
     if (!linked) {
       scrolled.current = false;
       return;
     }
     if (scrolled.current) return;
     scrolled.current = true;
-    row.current?.scrollIntoView?.({ block: "start" });
+    row.current?.scrollIntoView?.({ block });
     void load();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [linked]);

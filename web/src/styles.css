@@ -1874,9 +1874,11 @@ main.board {
 
 /* An ended run's id sits above its row's button, lined up with the row's
    text past the chevron. It is laid over the button's top padding and is
-   only as wide as the id, so a click beside it toggles the row. */
+   only as wide as the id, so a click beside it toggles the row. A run
+   scrolled to from a link clears the sticky top bar. */
 .run {
   position: relative;
+  scroll-margin-top: calc(var(--topbar) + var(--space-3));
 }
 
 .run-link {
@@ -1895,8 +1897,7 @@ main.board {
   padding-top: calc(var(--space-3) + 1.5 * var(--text-sm) + var(--space-1));
 }
 
-/* A run scrolled to from a link clears the sticky top bar. */
-.live-run,
-.run {
+/* The run in progress scrolled to from a link clears the sticky top bar. */
+.live-run {
   scroll-margin-top: calc(var(--topbar) + var(--space-3));
 }

@@ -275,6 +275,7 @@ describe("A link to a run", () => {
     await vi.waitFor(() => expect(calls).toContain(`/api/v1/namespaces/a/tasks/x/runs/${ended}/events`));
     await vi.waitFor(() => expect(row.closest("li")!.textContent).toContain("progress: working"));
     expect(scroll).toHaveBeenCalledTimes(1);
+    expect(scroll).toHaveBeenCalledWith({ block: "start" });
     expect(screen.getByRole("link", { name: `Run ${ended}` }).getAttribute("href")).toBe(`/t/a/tasks/x?run=${ended}`);
   });
 
@@ -316,7 +317,9 @@ describe("A link to a run", () => {
     fireEvent.click(screen.getByRole("link", { name: new RegExp(ended) }));
     expect(row.getAttribute("aria-expanded")).toBe("true");
     await vi.waitFor(() => expect(row.closest("li")!.textContent).toContain("progress: working"));
+    // Only as far as it takes: a row in view stays where it is.
     expect(scroll).toHaveBeenCalledTimes(1);
+    expect(scroll).toHaveBeenCalledWith({ block: "nearest" });
   });
 
   it("opens the linked run on Back and Forward, and again after it was closed", async () => {
@@ -341,6 +344,29 @@ describe("A link to a run", () => {
     expect(scroll).toHaveBeenCalledTimes(4);
     // Its events were read once.
     expect(calls.filter((c) => c.endsWith(`/runs/${ended}/events`))).toHaveLength(1);
+  });
+
+  it("reads a run's events again when its row is opened after a failed read", async () => {
+    const calls = runServer();
+    const serve = globalThis.fetch;
+    let fail = true;
+    vi.stubGlobal("fetch", (url: string) => {
+      if (fail && url.includes("/events")) {
+        calls.push(url);
+        return json({ error: { message: "boom" } }, 500);
+      }
+      return serve(url);
+    });
+    renderAt("");
+    const row = await rowOf("r1");
+    fireEvent.click(row);
+    await vi.waitFor(() => expect(row.closest("li")!.querySelector(".inline-error")).toBeTruthy());
+    fail = false;
+    fireEvent.click(row);
+    fireEvent.click(row);
+    await vi.waitFor(() => expect(row.closest("li")!.textContent).toContain("progress: working"));
+    expect(row.closest("li")!.querySelector(".inline-error")).toBeNull();
+    expect(calls.filter((c) => c.endsWith(`/runs/${ended}/events`))).toHaveLength(2);
   });
 
   it("reads a run's events once when its row is closed and opened again quickly", async () => {
