@@ -1,4 +1,4 @@
-import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { MemoryRouter } from "react-router";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { App } from "./App";
@@ -263,10 +263,11 @@ describe("Editing the Team", () => {
     document.dispatchEvent(new Event("visibilitychange")); // the page reads the Team again
     await waitFor(() => expect(reads()).toBe(2));
     await screen.findByText(/of 5 in use/); // the newer read has landed
+    await act(async () => {}); // and its effects have run
     expect((form.getByLabelText(/^Max concurrent runs/) as HTMLInputElement).value).toBe("2");
     fireEvent.click(form.getByRole("button", { name: "Save" }));
     await form.findByText(/Someone else changed the team/);
-    expect(sent[0].resourceVersion).toBe("7");
+    expect(sent[0]).toMatchObject({ resourceVersion: "7", displayName: "Team B", maxConcurrentRuns: 2 });
   });
 
   it("cannot save a Team deleted since it was read", async () => {
