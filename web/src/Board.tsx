@@ -4,6 +4,7 @@ import { listTasks, phases, terminalPhases, type Phase, type Task } from "./api"
 import { RoleLine, useIdentityDetails, useRole } from "./Identity";
 import { params, useParam } from "./links";
 import { can } from "./roles";
+import { TaskTable } from "./TaskTable";
 import { useTeamName } from "./teamList";
 import { assigneeIcon, Meta, phaseTone, Pills, PriorityChip, RoleBadge } from "./ui/Badge";
 import { Banner } from "./ui/Banner";
@@ -52,6 +53,9 @@ export function Board() {
   const [search, setSearch] = useParam(params.q);
   const [phaseParam, setPhase] = useParam(params.phase);
   const [assignee, setAssignee] = useParam(params.assignee);
+  const [view, setView] = useParam(params.view);
+  // Any view but the list is the board.
+  const list = view === "list";
   // An unknown phase reads as all of them; it is left in the URL, not set.
   const phase = phases.find((ph) => ph === phaseParam);
   const read = phase ? [phase] : phases;
@@ -127,6 +131,14 @@ export function Board() {
               ))}
             </select>
           </div>
+          <div className="view-switch" role="group" aria-label="View">
+            <Button variant="ghost" small icon="kanban" aria-pressed={!list} onClick={() => setView("")}>
+              Board
+            </Button>
+            <Button variant="ghost" small icon="list" aria-pressed={list} onClick={() => setView("list")}>
+              List
+            </Button>
+          </div>
           {(search.trim() !== "" || assignee !== "") && shownColumns && (
             <span className="search-count">
               {shown} of {total} loaded tasks shown
@@ -146,7 +158,21 @@ export function Board() {
         <Banner onRetry={() => setRetry((n) => n + 1)}>Could not load the board: {error}</Banner>
       )}
       {columns === null && !error && <BoardSkeleton />}
-      {shownColumns && (
+      {shownColumns && list && (
+        <TaskTable
+          ns={ns}
+          tasks={shownColumns.flatMap((c) => c.tasks.filter((t) => matches(t, search, assignee)))}
+          more={shownColumns.some((c) => c.more)}
+          onMore={() =>
+            setPages((p) => {
+              const next = { ...p };
+              for (const c of shownColumns) if (c.more) next[c.phase] = (p[c.phase] ?? 1) + 1;
+              return next;
+            })
+          }
+        />
+      )}
+      {shownColumns && !list && (
         <Columns
           ns={ns}
           columns={shownColumns}

@@ -285,6 +285,60 @@ describe("Board", () => {
     expect(screen.queryByText("Title of b")).toBeNull();
   });
 
+  it("opens the list with the search and the filters of the URL", async () => {
+    const go = serve([bot("fix-a", "Todo"), bot("other", "Todo"), task("fix-b", "Todo"), bot("fix-c", "Done")]);
+    go();
+    renderPage("/t/team-a?q=fix&phase=Todo&assignee=bot-1&view=list");
+    const list = await screen.findByRole("region", { name: "Tasks" });
+    expect(within(list).getAllByRole("link").map((l) => l.textContent)).toEqual(["Title of fix-a"]);
+    expect(screen.queryByRole("region", { name: "Todo" })).toBeNull();
+    expect((screen.getByLabelText("Search the loaded page") as HTMLInputElement).value).toBe("fix");
+    expect(select("Phase").value).toBe("Todo");
+    expect(select("Assignee").value).toBe("bot-1");
+    expect(screen.getByRole("button", { name: "List" }).getAttribute("aria-pressed")).toBe("true");
+    expect(screen.getByRole("button", { name: "Board" }).getAttribute("aria-pressed")).toBe("false");
+    expect(new Set(reads)).toEqual(new Set(["Todo"]));
+  });
+
+  it("switches between the board and the list, keeping the focus on the button", async () => {
+    serve([task("a", "Todo")])();
+    renderPage("/t/team-a?q=a");
+    await screen.findByRole("region", { name: "Todo" });
+    const listButton = screen.getByRole("button", { name: "List" });
+    listButton.focus();
+    fireEvent.click(listButton);
+    expect(query()).toBe("?q=a&view=list");
+    expect(screen.getByRole("region", { name: "Tasks" })).toBeTruthy();
+    expect(screen.queryByRole("region", { name: "Todo" })).toBeNull();
+    expect(document.activeElement).toBe(listButton);
+    fireEvent.click(screen.getByRole("button", { name: "Board" }));
+    expect(query()).toBe("?q=a");
+    expect(screen.getByRole("region", { name: "Todo" })).toBeTruthy();
+  });
+
+  it("reads the next page of each phase with more from the list's Load more", async () => {
+    const offsets: string[] = [];
+    vi.stubGlobal("fetch", (url: string) => {
+      if (url.endsWith("/me")) return json({ mode: "none", admin: true });
+      if (url.endsWith("/teams")) return json({ items: [] });
+      const q = new URL(url, "http://cadre.test").searchParams;
+      const phase = q.get("phase") as Phase;
+      const offset = Number(q.get("offset"));
+      offsets.push(`${phase}@${offset}`);
+      // Todo and Done have a full first page, and a short second one.
+      const n = phase === "Todo" || phase === "Done" ? (offset === 0 ? 50 : 1) : 0;
+      return json({ items: Array.from({ length: n }, (_, i) => task(`${phase}-${offset + i}`, phase)), offset, limit: 50 });
+    });
+    renderPage("/t/team-a?view=list");
+    const more = await screen.findByRole("button", { name: "Load more" });
+    expect(within(screen.getByRole("region", { name: "Tasks" })).getAllByRole("link")).toHaveLength(100);
+    offsets.length = 0;
+    fireEvent.click(more);
+    await vi.waitFor(() => expect(screen.queryByRole("button", { name: "Load more" })).toBeNull());
+    expect(offsets.filter((o) => !o.endsWith("@0")).sort()).toEqual(["Done@50", "Todo@50"]);
+    expect(within(screen.getByRole("region", { name: "Tasks" })).getAllByRole("link")).toHaveLength(102);
+  });
+
   it("opens the board filtered to the agent from the Agents page's link", async () => {
     serve([bot("a", "Todo"), task("b", "Todo")])();
     vi.stubGlobal(
