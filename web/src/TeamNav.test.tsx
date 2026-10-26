@@ -27,6 +27,11 @@ describe("TeamNav", () => {
     expect(board.getAttribute("href")).toBe("/t/a");
   });
 
+  it("marks Board current on the team's path with a trailing slash", () => {
+    const nav = at("/t/a/");
+    expect(nav.getByRole("link", { name: "Board" }).getAttribute("aria-current")).toBe("page");
+  });
+
   it("does not mark Board current on a task's page", () => {
     const nav = at("/t/a/tasks/x");
     expect(nav.getByRole("link", { name: "Board" }).getAttribute("aria-current")).toBeNull();

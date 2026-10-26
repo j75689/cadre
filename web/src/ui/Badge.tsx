@@ -38,6 +38,24 @@ export function PriorityChip({ priority, always = false }: { priority?: string; 
   return null;
 }
 
+// ReadyBadge is whether a resource can take work, as an icon and its word:
+// Ready, Pending while its current spec is unchecked, otherwise Not ready.
+// The reason "Pending" is the contract with readiness() in
+// internal/api/server.go.
+export function ReadyBadge({ ready, reason }: { ready: boolean; reason?: string }) {
+  const [tone, icon, word]: [string, IconName, string] = ready
+    ? ["tone-done", "check", "Ready"]
+    : reason === "Pending"
+      ? ["tone-waiting", "hourglass", "Pending"]
+      : ["tone-danger", "alert-triangle", "Not ready"];
+  return (
+    <Badge tone={tone}>
+      <Icon name={icon} size={12} />
+      {word}
+    </Badge>
+  );
+}
+
 // RoleBadge is the caller's role on a team.
 export function RoleBadge({ role }: { role: string }) {
   return <Badge tone={role === "admin" ? "tone-accent" : undefined}>{role}</Badge>;
