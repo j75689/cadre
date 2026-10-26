@@ -141,7 +141,7 @@ function Roles({ team }: { team: Team }) {
                   <td>
                     <RoleBadge role={r.role} />
                   </td>
-                  <td>
+                  <td className="table-text">
                     <ul className="subjects">
                       {r.subjects.map((s) => (
                         <li key={`${s.kind}:${s.name}`} className="mono">

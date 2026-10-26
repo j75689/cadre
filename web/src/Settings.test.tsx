@@ -55,6 +55,7 @@ describe("Settings", () => {
     expect(roles.getByText("user:dana")).toBeTruthy();
     expect(roles.getByText("group:ops")).toBeTruthy();
     expect(roles.getByText("user:lee")).toBeTruthy();
+    expect(roles.getByText("user:lee").closest("td")?.classList.contains("table-text")).toBe(true);
 
     const slots = within(screen.getByRole("region", { name: "Run slots" }));
     expect(within(screen.getByRole("table", { name: "Run slots" })).getAllByRole("row")).toHaveLength(2);
