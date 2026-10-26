@@ -10,36 +10,65 @@ import { Segmented } from "./ui/Segmented";
 const duration = /^\+?((\d+\.?\d*|\.\d+)(ns|us|µs|μs|ms|s|m|h))+$/;
 const nanos: Record<string, number> = { ns: 1, us: 1e3, µs: 1e3, μs: 1e3, ms: 1e6, s: 1e9, m: 60e9, h: 3600e9 };
 
-// The largest duration Go takes, 2^63 - 1 ns, which a number rounds to
-// 2^63.
-const maxInt64 = 2 ** 63;
+// The largest duration Go takes, 2^63 - 1 ns.
+const maxDuration = 2n ** 63n - 1n;
+
+// nanosOf is a duration in whole nanoseconds, as Go counts it: the whole
+// part exactly, the fraction as Go's float64 does. Undefined when it is not
+// a duration; it may be over Go's int64.
+function nanosOf(v: string): bigint | undefined {
+  if (!duration.test(v)) return undefined;
+  let n = 0n;
+  for (const [, whole = "", fraction = "", unit] of v.matchAll(/(\d*)\.?(\d*)(ns|us|µs|μs|ms|s|m|h)/g))
+    n += BigInt(whole || "0") * BigInt(nanos[unit]) + BigInt(Math.floor(Number(fraction || "0") * (nanos[unit] / 10 ** fraction.length)));
+  return n;
+}
 
 // durationOf is a duration in whole nanoseconds, as Go counts it, or
 // undefined when it is not one or overflows Go's int64.
 export function durationOf(v: string): number | undefined {
-  if (!duration.test(v)) return undefined;
-  let n = 0;
-  for (const [, num, unit] of v.matchAll(/(\d+\.?\d*|\.\d+)(ns|us|µs|μs|ms|s|m|h)/g)) n += Math.floor(Number(num) * nanos[unit]);
-  return n > maxInt64 ? undefined : n;
+  const n = nanosOf(v);
+  return n === undefined || n > maxDuration ? undefined : Number(n);
 }
 
 // The largest cap the server's int32 takes.
 const maxInt32 = 2147483647;
 
+// A Problem is why a save cannot go through, and the field it is about, if
+// any: maxConcurrentRuns, archiveAfter, role-<i> or subject-<i>-<j>,
+// numbered from 0.
+export interface Problem {
+  message: string;
+  at?: string;
+}
+
 // validate checks what the form can before the server does, numbering
 // roles and subjects as the form shows them. A number field the browser
 // could not read holds NaN.
-export function validate(d: TeamSpec): string {
+export function validate(d: TeamSpec): Problem | undefined {
   const max = d.maxConcurrentRuns;
-  if (max !== undefined && (!Number.isInteger(max) || max < 0 || max > maxInt32)) return `Max concurrent runs is a whole number, from 0 to ${maxInt32}.`;
+  if (max !== undefined && (!Number.isInteger(max) || max < 0 || max > maxInt32))
+    return { message: `Max concurrent runs is a whole number, from 0 to ${maxInt32}.`, at: "maxConcurrentRuns" };
   const after = d.archiveAfter?.trim();
-  if (after && !((durationOf(after) ?? 0) > 0)) return "Archive after is a duration longer than 0, such as 168h or 30m.";
-  for (const [i, r] of (d.roles ?? []).entries()) {
-    if (r.subjects.length === 0) return `Role ${i + 1} needs at least one subject.`;
-    const j = r.subjects.findIndex((s) => !s.name.trim());
-    if (j >= 0) return `Role ${i + 1}, subject ${j + 1} needs a name.`;
+  if (after) {
+    const n = nanosOf(after);
+    if (n !== undefined && n > maxDuration) return { message: "Archive after is too long: the longest the server takes is 2562047h47m16.854775807s.", at: "archiveAfter" };
+    if (!(n !== undefined && n > 0n)) return { message: "Archive after is a duration longer than 0, such as 168h or 30m.", at: "archiveAfter" };
   }
-  return "";
+  for (const [i, r] of (d.roles ?? []).entries()) {
+    if (r.subjects.length === 0) return { message: `Role ${i + 1} needs at least one subject.`, at: `role-${i}` };
+    const j = r.subjects.findIndex((s) => !s.name.trim());
+    if (j >= 0) return { message: `Role ${i + 1}, subject ${j + 1} needs a name.`, at: `subject-${i}-${j}` };
+  }
+  return undefined;
+}
+
+// refusal is a server message as a Problem: its roles and subjects
+// numbered as the form does, and the field its prefix names.
+export function refusal(msg: string): Problem {
+  const m = /^(maxConcurrentRuns|archiveAfter)\b|^roles\[(\d+)\](?:\.subjects\[(\d+)\])?/.exec(msg);
+  const at = !m ? undefined : (m[1] ?? (m[3] !== undefined ? `subject-${m[2]}-${m[3]}` : `role-${m[2]}`));
+  return { message: formIndexes(msg), at };
 }
 
 // formIndexes numbers the roles and subjects of a server message as the
@@ -114,7 +143,10 @@ export function TeamForm({ team, onSaved, onCancel }: { team: Team; onSaved: (t:
   // deleted is a 409 after which the Team could not be found: there is
   // nothing left to save to.
   const [deleted, setDeleted] = useState(false);
-  const [error, setError] = useState("");
+  const [error, setError] = useState<Problem | undefined>(undefined);
+  // failures counts the failed saves. It keys the alert, so that a failure
+  // with the same message is focused and announced again.
+  const [failures, setFailures] = useState(0);
   const [busy, setBusy] = useState(false);
   const [confirming, setConfirming] = useState(false);
   const [confirmed, setConfirmed] = useState(false);
@@ -124,18 +156,36 @@ export function TeamForm({ team, onSaved, onCancel }: { team: Team; onSaved: (t:
   const changed = (f: Field) =>
     stale && !deleted && same[f](base.spec ?? {}) !== same[f](opened.spec ?? {}) && same[f](base.spec ?? {}) !== same[f](draft);
   const note = (f: Field) => changed(f) && `changed-${f}`;
+  // invalid is whether the error is about the field at, which it then
+  // describes.
+  const invalid = (at: string) => error?.at === at;
+  const fail = (p: Problem) => {
+    setError(p);
+    setFailures((n) => n + 1);
+  };
   const errorRef = useRef<HTMLParagraphElement>(null);
   const conflictRef = useRef<HTMLDivElement>(null);
   const saveRef = useRef<HTMLButtonElement>(null);
+  const rolesRef = useRef<HTMLFieldSetElement>(null);
+  const addRoleRef = useRef<HTMLButtonElement>(null);
+  // removed is the index of the role just removed: the focus goes to the
+  // role now there, else the one before, else "Add role".
+  const removed = useRef<number | undefined>(undefined);
   // An error takes the focus, as the button that had it is disabled
-  // during the request. A save clears both first, so each failure sets
-  // them anew.
+  // during the request, and so does each conflict: a save clears it
+  // first.
   useEffect(() => {
-    if (error) errorRef.current?.focus();
-  }, [error]);
+    if (failures) errorRef.current?.focus();
+  }, [failures]);
   useEffect(() => {
     if (conflict) conflictRef.current?.focus();
   }, [conflict]);
+  useEffect(() => {
+    if (removed.current === undefined) return;
+    const selects = rolesRef.current?.querySelectorAll("select") ?? [];
+    (selects[Math.min(removed.current, selects.length - 1)] ?? addRoleRef.current)?.focus();
+    removed.current = undefined;
+  });
   const roles = draft.roles ?? [];
   const setRoles = (f: (rs: TeamRole[]) => TeamRole[]) => setDraft((d) => ({ ...d, roles: f(d.roles ?? []) }));
   const setRole = (i: number, f: (r: TeamRole) => TeamRole) => setRoles((rs) => rs.map((r, k) => (k === i ? f(r) : r)));
@@ -144,9 +194,12 @@ export function TeamForm({ team, onSaved, onCancel }: { team: Team; onSaved: (t:
   // save asks first, once, on a Team that looks managed by GitOps; force
   // is the confirmation's own save.
   const save = async (force: boolean) => {
-    const invalid = validate(draft);
-    setError(invalid);
-    if (invalid) return;
+    setError(undefined);
+    const problem = validate(draft);
+    if (problem) {
+      fail(problem);
+      return;
+    }
     if (gitops && !confirmed && !force) {
       setConfirming(true);
       return;
@@ -166,10 +219,10 @@ export function TeamForm({ team, onSaved, onCancel }: { team: Team; onSaved: (t:
           setStale(true);
         } catch (read) {
           if (read instanceof APIError && read.status === 404) setDeleted(true);
-          else setError(`Could not read the team again: ${(read as Error).message}`);
+          else fail({ message: `Could not read the team again: ${(read as Error).message}` });
         }
       } else {
-        setError(formIndexes((err as Error).message));
+        fail(refusal((err as Error).message));
       }
     }
     setBusy(false);
@@ -221,7 +274,8 @@ export function TeamForm({ team, onSaved, onCancel }: { team: Team; onSaved: (t:
             const v = e.target.validity.badInput ? NaN : e.target.value === "" ? undefined : Number(e.target.value);
             setDraft((d) => ({ ...d, maxConcurrentRuns: v }));
           }}
-          aria-describedby={ids("max-runs-help", note("maxConcurrentRuns"))}
+          aria-invalid={invalid("maxConcurrentRuns") || undefined}
+          aria-describedby={ids("max-runs-help", note("maxConcurrentRuns"), invalid("maxConcurrentRuns") && "team-error")}
         />
         <span id="max-runs-help" className="help">
           How many of the team's tasks run at once. Empty or 0 is saved as 1.
@@ -234,19 +288,20 @@ export function TeamForm({ team, onSaved, onCancel }: { team: Team; onSaved: (t:
           className="mono"
           value={draft.archiveAfter ?? ""}
           onChange={(e) => setDraft((d) => ({ ...d, archiveAfter: e.target.value }))}
-          aria-describedby={ids("archive-after-help", note("archiveAfter"))}
+          aria-invalid={invalid("archiveAfter") || undefined}
+          aria-describedby={ids("archive-after-help", note("archiveAfter"), invalid("archiveAfter") && "team-error")}
         />
         <span id="archive-after-help" className="help">
           A duration such as 168h or 30m. Empty: never.
         </span>
         {changed("archiveAfter") && <Changed field="archiveAfter" spec={base.spec ?? {}} />}
       </label>
-      <fieldset aria-describedby={ids(note("roles"))}>
+      <fieldset ref={rolesRef} aria-describedby={ids(note("roles"))}>
         <legend>Roles</legend>
         {changed("roles") && <Changed field="roles" spec={base.spec ?? {}} />}
         {roles.length === 0 && <p className="help">No roles are given on this team.</p>}
         {roles.map((r, i) => (
-          <fieldset key={i} className="role-edit">
+          <fieldset key={i} className="role-edit" aria-describedby={ids(invalid(`role-${i}`) && "team-error")}>
             <legend>Role {i + 1}</legend>
             <label className="field">
               Role
@@ -272,7 +327,14 @@ export function TeamForm({ team, onSaved, onCancel }: { team: Team; onSaved: (t:
                   />
                   <label className="field">
                     <span className="sr-only">Name of subject {j + 1}</span>
-                    <input className="mono" value={s.name} onChange={(e) => setSubject(i, j, { name: e.target.value })} placeholder={`A ${s.kind} name`} />
+                    <input
+                      className="mono"
+                      value={s.name}
+                      onChange={(e) => setSubject(i, j, { name: e.target.value })}
+                      placeholder={`A ${s.kind} name`}
+                      aria-invalid={invalid(`subject-${i}-${j}`) || undefined}
+                      aria-describedby={ids(invalid(`subject-${i}-${j}`) && "team-error")}
+                    />
                   </label>
                   <Button
                     variant="ghost"
@@ -288,21 +350,29 @@ export function TeamForm({ team, onSaved, onCancel }: { team: Team; onSaved: (t:
               <Button small icon="plus" onClick={() => setRole(i, (x) => ({ ...x, subjects: [...x.subjects, { kind: "user", name: "" }] }))}>
                 Add subject
               </Button>
-              <Button small variant="danger-ghost" icon="x" onClick={() => setRoles((rs) => rs.filter((_, k) => k !== i))}>
+              <Button
+                small
+                variant="danger-ghost"
+                icon="x"
+                onClick={() => {
+                  removed.current = i;
+                  setRoles((rs) => rs.filter((_, k) => k !== i));
+                }}
+              >
                 Remove role
               </Button>
             </div>
           </fieldset>
         ))}
         <div className="buttons">
-          <Button small icon="plus" onClick={() => setRoles((rs) => [...rs, { role: "viewer", subjects: [{ kind: "user", name: "" }] }])}>
+          <Button ref={addRoleRef} small icon="plus" onClick={() => setRoles((rs) => [...rs, { role: "viewer", subjects: [{ kind: "user", name: "" }] }])}>
             Add role
           </Button>
         </div>
       </fieldset>
       {error && (
-        <p ref={errorRef} className="inline-error" role="alert" tabIndex={-1}>
-          {error}
+        <p key={failures} ref={errorRef} id="team-error" className="inline-error" role="alert" tabIndex={-1}>
+          {error.message}
         </p>
       )}
       <div className="buttons">
