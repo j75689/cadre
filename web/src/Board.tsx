@@ -200,7 +200,9 @@ function BoardSkeleton() {
 }
 
 // matches is the client-side search and assignee filter over what is
-// loaded. The assignee, when set, is matched exactly.
+// loaded. The assignee, when set, is matched exactly, by name only: a User
+// and an Agent of the same name are one assignee, as in the Agents page's
+// link, which carries only the name.
 export function matches(t: Task, query: string, assignee = ""): boolean {
   if (assignee !== "" && t.spec.assignee?.name !== assignee) return false;
   const q = query.trim().toLowerCase();
