@@ -1,8 +1,9 @@
 import { useEffect, useRef } from "react";
 
 // usePolling calls load now and every interval while the page is visible,
-// and once more when it becomes visible again. The signal ends a load that
-// is overtaken or unmounted.
+// and once more when it becomes visible again. The interval counts from the
+// start of a load, and a load that takes longer is followed at once: loads
+// never overlap. The signal ends a load that is overtaken or unmounted.
 export function usePolling(load: (signal: AbortSignal) => Promise<void>, intervalMs: number, deps: unknown[]) {
   const latest = useRef(load);
   useEffect(() => {
@@ -22,6 +23,7 @@ export function usePolling(load: (signal: AbortSignal) => Promise<void>, interva
       }
       const mine = new AbortController();
       controller = mine;
+      const started = Date.now();
       try {
         await latest.current(mine.signal);
       } catch {
@@ -29,7 +31,7 @@ export function usePolling(load: (signal: AbortSignal) => Promise<void>, interva
       } finally {
         // Only the current tick schedules the next: an overtaken one would
         // start a second chain.
-        if (!stopped && controller === mine) timer = setTimeout(tick, intervalMs);
+        if (!stopped && controller === mine) timer = setTimeout(tick, Math.max(0, started + intervalMs - Date.now()));
       }
     };
     const onVisible = () => {
