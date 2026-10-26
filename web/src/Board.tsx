@@ -2,7 +2,7 @@ import { useEffect, useState } from "react";
 import { Link, useParams } from "react-router";
 import { listTasks, phases, terminalPhases, type Phase, type Task } from "./api";
 import { RoleLine, useIdentityDetails, useRole } from "./Identity";
-import { params, useParam } from "./links";
+import { params, useParam, useTextParam } from "./links";
 import { can } from "./roles";
 import { useTeamName } from "./teamList";
 import { assigneeIcon, Meta, phaseTone, Pills, PriorityChip, RoleBadge } from "./ui/Badge";
@@ -49,7 +49,7 @@ export function Board() {
   const [columns, setColumns] = useState<Column[] | null>(null);
   const [pages, setPages] = useState<Record<string, number>>({});
   const [error, setError] = useState("");
-  const [search, setSearch] = useParam(params.q);
+  const [search, setSearch, searchBox] = useTextParam(params.q);
   const [phaseParam, setPhase] = useParam(params.phase);
   const [assignee, setAssignee] = useParam(params.assignee);
   // The phase matches in any case, so "?phase=todo" reads Todo and the
@@ -103,11 +103,10 @@ export function Board() {
             <input
               id="board-search"
               type="search"
-              value={search}
-              onChange={(e) => setSearch(e.target.value)}
+              {...searchBox}
               placeholder="Title, label, assignee, #number"
             />
-            {search && <Button variant="ghost" small icon="x" aria-label="Clear the search" onClick={() => setSearch("")} />}
+            {searchBox.value && <Button variant="ghost" small icon="x" aria-label="Clear the search" onClick={() => setSearch("")} />}
           </div>
           <div className="filters">
             <label htmlFor="board-phase" className="sr-only">

@@ -1,5 +1,5 @@
-import { useCallback } from "react";
-import { useSearchParams } from "react-router";
+import { useCallback, useRef, useState, type ChangeEvent, type CompositionEvent } from "react";
+import { NavigationType, useNavigationType, useSearchParams } from "react-router";
 
 // The UI's URLs: the team's pages and the query parameters they read, so a
 // link built on one page is the one another page understands.
@@ -64,4 +64,37 @@ export function useParam(key: string): [string, (value: string) => void] {
     [key, setSearch],
   );
   return [search.get(key) ?? "", set];
+}
+
+// useTextParam is useParam for a text box: the parameter, its setter, and
+// the props of the box. The router applies a URL change in a transition, so
+// a box whose value is the parameter loses keys and breaks an input
+// method's composition. The box keeps its own value instead and writes it
+// to the parameter, not while a composition is on but at its end. It takes
+// the parameter's value only when a navigation other than a replace, as
+// its own writes are, changes it: Back, Forward, a link.
+export function useTextParam(key: string) {
+  const [param, setParam] = useParam(key);
+  const navigation = useNavigationType();
+  const [value, setValue] = useState(param);
+  const [seen, setSeen] = useState(param);
+  const composing = useRef(false);
+  if (param !== seen) {
+    setSeen(param);
+    if (navigation !== NavigationType.Replace) setValue(param);
+  }
+  const set = (v: string) => {
+    setValue(v);
+    if (!composing.current) setParam(v);
+  };
+  const box = {
+    value,
+    onChange: (e: ChangeEvent<HTMLInputElement>) => set(e.target.value),
+    onCompositionStart: () => (composing.current = true),
+    onCompositionEnd: (e: CompositionEvent<HTMLInputElement>) => {
+      composing.current = false;
+      set(e.currentTarget.value);
+    },
+  };
+  return [param, set, box] as const;
 }

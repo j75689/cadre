@@ -259,6 +259,72 @@ describe("Board", () => {
     expect(query()).toBe("?phase=Done");
   });
 
+  it("keeps an input method's composition in the search, and writes only the composed text", async () => {
+    serve([task("a", "Todo", { title: "是務" }), task("b", "Todo")])();
+    renderPage();
+    await screen.findByText("Title of b");
+    const search = screen.getByLabelText("Search the loaded page") as HTMLInputElement;
+    fireEvent.compositionStart(search);
+    for (const value of ["ㄕ", "ㄕˋ", "是", "是ㄨ", "是ㄨˋ", "是務"]) {
+      fireEvent.change(search, { target: { value } });
+      expect(search.value).toBe(value);
+      expect(query()).toBe("");
+    }
+    fireEvent.compositionEnd(search);
+    expect(search.value).toBe("是務");
+    expect(new URLSearchParams(query() ?? "").get("q")).toBe("是務");
+    expect(screen.queryByText("Title of b")).toBeNull();
+  });
+
+  it("keeps every key typed before the URL has caught up", async () => {
+    serve([task("a", "Todo", { title: "release notes" }), task("b", "Todo")])();
+    renderPage();
+    await screen.findByText("Title of b");
+    const search = screen.getByLabelText("Search the loaded page") as HTMLInputElement;
+    // One act: the keys come faster than the router's transition commits.
+    act(() => {
+      for (const key of "release") fireEvent.change(search, { target: { value: search.value + key } });
+    });
+    expect(search.value).toBe("release");
+    expect(query()).toBe("?q=release");
+  });
+
+  it("does not take back its own write when the URL catches up mid-composition", async () => {
+    serve([task("a", "Todo")])();
+    renderPage();
+    await screen.findByText("Title of a");
+    const search = screen.getByLabelText("Search the loaded page") as HTMLInputElement;
+    // "a" is written; the router commits it after the composition began.
+    act(() => {
+      fireEvent.change(search, { target: { value: "a" } });
+      fireEvent.compositionStart(search);
+      fireEvent.change(search, { target: { value: "aㄕ" } });
+    });
+    expect(query()).toBe("?q=a");
+    expect(search.value).toBe("aㄕ");
+    fireEvent.change(search, { target: { value: "a是" } });
+    fireEvent.compositionEnd(search);
+    expect(search.value).toBe("a是");
+    expect(new URLSearchParams(query() ?? "").get("q")).toBe("a是");
+  });
+
+  it("shows the search of a link, Back and Forward, and keeps it when a filter changes", async () => {
+    serve([task("a", "Todo"), task("b", "Todo")])();
+    renderPage("/t/team-a?q=a", "/t/team-a");
+    await screen.findByText("Title of b");
+    const search = screen.getByLabelText("Search the loaded page") as HTMLInputElement;
+    expect(search.value).toBe("");
+    act(() => navigate(-1));
+    expect(search.value).toBe("a");
+    act(() => navigate(1));
+    expect(search.value).toBe("");
+    act(() => navigate("/t/team-a?q=b"));
+    expect(search.value).toBe("b");
+    fireEvent.change(select("Phase"), { target: { value: "Todo" } });
+    expect(search.value).toBe("b");
+    expect(query()).toBe("?q=b&phase=Todo");
+  });
+
   it("sets and clears the filters in the URL, keeping the focus on the control", async () => {
     serve([bot("a", "Todo"), task("b", "Done")])();
     renderPage("/t/team-a");
