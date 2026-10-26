@@ -10,13 +10,17 @@ import { Segmented } from "./ui/Segmented";
 const duration = /^\+?((\d+\.?\d*|\.\d+)(ns|us|µs|μs|ms|s|m|h))+$/;
 const nanos: Record<string, number> = { ns: 1, us: 1e3, µs: 1e3, μs: 1e3, ms: 1e6, s: 1e9, m: 60e9, h: 3600e9 };
 
+// The largest duration Go takes, 2^63 - 1 ns, which a number rounds to
+// 2^63.
+const maxInt64 = 2 ** 63;
+
 // durationOf is a duration in whole nanoseconds, as Go counts it, or
-// undefined when it is not one.
+// undefined when it is not one or overflows Go's int64.
 export function durationOf(v: string): number | undefined {
   if (!duration.test(v)) return undefined;
   let n = 0;
   for (const [, num, unit] of v.matchAll(/(\d+\.?\d*|\.\d+)(ns|us|µs|μs|ms|s|m|h)/g)) n += Math.floor(Number(num) * nanos[unit]);
-  return n;
+  return n > maxInt64 ? undefined : n;
 }
 
 // The largest cap the server's int32 takes.

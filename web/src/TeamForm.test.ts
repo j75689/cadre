@@ -13,10 +13,12 @@ describe("durationOf", () => {
     expect(durationOf("1us2ms3ns")).toBe(2001003);
     expect(durationOf("0s")).toBe(0);
     expect(durationOf("0.5ns")).toBe(0); // Go drops the part under 1 ns
+    expect(durationOf("2562047h")).toBe(2562047 * 3600e9); // the most whole hours an int64 holds
   });
 
   it("refuses what it refuses, and negative durations", () => {
     for (const v of ["", "0", "1", "h", ".h", "1d", "1 h", "1hm", "-1h", "1h-1m", "a week"]) expect(durationOf(v), v).toBeUndefined();
+    for (const v of ["2562048h", "9999999h", "2562047h1h"]) expect(durationOf(v), v).toBeUndefined(); // over Go's int64
   });
 });
 
