@@ -114,8 +114,11 @@ The team's URLs and their query parameters are built in `web/src/links.ts` (`tea
   - **Toolbar:**
     - `h1` (the team's name) with the role badge;
     - the live status;
-    - the search field (icon, clear button, and "n of m shown" while a query is set);
+    - the search field (icon, clear button), `id="board-search"`;
+    - the filters, two selects with visually hidden labels: **Phase** ("All phases" and the seven phases) and **Assignee** ("Anyone", the assignees of the loaded tasks, and the one in the URL even if no loaded task has it);
+    - "n of m loaded tasks shown" while a search or an assignee is set: both filter the pages already loaded, not the server;
     - "New task", the one primary button, for members.
+  - **URL:** the search and the filters live in the query, so a reload or a shared link opens the same board: `?q=` (the search), `?phase=` (one phase), `?assignee=` (an exact assignee name). Typing and choosing replace the history entry, so they do not flood Back; an empty value removes its parameter. With a phase set, only that column is read and shown, at most 32rem wide from 1024 px. An unknown phase reads as all of them and is left in the URL. A filter change keeps the focus on its control.
   - **Columns:** a horizontal scroller.
     - Under 1024 px it snaps, and each column is 80 vw.
     - From 1024 px there are seven columns of `minmax(15rem, 1fr)`.
@@ -123,7 +126,7 @@ The team's URLs and their query parameters are built in `web/src/links.ts` (`tea
     - The column body scrolls on its own, so headers stay in view. The board fills the viewport below the top bar and the team nav.
     - Terminal columns (Done, Cancelled, Failed) mute their header.
 - **Agents** (`/t/<ns>/agents`): the team's Agent resources and whether each can take work, read every 15 s. It is health only, so every role sees it.
-  - A table in a horizontal-scroll region named "Agents": Agent (mono), Status (the ready badge), Reason (muted, empty while Pending, which the badge says), Message, and Tasks, a link to the board with the agent as the assignee (`boardLink(ns, { assignee })`). The board does not filter by `?assignee=` yet (P1.8), so it still shows every task.
+  - A table in a horizontal-scroll region named "Agents": Agent (mono), Status (the ready badge), Reason (muted, empty while Pending, which the badge says), Message, and Tasks, a link to the board with the agent as the assignee (`boardLink(ns, { assignee })`), which opens the board filtered to that agent.
   - With no agents: "This team has no agents. Agents are Agent resources in the namespace, applied with kubectl or GitOps."
   - An error that stops the read shows the banner with Retry.
 - **Task** (`/t/<ns>/tasks/<name>`):

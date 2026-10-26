@@ -2,6 +2,7 @@ import { useEffect, useState } from "react";
 import { Link, useParams } from "react-router";
 import { listTasks, phases, terminalPhases, type Phase, type Task } from "./api";
 import { RoleLine, useIdentityDetails, useRole } from "./Identity";
+import { params, useParam } from "./links";
 import { can } from "./roles";
 import { useTeamName } from "./teamList";
 import { assigneeIcon, Meta, phaseTone, Pills, PriorityChip, RoleBadge } from "./ui/Badge";
@@ -48,7 +49,12 @@ export function Board() {
   const [columns, setColumns] = useState<Column[] | null>(null);
   const [pages, setPages] = useState<Record<string, number>>({});
   const [error, setError] = useState("");
-  const [search, setSearch] = useState("");
+  const [search, setSearch] = useParam(params.q);
+  const [phaseParam, setPhase] = useParam(params.phase);
+  const [assignee, setAssignee] = useParam(params.assignee);
+  // An unknown phase reads as all of them; it is left in the URL, not set.
+  const phase = phases.find((ph) => ph === phaseParam);
+  const read = phase ? [phase] : phases;
   const [updated, setUpdated] = useState<Date | null>(null);
   // retry reads the board again at once, after a failed first read.
   const [retry, setRetry] = useState(0);
@@ -56,7 +62,7 @@ export function Board() {
   usePolling(
     async (signal) => {
       try {
-        const next = await Promise.all(phases.map((ph) => loadColumn(ns, ph, pages[ph] ?? 1, signal)));
+        const next = await Promise.all(read.map((ph) => loadColumn(ns, ph, pages[ph] ?? 1, signal)));
         setColumns(next);
         setUpdated(new Date());
         setError("");
@@ -65,11 +71,19 @@ export function Board() {
       }
     },
     pollMs,
-    [ns, pages, retry],
+    [ns, pages, retry, phase],
   );
   const board = `/t/${encodeURIComponent(ns)}`;
-  const total = columns?.reduce((n, c) => n + c.tasks.length, 0) ?? 0;
-  const shown = columns?.reduce((n, c) => n + c.tasks.filter((t) => matches(t, search)).length, 0) ?? 0;
+  // Until the read for a new phase filter is back, the columns read before
+  // it show only as far as the filter keeps them.
+  const shownColumns = columns?.filter((c) => read.includes(c.phase)) ?? null;
+  const total = shownColumns?.reduce((n, c) => n + c.tasks.length, 0) ?? 0;
+  const shown = shownColumns?.reduce((n, c) => n + c.tasks.filter((t) => matches(t, search, assignee)).length, 0) ?? 0;
+  // The assignees on the loaded tasks, and the one asked for even if none
+  // of them has it.
+  const assignees = [
+    ...new Set([...(columns ?? []).flatMap((c) => c.tasks.map((t) => t.spec.assignee?.name ?? "")), assignee].filter(Boolean)),
+  ].sort();
   return (
     <main id="main" className="board">
       <div className="toolbar">
@@ -93,9 +107,29 @@ export function Board() {
             />
             {search && <Button variant="ghost" small icon="x" aria-label="Clear the search" onClick={() => setSearch("")} />}
           </div>
-          {search.trim() !== "" && columns && (
+          <div className="filters">
+            <label htmlFor="board-phase" className="sr-only">
+              Phase
+            </label>
+            <select id="board-phase" value={phase ?? ""} onChange={(e) => setPhase(e.target.value)}>
+              <option value="">All phases</option>
+              {phases.map((ph) => (
+                <option key={ph}>{ph}</option>
+              ))}
+            </select>
+            <label htmlFor="board-assignee" className="sr-only">
+              Assignee
+            </label>
+            <select id="board-assignee" value={assignee} onChange={(e) => setAssignee(e.target.value)}>
+              <option value="">Anyone</option>
+              {assignees.map((a) => (
+                <option key={a}>{a}</option>
+              ))}
+            </select>
+          </div>
+          {(search.trim() !== "" || assignee !== "") && shownColumns && (
             <span className="search-count">
-              {shown} of {total} shown
+              {shown} of {total} loaded tasks shown
             </span>
           )}
           {can(role, "work") && (
@@ -112,11 +146,12 @@ export function Board() {
         <Banner onRetry={() => setRetry((n) => n + 1)}>Could not load the board: {error}</Banner>
       )}
       {columns === null && !error && <BoardSkeleton />}
-      {columns && (
+      {shownColumns && (
         <Columns
           ns={ns}
-          columns={columns}
+          columns={shownColumns}
           search={search}
+          assignee={assignee}
           onMore={(phase) => setPages((p) => ({ ...p, [phase]: (p[phase] ?? 1) + 1 }))}
         />
       )}
@@ -162,8 +197,10 @@ function BoardSkeleton() {
   );
 }
 
-// matches is the client-side search over what is loaded.
-export function matches(t: Task, query: string): boolean {
+// matches is the client-side search and assignee filter over what is
+// loaded. The assignee, when set, is matched exactly.
+export function matches(t: Task, query: string, assignee = ""): boolean {
+  if (assignee !== "" && t.spec.assignee?.name !== assignee) return false;
   const q = query.trim().toLowerCase();
   if (q === "") return true;
   const fields = [t.spec.title, t.metadata.name, t.spec.assignee?.name ?? "", ...(t.spec.labels ?? [])];
@@ -171,11 +208,11 @@ export function matches(t: Task, query: string): boolean {
   return fields.some((f) => f.toLowerCase().includes(q));
 }
 
-export function Columns(props: { ns: string; columns: Column[]; search: string; onMore: (phase: Phase) => void }) {
+export function Columns(props: { ns: string; columns: Column[]; search: string; assignee?: string; onMore: (phase: Phase) => void }) {
   return (
-    <div className="columns">
+    <div className={props.columns.length === 1 ? "columns one-phase" : "columns"}>
       {props.columns.map((col) => {
-        const shown = col.tasks.filter((t) => matches(t, props.search));
+        const shown = col.tasks.filter((t) => matches(t, props.search, props.assignee));
         const terminal = terminalPhases.includes(col.phase);
         return (
           <section className={`column ${phaseTone(col.phase)}${terminal ? " terminal" : ""}`} key={col.phase} aria-label={col.phase}>
