@@ -39,4 +39,27 @@ describe("useParam", () => {
     expect(result.current.location.search).toBe("?q=x");
     expect(result.current.param[0]).toBe("");
   });
+
+  it("keeps the same setter from one render to the next", () => {
+    const { result, rerender } = renderHook(use, { wrapper: at("/t/a?run=R1") });
+    const set = result.current.param[1];
+    rerender();
+    act(() => set("R2"));
+    expect(result.current.param[1]).toBe(set);
+  });
+
+  it("keeps both of two sets made in one event", () => {
+    const useTwo = () => ({ phase: useParam("phase"), assignee: useParam("assignee"), location: useLocation() });
+    const { result } = renderHook(useTwo, { wrapper: at("/t/a?phase=Todo&assignee=bot&q=x") });
+    act(() => {
+      result.current.phase[1]("");
+      result.current.assignee[1]("");
+    });
+    expect(result.current.location.search).toBe("?q=x");
+    act(() => {
+      result.current.phase[1]("Done");
+      result.current.assignee[1]("dana");
+    });
+    expect(result.current.location.search).toBe("?q=x&phase=Done&assignee=dana");
+  });
 });

@@ -1,3 +1,4 @@
+import { useCallback, useEffect, useRef } from "react";
 import { useSearchParams } from "react-router";
 
 // The UI's URLs: the team's pages and the query parameters they read, so a
@@ -30,19 +31,34 @@ export function taskLink(ns: string, name: string, run?: string): string {
   return withQuery(`${teamPath(ns)}/tasks/${encodeURIComponent(name)}`, [[params.run, run]]);
 }
 
-// useParam is a query parameter of the page and its setter. Setting one
-// replaces the history entry, and an empty value deletes the parameter.
+// pending is what the sets of the current event made of the query:
+// react-router hands setSearchParams the params of the last render, so a
+// second set in one event would drop the first.
+let pending: URLSearchParams | undefined;
+
+// useParam is a query parameter of the page and its setter, the same from
+// one render to the next. Setting one replaces the history entry, and an
+// empty value deletes the parameter. Sets in one event all apply.
 export function useParam(key: string): [string, (value: string) => void] {
   const [search, setSearch] = useSearchParams();
-  const set = (value: string) =>
-    setSearch(
-      (prev) => {
-        const next = new URLSearchParams(prev);
-        if (value) next.set(key, value);
-        else next.delete(key);
-        return next;
-      },
-      { replace: true },
-    );
+  const latest = useRef(setSearch);
+  useEffect(() => {
+    latest.current = setSearch;
+  });
+  const set = useCallback(
+    (value: string) =>
+      latest.current(
+        (prev) => {
+          const next = new URLSearchParams(pending ?? prev);
+          if (value) next.set(key, value);
+          else next.delete(key);
+          if (!pending) queueMicrotask(() => (pending = undefined));
+          pending = next;
+          return next;
+        },
+        { replace: true },
+      ),
+    [key],
+  );
   return [search.get(key) ?? "", set];
 }
