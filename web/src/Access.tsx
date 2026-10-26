@@ -134,7 +134,9 @@ function Credential({ access, minted = true }: { access: AgentAccess; minted?: b
 }
 
 // failure is what a failed read shows: a plain 404, the mux's for a route
-// it does not have, means the server serves no AgentAccesses.
+// it does not have, means the server serves no AgentAccesses. With logins
+// the routes are always served, so there it comes from something in front
+// of the server, and is shown as it is.
 interface Failure {
   notServed: boolean;
   message: string;
@@ -142,10 +144,10 @@ interface Failure {
   forbidden: boolean;
 }
 
-function failure(e: unknown): Failure {
+function failure(e: unknown, oidc: boolean): Failure {
   const api = e instanceof APIError ? e : undefined;
   return {
-    notServed: api?.status === 404 && api.code === "",
+    notServed: !oidc && api?.status === 404 && api.code === "",
     message: String((e as Error).message),
     forbidden: api?.status === 403,
   };
@@ -165,6 +167,7 @@ export function AccessList() {
 }
 
 function AccessTable({ ns }: { ns: string }) {
+  const oidc = useIdentityDetails().mode === "oidc";
   const [items, setItems] = useState<AgentAccess[] | null>(null);
   const [failed, setFailed] = useState<Failure | null>(null);
   // retry reads the AgentAccesses again at once, after a failed read.
@@ -176,7 +179,7 @@ function AccessTable({ ns }: { ns: string }) {
         setItems(res.items);
         setFailed(null);
       } catch (e) {
-        if (!signal.aborted) setFailed(failure(e));
+        if (!signal.aborted) setFailed(failure(e, oidc));
       }
     },
     pollMs,
@@ -269,6 +272,7 @@ export function AccessDetail() {
 }
 
 function AccessCard({ ns, name }: { ns: string; name: string }) {
+  const oidc = useIdentityDetails().mode === "oidc";
   const [access, setAccess] = useState<AgentAccess | null>(null);
   const [missing, setMissing] = useState(false);
   const [failed, setFailed] = useState<Failure | null>(null);
@@ -287,7 +291,7 @@ function AccessCard({ ns, name }: { ns: string; name: string }) {
           setFailed(null);
           return;
         }
-        setFailed(failure(e));
+        setFailed(failure(e, oidc));
       }
     },
     pollMs,

@@ -12,14 +12,14 @@ afterEach(() => {
 
 const admin: Me = { mode: "oidc", name: "dana", roles: { a: "admin" } };
 
-// open renders path with /me as given; the AgentAccess reads answer with
-// accesses, the Team with team a, and the rest with no items. It returns
-// the URLs fetched.
-function open(path: string, me: Me, accesses: () => Promise<Response> = () => json({ items: [] })) {
+// open renders path with /me as given, or failing for null; the
+// AgentAccess reads answer with accesses, the Team with team a, and the
+// rest with no items. It returns the URLs fetched.
+function open(path: string, me: Me | null, accesses: () => Promise<Response> = () => json({ items: [] })) {
   const urls: string[] = [];
   vi.stubGlobal("fetch", (url: string) => {
     urls.push(url);
-    if (url.endsWith("/me")) return json(me);
+    if (url.endsWith("/me")) return me ? json(me) : json({ error: { code: "unavailable", message: "down" } }, 503);
     if (url.includes("/agentaccesses")) return accesses();
     if (url.endsWith("/namespaces/a/team")) return json(team());
     return json({ items: [] });
@@ -79,10 +79,23 @@ describe("AccessList", () => {
     expect(urls.some((u) => u.includes("/agentaccesses"))).toBe(false);
   });
 
-  it("explains a plain 404 the same way", async () => {
-    open("/t/a/settings/access", admin, plainNotFound);
+  it("explains a plain 404 the same way when /me failed", async () => {
+    open("/t/a/settings/access", null, plainNotFound);
     expect(await screen.findByText(notServed)).toBeTruthy();
     expect(screen.queryByRole("button", { name: "Retry" })).toBeNull();
+  });
+
+  it("shows a plain 404 as an error with logins, which serve the routes", async () => {
+    open("/t/a/settings/access", admin, plainNotFound);
+    expect(await screen.findByText("Could not load the agent accesses: Not Found")).toBeTruthy();
+    expect(screen.queryByText(notServed)).toBeNull();
+  });
+
+  it("shows a 404 with a code as an error, whatever the mode", async () => {
+    const notFound = () => json({ error: { code: "not_found", message: "no such namespace" } }, 404);
+    open("/t/a/settings/access", null, notFound);
+    expect(await screen.findByText("Could not load the agent accesses: no such namespace")).toBeTruthy();
+    expect(screen.queryByText(notServed)).toBeNull();
   });
 
   it.each([["member"], ["viewer"]])("tells a %s it needs the admin role, and requests nothing", async (role) => {
@@ -167,9 +180,14 @@ describe("AccessDetail", () => {
     expect(screen.getByRole("link", { name: "All agent accesses" }).getAttribute("href")).toBe("/t/a/settings/access");
   });
 
-  it("explains a plain 404, and requests nothing without logins", async () => {
-    open("/t/a/settings/access/bot", admin, plainNotFound);
+  it("explains a plain 404 when /me failed, and requests nothing without logins", async () => {
+    open("/t/a/settings/access/bot", null, plainNotFound);
     expect(await screen.findByText(notServed)).toBeTruthy();
+    cleanup();
+
+    open("/t/a/settings/access/bot", admin, plainNotFound);
+    expect(await screen.findByText("Could not load the agent access: Not Found")).toBeTruthy();
+    expect(screen.queryByText(notServed)).toBeNull();
     cleanup();
 
     const urls = open("/t/a/settings/access/bot", { mode: "none", admin: true });
