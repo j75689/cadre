@@ -247,6 +247,17 @@ describe("Editing the Team", () => {
     expect(sent[1]).toMatchObject({ displayName: "Team B", maxConcurrentRuns: 2, archiveAfter: "30m", roles: full.spec!.roles });
   });
 
+  it("does not mark a field only this user changed", async () => {
+    const theirs = team({ metadata: { name: "team", namespace: "a", resourceVersion: "9" }, spec: { ...full.spec, displayName: "Team C" } });
+    const { form } = await edit([() => json(full), () => json(theirs)], [conflict]);
+    fireEvent.change(form.getByLabelText(/^Max concurrent runs/), { target: { value: "3" } });
+    fireEvent.click(form.getByRole("button", { name: "Save" }));
+    await form.findByRole("region", { name: "Current" });
+    expect(form.getByLabelText(/^Display name/).getAttribute("aria-describedby")).toBe("changed-displayName");
+    expect(form.getByLabelText(/^Max concurrent runs/).getAttribute("aria-describedby")).toBe("max-runs-help");
+    expect(form.queryAllByText(/Changed by someone else/)).toHaveLength(1);
+  });
+
   it("shows another 409 as the error it is, not as someone else's change", async () => {
     const exists = () => json({ error: { code: "already_exists", message: "team a: already exists" } }, 409);
     const { form, reads } = await edit([() => json(full)], [exists]);
@@ -369,10 +380,25 @@ describe("Editing the Team", () => {
     expect(await screen.findByText("You are a viewer of a.")).toBeTruthy(); // /me was read again
   });
 
+  // A bootstrap admin keeps the admin role without being named in one.
+  it("keeps showing an admin the settings after they removed every role", async () => {
+    const none = team({ spec: { ...full.spec, roles: undefined }, status: full.status });
+    const { form, sent } = await edit([() => json(full)], [() => json(none)]);
+    fireEvent.click(form.getAllByRole("button", { name: "Remove role" })[1]);
+    fireEvent.click(form.getByRole("button", { name: "Remove role" }));
+    fireEvent.click(form.getByRole("button", { name: "Save" }));
+    await screen.findByText("Saved");
+    expect(sent[0].roles ?? []).toEqual([]);
+    expect(screen.getByText("No roles are given on this team.")).toBeTruthy();
+    expect(screen.getByRole("heading", { name: "Run slots" })).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Edit" })).toBeTruthy();
+  });
+
   it("warns about a Team managed by GitOps, and saves only once confirmed", async () => {
     const applied = team({ ...full, metadata: { ...full.metadata, annotations: { "kubectl.kubernetes.io/last-applied-configuration": "{}" } } });
     const { form, sent } = await edit([() => json(applied)], [() => json(applied)]);
     expect(form.getByText(/This Team looks managed by GitOps \(it was last written by kubectl apply\)/)).toBeTruthy();
+    expect(screen.getByRole("form", { name: "Edit the team" }).getAttribute("aria-describedby")).toBe("team-gitops");
     const save = form.getByRole("button", { name: "Save" });
     fireEvent.click(save);
     const confirm = within(form.getByRole("group", { name: "Save anyway?" }));
