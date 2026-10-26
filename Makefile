@@ -11,6 +11,7 @@ ENVTEST_VERSION        := v0.25.2
 ENVTEST_K8S_VERSION    := 1.37.0
 HELM_VERSION           := v4.3.1
 KUBECONFORM_VERSION    := v0.8.0
+SHELLCHECK_VERSION     := v0.11.0
 # kind and kubectl for make e2e, downloaded by hack/e2e/run.sh, which holds
 # their checksums.
 KIND_VERSION           := v0.33.0
@@ -23,6 +24,7 @@ GOLANGCI_LINT  := $(TOOLS)/golangci-lint-$(GOLANGCI_LINT_VERSION)
 ENVTEST        := $(TOOLS)/setup-envtest-$(ENVTEST_VERSION)
 HELM           := $(TOOLS)/helm-$(HELM_VERSION)
 KUBECONFORM    := $(TOOLS)/kubeconform-$(KUBECONFORM_VERSION)
+SHELLCHECK     := $(TOOLS)/shellcheck-$(SHELLCHECK_VERSION)
 
 # go-install installs package $(2) at version $(3) as the binary $(1).
 define go-install
@@ -31,13 +33,22 @@ define go-install
 	mkdir -p $(TOOLS); mv $$tmp/$$(basename $(2)) $(1); rm -rf $$tmp
 endef
 
-.PHONY: all build test smoke chaos fmt vet lint check tidy clean generate manifests verify-generated verify-tidy tools image images ui ui-check chart-files chart-lint chart-dist print-chart-paths print-helm e2e print-e2e-tools
+.PHONY: all build test smoke chaos fmt vet lint check tidy clean generate manifests verify-generated verify-tidy tools image images ui ui-check chart-files chart-lint chart-dist print-chart-paths print-helm e2e print-e2e-tools install-cadre-cli cli-dist print-cli-dist
 
 all: build
 
 build: ## Build all binaries into bin/; for cadre-server with the web UI, run make ui first
 	@mkdir -p $(BIN)
 	@for c in $(CMDS); do echo "building $$c"; go build $(GOFLAGS) -o $(BIN)/$$c ./cmd/$$c; done
+
+# install-cadre-cli installs the cadre CLI from this checkout, with go
+# install, so it lands where go install puts binaries: go env GOBIN, or
+# bin under the first GOPATH entry.
+VERSION ?= $(shell git describe --tags --always --dirty)
+install-cadre-cli: ## Install the cadre CLI into go env GOBIN (or GOPATH/bin) [VERSION=...]
+	go install -trimpath -ldflags "-X main.version=$(VERSION)" ./cmd/cadre
+	@dir=$$(go env GOBIN); if [ -z "$$dir" ]; then gopath=$$(go env GOPATH); dir=$${gopath%%:*}/bin; fi; \
+		echo "installed $$dir/cadre ($(VERSION)); make sure $$dir is on your PATH"
 
 # web/node_modules is installed from the lockfile, again when it changes.
 web/node_modules/.package-lock.json: web/package-lock.json
@@ -89,8 +100,9 @@ fmt: ## Check formatting
 vet:
 	go vet ./...
 
-lint: $(GOLANGCI_LINT) ## Run golangci-lint
+lint: $(GOLANGCI_LINT) $(SHELLCHECK) ## Run golangci-lint, and shellcheck on the installer where it is pinned
 	$(GOLANGCI_LINT) run ./...
+	@if [ -x $(SHELLCHECK) ]; then echo "$(SHELLCHECK) -s sh hack/install.sh"; $(SHELLCHECK) -s sh hack/install.sh; fi
 
 generate: $(CONTROLLER_GEN) ## Generate deepcopy code for the API types
 	$(CONTROLLER_GEN) object:headerFile=hack/boilerplate.go.txt paths=./api/...
@@ -126,7 +138,9 @@ chart-lint: $(HELM) $(KUBECONFORM) ## Lint the Helm chart and validate its outpu
 # into dist/; print-chart-paths prints the two paths.
 CHART_VERSION = $(patsubst v%,%,$(RELEASE))
 CHART_PKG     = dist/cadre-$(CHART_VERSION).tgz
-check-release = @echo "$(RELEASE)" | grep -Eq '^v[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?(\+[0-9A-Za-z.-]+)?$$' || { echo "RELEASE must be a vX.Y.Z tag, not '$(RELEASE)'"; exit 1; }
+# A release has no +build part: GitHub turns the + into a . in asset names,
+# which then match neither the checksums file nor install.sh.
+check-release = @echo "$(RELEASE)" | grep -Eq '^v[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?$$' || { echo "RELEASE must be a vX.Y.Z tag without +build (GitHub renames + in release assets), not '$(RELEASE)'"; exit 1; }
 chart-dist: $(HELM) ## Package the chart and render install.yaml for RELEASE=vX.Y.Z
 	$(check-release)
 	@mkdir -p dist
@@ -138,6 +152,40 @@ chart-dist: $(HELM) ## Package the chart and render install.yaml for RELEASE=vX.
 print-chart-paths: ## Print chart-dist's package and install.yaml for RELEASE=vX.Y.Z
 	$(check-release)
 	@echo "$(CHART_PKG) dist/install.yaml"
+
+# cli-dist cross-compiles the cadre CLI at RELEASE (a vX.Y.Z tag) for each
+# of CLI_PLATFORMS into CLI_DIST: cadre_<version>_<os>_<arch>.tar.gz with
+# cadre and LICENSE (a .zip with cadre.exe for windows), <version> without
+# its v, and cadre_<version>_checksums.txt over them in sha256sum's format.
+# The builds carry no VCS stamp (the version is the tag), and hack/archive
+# writes the archives the same way on every host: sorted entries owned by
+# 0:0 with SOURCE_DATE_EPOCH (by default the commit's time) as their time.
+# So a rebuild of a commit gives the same checksums.
+CLI_PLATFORMS ?= darwin/amd64 darwin/arm64 linux/amd64 linux/arm64 windows/amd64 windows/arm64
+CLI_DIST      ?= dist
+CLI_VERSION    = $(patsubst v%,%,$(RELEASE))
+CLI_SUMS       = $(CLI_DIST)/cadre_$(CLI_VERSION)_checksums.txt
+# cli-names defines, for the recipes' shell, name OS ARCH: an archive's
+# path, and exe OS: the binary's name in it.
+cli-names = exe() { if [ "$$1" = windows ]; then echo cadre.exe; else echo cadre; fi; }; \
+	name() { ext=tar.gz; [ "$$1" != windows ] || ext=zip; echo "$(CLI_DIST)/cadre_$(CLI_VERSION)_$$1_$$2.$$ext"; }
+cli-dist: ## Build the cadre CLI's release archives and checksums for RELEASE=vX.Y.Z [CLI_PLATFORMS=os/arch ...]
+	$(check-release)
+	@set -e; $(cli-names); mkdir -p $(CLI_DIST); tmp=$$(mktemp -d); trap 'rm -rf "$$tmp"' EXIT; \
+	epoch=$${SOURCE_DATE_EPOCH:-$$(git log -1 --format=%ct)}; \
+	go build -o "$$tmp/archive" ./hack/archive; archives=; \
+	for p in $(CLI_PLATFORMS); do \
+		os=$${p%/*}; arch=$${p#*/}; bin=$$(exe $$os); out=$$(name $$os $$arch); \
+		echo "building cadre $(RELEASE) for $$p"; \
+		CGO_ENABLED=0 GOOS=$$os GOARCH=$$arch go build -trimpath -buildvcs=false -ldflags "-s -w -X main.version=$(RELEASE)" -o "$$tmp/$$p/$$bin" ./cmd/cadre; \
+		"$$tmp/archive" -mtime "$$epoch" -o "$$out" "$$bin=$$tmp/$$p/$$bin" LICENSE=LICENSE; \
+		archives="$$archives $$out"; \
+	done; \
+	"$$tmp/archive" -sums $(CLI_SUMS) $$archives
+
+print-cli-dist: ## Print cli-dist's archives, then its checksums file, for RELEASE=vX.Y.Z
+	$(check-release)
+	@$(cli-names); for p in $(CLI_PLATFORMS); do printf '%s ' "$$(name $${p%/*} $${p#*/})"; done; echo $(CLI_SUMS)
 
 print-helm: $(HELM) ## Print the pinned helm's path, installing it
 	@echo $(HELM)
@@ -153,7 +201,7 @@ verify-tidy: ## Fail if go.mod or go.sum is not tidy
 
 check: verify-tidy fmt vet lint verify-generated chart-lint ui-check test ## Everything CI runs
 
-tools: $(CONTROLLER_GEN) $(GOLANGCI_LINT) $(ENVTEST) $(HELM) $(KUBECONFORM) ## Install pinned tools into bin/tools
+tools: $(CONTROLLER_GEN) $(GOLANGCI_LINT) $(ENVTEST) $(HELM) $(KUBECONFORM) $(SHELLCHECK) ## Install pinned tools into bin/tools
 
 $(CONTROLLER_GEN):
 	$(call go-install,$@,sigs.k8s.io/controller-tools/cmd/controller-gen,$(CONTROLLER_GEN_VERSION))
@@ -169,6 +217,27 @@ $(HELM):
 
 $(KUBECONFORM):
 	$(call go-install,$@,github.com/yannh/kubeconform/cmd/kubeconform,$(KUBECONFORM_VERSION))
+
+# shellcheck is not a Go tool: its release archive, checked against these
+# SHA-256 sums, one per platform, which sha256 prints in a recipe (change them with the version). A
+# platform without one (armv7l, riscv64, FreeBSD) gets no shellcheck, with
+# a warning, and lint goes on without it.
+shellcheck-platform = $$(uname -s | tr A-Z a-z).$$(uname -m | sed s/arm64/aarch64/)
+shellcheck-sha256 = sha256() { case $(shellcheck-platform) in \
+	linux.x86_64) echo b7af85e41cc99489dcc21d66c6d5f3685138f06d34651e6d34b42ec6d54fe6f6 ;; \
+	linux.aarch64) echo 68a8133197a50beb8803f8d42f9908d1af1c5540d4bb05fdfca8c1fa47decefc ;; \
+	darwin.x86_64) echo c2c15e08df0e8fbc374c335b230a7ee958c313fa5714817a59aa59f1aa594f51 ;; \
+	darwin.aarch64) echo 339b930feb1ea764467013cc1f72d09cd6b869ebf1013296ba9055ab2ffbd26f ;; \
+	esac; }
+$(SHELLCHECK):
+	@set -e; $(shellcheck-sha256); want=$$(sha256); \
+	[ -n "$$want" ] || { echo "warning: shellcheck $(SHELLCHECK_VERSION) is not pinned for $(shellcheck-platform): skipping it"; exit 0; }; \
+	tmp=$$(mktemp -d); trap 'rm -rf "$$tmp"' EXIT; \
+	name=shellcheck-$(SHELLCHECK_VERSION).$(shellcheck-platform).tar.gz; \
+	curl -fsSL -o "$$tmp/$$name" https://github.com/koalaman/shellcheck/releases/download/$(SHELLCHECK_VERSION)/$$name; \
+	if command -v sha256sum >/dev/null; then got=$$(sha256sum "$$tmp/$$name"); else got=$$(shasum -a 256 "$$tmp/$$name"); fi; \
+	got=$${got%% *}; [ "$$got" = "$$want" ] || { echo "$$name: SHA-256 $$got, want $$want"; exit 1; }; \
+	tar -xzf "$$tmp/$$name" -C "$$tmp"; mkdir -p $(TOOLS); mv "$$tmp/shellcheck-$(SHELLCHECK_VERSION)/shellcheck" $@
 
 clean:
 	rm -rf $(BIN) dist

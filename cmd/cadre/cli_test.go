@@ -9,6 +9,7 @@ import (
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"runtime/debug"
 	"strings"
 	"testing"
 	"time"
@@ -391,5 +392,30 @@ func TestAgentAccessFromTheCLI(t *testing.T) {
 	mustContain(t, cadre(t, srv.URL, "agentaccess", "delete", "bot"), "agentaccess bot deleted")
 	if len(existing) != 0 {
 		t.Errorf("left %v", existing)
+	}
+}
+
+func TestBuildVersion(t *testing.T) {
+	info := func(v string, ok bool) func() (*debug.BuildInfo, bool) {
+		return func() (*debug.BuildInfo, bool) { return &debug.BuildInfo{Main: debug.Module{Version: v}}, ok }
+	}
+	cases := []struct {
+		name, set string
+		info      func() (*debug.BuildInfo, bool)
+		want      string
+	}{
+		{"set at build time", "v1.2.3", info("v9.9.9", true), "v1.2.3"},
+		{"go install of a tag", "dev", info("v0.4.0", true), "v0.4.0"},
+		{"go install of a commit", "dev", info("v0.0.0-20261026010203-abcdef123456", true), "v0.0.0-20261026010203-abcdef123456"},
+		{"a checkout", "dev", info("(devel)", true), "dev"},
+		{"set empty, go install of a tag", "", info("v0.4.0", true), "v0.4.0"},
+		{"set empty, a checkout", "", info("(devel)", true), "dev"},
+		{"no module version", "dev", info("", true), "dev"},
+		{"no build info", "dev", info("v0.4.0", false), "dev"},
+	}
+	for _, c := range cases {
+		if got := buildVersion(c.set, c.info); got != c.want {
+			t.Errorf("%s: got %q, want %q", c.name, got, c.want)
+		}
 	}
 }

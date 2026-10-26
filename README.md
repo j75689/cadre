@@ -58,6 +58,31 @@ with an OIDC issuer and client, the URL browsers reach it at (an Ingress host or
 
 Or, to try Cadre, with the `install.yaml` attached to each [release](https://github.com/j75689/cadre/releases): the chart rendered without logins, so anyone who reaches cadre-server is an admin, and with the bucket `CHANGE-ME` to replace. Its header says how to apply it.
 
+### Install the CLI
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/j75689/cadre/main/hack/install.sh | sh
+```
+
+installs `cadre` from the latest release, checked against the release's checksums, into `/usr/local/bin` when it is writable, else `~/.local/bin`. `CADRE_VERSION=v1.2.3` picks a release and `CADRE_INSTALL_DIR` the directory, for example `curl -fsSL … | CADRE_VERSION=v1.2.3 CADRE_INSTALL_DIR=$HOME/bin sh`.
+
+Other ways to install it:
+
+- **By hand.** Download `cadre_<version>_<os>_<arch>.tar.gz` (on Windows, the `.zip`) and `cadre_<version>_checksums.txt` from a [release](https://github.com/j75689/cadre/releases), check them with `sha256sum -c --ignore-missing cadre_<version>_checksums.txt` (on macOS, `shasum -a 256 -c --ignore-missing cadre_<version>_checksums.txt`), and put `cadre` on your `PATH`.
+- **With Go 1.27 or later:** `go install github.com/j75689/cadre/cmd/cadre@latest`, or `@vX.Y.Z`.
+- **From a clone:** `make install-cadre-cli`, which installs into `go env GOBIN`, or `GOPATH/bin` when that is unset.
+- **As an image,** for CI and containers: `docker run --rm ghcr.io/j75689/cadre:latest version`.
+
+Then point it at your server and log in:
+
+```sh
+export CADRE_SERVER=https://cadre.example.test   # or --server on each command
+cadre login
+cadre version
+```
+
+`cadre --help` lists the rest.
+
 ## Images
 
 `ghcr.io/j75689/cadre-server`, `ghcr.io/j75689/cadre-runner` and `ghcr.io/j75689/cadre`, for linux/amd64 and linux/arm64: `main` follows the main branch, `vX.Y.Z` each release. See [Installation](docs/architecture.md#installation).
