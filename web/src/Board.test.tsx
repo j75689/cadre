@@ -3,7 +3,7 @@ import { MemoryRouter, useLocation, useNavigate, type NavigateFunction } from "r
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { App } from "./App";
 import { phases, type Phase, type Task } from "./api";
-import { Columns, matches, type Column } from "./Board";
+import { Columns, latest, matches, type Column } from "./Board";
 import { json } from "./testing";
 
 afterEach(cleanup);
@@ -77,6 +77,18 @@ describe("matches", () => {
     expect(matches(t, "", "bot-1")).toBe(true);
     expect(matches(t, "", "bot")).toBe(false);
     expect(matches(task("b", "Todo"), "", "bot-1")).toBe(false);
+  });
+});
+
+describe("latest", () => {
+  it("keeps a task in two columns only in the one read last", () => {
+    const cols = columns([task("mover", "Todo"), task("a", "Todo"), task("b", "Running")]);
+    cols.find((c) => c.phase === "Running")!.tasks.push(task("mover", "Running"));
+    const tasks = (cs: Column[]) => Object.fromEntries(cs.map((c) => [c.phase, c.tasks.map((t) => t.metadata.name)]));
+    expect(tasks(latest(cols, ["Todo", "Running"])).Todo).toEqual(["a"]);
+    expect(tasks(latest(cols, ["Todo", "Running"])).Running).toEqual(["b", "mover"]);
+    expect(tasks(latest(cols, ["Running", "Todo"])).Todo).toEqual(["mover", "a"]);
+    expect(tasks(latest(cols, ["Running", "Todo"])).Running).toEqual(["b"]);
   });
 });
 
@@ -370,6 +382,29 @@ describe("Board", () => {
     await vi.waitFor(() => expect(screen.queryByRole("button", { name: "Load more" })).toBeNull());
     expect(offsets.filter((o) => !o.endsWith("@0")).sort()).toEqual(["Done@50", "Todo@50"]);
     expect(within(screen.getByRole("region", { name: "Tasks" })).getAllByRole("link")).toHaveLength(102);
+  });
+
+  it("shows a task that changed phase between the reads once, as the read back last has it", async () => {
+    const answer = new Map<string, () => void>();
+    vi.stubGlobal("fetch", async (url: string) => {
+      if (url.endsWith("/me")) return json({ mode: "none", admin: true });
+      if (url.endsWith("/teams")) return json({ items: [] });
+      const phase = new URL(url, "http://cadre.test").searchParams.get("phase") as Phase;
+      await new Promise<void>((r) => answer.set(phase, r));
+      // mover went from Running to Todo between the Running and Todo reads.
+      const items = phase === "Running" || phase === "Todo" ? [task("mover", phase)] : [];
+      return json({ items, offset: 0, limit: 50 });
+    });
+    renderPage("/t/team-a?q=mover&view=list");
+    await vi.waitFor(() => expect(answer.size).toBe(7));
+    for (const ph of [...phases.filter((p) => p !== "Todo"), "Todo"]) await act(async () => answer.get(ph)!());
+    const list = await screen.findByRole("region", { name: "Tasks" });
+    expect(within(list).getAllByRole("link")).toHaveLength(1);
+    expect(within(list).getByText("Todo")).toBeTruthy();
+    expect(screen.getByText("1 of 1 loaded tasks shown")).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: "Board" }));
+    expect(within(screen.getByRole("region", { name: "Todo" })).getByText("Title of mover")).toBeTruthy();
+    expect(within(screen.getByRole("region", { name: "Running" })).queryByText("Title of mover")).toBeNull();
   });
 
   it("opens the board filtered to the agent from the Agents page's link", async () => {

@@ -126,6 +126,7 @@ The team's URLs and their query parameters are built in `web/src/links.ts` (`tea
     - Each column is a `--surface-2` well with a sticky header: a dot in the phase's hue, the name, and a count pill (`50+` while there is more).
     - The column body scrolls on its own, so headers stay in view. The board fills the viewport below the top bar and the team nav.
     - Terminal columns (Done, Cancelled, Failed) mute their header.
+    - The phases are read in parallel, so a task that changes phase between two reads comes back in both. It is shown once, in the column whose read came back last (board and list alike).
   - **List** (`?view=list`): the loaded columns' tasks, filtered as the board is, in one table in a region named "Tasks": #, Title (a link to the task), Phase (the phase badge), Assignee, Priority (medium shown too) and Created. A task has no updated time, so there is no Updated column.
     - Each header is a button in its `th`; the sorted one has `aria-sort`. A click sorts ascending, then descending. The key is kept in `?sort=`: `number`, `title`, `phase`, `assignee`, `priority`, `created`, with `-` first for descending. No key (or an unknown one) is the API's order, priority then number; the number breaks ties.
     - One "Load more" below the table reads the next page of every column that has more, the board's paging.

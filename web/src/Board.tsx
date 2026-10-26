@@ -42,6 +42,19 @@ async function loadColumn(ns: string, phase: Phase, pages: number, signal: Abort
   return { phase, tasks, more };
 }
 
+// latest keeps each task in one column only. The phases are read in
+// parallel, so a task that changes phase between two reads comes back in
+// both; it stays in the column whose read came back last, which saw it
+// after the move. Its resourceVersion cannot tell the two apart: it is
+// opaque, never compared (storage.Objects).
+export function latest(columns: Column[], arrived: Phase[]): Column[] {
+  const owner = new Map<string, Phase>();
+  for (const ph of arrived) {
+    for (const t of columns.find((c) => c.phase === ph)?.tasks ?? []) owner.set(t.metadata.name, ph);
+  }
+  return columns.map((c) => ({ ...c, tasks: c.tasks.filter((t) => owner.get(t.metadata.name) === c.phase) }));
+}
+
 export function Board() {
   const { ns = "" } = useParams();
   const role = useRole(ns);
@@ -68,8 +81,11 @@ export function Board() {
   usePolling(
     async (signal) => {
       try {
-        const next = await Promise.all(read.map((ph) => loadColumn(ns, ph, pages[ph] ?? 1, signal)));
-        setColumns(next);
+        const arrived: Phase[] = [];
+        const next = await Promise.all(
+          read.map((ph) => loadColumn(ns, ph, pages[ph] ?? 1, signal).then((c) => (arrived.push(ph), c))),
+        );
+        setColumns(latest(next, arrived));
         setUpdated(new Date());
         setError("");
       } catch (e) {
