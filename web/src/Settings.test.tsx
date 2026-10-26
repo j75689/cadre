@@ -336,6 +336,37 @@ describe("Editing the Team", () => {
     expect((await form.findByRole("alert")).textContent).toBe("Role 2, subject 1: a group needs a name: invalid");
   });
 
+  it("hides what only admins see once a save took the caller's own admin role", async () => {
+    let me = 0;
+    const sent: Record<string, unknown>[] = [];
+    vi.stubGlobal("fetch", (url: string, init?: RequestInit) => {
+      if (url.endsWith("/me")) return json({ mode: "oidc", name: "dana", roles: { a: me++ === 0 ? "admin" : "viewer" } });
+      if (url.endsWith("/namespaces/a/team") && init?.method === "PUT") {
+        sent.push(JSON.parse(String(init.body)));
+        return json(stripped); // project(): the Team as a viewer sees it
+      }
+      if (url.endsWith("/namespaces/a/team")) return json(full);
+      return json({ items: [] });
+    });
+    render(
+      <MemoryRouter initialEntries={["/t/a/settings"]}>
+        <App />
+      </MemoryRouter>,
+    );
+    fireEvent.click(await screen.findByRole("button", { name: "Edit" }));
+    const form = within(screen.getByRole("form", { name: "Edit the team" }));
+    fireEvent.change(within(form.getByRole("group", { name: "Role 1" })).getByLabelText("Role"), { target: { value: "viewer" } });
+    fireEvent.click(form.getByRole("button", { name: "Save" }));
+
+    const hint = await screen.findByText("You no longer have the admin role on a, so its limits, roles and run slots are hidden.");
+    await waitFor(() => expect(document.activeElement).toBe(hint));
+    expect(sent).toHaveLength(1);
+    expect(screen.queryByText("No roles are given on this team.")).toBeNull();
+    expect(screen.queryByRole("heading", { name: "Roles" })).toBeNull();
+    expect(screen.queryByRole("heading", { name: "Run slots" })).toBeNull();
+    expect(screen.queryByRole("button", { name: "Edit" })).toBeNull();
+    expect(await screen.findByText("You are a viewer of a.")).toBeTruthy(); // /me was read again
+  });
 
   it("warns about a Team managed by GitOps, and saves only once confirmed", async () => {
     const applied = team({ ...full, metadata: { ...full.metadata, annotations: { "kubectl.kubernetes.io/last-applied-configuration": "{}" } } });

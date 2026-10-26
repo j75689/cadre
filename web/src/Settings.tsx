@@ -1,7 +1,7 @@
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { Link, useParams } from "react-router";
 import { APIError, getTeam, type Team } from "./api";
-import { RoleLine, useRole } from "./Identity";
+import { RoleLine, useIdentity, useRole } from "./Identity";
 import { taskLink, teamPath } from "./links";
 import { can } from "./roles";
 import { TeamForm } from "./TeamForm";
@@ -38,6 +38,15 @@ export function Settings() {
   const [editing, setEditing] = useState(false);
   const [left, setLeft] = useState(false);
   const [saved, setSaved] = useState(false);
+  // demoted is a save that took the caller's own admin role: the server
+  // answered with the Team as a non-admin sees it, without its roles and
+  // status, so the page stops showing what only admins see.
+  const [demoted, setDemoted] = useState(false);
+  const demotedRef = useRef<HTMLParagraphElement>(null);
+  const { refresh } = useIdentity();
+  useEffect(() => {
+    if (demoted) demotedRef.current?.focus();
+  }, [demoted]);
   const leave = () => {
     setEditing(false);
     setLeft(true);
@@ -55,6 +64,7 @@ export function Settings() {
         if (e instanceof APIError && e.status === 404) {
           setTeam(null);
           setMissing(true);
+          setEditing(false);
           setError("");
           return;
         }
@@ -65,7 +75,7 @@ export function Settings() {
     15000,
     [ns, retry],
   );
-  const admin = can(role, "manage");
+  const admin = can(role, "manage") && !demoted;
   return (
     <main id="main" className="page settings-page">
       <nav className="breadcrumb" aria-label="Breadcrumb">
@@ -123,9 +133,13 @@ export function Settings() {
             {editing ? (
               <TeamForm
                 team={team}
-                onSaved={(t) => {
+                onSaved={(t, sent) => {
                   setTeam(t);
                   setSaved(true);
+                  if ((sent.roles ?? []).length > 0 && !t.spec?.roles?.length) {
+                    setDemoted(true);
+                    refresh();
+                  }
                   leave();
                 }}
                 onCancel={leave}
@@ -146,7 +160,13 @@ export function Settings() {
                 )}
               </dl>
             )}
-            {!admin && role !== undefined && <p className="hint card-body">This page shows a team's limits, roles and run slots to its admins only.</p>}
+            {demoted ? (
+              <p ref={demotedRef} className="hint card-body" tabIndex={-1}>
+                You no longer have the admin role on {ns}, so its limits, roles and run slots are hidden.
+              </p>
+            ) : (
+              !admin && role !== undefined && <p className="hint card-body">This page shows a team's limits, roles and run slots to its admins only.</p>
+            )}
           </section>
           {admin && <Roles team={team} />}
           {admin && <RunSlots team={team} />}
