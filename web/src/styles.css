@@ -1974,6 +1974,72 @@ main.board {
   scroll-margin-top: calc(var(--topbar) + var(--space-3));
 }
 
+/* Team settings form: in the Team card, in place of its details. A
+   warning banner (GitOps, a conflict) is in the waiting tone, not red. */
+
+.banner-warning {
+  border-color: var(--waiting-dot);
+  background: var(--waiting-soft);
+  color: var(--waiting-fg);
+}
+
+.team-saved {
+  margin-left: auto;
+}
+
+.team-form .role-edit {
+  padding: var(--space-3);
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+}
+
+.subject-rows {
+  display: grid;
+  gap: var(--space-2);
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.subject-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-2);
+}
+
+.subject-row fieldset {
+  display: block;
+}
+
+.subject-row .field {
+  flex: 1;
+  min-width: 10rem;
+}
+
+.team-current {
+  display: grid;
+  gap: var(--space-2);
+  padding: var(--space-3);
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  background: var(--surface-2);
+}
+
+.team-current h3 {
+  margin: 0;
+  font-size: var(--text-md);
+}
+
+.team-form .changed {
+  color: var(--waiting-fg);
+}
+
+.confirm-warning {
+  border-color: var(--waiting-dot);
+  background: var(--waiting-soft);
+}
+
 /* Board filters: the phase and the assignee, beside the search. Under
    640 px they share a row of their own. A board filtered to one phase
    shows its column at a readable width, not a seventh of the board. */
