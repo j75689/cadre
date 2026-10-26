@@ -1,5 +1,5 @@
 import { act, cleanup, fireEvent, render, screen } from "@testing-library/react";
-import { MemoryRouter } from "react-router";
+import { MemoryRouter, useNavigate, type NavigateFunction } from "react-router";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { App } from "./App";
 import type { Phase, Task } from "./api";
@@ -225,15 +225,22 @@ describe("Subtasks", () => {
 describe("A link to a run", () => {
   const current = "01JRUN0000000000000000000B";
   const ended = "01JRUN0000000000000000000A";
+  const other = "01JRUN0000000000000000000C";
 
-  // runServer answers for a task running current, with ended in its runs.
+  // runServer answers for a task running current, with ended and other in
+  // its runs.
   function runServer() {
     const calls: string[] = [];
     vi.stubGlobal("fetch", (url: string) => {
       calls.push(url);
       if (url.endsWith("/me")) return json({ mode: "none", admin: true });
       if (url.endsWith("/runs"))
-        return json({ items: [{ id: ended, mode: "runtime", runner: "r1", reason: "claimed", outcome: "Review", endedAt: "2026-10-25T09:00:00Z" }] });
+        return json({
+          items: [
+            { id: ended, mode: "runtime", runner: "r1", reason: "claimed", outcome: "Review", endedAt: "2026-10-25T09:00:00Z" },
+            { id: other, mode: "runtime", runner: "r2", reason: "claimed", outcome: "Review", endedAt: "2026-10-25T08:00:00Z" },
+          ],
+        });
       if (url.includes("/events")) return json({ items: [{ runId: "", seq: 1, progress: "working" }] });
       if (url.includes("/thread") || url.includes("parent=")) return json({ items: [] });
       return json(task("Running", { run: { id: current, mode: "runtime" }, runs: { count: 2 } }));
@@ -241,13 +248,22 @@ describe("A link to a run", () => {
     return calls;
   }
 
-  function renderAt(run: string) {
+  let navigate: NavigateFunction;
+  function Navigator() {
+    navigate = useNavigate();
+    return null;
+  }
+
+  function renderAt(...runs: string[]) {
     render(
-      <MemoryRouter initialEntries={[`/t/a/tasks/x?run=${run}`]}>
+      <MemoryRouter initialEntries={runs.map((r) => (r ? `/t/a/tasks/x?run=${r}` : "/t/a/tasks/x"))} initialIndex={runs.length - 1}>
         <App />
+        <Navigator />
       </MemoryRouter>,
     );
   }
+
+  const rowOf = (runner: string) => screen.findByRole("button", { name: new RegExp(`runtime on ${runner}`) });
 
   it("opens an ended run and reads its events without a click", async () => {
     const scroll = vi.fn();
@@ -259,7 +275,7 @@ describe("A link to a run", () => {
     await vi.waitFor(() => expect(calls).toContain(`/api/v1/namespaces/a/tasks/x/runs/${ended}/events`));
     await vi.waitFor(() => expect(row.closest("li")!.textContent).toContain("progress: working"));
     expect(scroll).toHaveBeenCalledTimes(1);
-    expect(screen.getByRole("link", { name: `Link to run ${ended}` }).getAttribute("href")).toBe(`/t/a/tasks/x?run=${ended}`);
+    expect(screen.getByRole("link", { name: `Run ${ended}` }).getAttribute("href")).toBe(`/t/a/tasks/x?run=${ended}`);
   });
 
   it("scrolls to the run in progress once", async () => {
@@ -288,5 +304,53 @@ describe("A link to a run", () => {
     renderAt(current.toLowerCase());
     expect(await screen.findByRole("region", { name: "Run in progress" })).toBeTruthy();
     await vi.waitFor(() => expect(scroll).toHaveBeenCalledTimes(1));
+  });
+
+  it("opens an ended run when its link on the page is clicked", async () => {
+    const scroll = vi.fn();
+    Element.prototype.scrollIntoView = scroll;
+    runServer();
+    renderAt("");
+    const row = await rowOf("r1");
+    expect(row.getAttribute("aria-expanded")).toBe("false");
+    fireEvent.click(screen.getByRole("link", { name: new RegExp(ended) }));
+    expect(row.getAttribute("aria-expanded")).toBe("true");
+    await vi.waitFor(() => expect(row.closest("li")!.textContent).toContain("progress: working"));
+    expect(scroll).toHaveBeenCalledTimes(1);
+  });
+
+  it("opens the linked run on Back and Forward, and again after it was closed", async () => {
+    const scroll = vi.fn();
+    Element.prototype.scrollIntoView = scroll;
+    const calls = runServer();
+    renderAt(ended, other);
+    const first = await rowOf("r1");
+    const second = await rowOf("r2");
+    expect(second.getAttribute("aria-expanded")).toBe("true");
+    expect(first.getAttribute("aria-expanded")).toBe("false");
+    act(() => navigate(-1));
+    expect(first.getAttribute("aria-expanded")).toBe("true");
+    await vi.waitFor(() => expect(first.closest("li")!.textContent).toContain("progress: working"));
+    // Closed, then linked again: it opens again.
+    fireEvent.click(first);
+    expect(first.getAttribute("aria-expanded")).toBe("false");
+    act(() => navigate(1));
+    act(() => navigate(-1));
+    expect(first.getAttribute("aria-expanded")).toBe("true");
+    // Scrolled each time a run is linked: other, ended, other, ended.
+    expect(scroll).toHaveBeenCalledTimes(4);
+    // Its events were read once.
+    expect(calls.filter((c) => c.endsWith(`/runs/${ended}/events`))).toHaveLength(1);
+  });
+
+  it("reads a run's events once when its row is closed and opened again quickly", async () => {
+    const calls = runServer();
+    renderAt("");
+    const row = await rowOf("r1");
+    fireEvent.click(row);
+    fireEvent.click(row);
+    fireEvent.click(row);
+    await vi.waitFor(() => expect(row.closest("li")!.textContent).toContain("progress: working"));
+    expect(calls.filter((c) => c.endsWith(`/runs/${ended}/events`))).toHaveLength(1);
   });
 });

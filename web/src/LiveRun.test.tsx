@@ -66,8 +66,7 @@ describe("LiveRun", () => {
     expect(card.textContent).toContain("runtime on r1, step 3");
     expect(card.textContent).toContain("cache 50 read, 0 written");
     expect(card.textContent).toContain("progress: reading the code");
-    expect(card.id).toBe(`run-${runId}`);
-    expect(screen.getByRole("link", { name: `Link to run ${runId}` }).getAttribute("href")).toBe(`/t/a/tasks/x?run=${runId}`);
+    expect(screen.getByRole("link", { name: `Run ${runId}` }).getAttribute("href")).toBe(`/t/a/tasks/x?run=${runId}`);
     // The list is not a live region: polls are not read out.
     expect(card.querySelector("[aria-live], [role=status]")).toBeNull();
   });

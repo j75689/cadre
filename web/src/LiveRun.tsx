@@ -35,12 +35,12 @@ export function LiveRun({ ns, name, run, linked }: { ns: string; name: string; r
   const t = totals(events ?? []);
   const n = (v: number) => v.toLocaleString();
   return (
-    <section className="card live-run" id={`run-${run.id}`} aria-labelledby="live-run" ref={card}>
+    <section className="card live-run" aria-labelledby="live-run" ref={card}>
       <div className="card-head">
         <h2 id="live-run">Run in progress</h2>
       </div>
       <div className="card-body live-run-about">
-        <Link to={taskLink(ns, name, run.id)} aria-label={`Link to run ${run.id}`}>
+        <Link to={taskLink(ns, name, run.id)} aria-label={`Run ${run.id}`}>
           <code title={run.id}>{run.id}</code>
         </Link>
         <span>

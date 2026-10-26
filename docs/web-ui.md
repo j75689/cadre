@@ -129,7 +129,7 @@ The team's URLs and their query parameters are built in `web/src/links.ts` (`tea
   - **Body:** a grid of `minmax(0, 3fr) minmax(18rem, 1fr)`, stacked under 800 px.
     - The main column holds Description, Thread, the composer and Subtasks.
     - The side column holds Details, the run in progress (while Running) and Runs.
-  - `?run=<id>` (any case) opens the page at that run: the run in progress, or an ended run, expanded with its events read. It is scrolled into view once.
+  - `?run=<id>` (any case) opens the page at that run: the run in progress, or an ended run, expanded with its events read. It is scrolled into view once each time it is linked: on load, from a run's link on the page, or by Back and Forward.
 - **New task** (`/t/<ns>/new`): one form card, at most 40rem wide.
   - Labels sit above fields, and inputs are 16 px.
   - Assignee and priority are segmented controls.
@@ -214,7 +214,7 @@ Buttons are disabled while a call is in flight, and the server's error shows und
   - the run count;
   - conditions, each with a check (`True`) or an alert icon, its reason and its message.
 - **Run in progress:** shown while the task is Running. The id in mono links to the run (`?run=<id>`), then the mode, runner and step, and the token totals: "12,345 in · 2,100 out · context 30,120", plus the prompt cache's read and written tokens when there are any. In and out are summed over the events; context is the latest event's, the size of the conversation. Under them the events, as in Runs, read again every 5 s, counted from the start of the read before, while the tab is visible; "No events yet." until the first. The card goes when the run ends, and Runs reads its list again.
-- **Runs:** each run is a row button: a chevron, the mode, runner and reason, and an outcome badge in the outcome's phase hue, with the start and end times under it. The id in mono sits above the button, a link to the run named "Link to run <id>". Expanding a row shows its events in tabular mono: progress lines and token counts, with the prompt cache's when there are any.
+- **Runs:** each run is a row button: a chevron, the mode, runner and reason, and an outcome badge in the outcome's phase hue, with the start and end times under it. The id in mono sits above the button, a link to the run named "Run <id>", as wide as the id. Expanding a row shows its events in tabular mono: progress lines and token counts, with the prompt cache's when there are any.
 
 ## States
 

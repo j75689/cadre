@@ -10,7 +10,7 @@ import { Loading, Skeleton } from "./ui/Skeleton";
 // Runs lists a task's ended runs, read again when current (the run in
 // progress and the phase) changes: a run is in the list once it is not the
 // current one any more. Expanding one reads its events once; the run named
-// by open (any case) is expanded from the start.
+// by open (any case) is expanded.
 export function Runs({ ns, name, current, open = "" }: { ns: string; name: string; current: string; open?: string }) {
   const [runs, setRuns] = useState<RunRecord[] | null>(null);
   const [error, setError] = useState("");
@@ -44,7 +44,7 @@ export function Runs({ ns, name, current, open = "" }: { ns: string; name: strin
       {runs && runs.length > 0 && (
         <ol className="rows">
           {runs.map((r) => (
-            <Run key={r.id} ns={ns} name={name} run={r} initiallyOpen={open !== "" && r.id.toLowerCase() === open.toLowerCase()} />
+            <Run key={r.id} ns={ns} name={name} run={r} linked={open !== "" && r.id.toLowerCase() === open.toLowerCase()} />
           ))}
         </ol>
       )}
@@ -56,38 +56,54 @@ export function Runs({ ns, name, current, open = "" }: { ns: string; name: strin
 // sent the task to (Done, Review, Waiting or Failed).
 const outcomeTone = (outcome: string) => (phases as readonly string[]).includes(outcome) ? phaseTone(outcome as Phase) : undefined;
 
-// Run is one ended run. One opened from the start (a link to it) reads its
-// events at once and is scrolled into view, once.
-function Run({ ns, name, run, initiallyOpen }: { ns: string; name: string; run: RunRecord; initiallyOpen: boolean }) {
+// Run is one ended run. While it is linked (?run=<id>) it is open, its
+// events read, and it is scrolled into view once each time it is linked.
+function Run({ ns, name, run, linked }: { ns: string; name: string; run: RunRecord; linked: boolean }) {
   const [events, setEvents] = useState<RunEvent[] | null>(null);
-  const [open, setOpen] = useState(initiallyOpen);
+  const [open, setOpen] = useState(linked);
+  const [wasLinked, setWasLinked] = useState(linked);
+  if (linked !== wasLinked) {
+    setWasLinked(linked);
+    if (linked) setOpen(true);
+  }
   const [error, setError] = useState("");
   const row = useRef<HTMLLIElement>(null);
-  const linked = useRef(false);
+  const scrolled = useRef(false);
+  // asked keeps the events to one read: a row closed and opened again, or
+  // linked again, while or after they are read reads none. A failed read
+  // can be tried again.
+  const asked = useRef(false);
   const started = ulidTime(run.id);
   const load = async () => {
+    if (asked.current) return;
+    asked.current = true;
     try {
       setEvents((await runEvents(ns, name, run.id)).items);
       setError("");
     } catch (e) {
+      asked.current = false;
       setError((e as Error).message);
     }
   };
   useEffect(() => {
-    if (!initiallyOpen || linked.current) return;
-    linked.current = true;
+    if (!linked) {
+      scrolled.current = false;
+      return;
+    }
+    if (scrolled.current) return;
+    scrolled.current = true;
     row.current?.scrollIntoView?.({ block: "start" });
     void load();
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [initiallyOpen]);
+  }, [linked]);
   const toggle = () => {
     setOpen(!open);
-    if (events === null && !open) void load();
+    if (!open) void load();
   };
   return (
     <li className="run" ref={row}>
       {/* The id links to the run, so it sits outside the row's button. */}
-      <Link className="run-link" to={taskLink(ns, name, run.id)} aria-label={`Link to run ${run.id}`}>
+      <Link className="run-link" to={taskLink(ns, name, run.id)} aria-label={`Run ${run.id}`}>
         <code title={run.id}>{run.id}</code>
       </Link>
       <button type="button" className="run-head" aria-expanded={open} onClick={toggle}>
