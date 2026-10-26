@@ -1,5 +1,6 @@
 import { useState } from "react";
 import { Link, useParams } from "react-router";
+import { SettingsNav } from "./Access";
 import { APIError, getTeam, type Team } from "./api";
 import { RoleLine, useRole } from "./Identity";
 import { taskLink, teamPath } from "./links";
@@ -69,6 +70,7 @@ export function Settings() {
         <Heading>Settings</Heading>
         <RoleLine ns={ns} />
       </div>
+      <SettingsNav />
       {error && (
         <Banner onRetry={forbidden ? undefined : () => setRetry((n) => n + 1)}>
           Could not load the team: {error}

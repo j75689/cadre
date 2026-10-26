@@ -97,7 +97,7 @@ A skip link to `#main` comes first in the tab order. Each page's `main` has `id=
 #### Team nav
 
 Every team page, `/t/<ns>/...`, has the team nav under the top bar: a `nav` named "Team", 40 px (`--teamnav`), on `--surface`, with a bottom `--line`.
-- It holds the team's tabs, each an icon and a label, in order: **Board**, current on `/t/<ns>` (with or without a trailing slash) only, not on a task's page; **Agents**, for every role; **Settings**, for every role.
+- It holds the team's tabs, each an icon and a label, in order: **Board**, current on `/t/<ns>` (with or without a trailing slash) only, not on a task's page; **Agents**, for every role; **Settings**, for every role, also current on its sub-pages (`/t/<ns>/settings/access...`).
 - The current tab has `aria-current="page"`, a 2 px `--accent` underline and `--fg` text; the others are `--fg-muted`.
 - A tab can be left out for a role that cannot use it.
 - When the tabs do not fit, they scroll inside the nav; the page never scrolls sideways, down to 320 px.
@@ -142,11 +142,16 @@ The team's URLs and their query parameters are built in `web/src/links.ts` (`tea
   - "Create task" is the primary button; "Cancel" is a link back to the board.
 - **Settings** (`/t/<ns>/settings`): the team's Team, read every 15 s, at most 60rem wide.
   - A breadcrumb (the team, then Settings), then `h1` "Settings" and, with logins, the caller's role.
+  - Under the heading, the settings' tabs: a `nav` named "Settings" with **Team** (`/t/<ns>/settings`, current there only) and **Agent access** (`/t/<ns>/settings/access`), shown only with logins (`--auth=oidc`) to an admin of the team. The current tab has `aria-current="page"` and a 2 px `--accent` underline; the tabs scroll inside their bar when they do not fit.
   - **Team** card: a key/value list of the display name (the namespace, muted, when there is none) and the namespace in mono. For an admin (everyone under `--auth=none`) it also shows the max concurrent runs and the archive-after duration; an unset cap reads "1 (default)", as the server runs one task at a time then, and an unset duration reads "never".
   - **Roles** card, admins only: a table of each role (`RoleBadge`) and its subjects, as `user:<name>` or `group:<name>` in mono, in a `.table-text` cell, so they wrap.
   - **Run slots** card, admins only: "*running* of *max* in use" in its header (*max* is 1 when unset), then a table of the slots held: the task (a link to it, opened at the run), the run id in mono, and when the slot was acquired.
   - The server sends a viewer or a member the Team without its roles and status. It does send the limits, but the page shows them to admins only. So the others see the display name and the namespace, and the hint "This page shows a team's limits, roles and run slots to its admins only."
   - A namespace without a Team shows "This namespace has no Team." with the `cadre team init` command. A failed read shows a banner with Retry; a 403 shows it without Retry, as reading again cannot help.
+- **Agent access** (`/t/<ns>/settings/access`): the team's AgentAccesses, read every 15 s, at most 60rem wide, under the same breadcrumb (the team, Settings, then Agent access), heading and settings' tabs. Read-only for now.
+  - The server serves AgentAccesses with logins only, to a team's admins (with `--auth=none` the routes are not registered). So nothing is requested before `/me` says so: under `--auth=none` the page says "Agent access needs logins. This cadre-server runs with --auth=none, so it serves no AgentAccess routes; use kubectl, or run it with --auth=oidc."; a viewer or a member reads "Managing agent access needs the admin role.". A plain 404 (the router's, with no error code) shows the same "needs logins" card, not an error.
+  - A table of each AgentAccess: its name (mono, a link to its page; it wraps, at most 16rem), its role (`RoleBadge`), its credential ("ServiceAccount *name*", "Minted token in Secret *secret*" and when it was minted, or "Token not minted yet"), its readiness (`ReadyBadge`), the reason (blank for Pending, which the badge says) and the message, in a `.table-text` cell. None reads "No AgentAccess yet.". A failed read shows a banner with Retry; a 403 shows it without Retry.
+  - **One AgentAccess** (`/t/<ns>/settings/access/<name>`): the breadcrumb ends in Agent access, then the name; the `h1` is the name. A card lists the name, role, credential, status, reason and message when set, and when the token was minted. A minted token adds "The token is never shown again after it is minted; read it from Secret *secret* with kubectl." An AgentAccess that is not there (a 404 with the code `not_found`) reads "No AgentAccess *name*." with a link back to the list.
 
 ## Components
 
