@@ -219,6 +219,13 @@ describe("Board", () => {
     expect(screen.queryByText("Title of a")).toBeNull();
   });
 
+  it("counts what an assignee alone shows of what is loaded", async () => {
+    serve([bot("a", "Todo"), task("b", "Todo"), bot("c", "Done")])();
+    renderPage("/t/team-a?assignee=bot-1");
+    await screen.findByText("Title of a");
+    expect(screen.getByText("2 of 3 loaded tasks shown")).toBeTruthy();
+  });
+
   it("reads every phase for an unknown phase, and leaves it in the URL", async () => {
     serve([bot("a", "Todo")])();
     renderPage("/t/team-a?phase=Bogus");
@@ -255,6 +262,21 @@ describe("Board", () => {
     fireEvent.change(select("Assignee"), { target: { value: "" } });
     expect(query()).toBe("?phase=Todo");
     expect(document.activeElement).toBe(phase);
+  });
+
+  it("shows only the chosen phase's column while its read is on the way", async () => {
+    const tasks = [task("a", "Todo"), task("b", "Done")];
+    serve(tasks)();
+    renderPage("/t/team-a");
+    await screen.findByText("Title of b");
+    const go = serve(tasks);
+    fireEvent.change(select("Phase"), { target: { value: "Todo" } });
+    await vi.waitFor(() => expect(reads).toEqual(["Todo"]));
+    expect(screen.getAllByRole("region").map((r) => r.getAttribute("aria-label"))).toEqual(["Todo"]);
+    expect(screen.queryByText("Title of b")).toBeNull();
+    await act(async () => go());
+    expect(screen.getAllByRole("region").map((r) => r.getAttribute("aria-label"))).toEqual(["Todo"]);
+    expect(screen.getByText("Title of a")).toBeTruthy();
   });
 
   it("clears two filters in one handler", async () => {
