@@ -1654,6 +1654,11 @@ main.board {
   overflow-x: auto;
 }
 
+/* A long path or URL in an event wraps instead of widening the column. */
+.events li {
+  overflow-wrap: anywhere;
+}
+
 .subtask-row {
   display: flex;
   align-items: center;
