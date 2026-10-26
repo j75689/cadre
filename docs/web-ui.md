@@ -138,7 +138,7 @@ The team's URLs and their query parameters are built in `web/src/links.ts` (`tea
   - **Team** card: a key/value list of the display name (the namespace, muted, when there is none) and the namespace in mono. For an admin (everyone under `--auth=none`) it also shows the max concurrent runs and the archive-after duration; an unset cap reads "1 (default)", as the server runs one task at a time then, and an unset duration reads "never".
   - **Roles** card, admins only: a table of each role (`RoleBadge`) and its subjects, as `user:<name>` or `group:<name>` in mono.
   - **Run slots** card, admins only: "*running* of *max* in use" in its header (*max* is 1 when unset), then a table of the slots held: the task (a link to it, opened at the run), the run id in mono, and when the slot was acquired.
-  - A viewer or a member is sent the Team without its roles and status, so they see the display name and namespace, and the hint "Only the team's admins see its limits, roles and run slots."
+  - A viewer or a member is sent the Team without its roles and status. The page also keeps the limits, which the server does send, to admins, so the others see the display name and namespace, and the hint "This page shows a team's limits, roles and run slots to its admins only."
   - A namespace without a Team shows "This namespace has no Team." with the `cadre team init` command. A failed read shows a banner with Retry.
 
 ## Components

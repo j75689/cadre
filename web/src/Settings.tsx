@@ -16,9 +16,9 @@ import { usePolling } from "./usePolling";
 // (max(MaxConcurrentRuns, 1) wherever it is checked).
 const defaultMaxRuns = 1;
 
-// Settings shows the namespace's Team. Only its admins are sent the roles
-// and the status (the server's project()), so only they see the limits,
-// the roles and the run slots; the others see what it is called.
+// Settings shows the namespace's Team. The server sends its roles and its
+// status to its admins only (project()). The limits are sent to every role,
+// but the page shows them to admins only too; the others see its name.
 export function Settings() {
   const { ns = "" } = useParams();
   const role = useRole(ns);
@@ -103,7 +103,7 @@ export function Settings() {
                 </>
               )}
             </dl>
-            {!admin && role !== undefined && <p className="hint card-body">Only the team's admins see its limits, roles and run slots.</p>}
+            {!admin && role !== undefined && <p className="hint card-body">This page shows a team's limits, roles and run slots to its admins only.</p>}
           </section>
           {admin && <Roles team={team} />}
           {admin && <RunSlots team={team} />}

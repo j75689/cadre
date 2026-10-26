@@ -82,12 +82,12 @@ describe("Settings", () => {
   it("shows an admin the limits under --auth=none", async () => {
     open({ mode: "none", admin: true }, () => json(full));
     expect(await screen.findByRole("heading", { name: "Roles" })).toBeTruthy();
-    expect(screen.queryByText(/Only the team's admins/)).toBeNull();
+    expect(screen.queryByText(/to its admins only/)).toBeNull();
   });
 
   it.each(["viewer", "member"])("shows a %s the name only, from the stripped Team", async (role) => {
     open({ mode: "oidc", name: "lee", roles: { a: role } }, () => json(stripped));
-    expect(await screen.findByText("Only the team's admins see its limits, roles and run slots.")).toBeTruthy();
+    expect(await screen.findByText("This page shows a team's limits, roles and run slots to its admins only.")).toBeTruthy();
     const card = within(screen.getByRole("region", { name: "Team" }));
     expect(card.getByText("Team A")).toBeTruthy();
     expect(card.getByText("a")).toBeTruthy();
