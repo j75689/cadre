@@ -1,4 +1,4 @@
-import type { ButtonHTMLAttributes } from "react";
+import type { ButtonHTMLAttributes, Ref } from "react";
 import { Link, type LinkProps } from "react-router";
 import { Icon, type IconName } from "./Icon";
 
@@ -25,7 +25,7 @@ interface Look {
 }
 
 // Button is a button. An icon-only one (no children) must carry an
-// aria-label, which the types ask for.
+// aria-label, which the types ask for. ref reaches the <button>.
 export function Button({
   variant,
   small,
@@ -34,7 +34,7 @@ export function Button({
   children,
   type = "button",
   ...rest
-}: Look & ButtonHTMLAttributes<HTMLButtonElement>) {
+}: Look & ButtonHTMLAttributes<HTMLButtonElement> & { ref?: Ref<HTMLButtonElement> }) {
   const iconOnly = children === undefined;
   return (
     <button type={type} className={buttonClass(variant, small, iconOnly, className)} {...rest}>
