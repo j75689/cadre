@@ -38,7 +38,7 @@ describe("App", () => {
     act(() => nav.go("/t/b"));
     expect(screen.getByRole("heading", { name: "b" })).toBeTruthy();
     expect(screen.queryByText("A's task")).toBeNull();
-    expect(screen.getByText("Loading…")).toBeTruthy();
+    expect(screen.getByText("Loading the board")).toBeTruthy();
   });
 
   it("shows another task's page fresh, not the last one's", async () => {

@@ -31,7 +31,7 @@ export interface Condition {
 export interface TaskStatus {
   number?: number;
   phase?: Phase;
-  waiting?: { reason: string; since?: string; threadSeq?: number };
+  waiting?: { reason: string; since?: string; threadSeq?: number; itemId?: string };
   run?: { id: string; mode?: string; runnerName?: string; step?: number; attempt?: number; leaseUntil?: string };
   runs?: { count?: number; lastId?: string };
   conditions?: Condition[];

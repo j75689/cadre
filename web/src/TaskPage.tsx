@@ -1,11 +1,18 @@
 import { useRef, useState } from "react";
 import { Link, useParams } from "react-router";
 import { APIError, getTask, readThread, type Task, type ThreadEntry } from "./api";
-import { Actions } from "./Actions";
+import { CancelTask, Composer } from "./Actions";
 import { RoleLine } from "./Identity";
 import { Runs } from "./Runs";
 import { Subtasks } from "./Subtasks";
+import { useTeamName } from "./teamList";
 import { Thread } from "./Thread";
+import { assigneeIcon, PhaseBadge, Pills, PriorityChip } from "./ui/Badge";
+import { Banner } from "./ui/Banner";
+import { Icon } from "./ui/Icon";
+import { Heading, useTitle } from "./ui/Page";
+import { Loading, Skeleton } from "./ui/Skeleton";
+import { Time } from "./ui/Time";
 import { usePolling } from "./usePolling";
 
 // threadPage is how many thread entries one read asks for.
@@ -16,6 +23,7 @@ export const threadPage = 200;
 // start again.
 export function TaskPage() {
   const { ns = "", name = "" } = useParams();
+  const team = useTeamName(ns);
   const [task, setTask] = useState<Task | null>(null);
   const [entries, setEntries] = useState<ThreadEntry[]>([]);
   const lastSeq = useRef(0);
@@ -52,39 +60,78 @@ export function TaskPage() {
     [ns, name, refresh],
   );
 
+  const number = task?.status?.number;
+  useTitle(task ? `${number !== undefined ? `#${number} ` : ""}${task.spec.title}` : undefined, team);
   const board = `/t/${encodeURIComponent(ns)}`;
+  const onRefresh = () => setRefresh((n) => n + 1);
+  const waitingOn = task?.status?.waiting?.threadSeq;
+  const waitedCall = entries.find((e) => e.seq === waitingOn)?.call;
   return (
-    <main className="task">
-      <p>
-        <Link to={board}>← {ns}</Link>
-      </p>
-      {error && <p className="error">Could not load the task: {error}</p>}
+    <main id="main" className="task-page">
+      <nav className="breadcrumb" aria-label="Breadcrumb">
+        <ol>
+          <li>
+            <Link to={board}>{team}</Link>
+          </li>
+          <li aria-current="page" className="mono">
+            {number !== undefined ? `#${number}` : name}
+          </li>
+        </ol>
+      </nav>
+      {error && (
+        <Banner onRetry={onRefresh} className="page-banner">
+          Could not load the task: {error}
+        </Banner>
+      )}
+      {!task && !error && <TaskSkeleton />}
       {task && (
         <>
-          <h1>
-            {task.status?.number !== undefined && <span className="number">#{task.status.number} </span>}
-            {task.spec.title}
-          </h1>
-          <RoleLine ns={ns} />
-          {task.spec.parentRef && (
-            <p className="parent">
-              subtask of <Link to={`${board}/tasks/${encodeURIComponent(task.spec.parentRef.name)}`}>{task.spec.parentRef.name}</Link>
-            </p>
-          )}
+          <div className="task-head">
+            <div className="title-block">
+              <Heading>
+                {number !== undefined && <span className="mono num">#{number}</span>}{" "}
+                <span>{task.spec.title}</span>
+              </Heading>
+              <div className="badges">
+                <PhaseBadge phase={task.status?.phase ?? "Todo"} />
+                <PriorityChip priority={task.spec.priority} always />
+                {task.spec.parentRef && (
+                  <span className="meta">
+                    <Icon name="git-branch" size={14} />
+                    <span>
+                      subtask of <Link to={`${board}/tasks/${encodeURIComponent(task.spec.parentRef.name)}`}>{task.spec.parentRef.name}</Link>
+                    </span>
+                  </span>
+                )}
+              </div>
+              <RoleLine ns={ns} />
+            </div>
+            <CancelTask task={task} onTask={setTask} onRefresh={onRefresh} />
+          </div>
           <div className="task-layout">
-            <section className="task-main">
-              {/* Plain text: markdown needs a renderer and sanitising. */}
-              {task.spec.description && <pre className="description">{task.spec.description}</pre>}
-              <h2>Thread</h2>
-              <Thread entries={entries} waitingOn={task.status?.waiting?.threadSeq} />
-              <Actions
-                task={task}
-                onTask={setTask}
-                onRefresh={() => setRefresh((n) => n + 1)}
-              />
+            <div className="stack">
+              {task.spec.description && (
+                <section className="card" aria-labelledby="description">
+                  <div className="card-head">
+                    <h2 id="description">Description</h2>
+                  </div>
+                  {/* Plain text: markdown needs a renderer and sanitising. */}
+                  <pre className="card-body prose">{task.spec.description}</pre>
+                </section>
+              )}
+              <section className="card" aria-labelledby="thread">
+                <div className="card-head">
+                  <h2 id="thread">Thread</h2>
+                  <span className="count-pill">{entries.length}</span>
+                </div>
+                <div className="card-body">
+                  <Thread entries={entries} waitingOn={waitingOn} />
+                </div>
+              </section>
+              <Composer task={task} onTask={setTask} onRefresh={onRefresh} waitingTool={waitedCall?.name ?? waitedCall?.tool} />
               <Subtasks ns={ns} name={name} />
-            </section>
-            <aside className="task-side">
+            </div>
+            <aside className="stack" aria-label="About the task">
               <Details task={task} />
               {/* A run ends when the current run goes away or is replaced; the
                   count catches one that started and ended between reads. */}
@@ -97,56 +144,118 @@ export function TaskPage() {
   );
 }
 
+function TaskSkeleton() {
+  return (
+    <Loading what="the task">
+      <div className="task-head" aria-hidden="true">
+        <div className="title-block">
+          <Skeleton width="50%" height={24} />
+          <Skeleton width="20%" height={16} />
+        </div>
+      </div>
+      <div className="task-layout" aria-hidden="true">
+        <div className="stack">
+          <div className="card card-pad stack">
+            <Skeleton width="90%" />
+            <Skeleton width="75%" />
+            <Skeleton width="60%" />
+          </div>
+        </div>
+        <div className="card card-pad stack">
+          <Skeleton width="70%" />
+          <Skeleton width="50%" />
+        </div>
+      </div>
+    </Loading>
+  );
+}
+
 function Details({ task }: { task: Task }) {
   const { spec, status = {} } = task;
   const run = status.phase === "Running" ? status.run : undefined;
   return (
-    <dl className="details">
-      <dt>Phase</dt>
-      <dd className="phase">{status.phase ?? "Todo"}</dd>
-      {status.waiting && (
-        <>
-          <dt>Waiting</dt>
-          <dd>
-            {status.waiting.reason}
-            {status.waiting.since && <> since {new Date(status.waiting.since).toLocaleString()}</>}
-            {status.waiting.threadSeq ? <> (entry {status.waiting.threadSeq})</> : null}
-          </dd>
-        </>
-      )}
-      <dt>Assignee</dt>
-      <dd>{spec.assignee ? `${spec.assignee.kind === "Agent" ? "agent" : "user"} ${spec.assignee.name}` : "unassigned"}</dd>
-      <dt>Priority</dt>
-      <dd>{spec.priority ?? "medium"}</dd>
-      {spec.labels && spec.labels.length > 0 && (
-        <>
-          <dt>Labels</dt>
-          <dd>{spec.labels.join(", ")}</dd>
-        </>
-      )}
-      {run && (
-        <>
-          <dt>Run</dt>
-          <dd>
-            {run.mode ?? "runtime"} on {run.runnerName ?? "a runner"}
-            {run.step ? `, step ${run.step}` : ""}
-            {run.attempt ? `, attempt ${run.attempt}` : ""}
-            {run.leaseUntil && <>, lease until {new Date(run.leaseUntil).toLocaleTimeString()}</>}
-          </dd>
-        </>
-      )}
-      <dt>Runs</dt>
-      <dd>{status.runs?.count ?? 0}</dd>
-      {status.conditions?.map((c) => (
-        <div key={c.type}>
-          <dt>{c.type}</dt>
-          <dd>
-            {c.status}
-            {c.reason && ` (${c.reason})`}
-            {c.message && `: ${c.message}`}
-          </dd>
-        </div>
-      ))}
-    </dl>
+    <section className="card" aria-labelledby="details">
+      <div className="card-head">
+        <h2 id="details">Details</h2>
+      </div>
+      <dl className="details card-body">
+        <dt>Phase</dt>
+        <dd>
+          <PhaseBadge phase={status.phase ?? "Todo"} />
+        </dd>
+        {status.waiting && (
+          <>
+            <dt>Waiting</dt>
+            <dd>
+              <span className="chip tone-waiting">
+                <Icon name="hourglass" size={12} />
+                {status.waiting.reason}
+              </span>
+              {status.waiting.since && (
+                <span className="sub">
+                  since <Time at={status.waiting.since} />
+                  {status.waiting.threadSeq ? <> (entry {status.waiting.threadSeq})</> : null}
+                </span>
+              )}
+              {!status.waiting.since && status.waiting.threadSeq ? <span className="sub">entry {status.waiting.threadSeq}</span> : null}
+            </dd>
+          </>
+        )}
+        <dt>Assignee</dt>
+        <dd>
+          {spec.assignee ? (
+            <>
+              <Icon name={assigneeIcon(spec.assignee.kind)} />
+              <span>
+                <span className="sr-only">{spec.assignee.kind === "Agent" ? "agent " : "user "}</span>
+                {spec.assignee.name}
+              </span>
+            </>
+          ) : (
+            <span className="muted">unassigned</span>
+          )}
+        </dd>
+        <dt>Priority</dt>
+        <dd>
+          <PriorityChip priority={spec.priority} always />
+        </dd>
+        {spec.labels && spec.labels.length > 0 && (
+          <>
+            <dt>Labels</dt>
+            <dd>
+              <Pills labels={spec.labels} />
+            </dd>
+          </>
+        )}
+        {run && (
+          <>
+            <dt>Run</dt>
+            <dd>
+              <span>
+                {run.mode ?? "runtime"} on {run.runnerName ?? "a runner"}
+                {run.step ? `, step ${run.step}` : ""}
+                {run.attempt ? `, attempt ${run.attempt}` : ""}
+              </span>
+              {run.leaseUntil && <span className="sub">lease until {new Date(run.leaseUntil).toLocaleTimeString()}</span>}
+            </dd>
+          </>
+        )}
+        <dt>Runs</dt>
+        <dd className="num">{status.runs?.count ?? 0}</dd>
+        {status.conditions?.map((c) => (
+          <div key={c.type} className="condition">
+            <dt>{c.type}</dt>
+            <dd>
+              <Icon name={c.status === "True" ? "check" : "alert-triangle"} className={c.status === "True" ? "ok" : "bad"} />
+              <span>
+                {c.status}
+                {c.reason && ` (${c.reason})`}
+              </span>
+              {c.message && <span className="sub">{c.message}</span>}
+            </dd>
+          </div>
+        ))}
+      </dl>
+    </section>
   );
 }

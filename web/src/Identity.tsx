@@ -2,6 +2,8 @@ import { createContext, useContext, useEffect, useState, type ReactNode } from "
 import { getMe, logout, type Me } from "./api";
 import { isRole, type Role } from "./roles";
 import { loadIdentity, saveIdentity } from "./identityStore";
+import { Button } from "./ui/Button";
+import { Icon } from "./ui/Icon";
 
 // Who the UI acts as. With a login (--auth=oidc) the server knows: the UI
 // shows the user and sends no author. Without one (--auth=none, for local
@@ -77,15 +79,21 @@ export function useIdentityDetails() {
   return { mode, me };
 }
 
-// useRole is the caller's role on the team in namespace ns, as /me says:
+// roleOf is the caller's role on the team in namespace ns, as /me says:
 // an admin everywhere for a bootstrap admin, and without logins for
-// everyone. While it is not known yet, undefined.
-export function useRole(ns: string): Role | undefined {
-  const { me } = useContext(IdentityContext);
+// everyone. While /me is not read, or for a role it does not know,
+// undefined.
+export function roleOf(me: Me | undefined, ns: string): Role | undefined {
   if (!me) return undefined;
   const r = me.roles?.[ns];
   if (isRole(r)) return r;
   return me.admin ? "admin" : undefined;
+}
+
+// useRole is roleOf for the identity the UI has.
+export function useRole(ns: string): Role | undefined {
+  const { me } = useContext(IdentityContext);
+  return roleOf(me, ns);
 }
 
 // RoleLine says what the caller is on a team, with logins only.
@@ -96,25 +104,40 @@ export function RoleLine({ ns }: { ns: string }) {
   return <p className="role hint">{role ? `You are ${role === "admin" ? "an" : "a"} ${role} of ${ns}.` : `You have no role on ${ns}.`}</p>;
 }
 
-// IdentityBox is the header's: the user and a logout with a login, a name
-// box without one.
+// IdentityBox is the top bar's: the user and a logout with a login, the
+// acting name and "change" without one, and the name form while none is
+// set.
 export function IdentityBox() {
   const { mode, name, problem } = useContext(IdentityContext);
   if (mode === "loading") return null;
-  if (mode === "error") return <div className="identity error">Could not tell who you are{problem ? `: ${problem}` : "."}</div>;
+  if (mode === "error") {
+    // Truncated in a narrow bar; the whole of it in the title.
+    const text = `Could not tell who you are${problem ? `: ${problem}` : "."}`;
+    return (
+      <div className="identity error" title={text}>
+        {text}
+      </div>
+    );
+  }
   if (mode === "oidc") {
     return (
       <div className="identity">
-        <strong>{name}</strong>{" "}
-        <button
-          type="button"
+        <Icon name="user" />
+        <strong>{name}</strong>
+        <Button
+          variant="ghost"
+          small
+          icon="log-out"
+          aria-label="Log out"
           onClick={async () => {
             await logout();
             location.assign("/");
           }}
         >
-          Log out
-        </button>
+          <span className="logout-label" aria-hidden="true">
+            Log out
+          </span>
+        </Button>
       </div>
     );
   }
@@ -128,16 +151,18 @@ function NameBox() {
   if (!editing) {
     return (
       <div className="identity">
-        acting as <strong>{name}</strong>{" "}
-        <button
-          type="button"
+        <span className="acting muted">acting as</span>
+        <strong>{name}</strong>
+        <Button
+          variant="ghost"
+          small
           onClick={() => {
             setDraft(name);
             setEditing(true);
           }}
         >
           change
-        </button>
+        </Button>
       </div>
     );
   }
@@ -153,10 +178,22 @@ function NameBox() {
       }}
     >
       <label>
-        Your name <input value={draft} onChange={(e) => setDraft(e.target.value)} placeholder="shown on what you do" autoFocus />
+        <span className="sr-only">Your name</span>
+        <input
+          value={draft}
+          onChange={(e) => setDraft(e.target.value)}
+          placeholder="Your name"
+          title="This server has no logins (--auth=none): the name is kept in this browser."
+          aria-describedby="name-hint"
+          autoFocus
+        />
       </label>
-      <button type="submit">Save</button>
-      <span className="hint">This server has no logins (--auth=none): the name is kept in this browser.</span>
+      <span id="name-hint" className="sr-only">
+        This server has no logins (--auth=none): the name is kept in this browser.
+      </span>
+      <Button type="submit" small variant="primary">
+        Save
+      </Button>
     </form>
   );
 }

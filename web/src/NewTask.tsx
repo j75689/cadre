@@ -1,8 +1,13 @@
-import { useEffect, useState, type FormEvent } from "react";
+import { useEffect, useState, type FormEvent, type ReactNode } from "react";
 import { Link, useNavigate, useParams } from "react-router";
 import { createTask, listAgents, type AgentSummary, type TaskSpec } from "./api";
 import { RoleLine, useRole } from "./Identity";
 import { can } from "./roles";
+import { useTeamName } from "./teamList";
+import { Banner } from "./ui/Banner";
+import { Button } from "./ui/Button";
+import { Icon } from "./ui/Icon";
+import { Heading, useTitle } from "./ui/Page";
 
 const priorities = ["low", "medium", "high", "urgent"];
 
@@ -32,10 +37,29 @@ export function toSpec(d: Draft): TaskSpec {
   return spec;
 }
 
+// Segmented is a radio group drawn as one row of buttons.
+function Segmented<T extends string>(props: { legend: string; name: string; value: T; options: { value: T; label: string }[]; onChange: (v: T) => void; children?: ReactNode }) {
+  return (
+    <fieldset>
+      <legend>{props.legend}</legend>
+      <div className="segmented">
+        {props.options.map((o) => (
+          <label key={o.value}>
+            <input type="radio" name={props.name} value={o.value} checked={props.value === o.value} onChange={() => props.onChange(o.value)} />
+            {o.label}
+          </label>
+        ))}
+      </div>
+      {props.children}
+    </fieldset>
+  );
+}
+
 // NewTask creates a task in the team; the server names it.
 export function NewTask() {
   const { ns = "" } = useParams();
   const role = useRole(ns);
+  const team = useTeamName(ns);
   const navigate = useNavigate();
   const [draft, setDraft] = useState<Draft>({ title: "", description: "", kind: "", assignee: "", priority: "medium", labels: "" });
   const [agents, setAgents] = useState<AgentSummary[] | null>(null);
@@ -44,6 +68,7 @@ export function NewTask() {
   const [retry, setRetry] = useState(0);
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
+  useTitle("New task", team);
   // The agents are read once: picking one is not live data.
   useEffect(() => {
     const controller = new AbortController();
@@ -73,46 +98,59 @@ export function NewTask() {
       setBusy(false);
     }
   };
+  const board = `/t/${encodeURIComponent(ns)}`;
   const chosen = agents?.find((a) => a.name === draft.assignee);
+  const back = (
+    <nav className="breadcrumb" aria-label="Breadcrumb">
+      <ol>
+        <li>
+          <Link to={board}>{team}</Link>
+        </li>
+        <li aria-current="page">New task</li>
+      </ol>
+    </nav>
+  );
   if (!can(role, "work")) {
     return (
-      <main className="new-task">
-        <p>
-          <Link to={`/t/${encodeURIComponent(ns)}`}>← {ns}</Link>
-        </p>
-        <RoleLine ns={ns} />
-        {role !== undefined && <p>Creating tasks needs the member role.</p>}
+      <main id="main" className="form-page">
+        {back}
+        <div className="card card-pad stack">
+          <Heading>New task</Heading>
+          <RoleLine ns={ns} />
+          {role !== undefined && <p>Creating tasks needs the member role.</p>}
+        </div>
       </main>
     );
   }
   return (
-    <main className="new-task">
-      <p>
-        <Link to={`/t/${encodeURIComponent(ns)}`}>← {ns}</Link>
-      </p>
-      <h1>New task</h1>
-      <form onSubmit={submit} noValidate>
-        <label>
+    <main id="main" className="form-page">
+      {back}
+      <div className="page-head">
+        <Heading>New task</Heading>
+      </div>
+      <form className="card form" onSubmit={submit} noValidate>
+        <label className="field">
           Title <input value={draft.title} onChange={(e) => set({ title: e.target.value })} required />
         </label>
-        <label>
+        <label className="field">
           Description <textarea value={draft.description} onChange={(e) => set({ description: e.target.value })} rows={6} />
         </label>
-        <fieldset>
-          <legend>Assignee</legend>
-          <label>
-            Kind{" "}
-            <select value={draft.kind} onChange={(e) => set({ kind: e.target.value as Draft["kind"], assignee: "" })}>
-              <option value="">unassigned</option>
-              <option value="Agent">agent</option>
-              <option value="User">user</option>
-            </select>
-          </label>
+        <Segmented
+          legend="Assignee"
+          name="kind"
+          value={draft.kind}
+          options={[
+            { value: "", label: "Unassigned" },
+            { value: "Agent", label: "Agent" },
+            { value: "User", label: "User" },
+          ]}
+          onChange={(kind) => set({ kind, assignee: "" })}
+        >
           {draft.kind === "Agent" && (
-            <label>
-              Agent{" "}
+            <label className="field">
+              <span className="sr-only">Agent to assign</span>
               <select value={draft.assignee} onChange={(e) => set({ assignee: e.target.value })}>
-                <option value="">choose…</option>
+                <option value="">Choose an agent…</option>
                 {agents?.map((a) => (
                   <option key={a.name} value={a.name}>
                     {a.name}
@@ -123,44 +161,40 @@ export function NewTask() {
             </label>
           )}
           {draft.kind === "Agent" && chosen && !chosen.ready && (
-            <p className="hint">
+            <p className="help">
               {chosen.name} is not ready{chosen.message ? `: ${chosen.message}` : ""}. Its tasks wait until it is.
             </p>
           )}
-          {draft.kind === "Agent" && agentsError && (
-            <p className="error">
-              Could not load the agents: {agentsError}{" "}
-              <button type="button" onClick={() => setRetry((n) => n + 1)}>
-                Retry
-              </button>
-            </p>
-          )}
-          {draft.kind === "Agent" && !agentsError && agents?.length === 0 && <p className="hint">This team has no agents.</p>}
+          {draft.kind === "Agent" && agentsError && <Banner onRetry={() => setRetry((n) => n + 1)}>Could not load the agents: {agentsError}</Banner>}
+          {draft.kind === "Agent" && !agentsError && agents?.length === 0 && <p className="help">This team has no agents.</p>}
           {draft.kind === "User" && (
-            <label>
-              User <input value={draft.assignee} onChange={(e) => set({ assignee: e.target.value })} />
+            <label className="field">
+              <span className="sr-only">User to assign</span>
+              <input value={draft.assignee} onChange={(e) => set({ assignee: e.target.value })} placeholder="Their user name" />
             </label>
           )}
-        </fieldset>
-        <label>
-          Priority{" "}
-          <select value={draft.priority} onChange={(e) => set({ priority: e.target.value })}>
-            {priorities.map((p) => (
-              <option key={p}>{p}</option>
-            ))}
-          </select>
+        </Segmented>
+        <Segmented legend="Priority" name="priority" value={draft.priority} options={priorities.map((p) => ({ value: p, label: p }))} onChange={(priority) => set({ priority })} />
+        <label className="field">
+          Labels
+          <input value={draft.labels} onChange={(e) => set({ labels: e.target.value })} aria-describedby="labels-help" />
+          <span id="labels-help" className="help">
+            Comma-separated
+          </span>
         </label>
-        <label>
-          Labels <input value={draft.labels} onChange={(e) => set({ labels: e.target.value })} placeholder="comma-separated" />
-        </label>
+        <div className="buttons">
+          <Button type="submit" variant="primary" icon="plus" disabled={busy}>
+            Create task
+          </Button>
+          <Link to={board}>
+            <Icon name="arrow-left" size={14} /> Cancel
+          </Link>
+        </div>
         {error && (
-          <p className="error" role="alert">
+          <p className="inline-error" role="alert">
             {error}
           </p>
         )}
-        <button type="submit" disabled={busy}>
-          Create task
-        </button>
       </form>
     </main>
   );
