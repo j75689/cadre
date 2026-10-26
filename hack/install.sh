@@ -65,10 +65,12 @@ redirected() {
     # wget follows the redirects and prints each hop's response headers
     # (-S), indented, with "Location" in any case a proxy left it in; GNU
     # wget also logs "Location: <url> [following]", the same URL. wget2
-    # leaves Location out of that dump and logs "Adding URL: <url>" for
-    # each redirect instead. The last URL is the release's page.
+    # may leave Location out of that dump (2.2 always does, 2.3 for a
+    # lowercase header, as over HTTP/2), and logs each redirect it
+    # follows: "Adding URL: <url>" before 2.3, "Enqueuing <url>" from
+    # 2.3. The last URL is the release's page.
     wget -S -O /dev/null "$1" 2>&1 |
-      sed -n -e 's/^ *[Ll]ocation: *//p' -e 's/^Adding URL: *//p' |
+      sed -n -e 's/^ *[Ll]ocation: *//p' -e 's/^Adding URL: *//p' -e 's/^Enqueuing *//p' |
       sed 's/ \[following\]$//' | tr -d '\r' | tail -n 1
   fi
 }
