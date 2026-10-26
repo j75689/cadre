@@ -271,14 +271,20 @@ export function AccessDetail() {
   );
 }
 
+// dnsLabel is an AgentAccess's name: the CRD refuses any other, so a name
+// that is not one is not requested.
+const dnsLabel = /^[a-z0-9]([-a-z0-9]{0,61}[a-z0-9])?$/;
+
 function AccessCard({ ns, name }: { ns: string; name: string }) {
   const oidc = useIdentityDetails().mode === "oidc";
+  const valid = dnsLabel.test(name);
   const [access, setAccess] = useState<AgentAccess | null>(null);
   const [missing, setMissing] = useState(false);
   const [failed, setFailed] = useState<Failure | null>(null);
   const [retry, setRetry] = useState(0);
   usePolling(
     async (signal) => {
+      if (!valid) return;
       try {
         setAccess(await getAgentAccess(ns, name, signal));
         setMissing(false);
@@ -298,7 +304,7 @@ function AccessCard({ ns, name }: { ns: string; name: string }) {
     [ns, name, retry],
   );
   if (failed?.notServed) return <NotServed />;
-  if (missing) {
+  if (missing || !valid) {
     return (
       <div className="card empty">
         <p>

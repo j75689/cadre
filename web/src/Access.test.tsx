@@ -182,6 +182,13 @@ describe("AccessDetail", () => {
     expect(card.queryByText(/never shown again/)).toBeNull();
   });
 
+  it("requests no name that is not a DNS label", async () => {
+    const urls = open("/t/a/settings/access/Foo_Bar", admin);
+    expect(await screen.findByText(/No AgentAccess/)).toBeTruthy();
+    expect(screen.getByRole("link", { name: "All agent accesses" })).toBeTruthy();
+    expect(urls.some((u) => u.includes("/agentaccesses"))).toBe(false);
+  });
+
   it("links back to the list when there is no such access", async () => {
     open("/t/a/settings/access/gone", admin, () => json({ error: { code: "not_found", message: "not found" } }, 404));
     expect(await screen.findByText(/No AgentAccess/)).toBeTruthy();
