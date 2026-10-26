@@ -1,4 +1,4 @@
-import { useEffect, useState, type FormEvent, type ReactNode } from "react";
+import { useEffect, useState, type FormEvent } from "react";
 import { Link, useNavigate, useParams } from "react-router";
 import { createTask, listAgents, type AgentSummary, type TaskSpec } from "./api";
 import { RoleLine, useRole } from "./Identity";
@@ -8,6 +8,7 @@ import { Banner } from "./ui/Banner";
 import { Button } from "./ui/Button";
 import { Icon } from "./ui/Icon";
 import { Heading, useTitle } from "./ui/Page";
+import { Segmented } from "./ui/Segmented";
 
 const priorities = ["low", "medium", "high", "urgent"];
 
@@ -35,24 +36,6 @@ export function toSpec(d: Draft): TaskSpec {
   const labels = [...new Set(d.labels.split(",").map((l) => l.trim()).filter((l) => l !== ""))];
   if (labels.length > 0) spec.labels = labels;
   return spec;
-}
-
-// Segmented is a radio group drawn as one row of buttons.
-function Segmented<T extends string>(props: { legend: string; name: string; value: T; options: { value: T; label: string }[]; onChange: (v: T) => void; children?: ReactNode }) {
-  return (
-    <fieldset>
-      <legend>{props.legend}</legend>
-      <div className="segmented">
-        {props.options.map((o) => (
-          <label key={o.value}>
-            <input type="radio" name={props.name} value={o.value} checked={props.value === o.value} onChange={() => props.onChange(o.value)} />
-            {o.label}
-          </label>
-        ))}
-      </div>
-      {props.children}
-    </fieldset>
-  );
 }
 
 // NewTask creates a task in the team; the server names it.

@@ -164,6 +164,7 @@ Shared pieces live in `web/src/ui/`.
 | `Meta` | A row of an icon and text: an assignee (bot or user), "subtask of", a wait. |
 | `Skeleton`, `SkeletonCard`, `Loading` | Placeholder blocks. `Loading` wraps them, is `aria-busy`, and carries a visually hidden "Loading …" for screen readers. |
 | `Banner` | An inline error: an alert icon, the message and, where a retry exists, Retry. |
+| `Segmented` | A radio group in a `fieldset`, drawn as one row of buttons, with its `legend`. |
 | `Menu`, `MenuNote` | A menu button. It opens a `role="menu"` list of links and focuses the first item. Arrow keys, Home and End move between items, and Escape closes it and returns focus to the button. A click outside, Tab or a choice also closes it. A line that is not a choice (the teams still loading, or failing to load) is a `MenuNote`: a disabled menu item, so assistive technology reads it; it is not highlighted on hover or focus, and choosing it does nothing. |
 | `Time` | A `<time>`: relative under a day ("just now", "12 s ago", "5 min ago", "3 h ago"), otherwise the full date. The full date is always in its `title`. |
 | `Heading`, `useTitle` | A page's `h1`, which takes focus after a route change (not after a change of the query only), and its document title. |
