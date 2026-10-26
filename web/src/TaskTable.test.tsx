@@ -100,4 +100,9 @@ describe("sorted", () => {
     expect(names("assignee")).toEqual(["c", "a", "b"]);
     expect(names("number", [...tasks, task("new", "Todo", undefined)])).toEqual(["c", "b", "a", "new"]);
   });
+
+  it("sorts a priority it does not know after low", () => {
+    const names = sorted([...tasks, task("odd", "Todo", 4, { priority: "someday" })], "priority").map((t) => t.metadata.name);
+    expect(names).toEqual(["a", "c", "b", "odd"]);
+  });
 });

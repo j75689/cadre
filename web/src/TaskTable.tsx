@@ -15,13 +15,18 @@ const columns: { key: string; label: string; compare: (a: Task, b: Task) => numb
   { key: "title", label: "Title", compare: (a, b) => a.spec.title.localeCompare(b.spec.title) },
   { key: "phase", label: "Phase", compare: (a, b) => phaseRank(a) - phaseRank(b) },
   { key: "assignee", label: "Assignee", compare: (a, b) => (a.spec.assignee?.name ?? "").localeCompare(b.spec.assignee?.name ?? "") },
-  { key: "priority", label: "Priority", compare: (a, b) => priorities.indexOf(a.spec.priority ?? "medium") - priorities.indexOf(b.spec.priority ?? "medium") },
+  { key: "priority", label: "Priority", compare: (a, b) => priorityRank(a) - priorityRank(b) },
   { key: "created", label: "Created", compare: (a, b) => (a.metadata.creationTimestamp ?? "").localeCompare(b.metadata.creationTimestamp ?? "") },
 ];
 
 // A task without a number yet is a new one: it sorts after the numbered.
 const number = (t: Task) => t.status?.number ?? Number.MAX_SAFE_INTEGER;
 const phaseRank = (t: Task) => phases.findIndex((p) => p === t.status?.phase);
+// A priority the API does not know (an old or hand-edited Task) sorts after low.
+const priorityRank = (t: Task) => {
+  const i = priorities.indexOf(t.spec.priority ?? "medium");
+  return i < 0 ? priorities.length : i;
+};
 
 // parseSort reads a sort key, "-" first for descending. No key, or an
 // unknown one, is the API's order: priority ascending.
