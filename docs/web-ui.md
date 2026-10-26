@@ -152,7 +152,7 @@ Shared pieces live in `web/src/ui/`.
 | `Banner` | An inline error: an alert icon, the message and, where a retry exists, Retry. |
 | `Menu`, `MenuNote` | A menu button. It opens a `role="menu"` list of links and focuses the first item. Arrow keys, Home and End move between items, and Escape closes it and returns focus to the button. A click outside, Tab or a choice also closes it. A line that is not a choice (the teams still loading, or failing to load) is a `MenuNote`: a disabled menu item, so assistive technology reads it; it is not highlighted on hover or focus, and choosing it does nothing. |
 | `Time` | A `<time>`: relative under a day ("just now", "12 s ago", "5 min ago", "3 h ago"), otherwise the full date. The full date is always in its `title`. |
-| `Heading`, `useTitle` | A page's `h1`, which takes focus after a route change, and its document title. |
+| `Heading`, `useTitle` | A page's `h1`, which takes focus after a route change (not after a change of the query only), and its document title. |
 
 ### Board cards
 
@@ -230,7 +230,7 @@ Buttons are disabled while a call is in flight, and the server's error shows und
 - **Contrast:** text is at 4.5:1 or more in both themes. That includes `--fg-muted` on `--surface`, `--bg` and `--surface-2`, every status `-fg` on `--surface`, `--surface-2` and its `-soft` tint, and text on the accent and on the success and danger buttons. Change a token only after checking it again.
 - **Focus:**
   - Every control and card has a 2 px `--ring` `:focus-visible` outline. A card's ring is drawn by its covering link.
-  - After a route change, focus moves to the new page's `h1` (`tabindex="-1"`). The first page of a visit keeps the browser's focus.
+  - After a route change, focus moves to the new page's `h1` (`tabindex="-1"`). The first page of a visit keeps the browser's focus, and so does a change of the query only (a run linked, Back and Forward between runs), so focus stays where it was and the title is not read again.
 - **Names:**
   - Icon-only controls (theme, clear search) have an `aria-label`.
   - Decorative icons and skeleton blocks are `aria-hidden`.

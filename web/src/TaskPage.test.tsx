@@ -346,6 +346,20 @@ describe("A link to a run", () => {
     expect(calls.filter((c) => c.endsWith(`/runs/${ended}/events`))).toHaveLength(1);
   });
 
+  it("keeps the focus on a run's link: the page is the same", async () => {
+    runServer();
+    renderAt("");
+    await rowOf("r1");
+    const link = screen.getByRole("link", { name: `Run ${ended}` });
+    link.focus();
+    fireEvent.click(link);
+    await act(() => vi.advanceTimersByTimeAsync(10));
+    expect(document.activeElement).toBe(link);
+    act(() => navigate(-1));
+    await act(() => vi.advanceTimersByTimeAsync(10));
+    expect(document.activeElement).toBe(link);
+  });
+
   it("reads a run's events again when its row is opened after a failed read", async () => {
     const calls = runServer();
     const serve = globalThis.fetch;
