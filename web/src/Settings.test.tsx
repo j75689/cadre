@@ -221,6 +221,19 @@ describe("Editing the Team", () => {
     expect(sent[1].displayName).toBe("Team B");
   });
 
+  it("saves from the version it opened with, even after a newer read", async () => {
+    const theirs = team({ metadata: { name: "team", namespace: "a", resourceVersion: "9" }, spec: { ...full.spec, maxConcurrentRuns: 5 } });
+    const { form, sent, reads } = await edit([() => json(full), () => json(theirs)], [conflict]);
+    fireEvent.change(form.getByLabelText("Display name"), { target: { value: "Team B" } });
+    document.dispatchEvent(new Event("visibilitychange")); // the page reads the Team again
+    await waitFor(() => expect(reads()).toBe(2));
+    await screen.findByText(/of 5 in use/); // the newer read has landed
+    expect((form.getByLabelText(/^Max concurrent runs/) as HTMLInputElement).value).toBe("2");
+    fireEvent.click(form.getByRole("button", { name: "Save" }));
+    await form.findByText(/Someone else changed the team/);
+    expect(sent[0].resourceVersion).toBe("7");
+  });
+
   it("cannot save a Team deleted since it was read", async () => {
     const { form } = await edit([() => json(full), () => json({ error: { code: "not_found", message: "no Team in a" } }, 404)], [conflict]);
     fireEvent.click(form.getByRole("button", { name: "Save" }));
