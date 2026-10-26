@@ -265,6 +265,13 @@ describe("A link to a run", () => {
 
   const rowOf = (runner: string) => screen.findByRole("button", { name: new RegExp(`runtime on ${runner}`) });
 
+  // read waits for the page's first reads of the thread, the subtasks and
+  // the runs: a linked run is scrolled to only once they are done.
+  async function read(calls: string[]) {
+    await vi.waitFor(() => expect(calls.some((c) => c.includes("/thread")) && calls.some((c) => c.includes("parent=")) && calls.some((c) => c.endsWith("/runs"))).toBe(true));
+    await act(() => vi.advanceTimersByTimeAsync(10));
+  }
+
   it("opens an ended run and reads its events without a click", async () => {
     const scroll = vi.fn();
     Element.prototype.scrollIntoView = scroll;
@@ -274,7 +281,7 @@ describe("A link to a run", () => {
     expect(row.getAttribute("aria-expanded")).toBe("true");
     await vi.waitFor(() => expect(calls).toContain(`/api/v1/namespaces/a/tasks/x/runs/${ended}/events`));
     await vi.waitFor(() => expect(row.closest("li")!.textContent).toContain("progress: working"));
-    expect(scroll).toHaveBeenCalledTimes(1);
+    await vi.waitFor(() => expect(scroll).toHaveBeenCalledTimes(1));
     expect(scroll).toHaveBeenCalledWith({ block: "start" });
     expect(screen.getByRole("link", { name: `Run ${ended}` }).getAttribute("href")).toBe(`/t/a/tasks/x?run=${ended}`);
   });
@@ -310,9 +317,10 @@ describe("A link to a run", () => {
   it("opens an ended run when its link on the page is clicked", async () => {
     const scroll = vi.fn();
     Element.prototype.scrollIntoView = scroll;
-    runServer();
+    const calls = runServer();
     renderAt("");
     const row = await rowOf("r1");
+    await read(calls);
     expect(row.getAttribute("aria-expanded")).toBe("false");
     fireEvent.click(screen.getByRole("link", { name: new RegExp(ended) }));
     expect(row.getAttribute("aria-expanded")).toBe("true");
@@ -331,6 +339,7 @@ describe("A link to a run", () => {
     const second = await rowOf("r2");
     expect(second.getAttribute("aria-expanded")).toBe("true");
     expect(first.getAttribute("aria-expanded")).toBe("false");
+    await vi.waitFor(() => expect(scroll).toHaveBeenCalledTimes(1));
     act(() => navigate(-1));
     expect(first.getAttribute("aria-expanded")).toBe("true");
     await vi.waitFor(() => expect(first.closest("li")!.textContent).toContain("progress: working"));
@@ -428,12 +437,15 @@ describe("A link to a run", () => {
   it("scrolls the run in progress only as far as it takes when its link on the page is clicked", async () => {
     const scroll = vi.fn();
     Element.prototype.scrollIntoView = scroll;
-    runServer();
+    const calls = runServer();
     renderAt("");
     await screen.findByRole("region", { name: "Run in progress" });
+    await read(calls);
     fireEvent.click(screen.getByRole("link", { name: `Run ${current}` }));
     expect(scroll).toHaveBeenCalledTimes(1);
     expect(scroll).toHaveBeenCalledWith({ block: "nearest" });
+    await act(() => vi.advanceTimersByTimeAsync(10_000));
+    expect(scroll).toHaveBeenCalledTimes(1);
   });
 
   it("scrolls the run in progress only as far as it takes when its link is clicked before the subtasks are read", async () => {
