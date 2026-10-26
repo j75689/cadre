@@ -1,4 +1,4 @@
-import { NavLink, Outlet, useParams } from "react-router";
+import { NavLink, Outlet, useLocation, useParams } from "react-router";
 import { roleOf, useIdentityDetails } from "./Identity";
 import { teamPath } from "./links";
 import type { Role } from "./roles";
@@ -15,18 +15,23 @@ const items: { to: string; label: string; icon: IconName; end?: boolean; show: (
 // TeamNav is the team's tabs, under the top bar on every team page.
 export function TeamNav() {
   const { ns = "" } = useParams();
+  const { pathname } = useLocation();
   const { mode, me } = useIdentityDetails();
   const role = roleOf(me, ns);
   return (
     <nav className="teamnav" aria-label="Team">
       {items
         .filter((i) => i.show(role, mode))
-        .map((i) => (
-          <NavLink key={i.label} className="teamnav-tab" to={teamPath(ns) + (i.to && `/${i.to}`)} end={i.end}>
-            <Icon name={i.icon} />
-            {i.label}
-          </NavLink>
-        ))}
+        .map((i) => {
+          const to = teamPath(ns) + (i.to && `/${i.to}`);
+          // NavLink's end does not match the path with a trailing slash.
+          return (
+            <NavLink key={i.label} className="teamnav-tab" to={to} end={i.end && pathname !== `${to}/`}>
+              <Icon name={i.icon} />
+              {i.label}
+            </NavLink>
+          );
+        })}
     </nav>
   );
 }

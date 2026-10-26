@@ -97,7 +97,7 @@ A skip link to `#main` comes first in the tab order. Each page's `main` has `id=
 #### Team nav
 
 Every team page, `/t/<ns>/...`, has the team nav under the top bar: a `nav` named "Team", 40 px (`--teamnav`), on `--surface`, with a bottom `--line`.
-- It holds the team's tabs, each an icon and a label. For now there is one, **Board**, current on `/t/<ns>` only, not on a task's page.
+- It holds the team's tabs, each an icon and a label. For now there is one, **Board**, current on `/t/<ns>` (with or without a trailing slash) only, not on a task's page.
 - The current tab has `aria-current="page"`, a 2 px `--accent` underline and `--fg` text; the others are `--fg-muted`.
 - A tab can be left out for a role that cannot use it.
 - When the tabs do not fit, they scroll inside the nav; the page never scrolls sideways, down to 320 px.
