@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef } from "react";
+import { useCallback } from "react";
 import { useSearchParams } from "react-router";
 
 // The UI's URLs: the team's pages and the query parameters they read, so a
@@ -36,18 +36,17 @@ export function taskLink(ns: string, name: string, run?: string): string {
 // second set in one event would drop the first.
 let pending: URLSearchParams | undefined;
 
-// useParam is a query parameter of the page and its setter, the same from
-// one render to the next. Setting one replaces the history entry, and an
-// empty value deletes the parameter. Sets in one event all apply.
+// useParam is a query parameter of the page and its setter, the same while
+// the query is. Setting one replaces the history entry, and an empty value
+// deletes the parameter. Sets in one event all apply.
 export function useParam(key: string): [string, (value: string) => void] {
   const [search, setSearch] = useSearchParams();
-  const latest = useRef(setSearch);
-  useEffect(() => {
-    latest.current = setSearch;
-  });
+  // The setter follows setSearch, not a ref updated in an effect: a child's
+  // effect runs before its parent's, and would set from the query before a
+  // navigation, undoing it.
   const set = useCallback(
     (value: string) =>
-      latest.current(
+      setSearch(
         (prev) => {
           const next = new URLSearchParams(pending ?? prev);
           if (value) next.set(key, value);
@@ -58,7 +57,7 @@ export function useParam(key: string): [string, (value: string) => void] {
         },
         { replace: true },
       ),
-    [key],
+    [key, setSearch],
   );
   return [search.get(key) ?? "", set];
 }

@@ -1,7 +1,7 @@
-import { act, renderHook } from "@testing-library/react";
-import { createElement, type ReactNode } from "react";
-import { MemoryRouter, useLocation, useNavigationType } from "react-router";
-import { describe, expect, it } from "vitest";
+import { act, cleanup, fireEvent, render, renderHook, screen } from "@testing-library/react";
+import { createElement, useEffect, type ReactNode } from "react";
+import { Link, MemoryRouter, useLocation, useNavigationType } from "react-router";
+import { afterEach, describe, expect, it } from "vitest";
 import { boardLink, taskLink, teamPath, useParam } from "./links";
 
 describe("links", () => {
@@ -22,6 +22,7 @@ describe("links", () => {
 });
 
 describe("useParam", () => {
+  afterEach(cleanup);
   const at = (url: string) => ({ children }: { children: ReactNode }) => createElement(MemoryRouter, { initialEntries: [url] }, children);
   const use = () => ({ param: useParam("run"), location: useLocation(), action: useNavigationType() });
 
@@ -40,11 +41,10 @@ describe("useParam", () => {
     expect(result.current.param[0]).toBe("");
   });
 
-  it("keeps the same setter from one render to the next", () => {
+  it("keeps the same setter while the query is the same", () => {
     const { result, rerender } = renderHook(use, { wrapper: at("/t/a?run=R1") });
     const set = result.current.param[1];
     rerender();
-    act(() => set("R2"));
     expect(result.current.param[1]).toBe(set);
   });
 
@@ -61,5 +61,32 @@ describe("useParam", () => {
       result.current.assignee[1]("dana");
     });
     expect(result.current.location.search).toBe("?q=x&phase=Done&assignee=dana");
+  });
+
+  it("sets from the query a link navigated to, when a child's effect sets", () => {
+    // The child normalises the view the parent's link leaves invalid, with
+    // the parent's setter. Its effect runs before the parent's, so a setter
+    // of the last render would set on ?phase=Todo and undo the navigation.
+    function Child({ view, setView }: { view: string; setView: (v: string) => void }) {
+      useEffect(() => {
+        if (view !== "board" && view !== "list") setView("board");
+      }, [view, setView]);
+      return null;
+    }
+    function Parent() {
+      const [phase] = useParam("phase");
+      const [view, setView] = useParam("view");
+      const location = useLocation();
+      return createElement(
+        "div",
+        null,
+        createElement("output", null, location.search),
+        createElement(Link, { to: "?phase=Done&view=bogus" }, phase),
+        createElement(Child, { view, setView }),
+      );
+    }
+    render(createElement(MemoryRouter, { initialEntries: ["/t/a?phase=Todo&view=board"] }, createElement(Parent)));
+    act(() => fireEvent.click(screen.getByRole("link", { name: "Todo" })));
+    expect(screen.getByRole("status").textContent).toBe("?phase=Done&view=board");
   });
 });
