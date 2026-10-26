@@ -52,8 +52,10 @@ export function Board() {
   const [search, setSearch] = useParam(params.q);
   const [phaseParam, setPhase] = useParam(params.phase);
   const [assignee, setAssignee] = useParam(params.assignee);
-  // An unknown phase reads as all of them; it is left in the URL, not set.
-  const phase = phases.find((ph) => ph === phaseParam);
+  // The phase matches in any case, so "?phase=todo" reads Todo and the
+  // select can clear it. An unknown phase reads as all of them; it is left
+  // in the URL, not set.
+  const phase = phases.find((ph) => ph.toLowerCase() === phaseParam.toLowerCase());
   const read = phase ? [phase] : phases;
   const [updated, setUpdated] = useState<Date | null>(null);
   // retry reads the board again at once, after a failed first read.

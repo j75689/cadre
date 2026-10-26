@@ -235,6 +235,17 @@ describe("Board", () => {
     expect(query()).toBe("?phase=Bogus");
   });
 
+  it("reads a phase in any case, and the select clears it", async () => {
+    serve([bot("a", "Todo"), task("b", "Done")])();
+    renderPage("/t/team-a?phase=todo");
+    await screen.findByText("Title of a");
+    expect(select("Phase").value).toBe("Todo");
+    expect(new Set(reads)).toEqual(new Set(["Todo"]));
+    fireEvent.change(select("Phase"), { target: { value: "" } });
+    expect(query()).toBe("");
+    expect(await screen.findByText("Title of b")).toBeTruthy();
+  });
+
   it("keeps the search in the URL in place of the history entry", async () => {
     serve([task("a", "Todo", { labels: ["ops"] }), task("b", "Todo")])();
     renderPage("/t/team-a?phase=Done", "/t/team-a");
