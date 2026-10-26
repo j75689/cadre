@@ -436,6 +436,26 @@ describe("A link to a run", () => {
     expect(scroll).toHaveBeenCalledWith({ block: "nearest" });
   });
 
+  it("scrolls the run in progress only as far as it takes when its link is clicked before the subtasks are read", async () => {
+    const scroll = vi.fn();
+    Element.prototype.scrollIntoView = scroll;
+    runServer();
+    const serve = globalThis.fetch;
+    let answer = () => {};
+    vi.stubGlobal("fetch", (url: string) =>
+      url.includes("parent=") ? new Promise<Response>((r) => (answer = () => r(serve(url) as unknown as Response))) : serve(url),
+    );
+    renderAt("");
+    await screen.findByRole("region", { name: "Run in progress" });
+    fireEvent.click(screen.getByRole("link", { name: `Run ${current}` }));
+    expect(scroll).not.toHaveBeenCalled();
+    await act(async () => answer());
+    await vi.waitFor(() => expect(scroll).toHaveBeenCalledTimes(1));
+    expect(scroll).toHaveBeenCalledWith({ block: "nearest" });
+    await act(() => vi.advanceTimersByTimeAsync(10_000));
+    expect(scroll).toHaveBeenCalledTimes(1);
+  });
+
   it("reads a run's events again when its row is opened after a failed read", async () => {
     const calls = runServer();
     const serve = globalThis.fetch;

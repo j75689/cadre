@@ -67,14 +67,16 @@ const outcomeTone = (outcome: string) => (phases as readonly string[]).includes(
 // clicking the id of a run in view does not move the page. On Back and
 // Forward the browser puts the entry's scroll position back after the
 // page has rendered, in the same task, so it scrolls again in the next.
+// atLoad is whether the page loaded at it: a link clicked while the page
+// is still being read goes only as far as it takes too.
 export function useLinkScroll(el: RefObject<HTMLElement | null>, linked: boolean, ready: boolean) {
   const pop = useNavigationType() === "POP";
-  const loaded = useRef(false);
+  const atLoad = useRef(linked);
   const scrolled = useRef(false);
   useEffect(() => {
     if (!ready) return;
-    const block = loaded.current ? "nearest" : "start";
-    loaded.current = true;
+    const block = atLoad.current ? "start" : "nearest";
+    atLoad.current = false;
     if (!linked) {
       scrolled.current = false;
       return;
