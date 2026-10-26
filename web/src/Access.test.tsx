@@ -201,6 +201,17 @@ describe("AccessDetail", () => {
     expect(await screen.findByText(/No AgentAccess/)).toBeTruthy();
     expect(screen.getByRole("link", { name: "All agent accesses" })).toBeTruthy();
     expect(urls.some((u) => u.includes("/agentaccesses"))).toBe(false);
+    cleanup();
+
+    const long = open("/t/a/settings/access/" + "a".repeat(64), admin);
+    expect(await screen.findByText(/No AgentAccess/)).toBeTruthy();
+    expect(long.some((u) => u.includes("/agentaccesses"))).toBe(false);
+  });
+
+  it("requests a name of 63 characters", async () => {
+    const name = "a".repeat(63);
+    const urls = open(`/t/a/settings/access/${name}`, admin, () => json(access({ name })));
+    await waitFor(() => expect(urls.some((u) => u.endsWith(`/agentaccesses/${name}`))).toBe(true));
   });
 
   it("links back to the list when there is no such access", async () => {
