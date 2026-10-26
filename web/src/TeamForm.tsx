@@ -131,8 +131,19 @@ const ids = (...xs: (string | false)[]) => xs.filter(Boolean).join(" ") || undef
 // 409 that is the Team read again, shown as "Current" above the form, and
 // each field someone else changed since the form opened is marked, unless
 // the form already holds their value. onSaved gets the Team saved and the
-// spec sent.
-export function TeamForm({ team, onSaved, onCancel }: { team: Team; onSaved: (t: Team, sent: TeamSpec) => void; onCancel: () => void }) {
+// spec sent; onLost is a save refused for want of a role: the Team was
+// deleted, or the caller's admin role taken away.
+export function TeamForm({
+  team,
+  onSaved,
+  onLost,
+  onCancel,
+}: {
+  team: Team;
+  onSaved: (t: Team, sent: TeamSpec) => void;
+  onLost: () => void;
+  onCancel: () => void;
+}) {
   const ns = team.metadata.namespace;
   const [opened] = useState(team);
   const [base, setBase] = useState(team);
@@ -221,6 +232,9 @@ export function TeamForm({ team, onSaved, onCancel }: { team: Team; onSaved: (t:
           if (read instanceof APIError && read.status === 404) setDeleted(true);
           else fail({ message: `Could not read the team again: ${(read as Error).message}` });
         }
+      } else if (err instanceof APIError && err.code === "no_role") {
+        onLost();
+        return;
       } else {
         fail(refusal((err as Error).message));
       }

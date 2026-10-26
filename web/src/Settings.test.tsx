@@ -163,6 +163,7 @@ async function edit(reads: (() => Promise<Response>)[], puts: (() => Promise<Res
 }
 
 const conflict = () => json({ error: { code: "conflict", message: "the Team of a changed since it was read" } }, 409);
+const noRole = () => json({ error: { code: "no_role", message: "to manage the team on a needs the admin role; you have no role there" } }, 403);
 const noTeam = () => json({ error: { code: "not_found", message: "no Team in a" } }, 404);
 
 describe("Editing the Team", () => {
@@ -402,6 +403,49 @@ describe("Editing the Team", () => {
     await waitFor(() => expect(document.activeElement).toBe(select(1)));
     fireEvent.click(form.getByRole("button", { name: "Remove role" }));
     await waitFor(() => expect(document.activeElement).toBe(form.getByRole("button", { name: "Add role" })));
+  });
+
+  // A role given by the Team goes with it: the server answers a regular
+  // admin with a 403, not a 409.
+  it("stops editing when a save is refused for want of a role, and reads /me again", async () => {
+    const nobody: Me = { mode: "oidc", name: "dana", roles: {} };
+    const { form, sent, reads } = await edit([() => json(full), noRole], [noRole], [admin, nobody]);
+    fireEvent.change(form.getByLabelText("Display name"), { target: { value: "Team B" } });
+    fireEvent.click(form.getByRole("button", { name: "Save" }));
+
+    const banner = await screen.findByText("Your role on a is gone or has changed: its Team was deleted, or someone changed its roles.");
+    await waitFor(() => expect(document.activeElement).toBe(banner.closest("[role=alert]")));
+    expect(screen.queryByRole("form", { name: "Edit the team" })).toBeNull();
+    expect(screen.queryByRole("button", { name: "Save" })).toBeNull();
+    expect(await screen.findByText("You have no role on a.")).toBeTruthy();
+    await waitFor(() => expect(reads()).toBe(2)); // read again at once
+    expect(screen.queryByText(/Could not load the team/)).toBeNull();
+    expect(screen.queryByText("Team A")).toBeNull();
+    expect(screen.queryByRole("button", { name: "Edit" })).toBeNull();
+    expect(sent).toHaveLength(1);
+  });
+
+  it("stops editing when a read is refused for want of a role", async () => {
+    const nobody: Me = { mode: "oidc", name: "dana", roles: {} };
+    const { form, reads } = await edit([() => json(full), noRole], [], [admin, nobody]);
+    fireEvent.change(form.getByLabelText("Display name"), { target: { value: "Team B" } });
+    document.dispatchEvent(new Event("visibilitychange")); // the page reads the Team again
+    await waitFor(() => expect(reads()).toBe(2));
+
+    const banner = await screen.findByText(/Your role on a is gone or has changed/);
+    await waitFor(() => expect(document.activeElement).toBe(banner.closest("[role=alert]")));
+    expect(screen.queryByRole("form", { name: "Edit the team" })).toBeNull();
+    expect(screen.queryByText(/Could not load the team/)).toBeNull();
+    expect(await screen.findByText("You have no role on a.")).toBeTruthy();
+  });
+
+  it("moves the focus to the empty state when a read finds the Team deleted", async () => {
+    const { reads } = await edit([() => json(full), noTeam]);
+    document.dispatchEvent(new Event("visibilitychange"));
+    await waitFor(() => expect(reads()).toBe(2));
+    const empty = await screen.findByText(/This namespace has no Team/);
+    await waitFor(() => expect(document.activeElement).toBe(empty));
+    expect(screen.queryByRole("form", { name: "Edit the team" })).toBeNull();
   });
 
   it("hides what only admins see once a save took the caller's own admin role", async () => {

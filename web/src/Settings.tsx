@@ -43,13 +43,36 @@ export function Settings() {
   // status, so the page stops showing what only admins see.
   const [demoted, setDemoted] = useState(false);
   const demotedRef = useRef<HTMLParagraphElement>(null);
+  // lost is a 403 no_role after the Team was read, on a save or a read:
+  // the Team was deleted, or the caller's role on it taken away, so the
+  // role /me gave is out of date. It is read again, and the page edits no
+  // more.
+  const [lost, setLost] = useState(false);
+  const lostRef = useRef<HTMLDivElement>(null);
+  const missingRef = useRef<HTMLParagraphElement>(null);
+  // closed is whether a read closed the form, so the message that took its
+  // place takes the focus.
+  const closed = useRef(false);
   const { refresh } = useIdentity();
   useEffect(() => {
     if (demoted) demotedRef.current?.focus();
   }, [demoted]);
+  useEffect(() => {
+    if (!closed.current) return;
+    closed.current = false;
+    (lost ? lostRef : missingRef).current?.focus();
+  }, [lost, missing]);
   const leave = () => {
     setEditing(false);
     setLeft(true);
+  };
+  const lose = () => {
+    if (!lost) refresh();
+    closed.current ||= editing;
+    setEditing(false);
+    setLost(true);
+    setTeam(null);
+    setError("");
   };
   useTitle("Settings", name);
   usePolling(
@@ -61,7 +84,12 @@ export function Settings() {
         setForbidden(false);
       } catch (e) {
         if (signal.aborted) return;
+        if (e instanceof APIError && e.code === "no_role" && (team || lost)) {
+          lose();
+          return;
+        }
         if (e instanceof APIError && e.status === 404) {
+          closed.current ||= editing;
           setTeam(null);
           setMissing(true);
           setEditing(false);
@@ -75,7 +103,7 @@ export function Settings() {
     15000,
     [ns, retry],
   );
-  const admin = can(role, "manage") && !demoted;
+  const admin = can(role, "manage") && !demoted && !lost;
   return (
     <main id="main" className="page settings-page">
       <nav className="breadcrumb" aria-label="Breadcrumb">
@@ -95,13 +123,20 @@ export function Settings() {
           Could not load the team: {error}
         </Banner>
       )}
+      {lost && (
+        <div ref={lostRef} tabIndex={-1} role="alert">
+          <Banner className="banner-warning">Your role on {ns} is gone or has changed: its Team was deleted, or someone changed its roles.</Banner>
+        </div>
+      )}
       {missing && (
         <div className="card empty">
-          <p>This namespace has no Team. A namespace becomes a team when it has a Team resource:</p>
+          <p ref={missingRef} tabIndex={-1}>
+            This namespace has no Team. A namespace becomes a team when it has a Team resource:
+          </p>
           <pre>cadre team init -n {ns}</pre>
         </div>
       )}
-      {!team && !missing && !error && (
+      {!team && !missing && !error && !lost && (
         <Loading what="the settings" className="card card-pad stack">
           <Skeleton width="40%" />
           <Skeleton width="60%" />
@@ -141,6 +176,10 @@ export function Settings() {
                     refresh();
                   }
                   leave();
+                }}
+                onLost={() => {
+                  lose();
+                  setRetry((n) => n + 1);
                 }}
                 onCancel={leave}
               />
