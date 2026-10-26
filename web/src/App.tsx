@@ -4,6 +4,7 @@ import { Agents } from "./Agents";
 import { Board } from "./Board";
 import { IdentityBox, IdentityProvider, roleOf, useIdentityDetails } from "./Identity";
 import { NewTask } from "./NewTask";
+import { Settings } from "./Settings";
 import { TaskPage } from "./TaskPage";
 import { TeamLayout } from "./TeamNav";
 import { Teams } from "./Teams";
@@ -27,10 +28,16 @@ function TeamNewTask() {
   return <NewTask key={ns} />;
 }
 
-// and the agents page,
+// the agents page,
 function TeamAgents() {
   const { ns = "" } = useParams();
   return <Agents key={ns} />;
+}
+
+// the settings,
+function TeamSettings() {
+  const { ns = "" } = useParams();
+  return <Settings key={ns} />;
 }
 
 // and a task page to one task.
@@ -177,6 +184,7 @@ export function App() {
               <Route path="agents" element={<TeamAgents />} />
               <Route path="new" element={<TeamNewTask />} />
               <Route path="tasks/:name" element={<OneTask />} />
+              <Route path="settings" element={<TeamSettings />} />
               <Route path="*" element={<NotFound />} />
             </Route>
             <Route path="*" element={<NotFound />} />

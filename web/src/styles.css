@@ -1342,8 +1342,11 @@ main.board {
   }
 }
 
+/* The column is minmax(0, 1fr), so a wide table scrolls inside its card
+   instead of widening the card and the page. */
 .stack {
   display: grid;
+  grid-template-columns: minmax(0, 1fr);
   gap: var(--space-4);
   min-width: 0;
 }
@@ -1849,6 +1852,21 @@ main.board {
   .logout-label {
     display: none;
   }
+}
+
+/* Settings */
+
+.settings-page {
+  max-width: 60rem;
+}
+
+.subjects {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-1) var(--space-3);
+  margin: 0;
+  padding: 0;
+  list-style: none;
 }
 
 /* Table: a resource's rows. It scrolls sideways inside its wrapper, so the

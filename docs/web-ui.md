@@ -97,7 +97,7 @@ A skip link to `#main` comes first in the tab order. Each page's `main` has `id=
 #### Team nav
 
 Every team page, `/t/<ns>/...`, has the team nav under the top bar: a `nav` named "Team", 40 px (`--teamnav`), on `--surface`, with a bottom `--line`.
-- It holds the team's tabs, each an icon and a label, in order: **Board**, current on `/t/<ns>` (with or without a trailing slash) only, not on a task's page; **Agents**, for every role.
+- It holds the team's tabs, each an icon and a label, in order: **Board**, current on `/t/<ns>` (with or without a trailing slash) only, not on a task's page; **Agents**, for every role; **Settings**, for every role.
 - The current tab has `aria-current="page"`, a 2 px `--accent` underline and `--fg` text; the others are `--fg-muted`.
 - A tab can be left out for a role that cannot use it.
 - When the tabs do not fit, they scroll inside the nav; the page never scrolls sideways, down to 320 px.
@@ -137,6 +137,13 @@ The team's URLs and their query parameters are built in `web/src/links.ts` (`tea
   - Labels sit above fields, and inputs are 16 px.
   - Assignee and priority are segmented controls.
   - "Create task" is the primary button; "Cancel" is a link back to the board.
+- **Settings** (`/t/<ns>/settings`): the team's Team, read every 15 s, at most 60rem wide.
+  - A breadcrumb (the team, then Settings), then `h1` "Settings" and, with logins, the caller's role.
+  - **Team** card: a key/value list of the display name (the namespace, muted, when there is none) and the namespace in mono. For an admin (everyone under `--auth=none`) it also shows the max concurrent runs and the archive-after duration; an unset cap reads "1 (default)", as the server runs one task at a time then, and an unset duration reads "never".
+  - **Roles** card, admins only: a table of each role (`RoleBadge`) and its subjects, as `user:<name>` or `group:<name>` in mono, in a `.table-text` cell, so they wrap.
+  - **Run slots** card, admins only: "*running* of *max* in use" in its header (*max* is 1 when unset), then a table of the slots held: the task (a link to it, opened at the run), the run id in mono, and when the slot was acquired.
+  - The server sends a viewer or a member the Team without its roles and status. It does send the limits, but the page shows them to admins only. So the others see the display name and the namespace, and the hint "This page shows a team's limits, roles and run slots to its admins only."
+  - A namespace without a Team shows "This namespace has no Team." with the `cadre team init` command. A failed read shows a banner with Retry; a 403 shows it without Retry, as reading again cannot help.
 
 ## Components
 
