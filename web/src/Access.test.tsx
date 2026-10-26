@@ -127,6 +127,13 @@ describe("AccessList", () => {
 });
 
 describe("Settings tabs", () => {
+  it("keep Team current with a trailing slash", async () => {
+    open("/t/a/settings/", admin);
+    const tabs = within(screen.getByRole("navigation", { name: "Settings" }));
+    await tabs.findByRole("link", { name: "Agent access" });
+    expect(tabs.getByRole("link", { name: "Team" }).getAttribute("aria-current")).toBe("page");
+  });
+
   it("show Agent access to an oidc admin", async () => {
     open("/t/a/settings", admin);
     const tabs = within(screen.getByRole("navigation", { name: "Settings" }));
@@ -173,6 +180,13 @@ describe("AccessDetail", () => {
     expect(card.getByText("Not ready")).toBeTruthy();
     expect(card.queryByText("Minted")).toBeNull();
     expect(card.queryByText(/never shown again/)).toBeNull();
+  });
+
+  it("leaves Pending to the badge", async () => {
+    open("/t/a/settings/access/bot", admin, () => json(access({ ready: false, reason: "Pending" })));
+    const card = within(await screen.findByRole("region", { name: "AgentAccess" }));
+    expect(card.getAllByText("Pending")).toHaveLength(1);
+    expect(card.queryByText("Reason")).toBeNull();
   });
 
   it("does not point a ServiceAccount's access at a leftover Secret", async () => {
