@@ -97,10 +97,11 @@ func FS(root fs.FS) http.Handler {
 				return
 			}
 		}
-		// Any other path is a route of the app: index.html, never cached,
-		// so a new build is picked up at once.
+		// Any other path is a route of the app: index.html, never stored,
+		// so a new build is picked up at once, and no page that showed a
+		// token is kept or restored from the back/forward cache.
 		w.Header().Set("Content-Type", "text/html; charset=utf-8")
-		w.Header().Set("Cache-Control", "no-cache")
+		w.Header().Set("Cache-Control", "no-store")
 		_, _ = w.Write(index)
 	})
 }
