@@ -109,7 +109,7 @@ Every team page, `/t/<ns>/...`, has the team nav under the top bar: a `nav` name
 - `?` opens the help, `HelpDialog`: a `Dialog` titled "Keyboard shortcuts" with the shortcuts in a `dl`; `c` is listed only for a member or an admin of the team. The top bar's "Keyboard shortcuts" button opens it too.
 - `/` focuses the board's search (`#board-search`), where there is one.
 - `c` opens New task (`/t/<ns>/new`), on a team's pages, for a member or an admin.
-- `g` then `b` within 1 s goes to the team's board (`/t/<ns>`).
+- `g` then `b` within 1 s goes to the team's board (`/t/<ns>`). On the board already, it does nothing, so the board's search and filters stay.
 
 A shortcut is a key without Ctrl, Cmd or Alt, which belong to the browser and the system. AltGr is no modifier here, though Windows sends it as Ctrl and Alt, so `/` and `?` work on layouts that type them with AltGr. None fires when another handler has prevented the key, while the focus is in an `input`, `textarea`, `select` or `[contenteditable]`, during an input method's composition (`isComposing`, or `keyCode` 229), or while a dialog is open, except `?`; Escape closes the dialog. `c` and `g` `b`, which leave the page, also do not fire while the focus is in a `form` or on a `button`, where a draft may be. There is no unsaved-changes guard, so a draft is still lost if the focus is elsewhere on the page. After `c` and `g` `b`, the new page's `h1` takes the focus, as after any route change.
 

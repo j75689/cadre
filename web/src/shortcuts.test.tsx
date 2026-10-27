@@ -37,7 +37,13 @@ function server(role: string) {
 }
 
 function Where() {
-  return <output data-testid="path">{useLocation().pathname}</output>;
+  const { pathname, search } = useLocation();
+  return (
+    <>
+      <output data-testid="path">{pathname}</output>
+      <output data-testid="search">{search}</output>
+    </>
+  );
 }
 
 async function at(path: string, role = "member") {
@@ -99,6 +105,14 @@ describe("shortcuts", () => {
     press("b");
     expect(path()).toBe("/t/a");
     expect(document.activeElement).toBe(await screen.findByRole("heading", { level: 1, name: "a" }));
+  });
+
+  it("keep the board's search on g then b from the board", async () => {
+    await at("/t/a?q=foo");
+    press("g");
+    press("b");
+    expect(path()).toBe("/t/a");
+    expect(screen.getByTestId("search").textContent).toBe("?q=foo");
   });
 
   it("do not go to the board on b 1.2 s after g, or on b alone", async () => {

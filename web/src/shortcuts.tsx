@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from "react";
-import { useNavigate } from "react-router";
+import { useLocation, useNavigate } from "react-router";
 import { useRole } from "./Identity";
 import { teamPath } from "./links";
 import { can } from "./roles";
@@ -32,6 +32,7 @@ function inFormOrButton(e: KeyboardEvent) {
 export function useShortcuts(ns: string | undefined): [boolean, (open: boolean) => void] {
   const [help, setHelp] = useState(false);
   const navigate = useNavigate();
+  const { pathname } = useLocation();
   const role = useRole(ns ?? "");
   const gAt = useRef(0);
   useEffect(() => {
@@ -58,13 +59,14 @@ export function useShortcuts(ns: string | undefined): [boolean, (open: boolean) 
         void navigate(`${teamPath(ns)}/new`);
       } else if (e.key === "g") {
         gAt.current = Date.now();
-      } else if (e.key === "b" && afterG) {
+      } else if (e.key === "b" && afterG && pathname !== teamPath(ns)) {
+        // On the board already, it keeps the board's search and filters.
         void navigate(teamPath(ns));
       }
     };
     document.addEventListener("keydown", onKey);
     return () => document.removeEventListener("keydown", onKey);
-  }, [ns, role, navigate]);
+  }, [ns, role, navigate, pathname]);
   return [help, setHelp];
 }
 
