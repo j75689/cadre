@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState, type FormEvent, type ReactNode } from "react";
+import { flushSync } from "react-dom";
 import { Link, NavLink, useLocation, useNavigate, useParams } from "react-router";
 import {
   APIError,
@@ -492,7 +493,7 @@ function AccessForm({
 
 // TokenOnce is a token just minted, the only time it is shown. AccessCard
 // holds it in its state alone: it goes with Done, or when the page is
-// left. No live region holds it; the card's status says only that it is
+// left, the back/forward cache's way too. No live region holds it; the card's status says only that it is
 // shown.
 function TokenOnce({ token, onDone }: { token: AgentAccessToken; onDone: () => void }) {
   const input = useRef<HTMLInputElement>(null);
@@ -548,6 +549,18 @@ function AccessCard({ ns, name }: { ns: string; name: string }) {
   const [refused, setRefused] = useState("");
   const rotateRef = useRef<HTMLButtonElement>(null);
   const deleteRef = useRef<HTMLButtonElement>(null);
+  // A page left for the back/forward cache is kept as it is, and Back
+  // shows it again: the token goes before that, at once, as the page is
+  // frozen right after pagehide.
+  useEffect(() => {
+    const hide = () =>
+      flushSync(() => {
+        setToken(null);
+        setNote("");
+      });
+    window.addEventListener("pagehide", hide);
+    return () => window.removeEventListener("pagehide", hide);
+  }, []);
   usePolling(
     async (signal) => {
       if (!valid) return;
@@ -558,9 +571,15 @@ function AccessCard({ ns, name }: { ns: string; name: string }) {
       } catch (e) {
         if (signal.aborted) return;
         if (e instanceof APIError && e.status === 404 && e.code === "not_found") {
+          // Gone, a token or a form for it goes too: an access made again
+          // with this name does not bring them back.
           setAccess(null);
           setMissing(true);
           setFailed(null);
+          setToken(null);
+          setNote("");
+          setEditing(false);
+          setConfirming(null);
           return;
         }
         setFailed(failure(e, oidc));

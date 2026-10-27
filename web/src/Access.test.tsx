@@ -473,6 +473,39 @@ describe("Rotating a token", () => {
     spies.forEach((s) => s.mockRestore());
   });
 
+  it("clears the token as the page is left for the back/forward cache", async () => {
+    await rotate(minted);
+    expect(((await screen.findByRole("textbox", { name: "New token" })) as HTMLInputElement).value).toBe(secret);
+    // At once: the page is frozen as it is right after pagehide, and Back
+    // shows it again.
+    window.dispatchEvent(new Event("pagehide"));
+    expect(screen.queryByRole("textbox", { name: "New token" })).toBeNull();
+    expect(screen.queryByText("New token shown below")).toBeNull();
+    expect(document.body.innerHTML).not.toContain(secret);
+    expect(screen.getByRole("button", { name: "Rotate token" })).toBeTruthy();
+  });
+
+  it("drops the token and the form when the access is gone, and a new one of its name brings neither back", async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    const current = { access: access({ tokenSecret: "bot.access-token" }) as ReturnType<typeof access> | null };
+    open("/t/a/settings/access/bot", admin, server(current, minted).handle);
+    fireEvent.click(await screen.findByRole("button", { name: "Rotate token" }));
+    fireEvent.click(screen.getByRole("button", { name: "Yes, rotate it" }));
+    expect(await screen.findByRole("textbox", { name: "New token" })).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: "Edit" }));
+    expect(screen.getByRole("form", { name: "Edit bot" })).toBeTruthy();
+
+    current.access = null;
+    await act(() => vi.advanceTimersByTimeAsync(15000));
+    expect(screen.getByText(/No AgentAccess/)).toBeTruthy();
+    current.access = access({ tokenSecret: "bot.access-token" });
+    await act(() => vi.advanceTimersByTimeAsync(15000));
+    expect(await screen.findByRole("button", { name: "Edit" })).toBeTruthy();
+    expect(screen.queryByRole("form", { name: "Edit bot" })).toBeNull();
+    expect(screen.queryByRole("textbox", { name: "New token" })).toBeNull();
+    expect(document.body.innerHTML).not.toContain(secret);
+  });
+
   it("shows a 409's message as it is, and no token", async () => {
     const message = "AgentAccess bot's token Secret changed while rotating; its token is in Secret bot.access-token";
     await rotate(() => json({ error: { code: "conflict", message } }, 409));
