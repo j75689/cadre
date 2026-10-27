@@ -46,6 +46,7 @@ export function useShortcuts(ns: string | undefined): [boolean, (open: boolean) 
         return;
       }
       if (document.querySelector("dialog[open]")) return;
+      const path = pathname.replace(/\/$/, "");
       const afterG = Date.now() - gAt.current <= chordMs;
       gAt.current = 0;
       if (e.key === "/") {
@@ -55,12 +56,12 @@ export function useShortcuts(ns: string | undefined): [boolean, (open: boolean) 
         search.focus();
       } else if (ns === undefined || inForm(e) || document.querySelector("[data-dirty]")) {
         return;
-      } else if (e.key === "c" && can(role, "work") && pathname !== `${teamPath(ns)}/new`) {
+      } else if (e.key === "c" && can(role, "work") && path !== `${teamPath(ns)}/new`) {
         // On New task already, it adds no second entry to the history.
         void navigate(`${teamPath(ns)}/new`);
       } else if (e.key === "g") {
         gAt.current = Date.now();
-      } else if (e.key === "b" && afterG && pathname !== teamPath(ns)) {
+      } else if (e.key === "b" && afterG && path !== teamPath(ns)) {
         // On the board already, it keeps the board's search and filters.
         void navigate(teamPath(ns));
       }

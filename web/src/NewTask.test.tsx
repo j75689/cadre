@@ -66,6 +66,19 @@ describe("NewTask", () => {
     expect(posts).toEqual([{ spec: { title: "Write it", priority: "medium", assignee: { kind: "Agent", name: "coder" } } }]);
   });
 
+  it("is data-dirty only once it differs from a blank form", async () => {
+    vi.stubGlobal("fetch", (url: string) => json(url.endsWith("/me") ? { mode: "none", admin: true } : { items: [] }));
+    render(
+      <MemoryRouter initialEntries={["/t/a/new"]}>
+        <App />
+      </MemoryRouter>,
+    );
+    const title = await screen.findByLabelText("Title");
+    expect(document.querySelector("[data-dirty]")).toBeNull();
+    fireEvent.change(title, { target: { value: "Write it" } });
+    expect(document.querySelector("[data-dirty]")).not.toBeNull();
+  });
+
   it("says when the agents cannot be read, and reads them once", async () => {
     let reads = 0;
     vi.stubGlobal("fetch", (url: string) => {

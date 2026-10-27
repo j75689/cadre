@@ -243,6 +243,25 @@ describe("shortcuts", () => {
     expect(path()).toBe("/t/a/tasks/x");
   });
 
+  it("do nothing on c on New task with a trailing slash", async () => {
+    show("/t/a/new/");
+    await screen.findByRole("heading", { level: 1, name: "New task" });
+    await act(async () => {});
+    const key = screen.getByTestId("key").textContent;
+    press("c", {}, document.body);
+    expect(path()).toBe("/t/a/new/");
+    expect(screen.getByTestId("key").textContent).toBe(key);
+  });
+
+  it("do nothing on g then b on the board with a trailing slash", async () => {
+    await at("/t/a/");
+    const key = screen.getByTestId("key").textContent;
+    press("g", {}, document.body);
+    press("b", {}, document.body);
+    expect(path()).toBe("/t/a/");
+    expect(screen.getByTestId("key").textContent).toBe(key);
+  });
+
   it("do not fire during an input method's composition", async () => {
     await at("/t/a");
     press("c", { isComposing: true });
