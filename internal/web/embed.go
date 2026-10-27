@@ -98,8 +98,10 @@ func FS(root fs.FS) http.Handler {
 			}
 		}
 		// Any other path is a route of the app: index.html, never stored,
-		// so a new build is picked up at once, and no page that showed a
-		// token is kept or restored from the back/forward cache.
+		// so a new build is picked up at once. Chrome may still keep the
+		// page in its back/forward cache, but not once a cookie changed
+		// (Log out) or the page received an answer that is no-store too,
+		// as a rotated token's is: Back then loads it again.
 		w.Header().Set("Content-Type", "text/html; charset=utf-8")
 		w.Header().Set("Cache-Control", "no-store")
 		_, _ = w.Write(index)

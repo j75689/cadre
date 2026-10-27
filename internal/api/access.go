@@ -106,8 +106,9 @@ func (s *Server) putAgentAccess(w http.ResponseWriter, r *http.Request) {
 
 // rotateAgentAccessToken replaces an AgentAccess's minted token and answers
 // with the new one: this answer is the only place it is ever shown, and
-// it is never logged, nor stored: a page that received it is then not kept
-// in a browser's back/forward cache either. The old token stops at once.
+// it is never logged, nor stored: with the app's no-store pages, Chrome then
+// keeps the page that received it out of its back/forward cache. The old
+// token stops at once.
 func (s *Server) rotateAgentAccessToken(w http.ResponseWriter, r *http.Request) {
 	ns, name := r.PathValue("ns"), r.PathValue("name")
 	by := "anonymous"
