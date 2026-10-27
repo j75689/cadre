@@ -24,15 +24,21 @@ func TestWebHandler(t *testing.T) {
 		"assets/index-AbC1.js": {Data: []byte("console.log(1)")},
 		"favicon.svg":          {Data: []byte("<svg/>")},
 	})
-	for _, path := range []string{"/", "/t/x", "/t/x/tasks/y", "/index.html", "/.gitkeep"} {
+	for _, path := range []string{"/", "/t/x", "/t/x/tasks/y", "/t/demo", "/t/demo/settings/access/x", "/index.html", "/.gitkeep"} {
 		w := get(t, h, http.MethodGet, path)
-		if w.Code != http.StatusOK || !strings.Contains(w.Body.String(), "<title>Cadre</title>") || w.Header().Get("Cache-Control") != "no-cache" {
-			t.Errorf("%s: %d %q, Cache-Control %q; want index.html, no-cache", path, w.Code, w.Body.String(), w.Header().Get("Cache-Control"))
+		if w.Code != http.StatusOK || !strings.Contains(w.Body.String(), "<title>Cadre</title>") || w.Header().Get("Cache-Control") != "no-store" {
+			t.Errorf("%s: %d %q, Cache-Control %q; want index.html, no-store", path, w.Code, w.Body.String(), w.Header().Get("Cache-Control"))
+		}
+		if w := get(t, h, http.MethodHead, path); w.Code != http.StatusOK || w.Header().Get("Cache-Control") != "no-store" {
+			t.Errorf("HEAD %s: %d, Cache-Control %q; want no-store", path, w.Code, w.Header().Get("Cache-Control"))
 		}
 	}
 	w := get(t, h, http.MethodGet, "/assets/index-AbC1.js")
-	if w.Code != http.StatusOK || w.Body.String() != "console.log(1)" || !strings.Contains(w.Header().Get("Cache-Control"), "max-age=31536000") {
+	if w.Code != http.StatusOK || w.Body.String() != "console.log(1)" || w.Header().Get("Cache-Control") != "public, max-age=31536000, immutable" {
 		t.Errorf("hashed asset: %d %q, Cache-Control %q", w.Code, w.Body.String(), w.Header().Get("Cache-Control"))
+	}
+	if w := get(t, h, http.MethodHead, "/assets/index-AbC1.js"); w.Code != http.StatusOK || w.Header().Get("Cache-Control") != "public, max-age=31536000, immutable" {
+		t.Errorf("HEAD hashed asset: %d, Cache-Control %q", w.Code, w.Header().Get("Cache-Control"))
 	}
 	// An asset of an older build is gone, not the app.
 	if w := get(t, h, http.MethodGet, "/assets/index-OLD.js"); w.Code != http.StatusNotFound {
