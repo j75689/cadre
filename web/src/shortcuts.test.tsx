@@ -159,4 +159,20 @@ describe("shortcuts", () => {
     expect(screen.queryByRole("dialog")).toBeNull();
     expect(document.activeElement).toBe(opener);
   });
+
+  it("close the help on Escape, after which ? opens it again", async () => {
+    await at("/t/a");
+    const opener = screen.getByRole("button", { name: "Keyboard shortcuts" });
+    opener.focus();
+    fireEvent.click(opener);
+    const help = screen.getByRole("dialog", { name: "Keyboard shortcuts" }) as HTMLDialogElement;
+    // Escape is native: the browser fires cancel, then closes the dialog.
+    act(() => {
+      help.dispatchEvent(new Event("cancel", { cancelable: true }));
+      help.close();
+    });
+    expect(document.activeElement).toBe(opener);
+    press("?", {}, document.body);
+    expect(screen.getByRole("dialog", { name: "Keyboard shortcuts" })).toBeTruthy();
+  });
 });
