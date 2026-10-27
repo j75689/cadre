@@ -34,8 +34,11 @@ func TestWebHandler(t *testing.T) {
 		}
 	}
 	w := get(t, h, http.MethodGet, "/assets/index-AbC1.js")
-	if w.Code != http.StatusOK || w.Body.String() != "console.log(1)" || !strings.Contains(w.Header().Get("Cache-Control"), "max-age=31536000") {
+	if w.Code != http.StatusOK || w.Body.String() != "console.log(1)" || w.Header().Get("Cache-Control") != "public, max-age=31536000, immutable" {
 		t.Errorf("hashed asset: %d %q, Cache-Control %q", w.Code, w.Body.String(), w.Header().Get("Cache-Control"))
+	}
+	if w := get(t, h, http.MethodHead, "/assets/index-AbC1.js"); w.Code != http.StatusOK || w.Header().Get("Cache-Control") != "public, max-age=31536000, immutable" {
+		t.Errorf("HEAD hashed asset: %d, Cache-Control %q", w.Code, w.Header().Get("Cache-Control"))
 	}
 	// An asset of an older build is gone, not the app.
 	if w := get(t, h, http.MethodGet, "/assets/index-OLD.js"); w.Code != http.StatusNotFound {
