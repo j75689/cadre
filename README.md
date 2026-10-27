@@ -46,6 +46,21 @@ Not a SaaS. Not a workflow engine. Not an LLM gateway. Not a sandbox. Cadre inte
 
 cadre-server serves the board, task pages with their threads and actions, and a form for new tasks at `/`: the web UI is built into it (`make ui` before `make build`; the image carries it). Developing it: [web/README.md](web/README.md).
 
+### Keyboard shortcuts
+
+Press `?`, or the **Keyboard shortcuts** button in the top bar, to see them in the console.
+
+| Key | Does | Where |
+|---|---|---|
+| `?` | shows the shortcuts | any page, also while a dialog is open |
+| `/` | focuses the board's search | the board, `/t/<namespace>` |
+| `c` | opens New task | a team's pages, for members and admins; not on New task itself |
+| `g` then `b` | goes to the board | a team's pages; `b` must follow `g` within 1 second; not on the board itself |
+
+- A shortcut is a single key. With Ctrl, Cmd or Alt it is left to the browser; the exception is AltGr, which still works for `/` and `?` on layouts that type them with it.
+- None works while you type in a field (or compose with an input method), or while a dialog is open, except `?`. Escape closes the dialog.
+- `c` and `g` `b` leave the page, so they also do nothing while the focus is in a form, or while the page holds an unsaved draft (a new task, a changed Settings form, a reply or comment with text, a tool call note). Your text is never lost to a stray key.
+
 ## Installation
 
 With the Helm chart, the supported way:
