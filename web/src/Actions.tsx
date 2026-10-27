@@ -238,8 +238,8 @@ function Drafts(
   );
 }
 
-// TextAction is a form of one text box. Its text, and its error, are the
-// wait's: they go with it.
+// TextAction is a form of one text box, data-dirty while it holds text.
+// Its text, and its error, are the wait's: they go with it.
 function TextAction(props: {
   label: string;
   hint?: string;
@@ -255,6 +255,7 @@ function TextAction(props: {
   const id = useId();
   return (
     <form
+      data-dirty={body !== "" || undefined}
       onSubmit={async (e) => {
         e.preventDefault();
         if (body.trim() === "") return;
@@ -292,6 +293,7 @@ function TextAction(props: {
   );
 }
 
+// Approval is data-dirty while its note holds text.
 function Approval(props: { tool?: string; disabled: boolean; note: string; onNote: (note: string) => void; onDecide: (approve: boolean) => Promise<Outcome> }) {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
@@ -301,7 +303,7 @@ function Approval(props: { tool?: string; disabled: boolean; note: string; onNot
     setBusy(false);
   };
   return (
-    <div className="approval">
+    <div className="approval" data-dirty={props.note !== "" || undefined}>
       <p className="call-name">
         <Icon name="wrench" />
         <span>
