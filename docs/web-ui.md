@@ -81,7 +81,7 @@ The theme control in the top bar cycles system → light → dark. It keeps the 
 The top bar is 48 px, on `--surface`, with a bottom `--line`. It holds, in order:
 - the brand mark: a 20 px accent square with "C", then "Cadre", linking to `/`;
 - the team switcher;
-- on the right, the theme control and the identity.
+- on the right, the keyboard shortcuts button (a ghost `help-circle` icon button named "Keyboard shortcuts"), the theme control and the identity.
 
 The team switcher is a menu button. It names the current team: the display name, with the namespace in mono beside it. On `/` it reads "Teams". Its menu holds "All teams", then every team from `GET /teams`. When people log in, each team also shows the caller's role on it.
 
@@ -102,6 +102,16 @@ Every team page, `/t/<ns>/...`, has the team nav under the top bar: a `nav` name
 - A tab can be left out for a role that cannot use it.
 - When the tabs do not fit, they scroll inside the nav; the page never scrolls sideways, down to 320 px.
 - An unknown team page, `/t/<ns>/<anything else>`, shows Not found under the nav.
+
+#### Keyboard shortcuts
+
+`useShortcuts` (`web/src/shortcuts.tsx`), called once in the layout, listens for single keys on the document:
+- `?` opens the help, `HelpDialog`: a `Dialog` titled "Keyboard shortcuts" with the shortcuts in a `dl`; `c` is listed only for a member or an admin of the team. The top bar's "Keyboard shortcuts" button opens it too.
+- `/` focuses the board's search (`#board-search`), where there is one.
+- `c` opens New task (`/t/<ns>/new`), on a team's pages, for a member or an admin.
+- `g` then `b` within 1 s goes to the team's board (`/t/<ns>`).
+
+A shortcut is a key without Ctrl, Cmd or Alt, which belong to the browser and the system. None fires when another handler has prevented the key, while the focus is in an `input`, `textarea`, `select` or `[contenteditable]`, during an input method's composition (`isComposing`, or `keyCode` 229), or while a dialog is open, except `?`; Escape closes the dialog. After `c` and `g` `b`, the new page's `h1` takes the focus, as after any route change.
 
 The team's URLs and their query parameters are built in `web/src/links.ts` (`teamPath`, `boardLink`, `taskLink`), so a link from one page is one another page reads.
 
@@ -189,6 +199,7 @@ Shared pieces live in `web/src/ui/`.
 | `Segmented` | A radio group in a `fieldset`, drawn as one row of buttons, with its `legend`. |
 | `Menu`, `MenuNote` | A menu button. It opens a `role="menu"` list of links and focuses the first item. Arrow keys, Home and End move between items, and Escape closes it and returns focus to the button. A click outside, Tab or a choice also closes it. A line that is not a choice (the teams still loading, or failing to load) is a `MenuNote`: a disabled menu item, so assistive technology reads it; it is not highlighted on hover or focus, and choosing it does nothing. |
 | `Time` | A `<time>`: relative under a day ("just now", "12 s ago", "5 min ago", "3 h ago"), otherwise the full date. The full date is always in its `title`. |
+| `Dialog` | A modal: a native `<dialog>` opened with `showModal()`, so Escape closes it, the page behind is inert and it sits in the top layer. Props `open`, `onClose`, `title` (its `h2`, which names it through `aria-labelledby`) and `children`. A ghost "Close" icon button is in its head. On `--surface` with a `--line` border and the 6 px radius; its `::backdrop` is `--bg` at 40 %. When it closes, the focus goes back to the element that had it when it opened. |
 | `Heading`, `useTitle` | A page's `h1`, which takes focus after a route change (not after a change of the query only), and its document title. |
 
 ### Tables
@@ -277,11 +288,11 @@ Buttons are disabled while a call is in flight, and the server's error shows und
   - Every control and card has a 2 px `--ring` `:focus-visible` outline. A card's ring is drawn by its covering link.
   - After a route change, focus moves to the new page's `h1` (`tabindex="-1"`). The first page of a visit keeps the browser's focus, and so does a change of the query only (a run linked, Back and Forward between runs), so focus stays where it was and the title is not read again.
 - **Names:**
-  - Icon-only controls (theme, clear search) have an `aria-label`.
+  - Icon-only controls (keyboard shortcuts, theme, clear search, a dialog's Close) have an `aria-label`.
   - Decorative icons and skeleton blocks are `aria-hidden`.
   - A Running card's dot is an `img` named "running".
 - **Colour alone:** phase and priority never rely on colour only: a phase is a dot and its name, and a priority is an icon and its word. A wait is an icon and the word "Waiting".
 - **Structure:** one `h1` per page. Landmarks: `header`, `main` (skip-link target), breadcrumb `nav`, and `region`s for the board's columns and the task's cards.
 - **Live regions:** the board has a single polite `role="status"` with `aria-atomic`. Only a change of state reaches it: "Up to date" (visually hidden) or "Could not refresh: <message>". How long ago the board was read ("Updated 12 s ago") is shown beside it, outside the region, so the poll does not make it speak every five seconds. The run in progress's events are no live region either: a visually hidden polite `role="status"` says "Run ended" when the run goes. Errors from actions are `role="alert"`.
 - **Titles:** `document.title` is "<page> · <team> · Cadre", for example "#12 Fix the build · Platform · Cadre".
-- **Keyboard:** everything a pointer can do is reachable by keyboard: the menu, segmented controls (radios), `<details>`, run rows and the cancel confirmation.
+- **Keyboard:** everything a pointer can do is reachable by keyboard: the menu, segmented controls (radios), `<details>`, run rows and the cancel confirmation. The shortcuts (see [Keyboard shortcuts](#keyboard-shortcuts)) are single keys that never fire while typing, and a dialog gives the focus back to its opener when it closes.
