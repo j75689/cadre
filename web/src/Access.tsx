@@ -360,11 +360,15 @@ function check(d: Draft): Problem | undefined {
   return undefined;
 }
 
+const sameSpec = (a: AgentAccessSpec, b: AgentAccessSpec) => a.role === b.role && a.serviceAccount?.name === b.serviceAccount?.name;
+
 // AccessForm creates an AgentAccess or, given the version it was read at,
 // edits it, its name then read-only. The draft is made once, from initial;
 // the page's reads do not touch it. A refusal shows the server's message
 // as it is; after a 409 the AgentAccess is read again, so the next save
-// carries its new version.
+// carries its new version. A 409 whose AgentAccess still has the spec the
+// form last read is only its status moving, which the reconciler writes
+// after each save and rotation: the form saves again at once.
 function AccessForm({
   ns,
   label,
@@ -385,6 +389,8 @@ function AccessForm({
   const editing = version !== undefined;
   const [draft, setDraft] = useState(initial);
   const [base, setBase] = useState(version);
+  // seen is the spec of the AgentAccess at base.
+  const [seen, setSeen] = useState(() => specOf(initial));
   const [error, setError] = useState<Problem | undefined>(undefined);
   // failures keys the alert, so that the same message is focused and
   // announced again.
@@ -410,18 +416,33 @@ function AccessForm({
       return;
     }
     setBusy(true);
+    const put = (at?: string) => putAgentAccess(ns, draft.name, specOf(draft), at);
     try {
-      onSaved(await putAgentAccess(ns, draft.name, specOf(draft), base));
+      onSaved(await put(base));
       return;
     } catch (err) {
-      fail({ message: (err as Error).message });
+      let refusal = err;
       if (editing && err instanceof APIError && err.code === "conflict") {
+        let now: AgentAccess | undefined;
         try {
-          setBase((await getAgentAccess(ns, draft.name)).resourceVersion);
+          now = await getAgentAccess(ns, draft.name);
         } catch {
           // The save's message stands; the page's reads say the rest.
         }
+        if (now) {
+          setBase(now.resourceVersion);
+          setSeen(now.spec);
+          if (sameSpec(now.spec, seen)) {
+            try {
+              onSaved(await put(now.resourceVersion));
+              return;
+            } catch (again) {
+              refusal = again;
+            }
+          }
+        }
       }
+      fail({ message: (refusal as Error).message });
     }
     setBusy(false);
   };

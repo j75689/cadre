@@ -353,7 +353,7 @@ describe("Editing an agent access", () => {
     fireEvent.click(await screen.findByRole("button", { name: "Edit" }));
     const form = within(screen.getByRole("form", { name: "Edit bot" }));
     fireEvent.click(form.getByRole("radio", { name: "viewer" }));
-    current.access = access({ resourceVersion: "5" });
+    current.access = access({ resourceVersion: "5", spec: { role: "member", serviceAccount: { name: "ops" } } });
     fireEvent.click(form.getByRole("button", { name: "Save" }));
     expect((await form.findByRole("alert")).textContent).toBe(conflict);
     expect((form.getByRole("radio", { name: "viewer" }) as HTMLInputElement).checked).toBe(true);
@@ -361,6 +361,56 @@ describe("Editing an agent access", () => {
     fireEvent.click(form.getByRole("button", { name: "Save" }));
     await waitFor(() => expect(s.calls).toHaveLength(2));
     expect(s.calls[1].body).toEqual({ spec: { role: "viewer" }, resourceVersion: "5" });
+  });
+
+  // reconciled is an API server whose reconciler writes the status after
+  // each save and rotation, which moves the version on with the spec as it
+  // is.
+  function reconciled() {
+    const current = { access: access({ resourceVersion: "3", tokenSecret: "bot.access-token" }) };
+    const settle = () => (current.access = { ...current.access, resourceVersion: String(Number(current.access.resourceVersion) + 1) });
+    const s = server(current, (c) => {
+      if (c.method === "POST") {
+        settle();
+        return json({ token: secret, tokenSecret: "bot.access-token" });
+      }
+      const { spec, resourceVersion } = c.body as { spec: never; resourceVersion: string };
+      if (resourceVersion !== current.access.resourceVersion) return json({ error: { code: "conflict", message: "AgentAccess bot changed since it was read" } }, 409);
+      settle();
+      current.access = { ...current.access, spec };
+      const saved = current.access;
+      settle();
+      return json(saved);
+    });
+    return s;
+  }
+
+  async function edit(role: "viewer" | "member") {
+    fireEvent.click(await screen.findByRole("button", { name: "Edit" }));
+    const form = within(screen.getByRole("form", { name: "Edit bot" }));
+    fireEvent.click(form.getByRole("radio", { name: role }));
+    fireEvent.click(form.getByRole("button", { name: "Save" }));
+    const card = within(screen.getByRole("region", { name: "AgentAccess" }));
+    expect(await card.findByText("Saved")).toBeTruthy();
+    expect(card.queryByRole("alert")).toBeNull();
+  }
+
+  it("saves again after a save, though the reconciler wrote the status since", async () => {
+    const s = reconciled();
+    open("/t/a/settings/access/bot", admin, s.handle);
+    await edit("viewer");
+    await edit("member");
+    expect(s.calls.map((c) => (c.body as { spec: unknown }).spec)).toEqual([{ role: "viewer" }, { role: "member" }, { role: "member" }]);
+  });
+
+  it("saves after a rotation, though the reconciler wrote the status since", async () => {
+    const s = reconciled();
+    open("/t/a/settings/access/bot", admin, s.handle);
+    fireEvent.click(await screen.findByRole("button", { name: "Rotate token" }));
+    fireEvent.click(screen.getByRole("button", { name: "Yes, rotate it" }));
+    fireEvent.click(await screen.findByRole("button", { name: "Done" }));
+    await edit("viewer");
+    expect(s.calls.at(-1)?.body).toEqual({ spec: { role: "viewer" }, resourceVersion: "4" });
   });
 
   it.each([
