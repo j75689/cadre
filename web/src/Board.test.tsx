@@ -3,7 +3,7 @@ import { MemoryRouter, useLocation, useNavigate, type NavigateFunction } from "r
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { App } from "./App";
 import { phases, type Phase, type Task } from "./api";
-import { Columns, matches, type Column } from "./Board";
+import { Columns, latest, matches, type Column } from "./Board";
 import { json } from "./testing";
 
 afterEach(cleanup);
@@ -77,6 +77,18 @@ describe("matches", () => {
     expect(matches(t, "", "bot-1")).toBe(true);
     expect(matches(t, "", "bot")).toBe(false);
     expect(matches(task("b", "Todo"), "", "bot-1")).toBe(false);
+  });
+});
+
+describe("latest", () => {
+  it("keeps a task in two columns only in the one read last", () => {
+    const cols = columns([task("mover", "Todo"), task("a", "Todo"), task("b", "Running")]);
+    cols.find((c) => c.phase === "Running")!.tasks.push(task("mover", "Running"));
+    const tasks = (cs: Column[]) => Object.fromEntries(cs.map((c) => [c.phase, c.tasks.map((t) => t.metadata.name)]));
+    expect(tasks(latest(cols, ["Todo", "Running"])).Todo).toEqual(["a"]);
+    expect(tasks(latest(cols, ["Todo", "Running"])).Running).toEqual(["b", "mover"]);
+    expect(tasks(latest(cols, ["Running", "Todo"])).Todo).toEqual(["mover", "a"]);
+    expect(tasks(latest(cols, ["Running", "Todo"])).Running).toEqual(["b"]);
   });
 });
 
@@ -382,6 +394,83 @@ describe("Board", () => {
     expect(select("Assignee").value).toBe("bot-1");
     expect(await screen.findByText("Title of a")).toBeTruthy();
     expect(screen.queryByText("Title of b")).toBeNull();
+  });
+
+  it("opens the list with the search and the filters of the URL", async () => {
+    const go = serve([bot("fix-a", "Todo"), bot("other", "Todo"), task("fix-b", "Todo"), bot("fix-c", "Done")]);
+    go();
+    renderPage("/t/team-a?q=fix&phase=Todo&assignee=bot-1&view=list");
+    const list = await screen.findByRole("region", { name: "Tasks" });
+    expect(within(list).getAllByRole("link").map((l) => l.textContent)).toEqual(["Title of fix-a"]);
+    expect(screen.queryByRole("region", { name: "Todo" })).toBeNull();
+    expect((screen.getByLabelText("Search the loaded page") as HTMLInputElement).value).toBe("fix");
+    expect(select("Phase").value).toBe("Todo");
+    expect(select("Assignee").value).toBe("bot-1");
+    expect(screen.getByRole("button", { name: "List" }).getAttribute("aria-pressed")).toBe("true");
+    expect(screen.getByRole("button", { name: "Board" }).getAttribute("aria-pressed")).toBe("false");
+    expect(new Set(reads)).toEqual(new Set(["Todo"]));
+  });
+
+  it("switches between the board and the list, keeping the focus on the button", async () => {
+    serve([task("a", "Todo")])();
+    renderPage("/t/team-a?q=a");
+    await screen.findByRole("region", { name: "Todo" });
+    const listButton = screen.getByRole("button", { name: "List" });
+    listButton.focus();
+    fireEvent.click(listButton);
+    expect(query()).toBe("?q=a&view=list");
+    expect(screen.getByRole("region", { name: "Tasks" })).toBeTruthy();
+    expect(screen.queryByRole("region", { name: "Todo" })).toBeNull();
+    expect(document.activeElement).toBe(listButton);
+    fireEvent.click(screen.getByRole("button", { name: "Board" }));
+    expect(query()).toBe("?q=a");
+    expect(screen.getByRole("region", { name: "Todo" })).toBeTruthy();
+  });
+
+  it("reads the next page of each phase with more from the list's Load more", async () => {
+    const offsets: string[] = [];
+    vi.stubGlobal("fetch", (url: string) => {
+      if (url.endsWith("/me")) return json({ mode: "none", admin: true });
+      if (url.endsWith("/teams")) return json({ items: [] });
+      const q = new URL(url, "http://cadre.test").searchParams;
+      const phase = q.get("phase") as Phase;
+      const offset = Number(q.get("offset"));
+      offsets.push(`${phase}@${offset}`);
+      // Todo and Done have a full first page, and a short second one.
+      const n = phase === "Todo" || phase === "Done" ? (offset === 0 ? 50 : 1) : 0;
+      return json({ items: Array.from({ length: n }, (_, i) => task(`${phase}-${offset + i}`, phase)), offset, limit: 50 });
+    });
+    renderPage("/t/team-a?view=list");
+    const more = await screen.findByRole("button", { name: "Load more" });
+    expect(within(screen.getByRole("region", { name: "Tasks" })).getAllByRole("link")).toHaveLength(100);
+    offsets.length = 0;
+    fireEvent.click(more);
+    await vi.waitFor(() => expect(screen.queryByRole("button", { name: "Load more" })).toBeNull());
+    expect(offsets.filter((o) => !o.endsWith("@0")).sort()).toEqual(["Done@50", "Todo@50"]);
+    expect(within(screen.getByRole("region", { name: "Tasks" })).getAllByRole("link")).toHaveLength(102);
+  });
+
+  it("shows a task that changed phase between the reads once, as the read back last has it", async () => {
+    const answer = new Map<string, () => void>();
+    vi.stubGlobal("fetch", async (url: string) => {
+      if (url.endsWith("/me")) return json({ mode: "none", admin: true });
+      if (url.endsWith("/teams")) return json({ items: [] });
+      const phase = new URL(url, "http://cadre.test").searchParams.get("phase") as Phase;
+      await new Promise<void>((r) => answer.set(phase, r));
+      // mover went from Running to Todo between the Running and Todo reads.
+      const items = phase === "Running" || phase === "Todo" ? [task("mover", phase)] : [];
+      return json({ items, offset: 0, limit: 50 });
+    });
+    renderPage("/t/team-a?q=mover&view=list");
+    await vi.waitFor(() => expect(answer.size).toBe(7));
+    for (const ph of [...phases.filter((p) => p !== "Todo"), "Todo"]) await act(async () => answer.get(ph)!());
+    const list = await screen.findByRole("region", { name: "Tasks" });
+    expect(within(list).getAllByRole("link")).toHaveLength(1);
+    expect(within(list).getByText("Todo")).toBeTruthy();
+    expect(screen.getByText("1 of 1 loaded tasks shown")).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: "Board" }));
+    expect(within(screen.getByRole("region", { name: "Todo" })).getByText("Title of mover")).toBeTruthy();
+    expect(within(screen.getByRole("region", { name: "Running" })).queryByText("Title of mover")).toBeNull();
   });
 
   it("opens the board filtered to the agent from the Agents page's link", async () => {

@@ -4,6 +4,7 @@ import { listTasks, phases, terminalPhases, type Phase, type Task } from "./api"
 import { RoleLine, useIdentityDetails, useRole } from "./Identity";
 import { params, useParam, useTextParam } from "./links";
 import { can } from "./roles";
+import { TaskTable } from "./TaskTable";
 import { useTeamName } from "./teamList";
 import { assigneeIcon, Meta, phaseTone, Pills, PriorityChip, RoleBadge } from "./ui/Badge";
 import { Banner } from "./ui/Banner";
@@ -41,6 +42,19 @@ async function loadColumn(ns: string, phase: Phase, pages: number, signal: Abort
   return { phase, tasks, more };
 }
 
+// latest keeps each task in one column only. The phases are read in
+// parallel, so a task that changes phase between two reads comes back in
+// both; it stays in the column whose read came back last, which saw it
+// after the move. Its resourceVersion cannot tell the two apart: it is
+// opaque, never compared (storage.Objects).
+export function latest(columns: Column[], arrived: Phase[]): Column[] {
+  const owner = new Map<string, Phase>();
+  for (const ph of arrived) {
+    for (const t of columns.find((c) => c.phase === ph)?.tasks ?? []) owner.set(t.metadata.name, ph);
+  }
+  return columns.map((c) => ({ ...c, tasks: c.tasks.filter((t) => owner.get(t.metadata.name) === c.phase) }));
+}
+
 export function Board() {
   const { ns = "" } = useParams();
   const role = useRole(ns);
@@ -52,6 +66,9 @@ export function Board() {
   const [search, setSearch, searchBox] = useTextParam(params.q);
   const [phaseParam, setPhase] = useParam(params.phase);
   const [assignee, setAssignee] = useParam(params.assignee);
+  const [view, setView] = useParam(params.view);
+  // Any view but the list is the board.
+  const list = view === "list";
   // The phase matches in any case, so "?phase=todo" reads Todo and the
   // select can clear it. An unknown phase reads as all of them; it is left
   // in the URL, not set.
@@ -64,8 +81,11 @@ export function Board() {
   usePolling(
     async (signal) => {
       try {
-        const next = await Promise.all(read.map((ph) => loadColumn(ns, ph, pages[ph] ?? 1, signal)));
-        setColumns(next);
+        const arrived: Phase[] = [];
+        const next = await Promise.all(
+          read.map((ph) => loadColumn(ns, ph, pages[ph] ?? 1, signal).then((c) => (arrived.push(ph), c))),
+        );
+        setColumns(latest(next, arrived));
         setUpdated(new Date());
         setError("");
       } catch (e) {
@@ -128,6 +148,14 @@ export function Board() {
               ))}
             </select>
           </div>
+          <div className="view-switch" role="group" aria-label="View">
+            <Button variant="ghost" small icon="kanban" aria-pressed={!list} onClick={() => setView("")}>
+              Board
+            </Button>
+            <Button variant="ghost" small icon="list" aria-pressed={list} onClick={() => setView("list")}>
+              List
+            </Button>
+          </div>
           {(search.trim() !== "" || assignee !== "") && shownColumns && (
             <span className="search-count">
               {shown} of {total} loaded tasks shown
@@ -147,7 +175,21 @@ export function Board() {
         <Banner onRetry={() => setRetry((n) => n + 1)}>Could not load the board: {error}</Banner>
       )}
       {columns === null && !error && <BoardSkeleton />}
-      {shownColumns && (
+      {shownColumns && list && (
+        <TaskTable
+          ns={ns}
+          tasks={shownColumns.flatMap((c) => c.tasks.filter((t) => matches(t, search, assignee)))}
+          more={shownColumns.some((c) => c.more)}
+          onMore={() =>
+            setPages((p) => {
+              const next = { ...p };
+              for (const c of shownColumns) if (c.more) next[c.phase] = (p[c.phase] ?? 1) + 1;
+              return next;
+            })
+          }
+        />
+      )}
+      {shownColumns && !list && (
         <Columns
           ns={ns}
           columns={shownColumns}
