@@ -2040,6 +2040,50 @@ main.board {
   background: var(--waiting-soft);
 }
 
+/* Settings tabs and Agent access: the settings' own tabs, under the
+   heading, and the AgentAccess pages under them. The tabs scroll inside
+   their bar when they do not fit, as the team's do. A name wraps, so a long
+   one does not hide the columns after it at 320 px. */
+
+.subnav {
+  display: flex;
+  gap: var(--space-1);
+  margin-bottom: var(--space-4);
+  overflow-x: auto;
+  scrollbar-width: none;
+  border-bottom: 1px solid var(--line);
+}
+
+.subnav-tab {
+  flex: none;
+  padding: var(--space-2) var(--space-3);
+  border-bottom: 2px solid transparent;
+  color: var(--fg-muted);
+  font-weight: 500;
+  text-decoration: none;
+  white-space: nowrap;
+}
+
+.subnav-tab:hover {
+  color: var(--fg);
+}
+
+.subnav-tab[aria-current="page"] {
+  border-bottom-color: var(--accent);
+  color: var(--fg);
+}
+
+.subnav-tab:focus-visible {
+  outline-offset: -2px;
+}
+
+.table .access-name {
+  min-width: 8rem;
+  max-width: 16rem;
+  white-space: normal;
+  overflow-wrap: anywhere;
+}
+
 /* Board filters: the phase and the assignee, beside the search. Under
    640 px they share a row of their own. A board filtered to one phase
    shows its column at a readable width, not a seventh of the board. */
