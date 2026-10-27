@@ -38,8 +38,8 @@ export function useShortcuts(ns: string | undefined): [boolean, (open: boolean) 
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
       // AltGr, which types / or ? on some layouts, arrives with Ctrl and
-      // Alt on Windows.
-      const altGr = e.getModifierState("AltGraph");
+      // Alt on Windows; it is no modifier for those two keys only.
+      const altGr = e.getModifierState("AltGraph") && (e.key === "/" || e.key === "?");
       if (e.defaultPrevented || e.metaKey || (!altGr && (e.ctrlKey || e.altKey)) || typing(e)) return;
       if (e.key === "?") {
         setHelp(true);

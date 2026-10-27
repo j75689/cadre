@@ -176,6 +176,8 @@ describe("shortcuts", () => {
     const altGr = { ctrlKey: true, altKey: true, modifierAltGraph: true };
     press("/", altGr);
     expect(document.activeElement).toBe(screen.getByRole("searchbox", { name: "Search the loaded page" }));
+    press("c", altGr, document.body);
+    expect(path()).toBe("/t/a");
     press("?", altGr, document.body);
     expect(screen.getByRole("dialog", { name: "Keyboard shortcuts" })).toBeTruthy();
   });
