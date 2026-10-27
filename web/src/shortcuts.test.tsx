@@ -1,5 +1,6 @@
 import { act, cleanup, fireEvent, render, screen } from "@testing-library/react";
-import { MemoryRouter, useLocation } from "react-router";
+import { useEffect } from "react";
+import { MemoryRouter, useLocation, useNavigate, type NavigateFunction } from "react-router";
 import { afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import { App } from "./App";
 import { json, task } from "./testing";
@@ -36,8 +37,15 @@ function server(role: string) {
   });
 }
 
+// go is the router's navigate, as the browser's Back would use it.
+let go: NavigateFunction;
+
 function Where() {
   const { pathname, search } = useLocation();
+  const navigate = useNavigate();
+  useEffect(() => {
+    go = navigate;
+  }, [navigate]);
   return (
     <>
       <output data-testid="path">{pathname}</output>
@@ -210,5 +218,17 @@ describe("shortcuts", () => {
     expect(document.activeElement).toBe(opener);
     press("?", {}, document.body);
     expect(screen.getByRole("dialog", { name: "Keyboard shortcuts" })).toBeTruthy();
+  });
+
+  it("give the focus to the page's h1 when the opener has gone with the route", async () => {
+    await at("/t/a/tasks/x");
+    const opener = screen.getByRole("heading", { level: 1 });
+    act(() => opener.focus());
+    press("?");
+    act(() => void go("/t/a"));
+    act(() => screen.getByRole("button", { name: "Close" }).focus());
+    fireEvent.click(screen.getByRole("button", { name: "Close" }));
+    expect(opener.isConnected).toBe(false);
+    expect(document.activeElement).toBe(await screen.findByRole("heading", { level: 1, name: "a" }));
   });
 });

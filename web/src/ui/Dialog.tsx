@@ -4,7 +4,7 @@ import { Button } from "./Button";
 // Dialog is a modal: a native <dialog> opened with showModal(), so Escape
 // closes it, the page behind is inert and it sits in the top layer. It is
 // named by its h2. When it closes, the focus goes back to what had it when
-// it opened.
+// it opened, or, if that has gone with a route change, to the page's h1.
 export function Dialog({ open, onClose, title, children }: { open: boolean; onClose: () => void; title: string; children: ReactNode }) {
   const ref = useRef<HTMLDialogElement>(null);
   const titleId = useId();
@@ -15,7 +15,8 @@ export function Dialog({ open, onClose, title, children }: { open: boolean; onCl
     dialog.showModal();
     return () => {
       if (dialog.open) dialog.close();
-      if (opener instanceof HTMLElement) opener.focus();
+      if (opener instanceof HTMLElement && opener.isConnected) opener.focus();
+      else document.querySelector<HTMLElement>("h1")?.focus();
     };
   }, [open]);
   return (
