@@ -30,7 +30,10 @@ export function useShortcuts(ns: string | undefined): [boolean, (open: boolean) 
   const gAt = useRef(0);
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
-      if (e.defaultPrevented || e.ctrlKey || e.metaKey || e.altKey || typing(e)) return;
+      // AltGr, which types / or ? on some layouts, arrives with Ctrl and
+      // Alt on Windows.
+      const altGr = e.getModifierState("AltGraph");
+      if (e.defaultPrevented || e.metaKey || (!altGr && (e.ctrlKey || e.altKey)) || typing(e)) return;
       if (e.key === "?") {
         setHelp(true);
         return;

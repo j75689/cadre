@@ -131,6 +131,15 @@ describe("shortcuts", () => {
     expect(path()).toBe("/t/a");
   });
 
+  it("fire / and ? typed with AltGr, which comes with Ctrl and Alt", async () => {
+    await at("/t/a");
+    const altGr = { ctrlKey: true, altKey: true, modifierAltGraph: true };
+    press("/", altGr);
+    expect(document.activeElement).toBe(screen.getByRole("searchbox", { name: "Search the loaded page" }));
+    press("?", altGr, document.body);
+    expect(screen.getByRole("dialog", { name: "Keyboard shortcuts" })).toBeTruthy();
+  });
+
   it("do not fire during an input method's composition", async () => {
     await at("/t/a");
     press("c", { isComposing: true });
