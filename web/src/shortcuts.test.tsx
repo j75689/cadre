@@ -3,7 +3,8 @@ import { useEffect } from "react";
 import { MemoryRouter, useLocation, useNavigate, type NavigateFunction } from "react-router";
 import { afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import { App } from "./App";
-import { json, task } from "./testing";
+import type { Task } from "./api";
+import { json, task, team } from "./testing";
 
 // jsdom has <dialog> but not showModal() and close(): open and close it
 // as a browser would, without the top layer.
@@ -26,14 +27,16 @@ afterEach(() => {
 });
 
 // server answers as cadre-server with logins, the caller having role on
-// team a; a task is task x.
-function server(role: string) {
-  vi.stubGlobal("fetch", (url: string) => {
+// team a; a task is t, and creating one is refused.
+function server(role: string, t = task("Todo")) {
+  vi.stubGlobal("fetch", (url: string, init?: RequestInit) => {
     if (url.endsWith("/me")) return json({ mode: "oidc", username: "dana@example.test", name: "Dana", roles: { a: role }, admin: false });
+    if (url.endsWith("/team")) return json(team());
+    if (init?.method === "POST") return json({ error: { code: "invalid", message: "title is too long" } }, 400);
     if (url.endsWith("/teams")) return json({ items: [{ metadata: { name: "team", namespace: "a" } }] });
     if (url.includes("/thread") || url.endsWith("/runs") || url.includes("/subtasks")) return json({ items: [] });
     if (url.includes("/tasks?")) return json({ items: [], offset: 0, limit: 50 });
-    return json(task("Todo"));
+    return json(t);
   });
 }
 
@@ -54,14 +57,20 @@ function Where() {
   );
 }
 
-async function at(path: string, role = "member") {
-  server(role);
+// show renders path for a caller with role on team a.
+function show(path: string, role = "member", t?: Task) {
+  server(role, t);
   render(
     <MemoryRouter initialEntries={[path]}>
       <App />
       <Where />
     </MemoryRouter>,
   );
+}
+
+// at shows path once the role on team a is known.
+async function at(path: string, role = "member", t?: Task) {
+  show(path, role, t);
   expect(await screen.findByText(`You are a ${role} of a.`)).toBeTruthy();
 }
 
@@ -173,6 +182,42 @@ describe("shortcuts", () => {
     press("g", {}, top);
     press("b", {}, top);
     expect(path()).toBe("/t/a/new");
+  });
+
+  it("do not leave a Settings draft on c with the focus on the page", async () => {
+    show("/t/a/settings", "admin");
+    fireEvent.click(await screen.findByRole("button", { name: "Edit" }));
+    fireEvent.change(screen.getByLabelText("Display name"), { target: { value: "Draft name" } });
+    act(() => (document.activeElement as HTMLElement).blur());
+    press("c", {}, document.body);
+    expect(path()).toBe("/t/a/settings");
+  });
+
+  it("do not leave a New task draft on g then b after a refused Create", async () => {
+    show("/t/a/new");
+    fireEvent.change(await screen.findByLabelText("Title"), { target: { value: "draft" } });
+    fireEvent.click(screen.getByRole("button", { name: "Create task" }));
+    expect(await screen.findByText("title is too long")).toBeTruthy();
+    act(() => (document.activeElement as HTMLElement).blur());
+    press("g", {}, document.body);
+    press("b", {}, document.body);
+    expect(path()).toBe("/t/a/new");
+  });
+
+  it("do not leave a comment draft on c with the focus on the page", async () => {
+    await at("/t/a/tasks/x");
+    fireEvent.change(await screen.findByLabelText("Comment"), { target: { value: "draft" } });
+    act(() => (document.activeElement as HTMLElement).blur());
+    press("c", {}, document.body);
+    expect(path()).toBe("/t/a/tasks/x");
+  });
+
+  it("do not leave a tool call note on c with the focus on the page", async () => {
+    await at("/t/a/tasks/x", "member", task("Waiting", { waiting: { reason: "ToolApproval" } }));
+    fireEvent.change(await screen.findByLabelText("Tool call note"), { target: { value: "draft" } });
+    act(() => (document.activeElement as HTMLElement).blur());
+    press("c", {}, document.body);
+    expect(path()).toBe("/t/a/tasks/x");
   });
 
   it("do not fire during an input method's composition", async () => {

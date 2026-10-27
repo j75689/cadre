@@ -132,7 +132,8 @@ const ids = (...xs: (string | false)[]) => xs.filter(Boolean).join(" ") || undef
 // each field someone else changed since the form opened is marked, unless
 // the form already holds their value. onSaved gets the Team saved and the
 // spec sent; onLost is a save refused for want of a role: the Team was
-// deleted, or the caller's admin role taken away.
+// deleted, or the caller's admin role taken away. The form is data-dirty
+// while the draft would save something other than the Team it opened with.
 export function TeamForm({
   team,
   onSaved,
@@ -250,7 +251,8 @@ export function TeamForm({
       }}
       noValidate
       aria-label="Edit the team"
-      aria-describedby={gitops ? "team-gitops" : undefined}>
+      aria-describedby={gitops ? "team-gitops" : undefined}
+      data-dirty={JSON.stringify(toSpec(draft)) !== JSON.stringify(toSpec(opened.spec ?? {})) || undefined}>
       {conflict && (
         <div ref={conflictRef} tabIndex={-1} role="alert">
           <Banner className="banner-warning">

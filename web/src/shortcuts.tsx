@@ -10,7 +10,8 @@ import { Dialog } from "./ui/Dialog";
 // while typing: in a text field, during an input method's composition, or
 // in an open dialog, where only ? (and the dialog's own Escape) works. The
 // ones that leave the page do not fire from a form or a button either,
-// where a draft may be.
+// or while a form on the page holds a draft: such a form is marked
+// data-dirty.
 
 // chordMs is how long after g a b still goes to the board.
 const chordMs = 1000;
@@ -53,7 +54,7 @@ export function useShortcuts(ns: string | undefined): [boolean, (open: boolean) 
         if (!search) return;
         e.preventDefault();
         search.focus();
-      } else if (ns === undefined || inFormOrButton(e)) {
+      } else if (ns === undefined || inFormOrButton(e) || document.querySelector("[data-dirty]")) {
         return;
       } else if (e.key === "c" && can(role, "work")) {
         void navigate(`${teamPath(ns)}/new`);
