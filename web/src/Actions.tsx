@@ -181,6 +181,8 @@ function Drafts(
   const showing = commenting && can.comment ? "comment" : primary;
   return (
     <>
+      {/* The note stays a draft while Comment instead hides it. */}
+      {showing !== "approve" && note !== "" && <span hidden data-dirty />}
       {primary !== "comment" && can.comment && (
         <div className="composer-switch">
           <Button variant="ghost" small icon="message-square" aria-pressed={showing === "comment"} onClick={() => setCommenting(!commenting)}>

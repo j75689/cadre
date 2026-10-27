@@ -100,6 +100,26 @@ describe("Actions", () => {
   });
 });
 
+describe("Tool call note", () => {
+  it("is data-dirty only once it holds text", async () => {
+    renderActions(task("Waiting", { waiting: { reason: "ToolApproval" } }));
+    const note = await screen.findByLabelText("Tool call note");
+    const area = document.querySelector(".approval")!;
+    expect(area.hasAttribute("data-dirty")).toBe(false);
+    expect(document.querySelector("[data-dirty]")).toBeNull();
+    fireEvent.change(note, { target: { value: "draft" } });
+    expect(area.hasAttribute("data-dirty")).toBe(true);
+  });
+
+  it("stays a draft while Comment instead hides it", async () => {
+    renderActions(task("Waiting", { waiting: { reason: "ToolApproval" } }));
+    fireEvent.change(await screen.findByLabelText("Tool call note"), { target: { value: "draft" } });
+    fireEvent.click(screen.getByRole("button", { name: "Comment instead" }));
+    expect(screen.queryByLabelText("Tool call note")).toBeNull();
+    expect(document.querySelector("[data-dirty]")).not.toBeNull();
+  });
+});
+
 describe("Composer", () => {
   it("picks its mode from what the task waits for", async () => {
     const modes: [ReturnType<typeof task>, string, string[]][] = [

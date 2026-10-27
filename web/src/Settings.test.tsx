@@ -167,6 +167,14 @@ const noRole = () => json({ error: { code: "no_role", message: "to manage the te
 const noTeam = () => json({ error: { code: "not_found", message: "no Team in a" } }, 404);
 
 describe("Editing the Team", () => {
+  it("is data-dirty only while the draft differs from the Team", async () => {
+    const { form } = await edit([() => json(full)]);
+    const name = form.getByLabelText("Display name");
+    expect(document.querySelector("[data-dirty]")).toBeNull();
+    fireEvent.change(name, { target: { value: "Team B" } });
+    expect(document.querySelector("[data-dirty]")).not.toBeNull();
+  });
+
   it("saves the whole spec from the version read, and shows the saved values", async () => {
     const after = team({ metadata: { name: "team", namespace: "a", resourceVersion: "8" }, spec: { ...full.spec, displayName: "Team B", maxConcurrentRuns: 3, archiveAfter: "30m0s" } });
     const { form, sent } = await edit([() => json(full)], [() => json(after)]);
