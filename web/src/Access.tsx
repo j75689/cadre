@@ -368,7 +368,9 @@ const sameSpec = (a: AgentAccessSpec, b: AgentAccessSpec) => a.role === b.role &
 // as it is; after a 409 the AgentAccess is read again, so the next save
 // carries its new version. A 409 whose AgentAccess still has the spec the
 // form last read is only its status moving, which the reconciler writes
-// after each save and rotation: the form saves again at once.
+// after each save and rotation: the form saves again at once. The form is
+// data-dirty while it would save something other than what it opened with,
+// so a shortcut keeps it.
 function AccessForm({
   ns,
   label,
@@ -452,7 +454,8 @@ function AccessForm({
     setBusy(false);
   };
   return (
-    <form ref={formRef} className={`form access-form ${className}`.trim()} onSubmit={submit} noValidate aria-label={label}>
+    <form ref={formRef} className={`form access-form ${className}`.trim()} onSubmit={submit} noValidate aria-label={label}
+      data-dirty={JSON.stringify(specOf(draft)) !== JSON.stringify(specOf(initial)) || draft.name !== initial.name || undefined}>
       {editing && <p className="help">If AgentAccesses are applied from Git, change them there: an edit here drifts from Git.</p>}
       <label className="field">
         Name
