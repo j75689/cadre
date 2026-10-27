@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
 import { Link, Outlet, Route, Routes, useParams } from "react-router";
+import { AccessDetail, AccessList } from "./Access";
 import { Agents } from "./Agents";
 import { Board } from "./Board";
 import { IdentityBox, IdentityProvider, roleOf, useIdentityDetails } from "./Identity";
@@ -38,6 +39,18 @@ function TeamAgents() {
 function TeamSettings() {
   const { ns = "" } = useParams();
   return <Settings key={ns} />;
+}
+
+// the agent accesses,
+function TeamAccesses() {
+  const { ns = "" } = useParams();
+  return <AccessList key={ns} />;
+}
+
+// an AgentAccess's page to one AgentAccess,
+function OneAccess() {
+  const { ns = "", name = "" } = useParams();
+  return <AccessDetail key={`${ns}/${name}`} />;
 }
 
 // and a task page to one task.
@@ -186,6 +199,8 @@ export function App() {
               <Route path="new" element={<TeamNewTask />} />
               <Route path="tasks/:name" element={<OneTask />} />
               <Route path="settings" element={<TeamSettings />} />
+              <Route path="settings/access" element={<TeamAccesses />} />
+              <Route path="settings/access/:name" element={<OneAccess />} />
               <Route path="*" element={<NotFound />} />
             </Route>
             <Route path="*" element={<NotFound />} />
