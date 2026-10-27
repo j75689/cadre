@@ -3,7 +3,7 @@
 **A self-hosted, cloud-native platform for humans and AI agents to work together.**
 Declare agents, models and tools as Kubernetes CRDs. Run the work on a board. Keep every credential inside the cluster.
 
-> Status: M0, M1 and M2 complete (October 2026). Agents, models and tool servers are CRDs; `cadre-runner` runs builtin agents on Claude or any OpenAI-compatible endpoint, a step at a time by default, so any worker continues a run; runner agents' work can run in Kubernetes Jobs; Cadre can run a ToolServer itself; runs reach their tools through a per-run MCP endpoint; runners authenticate with ServiceAccount tokens. No web UI yet. See [Roadmap](#roadmap).
+> Status: M0, M1 and M2 complete (October 2026). Agents, models and tool servers are CRDs; `cadre-runner` runs builtin agents on Claude or any OpenAI-compatible endpoint, a step at a time by default, so any worker continues a run; runner agents' work can run in Kubernetes Jobs; Cadre can run a ToolServer itself; runs reach their tools through a per-run MCP endpoint; runners authenticate with ServiceAccount tokens. cadre-server serves the web console: the board (also as a list), task pages with live runs, Agents, and the team's Settings with its agent access ([Web UI](#web-ui)). See [Roadmap](#roadmap).
 
 ## What it is
 
