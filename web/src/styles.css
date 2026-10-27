@@ -2083,3 +2083,35 @@ main.board {
   white-space: normal;
   overflow-wrap: anywhere;
 }
+
+/* Board filters: the phase and the assignee, beside the search. Under
+   640 px they share a row of their own. A board filtered to one phase
+   shows its column at a readable width, not a seventh of the board. */
+
+.filters {
+  display: flex;
+  gap: var(--space-2);
+  min-width: 0;
+}
+
+.filters select {
+  min-width: 0;
+  max-width: 12rem;
+}
+
+@media (min-width: 1024px) {
+  .columns.one-phase {
+    grid-template-columns: minmax(15rem, 32rem);
+  }
+}
+
+@media (max-width: 640px) {
+  .filters {
+    width: 100%;
+  }
+
+  .filters select {
+    flex: 1;
+    max-width: none;
+  }
+}
