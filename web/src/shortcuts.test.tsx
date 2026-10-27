@@ -4,7 +4,7 @@ import { MemoryRouter, useLocation, useNavigate, type NavigateFunction } from "r
 import { afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import { App } from "./App";
 import type { Task } from "./api";
-import { json, task, team } from "./testing";
+import { access, json, task, team } from "./testing";
 
 // jsdom has <dialog> but not showModal() and close(): open and close it
 // as a browser would, without the top layer.
@@ -33,6 +33,7 @@ function server(role: string, t = task("Todo")) {
     if (url.endsWith("/me")) return json({ mode: "oidc", username: "dana@example.test", name: "Dana", roles: { a: role }, admin: false });
     if (url.endsWith("/team")) return json(team());
     if (init?.method === "POST") return json({ error: { code: "invalid", message: "title is too long" } }, 400);
+    if (url.includes("/agentaccesses")) return json(access());
     if (url.endsWith("/teams")) return json({ items: [{ metadata: { name: "team", namespace: "a" } }] });
     if (url.includes("/thread") || url.endsWith("/runs") || url.includes("/subtasks")) return json({ items: [] });
     if (url.includes("/tasks?")) return json({ items: [], offset: 0, limit: 50 });
@@ -204,6 +205,15 @@ describe("shortcuts", () => {
     act(() => (document.activeElement as HTMLElement).blur());
     press("c", {}, document.body);
     expect(path()).toBe("/t/a/settings");
+  });
+
+  it("do not leave an agent access draft on c with the focus on the page", async () => {
+    show("/t/a/settings/access/bot", "admin");
+    fireEvent.click(await screen.findByRole("button", { name: "Edit" }));
+    fireEvent.click(screen.getByRole("radio", { name: "viewer" }));
+    act(() => (document.activeElement as HTMLElement).blur());
+    press("c", {}, document.body);
+    expect(path()).toBe("/t/a/settings/access/bot");
   });
 
   it("do not leave a New task draft on g then b after a refused Create", async () => {

@@ -265,6 +265,15 @@ function server(current: { access: ReturnType<typeof access> | null }, answer: (
 const secret = "cdr_s3cr3t-t0ken-value";
 
 describe("Creating an agent access", () => {
+  it("is data-dirty only once it differs from a blank form", async () => {
+    open("/t/a/settings/access", admin, server({ access: null }, () => json({})).handle);
+    fireEvent.click(await screen.findByRole("button", { name: "New agent access" }));
+    const el = screen.getByRole("form", { name: "New agent access" });
+    expect(el.hasAttribute("data-dirty")).toBe(false);
+    fireEvent.change(within(el).getByRole("textbox", { name: /^Name/ }), { target: { value: "bot" } });
+    expect(el.hasAttribute("data-dirty")).toBe(true);
+  });
+
   it("sends a minted token's spec without a version, then opens the access", async () => {
     const current: { access: ReturnType<typeof access> | null } = { access: null };
     const s = server(current, (c) => {
@@ -324,6 +333,18 @@ describe("Creating an agent access", () => {
 });
 
 describe("Editing an agent access", () => {
+  it("is data-dirty only while the draft differs from what it opened with", async () => {
+    open("/t/a/settings/access/bot", admin, server({ access: access() }, () => json({})).handle);
+    fireEvent.click(await screen.findByRole("button", { name: "Edit" }));
+    const el = screen.getByRole("form", { name: "Edit bot" });
+    const form = within(el);
+    expect(el.hasAttribute("data-dirty")).toBe(false);
+    fireEvent.click(form.getByRole("radio", { name: "viewer" }));
+    expect(el.hasAttribute("data-dirty")).toBe(true);
+    fireEvent.click(form.getByRole("radio", { name: "member" }));
+    expect(el.hasAttribute("data-dirty")).toBe(false);
+  });
+
   it("sends the version read, and shows what was saved", async () => {
     const current = { access: access({ resourceVersion: "3" }) };
     const s = server(current, (c) => json(access({ resourceVersion: "4", spec: (c.body as { spec: never }).spec })));
