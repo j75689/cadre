@@ -363,6 +363,31 @@ describe("Editing an agent access", () => {
     expect(s.calls[1].body).toEqual({ spec: { role: "viewer" }, resourceVersion: "5" });
   });
 
+  it("on a 409 from another admin's change to the role, shows it and does not save over it", async () => {
+    const current = { access: access({ resourceVersion: "3" }) };
+    const conflict = "AgentAccess bot changed since it was read: read it again, and edit that";
+    const s = server(current, (c) =>
+      (c.body as { resourceVersion: string }).resourceVersion === "3"
+        ? json({ error: { code: "conflict", message: conflict } }, 409)
+        : json(access({ resourceVersion: "5", spec: { role: "member", serviceAccount: { name: "ops" } } })),
+    );
+    open("/t/a/settings/access/bot", admin, s.handle);
+    fireEvent.click(await screen.findByRole("button", { name: "Edit" }));
+    const form = within(screen.getByRole("form", { name: "Edit bot" }));
+    fireEvent.click(form.getByRole("radio", { name: "ServiceAccount" }));
+    fireEvent.change(form.getByRole("textbox", { name: "ServiceAccount name" }), { target: { value: "ops" } });
+    current.access = access({ resourceVersion: "4", spec: { role: "viewer" } });
+    fireEvent.click(form.getByRole("button", { name: "Save" }));
+    expect((await form.findByRole("alert")).textContent).toBe(conflict);
+    expect(s.calls).toHaveLength(1);
+    expect((form.getByRole("radio", { name: "member" }) as HTMLInputElement).checked).toBe(true);
+    expect((form.getByRole("textbox", { name: "ServiceAccount name" }) as HTMLInputElement).value).toBe("ops");
+
+    fireEvent.click(form.getByRole("button", { name: "Save" }));
+    await waitFor(() => expect(s.calls).toHaveLength(2));
+    expect(s.calls[1].body).toEqual({ spec: { role: "member", serviceAccount: { name: "ops" } }, resourceVersion: "4" });
+  });
+
   // reconciled is an API server whose reconciler writes the status after
   // each save and rotation, which moves the version on with the spec as it
   // is.
