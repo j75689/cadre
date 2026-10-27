@@ -363,6 +363,26 @@ describe("Editing an agent access", () => {
     expect(s.calls[1].body).toEqual({ spec: { role: "viewer" }, resourceVersion: "5" });
   });
 
+  it.each([
+    [400, "invalid", "spec.role must be viewer or member"],
+    [500, "internal", "the AgentAccess could not be written"],
+  ])("on a %i shows the server's words, and saves again with the version opened", async (status, code, message) => {
+    const current = { access: access({ resourceVersion: "3" }) };
+    let saves = 0;
+    const s = server(current, () => (++saves === 1 ? json({ error: { code, message } }, status) : json(access({ resourceVersion: "4" }))));
+    open("/t/a/settings/access/bot", admin, s.handle);
+    fireEvent.click(await screen.findByRole("button", { name: "Edit" }));
+    const form = within(screen.getByRole("form", { name: "Edit bot" }));
+    // Only a 409 reads the version again; this one would be another admin's.
+    current.access = access({ resourceVersion: "5" });
+    fireEvent.click(form.getByRole("button", { name: "Save" }));
+    expect((await form.findByRole("alert")).textContent).toBe(message);
+
+    fireEvent.click(form.getByRole("button", { name: "Save" }));
+    await waitFor(() => expect(s.calls).toHaveLength(2));
+    expect(s.calls[1].body).toEqual({ spec: { role: "member" }, resourceVersion: "3" });
+  });
+
   it("does not let the 15 s read overwrite the draft", async () => {
     vi.useFakeTimers({ shouldAdvanceTime: true });
     const current = { access: access({ resourceVersion: "3" }) };
