@@ -140,6 +140,19 @@ describe("shortcuts", () => {
     expect(screen.getByRole("dialog", { name: "Keyboard shortcuts" })).toBeTruthy();
   });
 
+  it("do not leave the page from a form or a button, where a draft may be", async () => {
+    await at("/t/a");
+    press("c");
+    const create = await screen.findByRole("button", { name: "Create task" });
+    press("g", {}, create);
+    press("b", {}, create);
+    expect(path()).toBe("/t/a/new");
+    const top = screen.getByRole("button", { name: "Keyboard shortcuts" });
+    press("g", {}, top);
+    press("b", {}, top);
+    expect(path()).toBe("/t/a/new");
+  });
+
   it("do not fire during an input method's composition", async () => {
     await at("/t/a");
     press("c", { isComposing: true });

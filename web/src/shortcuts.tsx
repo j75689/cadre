@@ -8,7 +8,9 @@ import { Dialog } from "./ui/Dialog";
 // The console's keyboard shortcuts are single keys, never with Ctrl, Cmd
 // or Alt, which belong to the browser and the system. They do not fire
 // while typing: in a text field, during an input method's composition, or
-// in an open dialog, where only ? (and the dialog's own Escape) works.
+// in an open dialog, where only ? (and the dialog's own Escape) works. The
+// ones that leave the page do not fire from a form or a button either,
+// where a draft may be.
 
 // chordMs is how long after g a b still goes to the board.
 const chordMs = 1000;
@@ -18,6 +20,10 @@ function typing(e: KeyboardEvent) {
   // just after the composition has ended.
   if (e.isComposing || e.keyCode === 229) return true;
   return e.target instanceof Element && e.target.closest("input, textarea, select, [contenteditable]:not([contenteditable=false])") !== null;
+}
+
+function inFormOrButton(e: KeyboardEvent) {
+  return e.target instanceof Element && e.target.closest("form, button") !== null;
 }
 
 // useShortcuts listens for the shortcuts on the team in namespace ns, if
@@ -46,7 +52,7 @@ export function useShortcuts(ns: string | undefined): [boolean, (open: boolean) 
         if (!search) return;
         e.preventDefault();
         search.focus();
-      } else if (ns === undefined) {
+      } else if (ns === undefined || inFormOrButton(e)) {
         return;
       } else if (e.key === "c" && can(role, "work")) {
         void navigate(`${teamPath(ns)}/new`);
