@@ -1,4 +1,4 @@
-import { cleanup, render, screen, waitFor, within } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { MemoryRouter } from "react-router";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { App } from "./App";
@@ -8,19 +8,20 @@ import { access, json, team } from "./testing";
 afterEach(() => {
   cleanup();
   vi.unstubAllGlobals();
+  vi.useRealTimers();
 });
 
 const admin: Me = { mode: "oidc", name: "dana", roles: { a: "admin" } };
 
 // open renders path with /me as given, or failing for null; the
-// AgentAccess reads answer with accesses, the Team with team a, and the
+// AgentAccess requests answer with accesses, the Team with team a, and the
 // rest with no items. It returns the URLs fetched.
-function open(path: string, me: Me | null, accesses: () => Promise<Response> = () => json({ items: [] })) {
+function open(path: string, me: Me | null, accesses: (url: string, init?: RequestInit) => Promise<Response> = () => json({ items: [] })) {
   const urls: string[] = [];
-  vi.stubGlobal("fetch", (url: string) => {
+  vi.stubGlobal("fetch", (url: string, init?: RequestInit) => {
     urls.push(url);
     if (url.endsWith("/me")) return me ? json(me) : json({ error: { code: "unavailable", message: "down" } }, 503);
-    if (url.includes("/agentaccesses")) return accesses();
+    if (url.includes("/agentaccesses")) return accesses(url, init);
     if (url.endsWith("/namespaces/a/team")) return json(team());
     return json({ items: [] });
   });
@@ -234,5 +235,494 @@ describe("AccessDetail", () => {
     expect(await screen.findByText(notServed)).toBeTruthy();
     await waitFor(() => expect(urls.some((u) => u.endsWith("/me"))).toBe(true));
     expect(urls.some((u) => u.includes("/agentaccesses"))).toBe(false);
+  });
+});
+
+// A Call is a request the AgentAccess routes were sent other than a read.
+interface Call {
+  method: string;
+  url: string;
+  body?: unknown;
+}
+
+// server answers the AgentAccess routes: reads with the access current
+// holds, and each other request with answer. calls are those others.
+function server(current: { access: ReturnType<typeof access> | null }, answer: (c: Call) => Promise<Response>) {
+  const calls: Call[] = [];
+  const handle = (url: string, init?: RequestInit) => {
+    const method = init?.method ?? "GET";
+    if (method === "GET") {
+      if (url.endsWith("/agentaccesses")) return json({ items: current.access ? [current.access] : [] });
+      return current.access ? json(current.access) : json({ error: { code: "not_found", message: "not found" } }, 404);
+    }
+    const c = { method, url, body: init?.body ? JSON.parse(String(init.body)) : undefined };
+    calls.push(c);
+    return answer(c);
+  };
+  return { calls, handle };
+}
+
+const secret = "cdr_s3cr3t-t0ken-value";
+
+describe("Creating an agent access", () => {
+  it("sends a minted token's spec without a version, then opens the access", async () => {
+    const current: { access: ReturnType<typeof access> | null } = { access: null };
+    const s = server(current, (c) => {
+      current.access = access({ name: "bot", spec: (c.body as { spec: never }).spec });
+      return json(current.access, 201);
+    });
+    open("/t/a/settings/access", admin, s.handle);
+    fireEvent.click(await screen.findByRole("button", { name: "New agent access" }));
+    const form = within(screen.getByRole("form", { name: "New agent access" }));
+    fireEvent.change(form.getByRole("textbox", { name: /^Name/ }), { target: { value: "bot" } });
+    fireEvent.click(form.getByRole("button", { name: "Create" }));
+    await waitFor(() => expect(s.calls).toHaveLength(1));
+    expect(s.calls[0]).toEqual({ method: "PUT", url: "/api/v1/namespaces/a/agentaccesses/bot", body: { spec: { role: "member" } } });
+    expect(await screen.findByRole("region", { name: "AgentAccess" })).toBeTruthy();
+    expect(screen.getByRole("heading", { level: 1 }).textContent).toBe("bot");
+  });
+
+  it("sends a ServiceAccount and the role picked", async () => {
+    const s = server({ access: null }, () => json(access({ name: "ci-bot" }), 201));
+    open("/t/a/settings/access", admin, s.handle);
+    fireEvent.click(await screen.findByRole("button", { name: "New agent access" }));
+    const form = within(screen.getByRole("form", { name: "New agent access" }));
+    fireEvent.change(form.getByRole("textbox", { name: /^Name/ }), { target: { value: "ci-bot" } });
+    fireEvent.click(form.getByRole("radio", { name: "viewer" }));
+    fireEvent.click(form.getByRole("radio", { name: "ServiceAccount" }));
+    fireEvent.change(form.getByRole("textbox", { name: "ServiceAccount name" }), { target: { value: " ci " } });
+    fireEvent.click(form.getByRole("button", { name: "Create" }));
+    await waitFor(() => expect(s.calls).toHaveLength(1));
+    expect(s.calls[0].body).toEqual({ spec: { role: "viewer", serviceAccount: { name: "ci" } } });
+  });
+
+  it("refuses a name that is not a DNS label, and sends nothing", async () => {
+    const s = server({ access: null }, () => json(access(), 201));
+    open("/t/a/settings/access", admin, s.handle);
+    fireEvent.click(await screen.findByRole("button", { name: "New agent access" }));
+    const form = within(screen.getByRole("form", { name: "New agent access" }));
+    fireEvent.change(form.getByRole("textbox", { name: /^Name/ }), { target: { value: "Bot_1" } });
+    fireEvent.click(form.getByRole("button", { name: "Create" }));
+    expect((await form.findByRole("alert")).textContent).toMatch(/at most 63 lower-case letters/);
+    expect(form.getByRole("textbox", { name: /^Name/ }).getAttribute("aria-invalid")).toBe("true");
+    expect(s.calls).toHaveLength(0);
+  });
+
+  it.each([
+    [409, "already_exists", "agent access bot: already exists"],
+    [400, "invalid", "spec.role: Unsupported value: \"admin\""],
+  ])("shows a %d's message as it is", async (status, code, message) => {
+    const s = server({ access: null }, () => json({ error: { code, message } }, status));
+    open("/t/a/settings/access", admin, s.handle);
+    fireEvent.click(await screen.findByRole("button", { name: "New agent access" }));
+    const form = within(screen.getByRole("form", { name: "New agent access" }));
+    fireEvent.change(form.getByRole("textbox", { name: /^Name/ }), { target: { value: "bot" } });
+    fireEvent.click(form.getByRole("button", { name: "Create" }));
+    expect((await form.findByRole("alert")).textContent).toBe(message);
+    expect((form.getByRole("textbox", { name: /^Name/ }) as HTMLInputElement).value).toBe("bot");
+  });
+});
+
+describe("Editing an agent access", () => {
+  it("sends the version read, and shows what was saved", async () => {
+    const current = { access: access({ resourceVersion: "3" }) };
+    const s = server(current, (c) => json(access({ resourceVersion: "4", spec: (c.body as { spec: never }).spec })));
+    open("/t/a/settings/access/bot", admin, s.handle);
+    fireEvent.click(await screen.findByRole("button", { name: "Edit" }));
+    const form = within(screen.getByRole("form", { name: "Edit bot" }));
+    expect(form.getByText(/an edit here drifts from Git/)).toBeTruthy();
+    expect(form.getByRole("textbox", { name: /^Name/ }).hasAttribute("readonly")).toBe(true);
+    fireEvent.click(form.getByRole("radio", { name: "viewer" }));
+    fireEvent.click(form.getByRole("button", { name: "Save" }));
+    await waitFor(() => expect(s.calls).toHaveLength(1));
+    expect(s.calls[0]).toEqual({ method: "PUT", url: "/api/v1/namespaces/a/agentaccesses/bot", body: { spec: { role: "viewer" }, resourceVersion: "3" } });
+    const card = within(screen.getByRole("region", { name: "AgentAccess" }));
+    expect(await card.findByText("Saved")).toBeTruthy();
+    expect(card.getByText("viewer")).toBeTruthy();
+  });
+
+  it("on a 409 shows the server's words, keeps the draft, and saves with the version read again", async () => {
+    const current = { access: access({ resourceVersion: "3" }) };
+    const conflict = "AgentAccess bot changed since it was read: read it again, and edit that";
+    const s = server(current, (c) =>
+      (c.body as { resourceVersion: string }).resourceVersion === "3"
+        ? json({ error: { code: "conflict", message: conflict } }, 409)
+        : json(access({ resourceVersion: "6", spec: { role: "viewer" } })),
+    );
+    open("/t/a/settings/access/bot", admin, s.handle);
+    fireEvent.click(await screen.findByRole("button", { name: "Edit" }));
+    const form = within(screen.getByRole("form", { name: "Edit bot" }));
+    fireEvent.click(form.getByRole("radio", { name: "viewer" }));
+    current.access = access({ resourceVersion: "5", spec: { role: "member", serviceAccount: { name: "ops" } } });
+    fireEvent.click(form.getByRole("button", { name: "Save" }));
+    expect((await form.findByRole("alert")).textContent).toBe(conflict);
+    expect((form.getByRole("radio", { name: "viewer" }) as HTMLInputElement).checked).toBe(true);
+
+    fireEvent.click(form.getByRole("button", { name: "Save" }));
+    await waitFor(() => expect(s.calls).toHaveLength(2));
+    expect(s.calls[1].body).toEqual({ spec: { role: "viewer" }, resourceVersion: "5" });
+  });
+
+  it("on a 409 from another admin's change to the role, shows it and does not save over it", async () => {
+    const current = { access: access({ resourceVersion: "3" }) };
+    const conflict = "AgentAccess bot changed since it was read: read it again, and edit that";
+    const s = server(current, (c) =>
+      (c.body as { resourceVersion: string }).resourceVersion === "3"
+        ? json({ error: { code: "conflict", message: conflict } }, 409)
+        : json(access({ resourceVersion: "5", spec: { role: "member", serviceAccount: { name: "ops" } } })),
+    );
+    open("/t/a/settings/access/bot", admin, s.handle);
+    fireEvent.click(await screen.findByRole("button", { name: "Edit" }));
+    const form = within(screen.getByRole("form", { name: "Edit bot" }));
+    fireEvent.click(form.getByRole("radio", { name: "ServiceAccount" }));
+    fireEvent.change(form.getByRole("textbox", { name: "ServiceAccount name" }), { target: { value: "ops" } });
+    current.access = access({ resourceVersion: "4", spec: { role: "viewer" } });
+    fireEvent.click(form.getByRole("button", { name: "Save" }));
+    expect((await form.findByRole("alert")).textContent).toBe(conflict);
+    expect(s.calls).toHaveLength(1);
+    expect((form.getByRole("radio", { name: "member" }) as HTMLInputElement).checked).toBe(true);
+    expect((form.getByRole("textbox", { name: "ServiceAccount name" }) as HTMLInputElement).value).toBe("ops");
+
+    fireEvent.click(form.getByRole("button", { name: "Save" }));
+    await waitFor(() => expect(s.calls).toHaveLength(2));
+    expect(s.calls[1].body).toEqual({ spec: { role: "member", serviceAccount: { name: "ops" } }, resourceVersion: "4" });
+  });
+
+  // reconciled is an API server whose reconciler writes the status after
+  // each save and rotation, which moves the version on with the spec as it
+  // is.
+  function reconciled() {
+    const current = { access: access({ resourceVersion: "3", tokenSecret: "bot.access-token" }) };
+    const settle = () => (current.access = { ...current.access, resourceVersion: String(Number(current.access.resourceVersion) + 1) });
+    const s = server(current, (c) => {
+      if (c.method === "POST") {
+        settle();
+        return json({ token: secret, tokenSecret: "bot.access-token" });
+      }
+      const { spec, resourceVersion } = c.body as { spec: never; resourceVersion: string };
+      if (resourceVersion !== current.access.resourceVersion) return json({ error: { code: "conflict", message: "AgentAccess bot changed since it was read" } }, 409);
+      settle();
+      current.access = { ...current.access, spec };
+      const saved = current.access;
+      settle();
+      return json(saved);
+    });
+    return s;
+  }
+
+  async function edit(role: "viewer" | "member") {
+    fireEvent.click(await screen.findByRole("button", { name: "Edit" }));
+    const form = within(screen.getByRole("form", { name: "Edit bot" }));
+    fireEvent.click(form.getByRole("radio", { name: role }));
+    fireEvent.click(form.getByRole("button", { name: "Save" }));
+    const card = within(screen.getByRole("region", { name: "AgentAccess" }));
+    expect(await card.findByText("Saved")).toBeTruthy();
+    expect(card.queryByRole("alert")).toBeNull();
+  }
+
+  it("saves again after a save, though the reconciler wrote the status since", async () => {
+    const s = reconciled();
+    open("/t/a/settings/access/bot", admin, s.handle);
+    await edit("viewer");
+    await edit("member");
+    expect(s.calls.map((c) => (c.body as { spec: unknown }).spec)).toEqual([{ role: "viewer" }, { role: "member" }, { role: "member" }]);
+  });
+
+  it("saves after a rotation, though the reconciler wrote the status since", async () => {
+    const s = reconciled();
+    open("/t/a/settings/access/bot", admin, s.handle);
+    fireEvent.click(await screen.findByRole("button", { name: "Rotate token" }));
+    fireEvent.click(screen.getByRole("button", { name: "Yes, rotate it" }));
+    fireEvent.click(await screen.findByRole("button", { name: "Done" }));
+    await edit("viewer");
+    expect(s.calls.at(-1)?.body).toEqual({ spec: { role: "viewer" }, resourceVersion: "4" });
+  });
+
+  it("after a 409 that was shown, saves though the reconciler wrote the status since", async () => {
+    const current = { access: access({ resourceVersion: "3" }) };
+    const s = server(current, (c) =>
+      (c.body as { resourceVersion: string }).resourceVersion === current.access.resourceVersion
+        ? json(access({ resourceVersion: "9", spec: { role: "viewer" } }))
+        : json({ error: { code: "conflict", message: "AgentAccess bot changed since it was read" } }, 409),
+    );
+    open("/t/a/settings/access/bot", admin, s.handle);
+    fireEvent.click(await screen.findByRole("button", { name: "Edit" }));
+    const form = within(screen.getByRole("form", { name: "Edit bot" }));
+    fireEvent.click(form.getByRole("radio", { name: "viewer" }));
+    current.access = access({ resourceVersion: "5", spec: { role: "member", serviceAccount: { name: "ops" } } });
+    fireEvent.click(form.getByRole("button", { name: "Save" }));
+    expect(await form.findByRole("alert")).toBeTruthy();
+
+    current.access = { ...current.access, resourceVersion: "6" };
+    fireEvent.click(form.getByRole("button", { name: "Save" }));
+    const card = within(screen.getByRole("region", { name: "AgentAccess" }));
+    expect(await card.findByText("Saved")).toBeTruthy();
+    expect(card.queryByRole("alert")).toBeNull();
+    expect(s.calls.map((c) => (c.body as { resourceVersion: string }).resourceVersion)).toEqual(["3", "5", "6"]);
+  });
+
+  it("saves again only once when every save is a 409 with the spec as it was", async () => {
+    const current = { access: access({ resourceVersion: "3" }) };
+    const conflict = "AgentAccess bot changed since it was read";
+    const s = server(current, () => {
+      current.access = { ...current.access, resourceVersion: String(Number(current.access.resourceVersion) + 1) };
+      return json({ error: { code: "conflict", message: conflict } }, 409);
+    });
+    open("/t/a/settings/access/bot", admin, s.handle);
+    fireEvent.click(await screen.findByRole("button", { name: "Edit" }));
+    const form = within(screen.getByRole("form", { name: "Edit bot" }));
+    fireEvent.click(form.getByRole("radio", { name: "viewer" }));
+    fireEvent.click(form.getByRole("button", { name: "Save" }));
+    expect((await form.findByRole("alert")).textContent).toBe(conflict);
+    expect(s.calls.map((c) => (c.body as { resourceVersion: string }).resourceVersion)).toEqual(["3", "4"]);
+  });
+
+  it("puts the focus on the role, and back on Edit after Cancel", async () => {
+    open("/t/a/settings/access/bot", admin, server({ access: access() }, () => json(access())).handle);
+    fireEvent.click(await screen.findByRole("button", { name: "Edit" }));
+    const form = within(screen.getByRole("form", { name: "Edit bot" }));
+    await waitFor(() => expect(document.activeElement).toBe(form.getByRole("radio", { name: "member" })));
+    fireEvent.click(form.getByRole("button", { name: "Cancel" }));
+    await waitFor(() => expect(document.activeElement).toBe(screen.getByRole("button", { name: "Edit" })));
+  });
+
+  it("puts the focus back on Edit after a save", async () => {
+    open("/t/a/settings/access/bot", admin, server({ access: access() }, () => json(access({ resourceVersion: "4" }))).handle);
+    fireEvent.click(await screen.findByRole("button", { name: "Edit" }));
+    fireEvent.click(within(screen.getByRole("form", { name: "Edit bot" })).getByRole("button", { name: "Save" }));
+    expect(await screen.findByText("Saved")).toBeTruthy();
+    await waitFor(() => expect(document.activeElement).toBe(screen.getByRole("button", { name: "Edit" })));
+  });
+
+  it.each([
+    [400, "invalid", "spec.role must be viewer or member"],
+    [500, "internal", "the AgentAccess could not be written"],
+  ])("on a %i shows the server's words, and saves again with the version opened", async (status, code, message) => {
+    const current = { access: access({ resourceVersion: "3" }) };
+    let saves = 0;
+    const s = server(current, () => (++saves === 1 ? json({ error: { code, message } }, status) : json(access({ resourceVersion: "4" }))));
+    open("/t/a/settings/access/bot", admin, s.handle);
+    fireEvent.click(await screen.findByRole("button", { name: "Edit" }));
+    const form = within(screen.getByRole("form", { name: "Edit bot" }));
+    // Only a 409 reads the version again; this one would be another admin's.
+    current.access = access({ resourceVersion: "5" });
+    fireEvent.click(form.getByRole("button", { name: "Save" }));
+    expect((await form.findByRole("alert")).textContent).toBe(message);
+
+    fireEvent.click(form.getByRole("button", { name: "Save" }));
+    await waitFor(() => expect(s.calls).toHaveLength(2));
+    expect(s.calls[1].body).toEqual({ spec: { role: "member" }, resourceVersion: "3" });
+  });
+
+  it("does not let the 15 s read overwrite the draft", async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    const current = { access: access({ resourceVersion: "3" }) };
+    const s = server(current, () => json(access()));
+    open("/t/a/settings/access/bot", admin, s.handle);
+    fireEvent.click(await screen.findByRole("button", { name: "Edit" }));
+    const form = within(screen.getByRole("form", { name: "Edit bot" }));
+    fireEvent.click(form.getByRole("radio", { name: "ServiceAccount" }));
+    fireEvent.change(form.getByRole("textbox", { name: "ServiceAccount name" }), { target: { value: "half-typed" } });
+
+    current.access = access({ resourceVersion: "9", spec: { role: "viewer" } });
+    await act(() => vi.advanceTimersByTimeAsync(15000));
+    await act(() => vi.advanceTimersByTimeAsync(15000));
+    expect((form.getByRole("textbox", { name: "ServiceAccount name" }) as HTMLInputElement).value).toBe("half-typed");
+    expect((form.getByRole("radio", { name: "member" }) as HTMLInputElement).checked).toBe(true);
+    fireEvent.click(form.getByRole("button", { name: "Save" }));
+    await waitFor(() => expect(s.calls).toHaveLength(1));
+    expect(s.calls[0].body).toEqual({ spec: { role: "member", serviceAccount: { name: "half-typed" } }, resourceVersion: "3" });
+  });
+});
+
+describe("Rotating a token", () => {
+  // rotate opens bot, confirms a rotation answered with answer, and
+  // returns the requests made.
+  async function rotate(answer: () => Promise<Response>) {
+    const s = server({ access: access({ tokenSecret: "bot.access-token" }) }, answer);
+    open("/t/a/settings/access/bot", admin, s.handle);
+    fireEvent.click(await screen.findByRole("button", { name: "Rotate token" }));
+    const confirm = within(screen.getByRole("group", { name: "Rotate the token?" }));
+    expect(confirm.getByText("Rotate the token? The old one stops working at once.")).toBeTruthy();
+    fireEvent.click(confirm.getByRole("button", { name: "Yes, rotate it" }));
+    return s.calls;
+  }
+  const minted = () => json({ token: secret, tokenSecret: "bot.access-token" });
+
+  it("shows the token once, with Copy, and never in a live region", async () => {
+    const writeText = vi.fn(() => Promise.resolve());
+    vi.stubGlobal("navigator", { ...navigator, clipboard: { writeText } });
+    const calls = await rotate(minted);
+    const field = (await screen.findByRole("textbox", { name: "New token" })) as HTMLInputElement;
+    expect(calls).toEqual([{ method: "POST", url: "/api/v1/namespaces/a/agentaccesses/bot/token", body: {} }]);
+    expect(field.value).toBe(secret);
+    expect(field.readOnly).toBe(true);
+    expect(field.getAttribute("autocomplete")).toBe("off");
+    expect(field.getAttribute("spellcheck")).toBe("false");
+    expect(screen.getByText(/This is the only time this token is shown. It is also in Secret/)).toBeTruthy();
+    for (const live of document.querySelectorAll("[role=status], [role=alert], [aria-live]")) expect(live.textContent).not.toContain(secret);
+    expect(screen.getByText("New token shown below")).toBeTruthy();
+
+    fireEvent.click(screen.getByRole("button", { name: "Copy" }));
+    expect(await screen.findByText("Copied")).toBeTruthy();
+    expect(writeText).toHaveBeenCalledWith(secret);
+    for (const live of document.querySelectorAll("[role=status], [role=alert], [aria-live]")) expect(live.textContent).not.toContain(secret);
+    expect(document.title).not.toContain(secret);
+
+    fireEvent.click(screen.getByRole("button", { name: "Done" }));
+    expect(screen.queryByRole("textbox", { name: "New token" })).toBeNull();
+    expect(document.body.innerHTML).not.toContain(secret);
+  });
+
+  it("selects the token to copy by hand without a clipboard", async () => {
+    vi.stubGlobal("navigator", { ...navigator, clipboard: undefined });
+    await rotate(minted);
+    const field = (await screen.findByRole("textbox", { name: "New token" })) as HTMLInputElement;
+    fireEvent.click(screen.getByRole("button", { name: "Copy" }));
+    expect(await screen.findByText("Press Ctrl+C to copy it.")).toBeTruthy();
+    expect(document.activeElement).toBe(field);
+    expect(field.value.slice(field.selectionStart ?? 0, field.selectionEnd ?? 0)).toBe(secret);
+  });
+
+  it("keeps the token nowhere: not after leaving, nor in storage, the URL or the console", async () => {
+    const logged: unknown[] = [];
+    const spies = (["log", "info", "warn", "error", "debug"] as const).map((m) => vi.spyOn(console, m).mockImplementation((...a) => void logged.push(...a)));
+    await rotate(minted);
+    expect(((await screen.findByRole("textbox", { name: "New token" })) as HTMLInputElement).value).toBe(secret);
+    const stored = (st: Storage) => Array.from({ length: st.length }, (_, i) => `${st.key(i)}=${st.getItem(st.key(i)!)}`).join("\n");
+    expect(stored(localStorage)).not.toContain(secret);
+    expect(stored(sessionStorage)).not.toContain(secret);
+    expect(location.search + location.hash + location.href).not.toContain(secret);
+    expect(JSON.stringify(history.state) ?? "").not.toContain(secret);
+
+    cleanup();
+    open("/t/a/settings/access/bot", admin, server({ access: access({ tokenSecret: "bot.access-token" }) }, minted).handle);
+    expect(await screen.findByRole("button", { name: "Rotate token" })).toBeTruthy();
+    expect(screen.queryByRole("textbox", { name: "New token" })).toBeNull();
+    expect(document.body.innerHTML).not.toContain(secret);
+    expect(logged.map((x) => String(x instanceof Error ? x.stack : typeof x === "object" ? JSON.stringify(x) : x)).join("\n")).not.toContain(secret);
+    spies.forEach((s) => s.mockRestore());
+  });
+
+  it("clears the token as the page is left for the back/forward cache", async () => {
+    await rotate(minted);
+    expect(((await screen.findByRole("textbox", { name: "New token" })) as HTMLInputElement).value).toBe(secret);
+    // At once: the page is frozen as it is right after pagehide, and Back
+    // shows it again.
+    window.dispatchEvent(new Event("pagehide"));
+    expect(screen.queryByRole("textbox", { name: "New token" })).toBeNull();
+    expect(screen.queryByText("New token shown below")).toBeNull();
+    expect(document.body.innerHTML).not.toContain(secret);
+    expect(screen.getByRole("button", { name: "Rotate token" })).toBeTruthy();
+  });
+
+  it("shows no token from a rotation answered after the page was left", async () => {
+    let answer: (r: Response) => void = () => {};
+    await rotate(() => new Promise<Response>((resolve) => (answer = resolve)));
+    // Left while the rotation is in flight: Back from the back/forward
+    // cache then lets the answer in.
+    window.dispatchEvent(new Event("pagehide"));
+    answer(new Response(JSON.stringify({ token: secret, tokenSecret: "bot.access-token" })));
+    expect(
+      await screen.findByText("Rotated while the page was left, so the token is not shown: it is in Secret bot.access-token; rotate again to see one here"),
+    ).toBeTruthy();
+    expect(screen.queryByRole("textbox", { name: "New token" })).toBeNull();
+    expect(document.body.innerHTML).not.toContain(secret);
+    expect(screen.getByRole("button", { name: "Rotate token" })).toBeTruthy();
+  });
+
+  it("drops the token and the form when the access is gone, and a new one of its name brings neither back", async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    const current = { access: access({ tokenSecret: "bot.access-token" }) as ReturnType<typeof access> | null };
+    open("/t/a/settings/access/bot", admin, server(current, minted).handle);
+    fireEvent.click(await screen.findByRole("button", { name: "Rotate token" }));
+    fireEvent.click(screen.getByRole("button", { name: "Yes, rotate it" }));
+    expect(await screen.findByRole("textbox", { name: "New token" })).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: "Rotate token" }));
+    fireEvent.click(screen.getByRole("button", { name: "Edit" }));
+    expect(screen.getByRole("form", { name: "Edit bot" })).toBeTruthy();
+    expect(screen.getByRole("group", { name: "Rotate the token?" })).toBeTruthy();
+
+    current.access = null;
+    await act(() => vi.advanceTimersByTimeAsync(15000));
+    expect(screen.getByText(/No AgentAccess/)).toBeTruthy();
+    current.access = access({ tokenSecret: "bot.access-token" });
+    await act(() => vi.advanceTimersByTimeAsync(15000));
+    expect(await screen.findByRole("button", { name: "Edit" })).toBeTruthy();
+    expect(screen.queryByRole("form", { name: "Edit bot" })).toBeNull();
+    expect(screen.queryByRole("textbox", { name: "New token" })).toBeNull();
+    expect(screen.queryByRole("group", { name: "Rotate the token?" })).toBeNull();
+    expect(document.body.innerHTML).not.toContain(secret);
+  });
+
+  it("shows a 409's message as it is, and no token", async () => {
+    const message = "AgentAccess bot's token Secret changed while rotating; its token is in Secret bot.access-token";
+    await rotate(() => json({ error: { code: "conflict", message } }, 409));
+    expect((await screen.findByRole("alert")).textContent).toBe(message);
+    expect(screen.queryByRole("textbox", { name: "New token" })).toBeNull();
+    expect(screen.queryByText("New token shown below")).toBeNull();
+  });
+
+  it("shows a 400's message as it is", async () => {
+    const message = "namespace a has no Team, and no token is minted outside one";
+    await rotate(() => json({ error: { code: "invalid", message } }, 400));
+    expect((await screen.findByRole("alert")).textContent).toBe(message);
+  });
+
+  it("is not offered for a ServiceAccount", async () => {
+    open("/t/a/settings/access/bot", admin, () => json(access({ spec: { role: "member", serviceAccount: { name: "ci" } } })));
+    expect(await screen.findByRole("button", { name: "Edit" })).toBeTruthy();
+    expect(screen.queryByRole("button", { name: "Rotate token" })).toBeNull();
+    expect(screen.queryByText(/rotate it/)).toBeNull();
+  });
+
+  it("says where a token not yet minted will be", async () => {
+    open("/t/a/settings/access/bot", admin, () => json(access()));
+    expect(await screen.findByText("The reconciler mints the token into a Secret; rotate it to see one here.")).toBeTruthy();
+  });
+});
+
+describe("Deleting an agent access", () => {
+  it("asks, deletes, and goes back to the list without it", async () => {
+    const current = { access: access() as ReturnType<typeof access> | null };
+    const s = server(current, () => {
+      current.access = null;
+      return Promise.resolve(new Response(null, { status: 204 }));
+    });
+    open("/t/a/settings/access/bot", admin, s.handle);
+    fireEvent.click(await screen.findByRole("button", { name: "Delete" }));
+    const confirm = within(screen.getByRole("group", { name: "Delete bot?" }));
+    expect(confirm.getByText("Delete bot? Its agent loses access at once.")).toBeTruthy();
+    // The status is there, empty, before it says so: a live region that
+    // comes with its text is not announced.
+    const said: Node[] = [];
+    const seen = new MutationObserver((records) => {
+      for (const r of records) if (r.target instanceof Element && r.target.getAttribute("role") === "status") said.push(...r.addedNodes);
+    });
+    seen.observe(document.body, { childList: true, subtree: true });
+    fireEvent.click(confirm.getByRole("button", { name: "Yes, delete it" }));
+    expect(await screen.findByText("Deleted bot.")).toBeTruthy();
+    await waitFor(() => expect(said.map((n) => n.textContent)).toContain("Deleted bot."));
+    seen.disconnect();
+    expect(s.calls).toEqual([{ method: "DELETE", url: "/api/v1/namespaces/a/agentaccesses/bot", body: undefined }]);
+    expect(screen.getByRole("heading", { level: 1 }).textContent).toBe("Agent access");
+    expect(await screen.findByText("No AgentAccess yet.")).toBeTruthy();
+    expect(screen.queryByRole("link", { name: "bot" })).toBeNull();
+  });
+
+  it("takes a 404 as already gone", async () => {
+    open("/t/a/settings/access/bot", admin, server({ access: access() }, () => json({ error: { code: "not_found", message: "not found" } }, 404)).handle);
+    fireEvent.click(await screen.findByRole("button", { name: "Delete" }));
+    fireEvent.click(screen.getByRole("button", { name: "Yes, delete it" }));
+    expect(await screen.findByText("Deleted bot.")).toBeTruthy();
+  });
+
+  it("keeps the access, and shows why, when refused", async () => {
+    const message = "cadre-server may not do this: its ClusterRole lacks the verb; see its log";
+    open("/t/a/settings/access/bot", admin, server({ access: access() }, () => json({ error: { code: "server_forbidden", message } }, 500)).handle);
+    fireEvent.click(await screen.findByRole("button", { name: "Delete" }));
+    fireEvent.click(screen.getByRole("button", { name: "Yes, delete it" }));
+    expect((await screen.findByRole("alert")).textContent).toBe(message);
+    expect(screen.getByRole("region", { name: "AgentAccess" })).toBeTruthy();
   });
 });

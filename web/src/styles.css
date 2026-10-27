@@ -2176,6 +2176,61 @@ main.board {
   color: var(--fg);
 }
 
+/* Agent access editing: "New agent access" above the table, the form in
+   a card of its own; on one AgentAccess the actions in its card's head,
+   the confirmations and the token shown once. The token's field takes the
+   row, so a long token scrolls inside it rather than widening the card. */
+
+.access-toolbar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-2);
+}
+
+.access-toolbar .hint {
+  margin: 0;
+}
+
+.access-head {
+  flex-wrap: wrap;
+}
+
+.access-status {
+  margin-left: auto;
+}
+
+.access-head .buttons {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-2);
+}
+
+.settings-page .card .confirm {
+  margin: var(--space-4);
+}
+
+.token-once {
+  display: grid;
+  gap: var(--space-2);
+  border-top: 1px solid var(--line);
+}
+
+.token-once p {
+  margin: 0;
+}
+
+.token-row {
+  display: flex;
+  gap: var(--space-2);
+}
+
+.token-row input {
+  flex: 1;
+  min-width: 0;
+}
+
 /* Dialog (ui/Dialog.tsx) and the keyboard shortcuts' help (shortcuts.tsx). */
 
 .dialog {
