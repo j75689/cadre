@@ -194,6 +194,17 @@ func TestAgentAccessRoutes(t *testing.T) {
 	if len(store.rotatedBy) != 1 || store.rotatedBy[0] != "lead@example.test" {
 		t.Errorf("rotated by %v, want the admin", store.rotatedBy)
 	}
+	// The minted token is stored nowhere, a browser's cache included.
+	req, _ := http.NewRequest("POST", e.url+api.Base+path+"/bot/token", nil)
+	req.Header.Set("Authorization", "Bearer "+admin)
+	res, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = res.Body.Close()
+	if got := res.Header.Get("Cache-Control"); res.StatusCode != 200 || got != "no-store" {
+		t.Errorf("a rotate's answer: %d, Cache-Control %q; want 200, no-store", res.StatusCode, got)
+	}
 }
 
 // Without logins everyone may do anything: AgentAccesses are not served
