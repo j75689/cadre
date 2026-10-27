@@ -507,8 +507,10 @@ describe("Rotating a token", () => {
     fireEvent.click(await screen.findByRole("button", { name: "Rotate token" }));
     fireEvent.click(screen.getByRole("button", { name: "Yes, rotate it" }));
     expect(await screen.findByRole("textbox", { name: "New token" })).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: "Rotate token" }));
     fireEvent.click(screen.getByRole("button", { name: "Edit" }));
     expect(screen.getByRole("form", { name: "Edit bot" })).toBeTruthy();
+    expect(screen.getByRole("group", { name: "Rotate the token?" })).toBeTruthy();
 
     current.access = null;
     await act(() => vi.advanceTimersByTimeAsync(15000));
@@ -518,6 +520,7 @@ describe("Rotating a token", () => {
     expect(await screen.findByRole("button", { name: "Edit" })).toBeTruthy();
     expect(screen.queryByRole("form", { name: "Edit bot" })).toBeNull();
     expect(screen.queryByRole("textbox", { name: "New token" })).toBeNull();
+    expect(screen.queryByRole("group", { name: "Rotate the token?" })).toBeNull();
     expect(document.body.innerHTML).not.toContain(secret);
   });
 
