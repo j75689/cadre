@@ -544,8 +544,17 @@ describe("Deleting an agent access", () => {
     fireEvent.click(await screen.findByRole("button", { name: "Delete" }));
     const confirm = within(screen.getByRole("group", { name: "Delete bot?" }));
     expect(confirm.getByText("Delete bot? Its agent loses access at once.")).toBeTruthy();
+    // The status is there, empty, before it says so: a live region that
+    // comes with its text is not announced.
+    const said: Node[] = [];
+    const seen = new MutationObserver((records) => {
+      for (const r of records) if (r.target instanceof Element && r.target.getAttribute("role") === "status") said.push(...r.addedNodes);
+    });
+    seen.observe(document.body, { childList: true, subtree: true });
     fireEvent.click(confirm.getByRole("button", { name: "Yes, delete it" }));
     expect(await screen.findByText("Deleted bot.")).toBeTruthy();
+    await waitFor(() => expect(said.map((n) => n.textContent)).toContain("Deleted bot."));
+    seen.disconnect();
     expect(s.calls).toEqual([{ method: "DELETE", url: "/api/v1/namespaces/a/agentaccesses/bot", body: undefined }]);
     expect(screen.getByRole("heading", { level: 1 }).textContent).toBe("Agent access");
     expect(await screen.findByText("No AgentAccess yet.")).toBeTruthy();

@@ -187,12 +187,18 @@ export function AccessList() {
 function AccessCreate({ ns }: { ns: string }) {
   const navigate = useNavigate();
   const deleted = (useLocation().state as { deleted?: string } | null)?.deleted;
+  // said is set after the status mounts empty: a live region is
+  // announced when it changes, not when it comes with its text.
+  const [said, setSaid] = useState("");
+  // The second render is the point: it is the change that is announced.
+  // eslint-disable-next-line react-hooks/set-state-in-effect
+  useEffect(() => setSaid(deleted ? `Deleted ${deleted}.` : ""), [deleted]);
   const [open, setOpen] = useState(false);
   return (
     <>
       <div className="access-toolbar">
         <p role="status" className="hint">
-          {deleted && `Deleted ${deleted}.`}
+          {said}
         </p>
         {!open && (
           <Button variant="primary" icon="plus" onClick={() => setOpen(true)}>
