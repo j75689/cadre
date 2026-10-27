@@ -180,16 +180,18 @@ describe("shortcuts", () => {
     expect(screen.getByRole("dialog", { name: "Keyboard shortcuts" })).toBeTruthy();
   });
 
-  it("do not leave the page from a form or a button, where a draft may be", async () => {
+  it("do not leave the page from a form, where a draft may be", async () => {
     await at("/t/a");
     press("c");
     const create = await screen.findByRole("button", { name: "Create task" });
     press("g", {}, create);
     press("b", {}, create);
     expect(path()).toBe("/t/a/new");
-    const top = screen.getByRole("button", { name: "Keyboard shortcuts" });
-    press("g", {}, top);
-    press("b", {}, top);
+  });
+
+  it("open New task on c from a button outside a form, such as the help's opener", async () => {
+    await at("/t/a");
+    press("c", {}, screen.getByRole("button", { name: "Keyboard shortcuts" }));
     expect(path()).toBe("/t/a/new");
   });
 

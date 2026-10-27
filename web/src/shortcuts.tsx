@@ -9,9 +9,8 @@ import { Dialog } from "./ui/Dialog";
 // or Alt, which belong to the browser and the system. They do not fire
 // while typing: in a text field, during an input method's composition, or
 // in an open dialog, where only ? (and the dialog's own Escape) works. The
-// ones that leave the page do not fire from a form or a button either,
-// or while a form on the page holds a draft: such a form is marked
-// data-dirty.
+// ones that leave the page do not fire from a form either, or while a
+// form on the page holds a draft: such a form is marked data-dirty.
 
 // chordMs is how long after g a b still goes to the board.
 const chordMs = 1000;
@@ -23,8 +22,8 @@ function typing(e: KeyboardEvent) {
   return e.target instanceof Element && e.target.closest("input, textarea, select, [contenteditable]:not([contenteditable=false])") !== null;
 }
 
-function inFormOrButton(e: KeyboardEvent) {
-  return e.target instanceof Element && e.target.closest("form, button") !== null;
+function inForm(e: KeyboardEvent) {
+  return e.target instanceof Element && e.target.closest("form") !== null;
 }
 
 // useShortcuts listens for the shortcuts on the team in namespace ns, if
@@ -54,7 +53,7 @@ export function useShortcuts(ns: string | undefined): [boolean, (open: boolean) 
         if (!search) return;
         e.preventDefault();
         search.focus();
-      } else if (ns === undefined || inFormOrButton(e) || document.querySelector("[data-dirty]")) {
+      } else if (ns === undefined || inForm(e) || document.querySelector("[data-dirty]")) {
         return;
       } else if (e.key === "c" && can(role, "work") && pathname !== `${teamPath(ns)}/new`) {
         // On New task already, it adds no second entry to the history.
