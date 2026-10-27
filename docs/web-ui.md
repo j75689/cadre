@@ -2,7 +2,7 @@
 
 The web UI is an operations console: minimal, dense and grid-based. Typography, spacing and a small set of semantic colours carry the information, not decoration. Light and dark are designed together. There is one accent, and the status colours are used only for status.
 
-It is React, TypeScript and plain CSS (`web/src/styles.css`), with no component kit, no CSS framework and no new runtime dependency. Nothing is fetched at run time: no web fonts and no icon packages. The UI therefore works in an air-gapped cluster. What the pages do is described in [architecture.md](architecture.md#web-ui-and-api).
+It is React, TypeScript and plain CSS (`web/src/styles.css`), with no component kit, no CSS framework and no new runtime dependency. Nothing is fetched at run time: no web fonts and no icon packages. The UI therefore works in an air-gapped cluster. This document is its design system and how each page looks and behaves ([Pages](#pages), [URL parameters](#url-parameters), [States](#states), [Accessibility](#accessibility)); the routes the pages call are in [architecture.md](architecture.md#web-ui-and-api).
 
 ## Tokens
 
@@ -99,7 +99,7 @@ A skip link to `#main` comes first in the tab order. Each page's `main` has `id=
 Every team page, `/t/<ns>/...`, has the team nav under the top bar: a `nav` named "Team", 40 px (`--teamnav`), on `--surface`, with a bottom `--line`.
 - It holds the team's tabs, each an icon and a label, in order: **Board**, current on `/t/<ns>` (with or without a trailing slash) only, not on a task's page; **Agents**, for every role; **Settings**, for every role, also current on its sub-pages (`/t/<ns>/settings/access...`).
 - The current tab has `aria-current="page"`, a 2 px `--accent` underline and `--fg` text; the others are `--fg-muted`.
-- A tab can be left out for a role that cannot use it.
+- Every role sees all three tabs. What a role may not do is left out of the pages themselves (see [States](#states)).
 - When the tabs do not fit, they scroll inside the nav; the page never scrolls sideways, down to 320 px.
 - An unknown team page, `/t/<ns>/<anything else>`, shows Not found under the nav.
 
@@ -113,7 +113,20 @@ Every team page, `/t/<ns>/...`, has the team nav under the top bar: a `nav` name
 
 A shortcut is a key without Ctrl, Cmd or Alt, which belong to the browser and the system. For `/` and `?` only, AltGr is no modifier, though Windows sends it as Ctrl and Alt, so they work on layouts that type them with AltGr. None fires when another handler has prevented the key, while the focus is in an `input`, `textarea`, `select` or `[contenteditable]`, during an input method's composition (`isComposing`, or `keyCode` 229), or while a dialog is open, except `?`; Escape closes the dialog. `c` and `g` `b`, which leave the page, also do not fire while the focus is in a `form`, or while the page holds a draft, wherever the focus is. A draft is an element marked `data-dirty`: New task's form once it differs from a blank one, the team's Settings form while it would save something other than the Team it opened with, a task's reply or comment while it holds text, and a tool call note. Each form sets the mark itself, as React keeps a controlled field's `defaultValue` equal to its value, so a field cannot tell it was changed. After `c` and `g` `b`, the new page's `h1` takes the focus, as after any route change.
 
-The team's URLs and their query parameters are built in `web/src/links.ts` (`teamPath`, `boardLink`, `taskLink`), so a link from one page is one another page reads.
+### URL parameters
+
+The team's URLs and their query parameters are built in `web/src/links.ts` (`params`, `teamPath`, `boardLink`, `taskLink`), so a link from one page is one another page reads. A page's state that a link should carry is in its query, so a reload or a shared link opens the same view:
+
+| Parameter | Page | Value | Set by |
+| --- | --- | --- | --- |
+| `q` | Board | The search text, matched in any case against the title, the task's name, the assignee, the labels and `#number`, over the loaded tasks. | the search box |
+| `phase` | Board | One phase, in any case (`todo` is Todo): only that column is read and shown. An unknown phase reads as all of them and is left in the URL. | the Phase select |
+| `assignee` | Board | An assignee's exact name; a User and an Agent of the same name are one assignee. Filters the loaded tasks. | the Assignee select; Agents' Tasks link (`boardLink(ns, { assignee })`) |
+| `view` | Board | `list` for the list; any other value is the board. | the Board and List toggles |
+| `sort` | Board, as a list | `number`, `title`, `phase`, `assignee`, `priority` or `created`, with `-` first for descending. None, or an unknown one, is the API's order, priority then number. | the list's header buttons |
+| `run` | Task | A run's id, in any case: the page opens at that run, expanded if it has ended. | a run's id link in Runs and Run in progress; Settings' Run slots (`taskLink(ns, name, run)`) |
+
+The board's controls replace the history entry, so they do not flood Back, and an empty value removes its parameter. A change of the query alone keeps the focus where it was.
 
 ### Pages
 
@@ -129,7 +142,7 @@ The team's URLs and their query parameters are built in `web/src/links.ts` (`tea
     - the view, a group of two toggle buttons (`aria-pressed`): **Board** and **List**;
     - "n of m loaded tasks shown" while a search or an assignee is set: both filter the pages already loaded, not the server;
     - "New task", the one primary button, for members.
-  - **URL:** the search and the filters live in the query, so a reload or a shared link opens the same board: `?q=` (the search), `?phase=` (one phase), `?assignee=` (an exact assignee name), `?view=list` (the list; any other value is the board) and `?sort=` (the list's order). Typing and choosing replace the history entry, so they do not flood Back; an empty value removes its parameter. The search box keeps its own value and writes it to `?q=` (`useTextParam` in `web/src/links.ts`), so fast typing and an input method's composition are not lost to the router's transition: it writes when a composition ends, not during it, and takes the URL's value on Back, Forward or a link. With a phase set, only that column is read and shown, at most 32rem wide from 1024 px. The phase matches in any case (`?phase=todo` is Todo); an unknown phase reads as all of them and is left in the URL. The assignee matches by name only, so a User and an Agent of the same name are one assignee. A filter change keeps the focus on its control.
+  - **URL:** the search, the filters, the view and the list's order live in the query (`q`, `phase`, `assignee`, `view`, `sort`; see [URL parameters](#url-parameters)), so a reload or a shared link opens the same board. The search box keeps its own value and writes it to `?q=` (`useTextParam` in `web/src/links.ts`), so fast typing and an input method's composition are not lost to the router's transition: it writes when a composition ends, not during it, and takes the URL's value on Back, Forward or a link. With a phase set, only that column is read and shown, at most 32rem wide from 1024 px. A filter change keeps the focus on its control.
   - **Columns:** a horizontal scroller.
     - Under 1024 px it snaps, and each column is 80 vw.
     - From 1024 px there are seven columns of `minmax(15rem, 1fr)`.
@@ -138,7 +151,7 @@ The team's URLs and their query parameters are built in `web/src/links.ts` (`tea
     - Terminal columns (Done, Cancelled, Failed) mute their header.
     - The phases are read in parallel, so a task that changes phase between two reads comes back in both. It is shown once, in the column whose read came back last (board and list alike).
   - **List** (`?view=list`): the loaded columns' tasks, filtered as the board is, in one table in a region named "Tasks": #, Title (a link to the task), Phase (the phase badge), Assignee, Priority (medium shown too) and Created. A task has no updated time, so there is no Updated column.
-    - Each header is a button in its `th`; the sorted one has `aria-sort`. A click sorts ascending, then descending. The key is kept in `?sort=`: `number`, `title`, `phase`, `assignee`, `priority`, `created`, with `-` first for descending. No key (or an unknown one) is the API's order, priority then number; the number breaks ties.
+    - Each header is a button in its `th`; the sorted one has `aria-sort`. A click sorts ascending, then descending. The key is kept in `?sort=`: `number`, `title`, `phase`, `assignee`, `priority`, `created`, with `-` first for descending. No key (or an unknown one) is the API's order, priority then number, so Priority then has `aria-sort="ascending"`, and choosing that order removes the key; the number breaks ties.
     - One "Load more" below the table reads the next page of every column that has more, the board's paging.
     - The table fills the board's height and scrolls on its own, both ways, so the page does not; its header stays in view.
 - **Agents** (`/t/<ns>/agents`): the team's Agent resources and whether each can take work, read every 15 s. It is health only, so every role sees it.
@@ -171,8 +184,8 @@ The team's URLs and their query parameters are built in `web/src/links.ts` (`tea
     - Any other refusal (a 400, such as an edit that would leave the team without an admin) is an alert right after the Roles fieldset, beside Save. Alerts take the focus, each failed Save again, also with the same message (the alert is remounted, so it is announced again). The field an error is about (from the check before sending, or the server's `maxConcurrentRuns`, `archiveAfter`, `roles[i]` or `roles[i].subjects[j]` prefix) is `aria-invalid` and described by the alert; for a role without subjects, its fieldset is described by it.
     - A Team that looks managed by GitOps (`gitops.ts`: a `kubectl.kubernetes.io/last-applied-configuration` or `argocd.argoproj.io/tracking-id` annotation, an `app.kubernetes.io/instance`, `kustomize.toolkit.fluxcd.io/name` or `helm.toolkit.fluxcd.io/name` label, or a server-side `Apply` in its managedFields) gets a warning banner at the top of the form (its `aria-describedby`), saying why; the first Save then asks "Save anyway?" inline (Save anyway / Keep editing).
     - Warnings use `.banner-warning`, in the waiting tone; errors stay red.
-  - **Roles** card, admins only: a table of each role (`RoleBadge`) and its subjects, as `user:<name>` or `group:<name>` in mono, in a `.table-text` cell, so they wrap.
-  - **Run slots** card, admins only: "*running* of *max* in use" in its header (*max* is 1 when unset), then a table of the slots held: the task (a link to it, opened at the run), the run id in mono, and when the slot was acquired.
+  - **Roles** card, admins only: a table of each role (`RoleBadge`) and its subjects, as `user:<name>` or `group:<name>` in mono, in a `.table-text` cell, so they wrap; with none, "No roles are given on this team."
+  - **Run slots** card, admins only: "*running* of *max* in use" in its header (*max* is 1 when unset), then a table of the slots held: the task (a link to it, opened at the run), the run id in mono, and when the slot was acquired; with none, "No run holds a slot."
   - The server sends a viewer or a member the Team without its roles and status. It does send the limits, but the page shows them to admins only. So the others see the display name and the namespace, and the hint "This page shows a team's limits, roles and run slots to its admins only."
   - A namespace without a Team shows "This namespace has no Team." with the `cadre team init` command. A failed read shows a banner with Retry; a 403 shows it without Retry, as reading again cannot help.
 - **Agent access** (`/t/<ns>/settings/access`): the team's AgentAccesses, read every 15 s, at most 60rem wide, under the same breadcrumb (the team, Settings, then Agent access), heading and settings' tabs.
@@ -276,7 +289,7 @@ Buttons are disabled while a call is in flight, and the server's error shows und
   - the run count;
   - conditions, each with a check (`True`) or an alert icon, its reason and its message.
 - **Run in progress:** shown while the task is Running. The id in mono links to the run (`?run=<id>`), then the mode, runner and step, and the token totals: "12,345 in · 2,100 out · context 30,120", plus the prompt cache's read and written tokens when there are any. In and out are summed over the events; context is the latest event's, the size of the conversation, left out until an event reports it. Under them the events, as in Runs, read again every 4 s, counted from the start of the read before and at least 0.8 s after it ended, while the tab is visible, so an event is shown within 5 s of being written while a read takes up to 1 s; "No events yet." until the first. The card goes when the run ends, and Runs reads its list again.
-- **Runs:** each run is a row button: a chevron, the mode, runner and reason, and an outcome badge in the outcome's phase hue, with the start and end times under it. The id in mono sits above the button, a link to the run named "Run <id>", as wide as the id. Expanding a row shows its events in tabular mono: progress lines and token counts, with the prompt cache's when there are any.
+- **Runs:** each run is a row button: a chevron, the mode, runner and reason, and an outcome badge in the outcome's phase hue, with the start and end times under it. The id in mono sits above the button, a link to the run named "Run <id>", as wide as the id. Expanding a row reads its events once, as an ended run's do not change, and shows them in tabular mono: progress lines and token counts, with the prompt cache's when there are any.
 
 ## States
 
@@ -286,6 +299,9 @@ Buttons are disabled while a call is in flight, and the server's error shows und
 | Error | An inline banner where the content would be, with Retry where a retry exists. Once the board has loaded, a failed poll keeps its columns and shows the error in the live status: "Could not refresh: <message>". A refused action's reason stays when the role is read again and the action goes, for the composer and for "Cancel task" alike, and it is said once: a refusal for the role is not also shown under the form, and its alert stays the same element as the action it was for goes: the composer's card stays to hold it. |
 | Empty | Says what would fill it: "No team yet", with `cadre team init -n <namespace>` in a code block (for a bootstrap admin, the create form, with the command as the other way); "Nothing here" in a column; "Nothing in the thread yet."; "No run has ended yet." |
 | Not found | A centred card with a link back to Teams. |
+| No Team | A namespace without a Team is no team, and `/` does not list it (with no teams at all, see Empty). Its Settings says "This namespace has no Team. A namespace becomes a team when it has a Team resource:" with `cadre team init -n <ns>`. |
+| Without logins | With `--auth=none` there is no login: `/me` makes everyone an admin, so every action and Settings' Edit are offered, no role is shown, and the identity is a name kept in the browser (a task's composer says "Give your name at the top to act on this task." until there is one). Agent access says it needs logins, as the server serves no AgentAccess routes then. |
+| Role | The UI leaves out what the caller's role would be refused; the server decides. With logins, the board, a task, New task, Settings and Agent access say the role under their heading ("You are a viewer of *ns*." or "You have no role on *ns*."). A viewer gets no "New task", composer, "Cancel task" or `c`; New task itself says "Creating tasks needs the member role.". A viewer or a member sees Settings' display name and namespace with "This page shows a team's limits, roles and run slots to its admins only.", no Edit and no Agent access tab, and an Agent access URL says "Managing agent access needs the admin role.". A role lost meanwhile is said where it shows: Settings' "Your role on *ns* is gone or has changed …", and a refused action's reason (see Error). |
 
 ## Accessibility
 
@@ -298,7 +314,7 @@ Buttons are disabled while a call is in flight, and the server's error shows und
   - Decorative icons and skeleton blocks are `aria-hidden`.
   - A Running card's dot is an `img` named "running".
 - **Colour alone:** phase and priority never rely on colour only: a phase is a dot and its name, and a priority is an icon and its word. A wait is an icon and the word "Waiting".
-- **Structure:** one `h1` per page. Landmarks: `header`, `main` (skip-link target), breadcrumb `nav`, and `region`s for the board's columns and the task's cards.
+- **Structure:** one `h1` per page. Landmarks: `header`, `main` (skip-link target), the breadcrumb, Team and Settings `nav`s, and `region`s for the board's columns, the task's cards and each scrolling table.
 - **Live regions:** the board has a single polite `role="status"` with `aria-atomic`. Only a change of state reaches it: "Up to date" (visually hidden) or "Could not refresh: <message>". How long ago the board was read ("Updated 12 s ago") is shown beside it, outside the region, so the poll does not make it speak every five seconds. The run in progress's events are no live region either: a visually hidden polite `role="status"` says "Run ended" when the run goes. Errors from actions are `role="alert"`.
 - **Titles:** `document.title` is "<page> · <team> · Cadre", for example "#12 Fix the build · Platform · Cadre".
-- **Keyboard:** everything a pointer can do is reachable by keyboard: the menu, segmented controls (radios), `<details>`, run rows and the cancel confirmation. The shortcuts (see [Keyboard shortcuts](#keyboard-shortcuts)) are single keys that never fire while typing, and a dialog gives the focus back to its opener when it closes.
+- **Keyboard:** everything a pointer can do is reachable by keyboard: the menu, segmented controls (radios), `<details>`, run rows, the cancel confirmation and the list's sort (a button in each header cell; the sorted column's `th` has `aria-sort`). The shortcuts (see [Keyboard shortcuts](#keyboard-shortcuts)) are single keys that never fire while typing, and a dialog gives the focus back to its opener when it closes.
