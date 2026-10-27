@@ -56,7 +56,8 @@ export function useShortcuts(ns: string | undefined): [boolean, (open: boolean) 
         search.focus();
       } else if (ns === undefined || inFormOrButton(e) || document.querySelector("[data-dirty]")) {
         return;
-      } else if (e.key === "c" && can(role, "work")) {
+      } else if (e.key === "c" && can(role, "work") && pathname !== `${teamPath(ns)}/new`) {
+        // On New task already, it adds no second entry to the history.
         void navigate(`${teamPath(ns)}/new`);
       } else if (e.key === "g") {
         gAt.current = Date.now();

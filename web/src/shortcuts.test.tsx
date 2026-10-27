@@ -44,7 +44,7 @@ function server(role: string, t = task("Todo")) {
 let go: NavigateFunction;
 
 function Where() {
-  const { pathname, search } = useLocation();
+  const { pathname, search, key } = useLocation();
   const navigate = useNavigate();
   useEffect(() => {
     go = navigate;
@@ -53,6 +53,7 @@ function Where() {
     <>
       <output data-testid="path">{pathname}</output>
       <output data-testid="search">{search}</output>
+      <output data-testid="key">{key}</output>
     </>
   );
 }
@@ -106,6 +107,14 @@ describe("shortcuts", () => {
     press("c");
     expect(path()).toBe("/t/a/new");
     expect(document.activeElement).toBe(await screen.findByRole("heading", { level: 1, name: "New task" }));
+  });
+
+  it("do nothing on c on New task", async () => {
+    await at("/t/a/tasks/x");
+    press("c");
+    const key = screen.getByTestId("key").textContent;
+    press("c", {}, await screen.findByRole("heading", { level: 1, name: "New task" }));
+    expect(screen.getByTestId("key").textContent).toBe(key);
   });
 
   it("do nothing on c for a viewer", async () => {
