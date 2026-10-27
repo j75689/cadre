@@ -438,6 +438,45 @@ describe("Editing an agent access", () => {
     expect(s.calls.at(-1)?.body).toEqual({ spec: { role: "viewer" }, resourceVersion: "4" });
   });
 
+  it("after a 409 that was shown, saves though the reconciler wrote the status since", async () => {
+    const current = { access: access({ resourceVersion: "3" }) };
+    const s = server(current, (c) =>
+      (c.body as { resourceVersion: string }).resourceVersion === current.access.resourceVersion
+        ? json(access({ resourceVersion: "9", spec: { role: "viewer" } }))
+        : json({ error: { code: "conflict", message: "AgentAccess bot changed since it was read" } }, 409),
+    );
+    open("/t/a/settings/access/bot", admin, s.handle);
+    fireEvent.click(await screen.findByRole("button", { name: "Edit" }));
+    const form = within(screen.getByRole("form", { name: "Edit bot" }));
+    fireEvent.click(form.getByRole("radio", { name: "viewer" }));
+    current.access = access({ resourceVersion: "5", spec: { role: "member", serviceAccount: { name: "ops" } } });
+    fireEvent.click(form.getByRole("button", { name: "Save" }));
+    expect(await form.findByRole("alert")).toBeTruthy();
+
+    current.access = { ...current.access, resourceVersion: "6" };
+    fireEvent.click(form.getByRole("button", { name: "Save" }));
+    const card = within(screen.getByRole("region", { name: "AgentAccess" }));
+    expect(await card.findByText("Saved")).toBeTruthy();
+    expect(card.queryByRole("alert")).toBeNull();
+    expect(s.calls.map((c) => (c.body as { resourceVersion: string }).resourceVersion)).toEqual(["3", "5", "6"]);
+  });
+
+  it("saves again only once when every save is a 409 with the spec as it was", async () => {
+    const current = { access: access({ resourceVersion: "3" }) };
+    const conflict = "AgentAccess bot changed since it was read";
+    const s = server(current, () => {
+      current.access = { ...current.access, resourceVersion: String(Number(current.access.resourceVersion) + 1) };
+      return json({ error: { code: "conflict", message: conflict } }, 409);
+    });
+    open("/t/a/settings/access/bot", admin, s.handle);
+    fireEvent.click(await screen.findByRole("button", { name: "Edit" }));
+    const form = within(screen.getByRole("form", { name: "Edit bot" }));
+    fireEvent.click(form.getByRole("radio", { name: "viewer" }));
+    fireEvent.click(form.getByRole("button", { name: "Save" }));
+    expect((await form.findByRole("alert")).textContent).toBe(conflict);
+    expect(s.calls.map((c) => (c.body as { resourceVersion: string }).resourceVersion)).toEqual(["3", "4"]);
+  });
+
   it("puts the focus on the role, and back on Edit after Cancel", async () => {
     open("/t/a/settings/access/bot", admin, server({ access: access() }, () => json(access())).handle);
     fireEvent.click(await screen.findByRole("button", { name: "Edit" }));
