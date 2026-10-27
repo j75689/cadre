@@ -413,6 +413,23 @@ describe("Editing an agent access", () => {
     expect(s.calls.at(-1)?.body).toEqual({ spec: { role: "viewer" }, resourceVersion: "4" });
   });
 
+  it("puts the focus on the role, and back on Edit after Cancel", async () => {
+    open("/t/a/settings/access/bot", admin, server({ access: access() }, () => json(access())).handle);
+    fireEvent.click(await screen.findByRole("button", { name: "Edit" }));
+    const form = within(screen.getByRole("form", { name: "Edit bot" }));
+    await waitFor(() => expect(document.activeElement).toBe(form.getByRole("radio", { name: "member" })));
+    fireEvent.click(form.getByRole("button", { name: "Cancel" }));
+    await waitFor(() => expect(document.activeElement).toBe(screen.getByRole("button", { name: "Edit" })));
+  });
+
+  it("puts the focus back on Edit after a save", async () => {
+    open("/t/a/settings/access/bot", admin, server({ access: access() }, () => json(access({ resourceVersion: "4" }))).handle);
+    fireEvent.click(await screen.findByRole("button", { name: "Edit" }));
+    fireEvent.click(within(screen.getByRole("form", { name: "Edit bot" })).getByRole("button", { name: "Save" }));
+    expect(await screen.findByText("Saved")).toBeTruthy();
+    await waitFor(() => expect(document.activeElement).toBe(screen.getByRole("button", { name: "Edit" })));
+  });
+
   it.each([
     [400, "invalid", "spec.role must be viewer or member"],
     [500, "internal", "the AgentAccess could not be written"],

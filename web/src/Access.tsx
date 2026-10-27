@@ -397,11 +397,16 @@ function AccessForm({
   const [failures, setFailures] = useState(0);
   const [busy, setBusy] = useState(false);
   const errorRef = useRef<HTMLParagraphElement>(null);
+  const formRef = useRef<HTMLFormElement>(null);
   // An error takes the focus, as the button that had it is disabled
   // during the request.
   useEffect(() => {
     if (failures) errorRef.current?.focus();
   }, [failures]);
+  // An edit starts at the role, as the name cannot be changed.
+  useEffect(() => {
+    if (editing) formRef.current?.querySelector<HTMLInputElement>("input[name=access-role]:checked")?.focus();
+  }, [editing]);
   const fail = (p: Problem) => {
     setError(p);
     setFailures((n) => n + 1);
@@ -447,7 +452,7 @@ function AccessForm({
     setBusy(false);
   };
   return (
-    <form className={`form access-form ${className}`.trim()} onSubmit={submit} noValidate aria-label={label}>
+    <form ref={formRef} className={`form access-form ${className}`.trim()} onSubmit={submit} noValidate aria-label={label}>
       {editing && <p className="help">If AgentAccesses are applied from Git, change them there: an edit here drifts from Git.</p>}
       <label className="field">
         Name
@@ -564,7 +569,10 @@ function AccessCard({ ns, name }: { ns: string; name: string }) {
   const [missing, setMissing] = useState(false);
   const [failed, setFailed] = useState<Failure | null>(null);
   const [retry, setRetry] = useState(0);
+  // editing is the Edit form. closed is whether it was closed, so the
+  // Edit button that comes back takes the focus.
   const [editing, setEditing] = useState(false);
+  const [closed, setClosed] = useState(false);
   // note is the card's status: a save, or that a token is shown, never
   // the token.
   const [note, setNote] = useState("");
@@ -703,6 +711,7 @@ function AccessCard({ ns, name }: { ns: string; name: string }) {
                 <Button
                   small
                   icon="settings"
+                  autoFocus={closed}
                   onClick={() => {
                     setNote("");
                     setEditing(true);
@@ -730,9 +739,13 @@ function AccessCard({ ns, name }: { ns: string; name: string }) {
               onSaved={(a) => {
                 setAccess(a);
                 setEditing(false);
+                setClosed(true);
                 setNote("Saved");
               }}
-              onCancel={() => setEditing(false)}
+              onCancel={() => {
+                setEditing(false);
+                setClosed(true);
+              }}
             />
           ) : (
             <dl className="details card-body">
