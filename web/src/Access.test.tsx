@@ -485,6 +485,21 @@ describe("Rotating a token", () => {
     expect(screen.getByRole("button", { name: "Rotate token" })).toBeTruthy();
   });
 
+  it("shows no token from a rotation answered after the page was left", async () => {
+    let answer: (r: Response) => void = () => {};
+    await rotate(() => new Promise<Response>((resolve) => (answer = resolve)));
+    // Left while the rotation is in flight: Back from the back/forward
+    // cache then lets the answer in.
+    window.dispatchEvent(new Event("pagehide"));
+    answer(new Response(JSON.stringify({ token: secret, tokenSecret: "bot.access-token" })));
+    expect(
+      await screen.findByText("Rotated while the page was left, so the token is not shown: it is in Secret bot.access-token; rotate again to see one here"),
+    ).toBeTruthy();
+    expect(screen.queryByRole("textbox", { name: "New token" })).toBeNull();
+    expect(document.body.innerHTML).not.toContain(secret);
+    expect(screen.getByRole("button", { name: "Rotate token" })).toBeTruthy();
+  });
+
   it("drops the token and the form when the access is gone, and a new one of its name brings neither back", async () => {
     vi.useFakeTimers({ shouldAdvanceTime: true });
     const current = { access: access({ tokenSecret: "bot.access-token" }) as ReturnType<typeof access> | null };

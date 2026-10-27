@@ -557,13 +557,17 @@ function AccessCard({ ns, name }: { ns: string; name: string }) {
   const deleteRef = useRef<HTMLButtonElement>(null);
   // A page left for the back/forward cache is kept as it is, and Back
   // shows it again: the token goes before that, at once, as the page is
-  // frozen right after pagehide.
+  // frozen right after pagehide. left counts the times it was left, so a
+  // rotation answered after that shows no token either.
+  const left = useRef(0);
   useEffect(() => {
-    const hide = () =>
+    const hide = () => {
+      left.current++;
       flushSync(() => {
         setToken(null);
         setNote("");
       });
+    };
     window.addEventListener("pagehide", hide);
     return () => window.removeEventListener("pagehide", hide);
   }, []);
@@ -606,9 +610,17 @@ function AccessCard({ ns, name }: { ns: string; name: string }) {
     setBusy(true);
     setToken(null);
     setNote("");
+    const at = left.current;
     try {
-      setToken(await rotateAgentAccessToken(ns, name));
-      setNote("New token shown below");
+      const minted = await rotateAgentAccessToken(ns, name);
+      if (left.current === at) {
+        setToken(minted);
+        setNote("New token shown below");
+      } else {
+        // The server rotated it, and the old one is gone: say so, and
+        // where the new one is, but not the token.
+        setNote(`Rotated while the page was left, so the token is not shown: it is in Secret ${minted.tokenSecret}; rotate again to see one here`);
+      }
     } catch (e) {
       setRefused((e as Error).message);
     }
