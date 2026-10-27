@@ -6,6 +6,7 @@ import { Board } from "./Board";
 import { IdentityBox, IdentityProvider, roleOf, useIdentityDetails } from "./Identity";
 import { NewTask } from "./NewTask";
 import { Settings } from "./Settings";
+import { HelpDialog, useShortcuts } from "./shortcuts";
 import { TaskPage } from "./TaskPage";
 import { TeamLayout } from "./TeamNav";
 import { Teams } from "./Teams";
@@ -146,6 +147,8 @@ export function ThemeControl() {
 
 function Layout() {
   useRouteChanges();
+  const { ns } = useParams();
+  const [help, setHelp] = useShortcuts(ns);
   return (
     <>
       <a className="skip-link" href="#main">
@@ -161,10 +164,12 @@ function Layout() {
         <span className="topbar-sep" aria-hidden="true" />
         <TeamSwitcher />
         <div className="topbar-end">
+          <Button variant="ghost" icon="help-circle" aria-label="Keyboard shortcuts" title="Keyboard shortcuts" onClick={() => setHelp(true)} />
           <ThemeControl />
           <IdentityBox />
         </div>
       </header>
+      <HelpDialog ns={ns} open={help} onClose={() => setHelp(false)} />
       <Outlet />
     </>
   );

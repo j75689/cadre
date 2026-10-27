@@ -38,13 +38,16 @@ export function toSpec(d: Draft): TaskSpec {
   return spec;
 }
 
-// NewTask creates a task in the team; the server names it.
+const blank: Draft = { title: "", description: "", kind: "", assignee: "", priority: "medium", labels: "" };
+
+// NewTask creates a task in the team; the server names it. Its form is
+// data-dirty once it differs from a blank draft, so a shortcut keeps it.
 export function NewTask() {
   const { ns = "" } = useParams();
   const role = useRole(ns);
   const team = useTeamName(ns);
   const navigate = useNavigate();
-  const [draft, setDraft] = useState<Draft>({ title: "", description: "", kind: "", assignee: "", priority: "medium", labels: "" });
+  const [draft, setDraft] = useState(blank);
   const [agents, setAgents] = useState<AgentSummary[] | null>(null);
   const [agentsError, setAgentsError] = useState("");
   // retry reads the agents again after a failed read.
@@ -111,7 +114,7 @@ export function NewTask() {
       <div className="page-head">
         <Heading>New task</Heading>
       </div>
-      <form className="card form" onSubmit={submit} noValidate>
+      <form className="card form" onSubmit={submit} noValidate data-dirty={JSON.stringify(draft) !== JSON.stringify(blank) || undefined}>
         <label className="field">
           Title <input value={draft.title} onChange={(e) => set({ title: e.target.value })} required />
         </label>
