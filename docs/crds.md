@@ -383,6 +383,7 @@ Ready is False with reason `InvalidURL` (no host, credentials in it, or not http
 - **Cloud services** use workload identity: an Agent or ToolServer maps to a ServiceAccount bound to a GCP or AWS IAM identity, no key files.
 - **Credentials never leave Cadre.** Tools execute on the Cadre side; LLM calls are made by Cadre's worker or a gateway. Runtime-mode runners never receive a provider key.
 - Rotation is the Secret's business.
+- **Specs are not secret.** A team's members read its Agents' specs and status through the API (`GET /api/v1/namespaces/<namespace>/agents/<name>`; see [architecture.md](architecture.md#web-ui-and-api)). Put no credential in a spec: not in a Notifier's webhook headers, URL or tool arguments, nor in a ToolServer's readiness probe. Use a `secretRef`.
 
 ## Multi-team
 
