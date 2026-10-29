@@ -2,15 +2,21 @@ package main
 
 import (
 	"context"
+	"errors"
 	"io"
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"reflect"
+	"slices"
 	"strings"
 	"testing"
 	"time"
+
+	"sigs.k8s.io/controller-runtime/pkg/cache"
+	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	"github.com/j75689/cadre/internal/auth"
 	"github.com/j75689/cadre/internal/auth/oidctest"
@@ -102,6 +108,40 @@ func TestRoutesCoexist(t *testing.T) {
 		if w.Code != c.code {
 			t.Errorf("%s %s: %d, want %d", c.method, c.path, w.Code, c.code)
 		}
+	}
+}
+
+// informers is a cache that records which kinds' informers were asked for,
+// and fails for the kind named in fail.
+type informers struct {
+	cache.Informers
+	got  []string
+	fail string
+}
+
+func (c *informers) GetInformer(_ context.Context, obj client.Object, _ ...cache.InformerGetOption) (cache.Informer, error) {
+	kind := reflect.TypeOf(obj).Elem().Name()
+	c.got = append(c.got, kind)
+	if kind == c.fail {
+		return nil, errors.New("no such kind")
+	}
+	return nil, nil
+}
+
+// Boot starts the informers of the six kinds the API reads, so a replica
+// that does not lead serves them from a synced cache.
+func TestWarmConfig(t *testing.T) {
+	c := &informers{}
+	if err := warmConfig(context.Background(), c); err != nil {
+		t.Fatal(err)
+	}
+	want := []string{"Agent", "ModelProvider", "ToolServer", "Schedule", "Notifier", "Runner"}
+	if !slices.Equal(c.got, want) {
+		t.Errorf("informers %v, want %v", c.got, want)
+	}
+	c = &informers{fail: "Schedule"}
+	if err := warmConfig(context.Background(), c); err == nil || !strings.Contains(err.Error(), "v1alpha1.Schedule: no such kind") {
+		t.Errorf("a kind the cache cannot start: %v", err)
 	}
 }
 
