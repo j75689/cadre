@@ -23,9 +23,11 @@ import (
 	"unicode"
 
 	"github.com/go-logr/logr"
+	"sigs.k8s.io/controller-runtime/pkg/client"
 	ctrl "sigs.k8s.io/controller-runtime/pkg/client/config"
 	ctrllog "sigs.k8s.io/controller-runtime/pkg/log"
 
+	v1alpha1 "github.com/j75689/cadre/api/v1alpha1"
 	"github.com/j75689/cadre/internal/api"
 	"github.com/j75689/cadre/internal/auth"
 	"github.com/j75689/cadre/internal/authz"
@@ -166,6 +168,14 @@ func run() error {
 	}
 	opened(nil)
 	defer func() { _ = store.Close() }()
+	// The API reads configuration resources from the cache, which starts
+	// an informer at its first read: on a replica that does not lead, no
+	// controller has started one. They start now, not on a request.
+	for _, obj := range []client.Object{&v1alpha1.Agent{}, &v1alpha1.ModelProvider{}, &v1alpha1.ToolServer{}, &v1alpha1.Schedule{}, &v1alpha1.Notifier{}, &v1alpha1.Runner{}} {
+		if _, err := ctrls.GetCache().GetInformer(ctx, obj); err != nil {
+			return fmt.Errorf("cache %T: %w", obj, err)
+		}
+	}
 	// Schedules create tasks through the store, which exists only now that
 	// the manager runs: their controller joins it late, as controller-runtime
 	// allows, and starts once this replica leads.
@@ -185,7 +195,10 @@ func run() error {
 	} else {
 		log.Warn("runners are not authenticated (--runner-auth=none): any client may claim and finish runs")
 	}
-	apiOpts := []api.Option{api.WithAgentAccesses(controller.AgentAccessStore(ctrls.GetClient(), ctrls.GetAPIReader(), ctrls.GetEventRecorder("cadre-server")))}
+	apiOpts := []api.Option{
+		api.WithAgentAccesses(controller.AgentAccessStore(ctrls.GetClient(), ctrls.GetAPIReader(), ctrls.GetEventRecorder("cadre-server"))),
+		api.WithConfig(ctrls.GetClient()),
+	}
 	mux := newMux(m, log, *publicURL, authn, policy, runnerOpts, apiOpts, mcp.WithForwarder(forwarder))
 
 	srv := &http.Server{

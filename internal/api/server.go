@@ -13,6 +13,7 @@ import (
 
 	"k8s.io/apimachinery/pkg/api/meta"
 	"k8s.io/apimachinery/pkg/util/validation"
+	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	v1alpha1 "github.com/j75689/cadre/api/v1alpha1"
 	"github.com/j75689/cadre/internal/auth"
@@ -29,6 +30,7 @@ type Server struct {
 	mode   string           // auth.ModeOIDC or auth.ModeNone
 	policy *authz.Policy    // nil: everyone may do anything
 	access AgentAccessStore // nil: AgentAccesses are not served
+	config client.Reader    // nil: configuration resources are not served
 }
 
 // Option adjusts NewServer.
@@ -96,6 +98,15 @@ func (s *Server) Register(mux *http.ServeMux) {
 		mux.HandleFunc("PUT "+accesses+"/{name}", s.guard(authz.ManageAccess, s.putAgentAccess))
 		mux.HandleFunc("DELETE "+accesses+"/{name}", s.guard(authz.ManageAccess, s.deleteAgentAccess))
 		mux.HandleFunc("POST "+accesses+"/{name}/token", s.guard(authz.ManageAccess, s.rotateAgentAccessToken))
+	}
+	if s.config != nil {
+		for _, k := range configKinds {
+			kind := Base + "/namespaces/{ns}/" + k.plural
+			if k.plural != "agents" { // listed above, through the Task Manager
+				mux.HandleFunc("GET "+kind, s.guard(authz.Read, s.listConfig(k)))
+			}
+			mux.HandleFunc("GET "+kind+"/{name}", s.guard(authz.Read, s.getConfig(k)))
+		}
 	}
 	mux.HandleFunc("GET "+Base+"/teams", s.listTeams)
 	mux.HandleFunc("GET "+Base+"/me", s.me)
