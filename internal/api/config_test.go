@@ -9,6 +9,7 @@ import (
 	"strings"
 	"testing"
 
+	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
@@ -41,11 +42,24 @@ func configCluster(t *testing.T) api.Option {
 	reviewer := manager.ReadyAgent("team-a", "reviewer", "claude", v1alpha1.AgentRuntime{Type: v1alpha1.RuntimeBuiltin})
 	reviewer.Generation = 2
 	elsewhere := manager.ReadyAgent("team-b", "elsewhere", "claude", v1alpha1.AgentRuntime{Type: v1alpha1.RuntimeBuiltin})
-	return api.WithConfig(fake.NewClientBuilder().WithScheme(scheme).WithObjects(writer, reviewer, elsewhere).Build())
+	runner := corev1.Container{
+		Name: "runner", Image: "runner:1", Command: []string{"run", "--token=ghp_literal_command"}, Args: []string{"--key=ghp_literal_arg"},
+		Env: []corev1.EnvVar{
+			{Name: "GITHUB_TOKEN", Value: "ghp_literal_secret"},
+			{Name: "API_KEY", ValueFrom: &corev1.EnvVarSource{SecretKeyRef: &corev1.SecretKeySelector{LocalObjectReference: corev1.LocalObjectReference{Name: "api"}, Key: "key"}}},
+		},
+	}
+	setup := corev1.Container{Name: "setup", Image: "setup:1", Command: []string{"clone", "https://x:ghp_literal_init@example.test"}, Env: []corev1.EnvVar{{Name: "NETRC", Value: "ghp_literal_init_env"}}}
+	jobber := manager.ReadyAgent("team-a", "jobber", "claude", v1alpha1.AgentRuntime{Type: v1alpha1.RuntimeRunner, Job: &v1alpha1.AgentJob{
+		RunnerRef: "pool", Template: corev1.PodTemplateSpec{Spec: corev1.PodSpec{InitContainers: []corev1.Container{setup}, Containers: []corev1.Container{runner}}},
+	}})
+	return api.WithConfig(fake.NewClientBuilder().WithScheme(scheme).WithObjects(writer, reviewer, elsewhere, jobber).Build())
 }
 
 // startConfig serves the API, with Teams in team-a and team-b, to callers
-// named by the X-User header, in the groups of X-Groups.
+// named by the X-User header, in the groups of X-Groups; X-User
+// agentaccess/<name> is team-a's AgentAccess of that name, with the role
+// X-Groups names.
 func startConfig(t *testing.T, opts ...api.Option) func(user, groups, path string) (int, string) {
 	t.Helper()
 	store := memory.NewBackend().Open()
@@ -65,6 +79,9 @@ func startConfig(t *testing.T, opts ...api.Option) func(user, groups, path strin
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if u := r.Header.Get("X-User"); u != "" {
 			id := &auth.Identity{Username: u, Groups: strings.Split(r.Header.Get("X-Groups"), ",")}
+			if name, ok := strings.CutPrefix(u, "agentaccess/"); ok {
+				id = auth.AgentIdentity("team-a", name, r.Header.Get("X-Groups"))
+			}
 			r = r.WithContext(auth.WithIdentity(r.Context(), id))
 		}
 		mux.ServeHTTP(w, r)
@@ -152,6 +169,38 @@ func TestAgentByRole(t *testing.T) {
 	}
 	if code, body := withRoles("mallory@example.test", "", "/namespaces/team-a/agents/writer"); code != 403 {
 		t.Errorf("a stranger: %d %s", code, body)
+	}
+}
+
+// A member sees that an Agent's job template sets env values, commands and
+// arguments, not what they are; an admin sees them.
+func TestAgentJobTemplateByRole(t *testing.T) {
+	policy := &authz.Policy{FoldUsernames: true}
+	get := startConfig(t, api.WithAccess(auth.ModeOIDC, policy), configCluster(t))
+	literals := []string{"ghp_literal_secret", "ghp_literal_command", "ghp_literal_arg", "ghp_literal_init", "ghp_literal_init_env"}
+	for _, c := range []struct {
+		name, user, groups string
+		masked             bool
+	}{
+		{"a member", "dana@example.test", "backend", true},
+		{"a member AgentAccess", "agentaccess/bot", "member", true},
+		{"an admin", "lead@example.test", "", false},
+	} {
+		code, body := get(c.user, c.groups, "/namespaces/team-a/agents/jobber")
+		if code != 200 {
+			t.Fatalf("%s: %d %s", c.name, code, body)
+		}
+		for _, l := range literals {
+			if strings.Contains(body, l) == c.masked {
+				t.Errorf("%s: %q shown %v: %s", c.name, l, !c.masked, body)
+			}
+		}
+		if c.masked && (!strings.Contains(body, `{"name":"GITHUB_TOKEN","value":"(set)"}`) || !strings.Contains(body, `"command":["(set)","(set)"],"args":["(set)"]`)) {
+			t.Errorf("%s: no (set) in place of the values: %s", c.name, body)
+		}
+		if !strings.Contains(body, `{"name":"API_KEY","valueFrom":{"secretKeyRef":{"name":"api","key":"key"}}}`) {
+			t.Errorf("%s: no secret reference: %s", c.name, body)
+		}
 	}
 }
 

@@ -8,6 +8,7 @@ import (
 	"slices"
 	"strings"
 
+	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -47,11 +48,41 @@ var configKinds = []configKind{{
 	newObj:  func() client.Object { return &v1alpha1.Agent{} },
 	newList: func() client.ObjectList { return &v1alpha1.AgentList{} },
 	status:  func(o client.Object) v1alpha1.ConfigStatus { return o.(*v1alpha1.Agent).Status },
-	view: func(o client.Object, _ authz.Role) (any, any) {
+	view: func(o client.Object, role authz.Role) (any, any) {
 		a := o.(*v1alpha1.Agent)
-		return a.Spec, a.Status
+		if role >= authz.Admin || a.Spec.Runtime.Job == nil {
+			return a.Spec, a.Status
+		}
+		spec := a.Spec.DeepCopy()
+		pod := &spec.Runtime.Job.Template.Spec
+		maskContainers(pod.InitContainers)
+		maskContainers(pod.Containers)
+		return *spec, a.Status
 	},
 }}
+
+// set stands in for a value a member may know is there but not read.
+const set = "(set)"
+
+// maskContainers hides what in cs may hold a credential: literal env
+// values, commands and arguments. An env var's valueFrom stays, as it
+// names a Secret, not its value.
+func maskContainers(cs []corev1.Container) {
+	for i := range cs {
+		c := &cs[i]
+		for j := range c.Env {
+			if c.Env[j].Value != "" {
+				c.Env[j].Value = set
+			}
+		}
+		for j := range c.Command {
+			c.Command[j] = set
+		}
+		for j := range c.Args {
+			c.Args[j] = set
+		}
+	}
+}
 
 // WithConfig serves the configuration resources of a Team's namespace,
 // read-only, as r reads them: the controllers' cache. Without it the
