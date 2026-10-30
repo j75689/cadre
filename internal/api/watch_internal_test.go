@@ -1,13 +1,21 @@
 package api
 
 import (
+	"io"
+	"log/slog"
+	"net"
+	"net/http"
+	"net/http/httptest"
 	"strconv"
+	"strings"
 	"testing"
 	"time"
 
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
 	v1alpha1 "github.com/j75689/cadre/api/v1alpha1"
+	"github.com/j75689/cadre/internal/manager"
+	"github.com/j75689/cadre/internal/storage/memory"
 )
 
 func TestHubOverflow(t *testing.T) {
@@ -77,5 +85,58 @@ func TestBoardDigestAbsentFields(t *testing.T) {
 	labelled := &v1alpha1.Task{Spec: v1alpha1.TaskSpec{Labels: []string{"Agent/x"}}, Status: v1alpha1.TaskStatus{Waiting: &v1alpha1.Waiting{}}}
 	if boardDigest(assigned) == boardDigest(labelled) {
 		t.Fatal("an assignee and a label of the same text hash the same")
+	}
+}
+
+// A stream whose client reads nothing is dropped at the write deadline, and
+// its slot freed.
+func TestWatchWriteTimeout(t *testing.T) {
+	defer func(d time.Duration) { watchWriteTimeout = d }(watchWriteTimeout)
+	watchWriteTimeout = 100 * time.Millisecond
+	h := NewHub(nil)
+	mux := http.NewServeMux()
+	m := manager.New(memory.NewBackend().Open(), manager.Config{})
+	NewServer(m, slog.New(slog.NewTextHandler(io.Discard, nil)), WithWatch(h, WatchConfig{MaxStreams: 1, Coalesce: time.Millisecond})).Register(mux)
+	srv := httptest.NewServer(mux)
+	t.Cleanup(srv.Close)
+
+	conn, err := net.Dial("tcp", srv.Listener.Addr().String())
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = conn.Close() })
+	_ = conn.(*net.TCPConn).SetReadBuffer(4096)
+	if _, err := io.WriteString(conn, "GET "+Base+"/namespaces/team-a/watch HTTP/1.1\r\nHost: cadre\r\n\r\n"); err != nil {
+		t.Fatal(err)
+	}
+	streams := func() int {
+		h.mu.Lock()
+		defer h.mu.Unlock()
+		return h.streams
+	}
+	for start := time.Now(); streams() == 0; time.Sleep(time.Millisecond) {
+		if time.Since(start) > time.Second {
+			t.Fatal("the stream did not open")
+		}
+	}
+	// Hints until the buffers between fill, and a write waits past its
+	// deadline.
+	name := strings.Repeat("x", 1000)
+	for i, start := 0, time.Now(); streams() != 0; i++ {
+		if time.Since(start) > 5*time.Second {
+			t.Fatal("a stream that reads nothing is still open after 5s")
+		}
+		h.publishTask(&v1alpha1.Task{ObjectMeta: metav1.ObjectMeta{Namespace: "team-a", Name: name + strconv.Itoa(i)}})
+		if i%100 == 0 {
+			time.Sleep(time.Millisecond)
+		}
+	}
+	res, err := http.Get(srv.URL + Base + "/namespaces/team-a/watch")
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = res.Body.Close()
+	if res.StatusCode != http.StatusOK {
+		t.Fatalf("a stream after the stuck one: %d, want 200", res.StatusCode)
 	}
 }

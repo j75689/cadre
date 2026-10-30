@@ -6,6 +6,7 @@ import (
 	"io"
 	"log/slog"
 	"net/http"
+	"net/http/cookiejar"
 	"net/http/httptest"
 	"strings"
 	"testing"
@@ -25,7 +26,8 @@ import (
 // fastWatch has the stream's intervals short enough for tests.
 var fastWatch = api.WatchConfig{Ping: 100 * time.Millisecond, Lifetime: time.Minute, Coalesce: 50 * time.Millisecond}
 
-// sseEvent is one event of a stream; a ping is kind "ping".
+// sseEvent is one event of a stream; a ping is kind "ping", and a retry
+// line kind "retry".
 type sseEvent struct{ kind, data string }
 
 // watch opens path's stream with token, and returns its status and events,
@@ -34,11 +36,18 @@ func watch(t *testing.T, url, token, path string) (int, <-chan sseEvent) {
 	t.Helper()
 	ctx, cancel := context.WithCancel(context.Background())
 	t.Cleanup(cancel)
+	res, events := watchWith(ctx, t, http.DefaultClient, url, token, path)
+	return res.StatusCode, events
+}
+
+// watchWith is watch through c until ctx ends, with the whole response.
+func watchWith(ctx context.Context, t *testing.T, c *http.Client, url, token, path string) (*http.Response, <-chan sseEvent) {
+	t.Helper()
 	req, _ := http.NewRequestWithContext(ctx, http.MethodGet, url+api.Base+path, nil)
 	if token != "" {
 		req.Header.Set("Authorization", "Bearer "+token)
 	}
-	res, err := http.DefaultClient.Do(req)
+	res, err := c.Do(req)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -55,6 +64,8 @@ func watch(t *testing.T, url, token, path string) (int, <-chan sseEvent) {
 			switch line := sc.Text(); {
 			case line == ": ping":
 				events <- sseEvent{kind: "ping"}
+			case strings.HasPrefix(line, "retry: "):
+				events <- sseEvent{kind: "retry", data: strings.TrimPrefix(line, "retry: ")}
 			case strings.HasPrefix(line, "event: "):
 				ev.kind = strings.TrimPrefix(line, "event: ")
 			case strings.HasPrefix(line, "data: "):
@@ -65,10 +76,11 @@ func watch(t *testing.T, url, token, path string) (int, <-chan sseEvent) {
 			}
 		}
 	}()
-	return res.StatusCode, events
+	return res, events
 }
 
-// next is the stream's next event other than a ping, within a second.
+// next is the stream's next event other than a ping or retry, within a
+// second.
 func next(t *testing.T, events <-chan sseEvent) sseEvent {
 	t.Helper()
 	timeout := time.After(time.Second)
@@ -78,7 +90,7 @@ func next(t *testing.T, events <-chan sseEvent) sseEvent {
 			if !ok {
 				t.Fatal("the stream ended")
 			}
-			if ev.kind != "ping" {
+			if ev.kind != "ping" && ev.kind != "retry" {
 				return ev
 			}
 		case <-timeout:
@@ -109,9 +121,19 @@ func TestWatchHints(t *testing.T) {
 	viewer := e.as("eve@example.test", "readers")
 	member := e.as("dana@example.test", "backend")
 
-	code, events := watch(t, e.url, viewer, "/namespaces/team-a/watch?task=x")
-	if code != http.StatusOK {
-		t.Fatalf("watch: %d", code)
+	open, cancel := context.WithCancel(ctx)
+	t.Cleanup(cancel)
+	res, events := watchWith(open, t, http.DefaultClient, e.url, viewer, "/namespaces/team-a/watch?task=x")
+	if res.StatusCode != http.StatusOK {
+		t.Fatalf("watch: %d", res.StatusCode)
+	}
+	for k, v := range map[string]string{"Content-Type": "text/event-stream", "Cache-Control": "no-cache", "X-Accel-Buffering": "no"} {
+		if got := res.Header.Get(k); got != v {
+			t.Errorf("%s: %q, want %q", k, got, v)
+		}
+	}
+	if ev := <-events; ev.kind != "retry" || ev.data != "3000" {
+		t.Fatalf("first line %+v, want retry: 3000", ev)
 	}
 	if ev := next(t, events); ev.kind != "hello" || ev.data != `{"tasks":true,"config":false,"runs":false,"lifetimeSeconds":60}` {
 		t.Fatalf("first event %+v, want hello", ev)
@@ -196,6 +218,97 @@ func TestWatchAccess(t *testing.T) {
 	waitClosed(t, events)
 	if code, _ := watch(t, e.url, viewer, "/namespaces/team-a/watch"); code != http.StatusForbidden {
 		t.Errorf("reconnect without the role: %d, want 403", code)
+	}
+}
+
+// A closed stream frees its slot.
+func TestWatchFreesSlot(t *testing.T) {
+	c := fastWatch
+	c.MaxStreams = 1
+	store := memory.NewBackend().Open()
+	e := startRolesWith(t, store, nil, &authz.Policy{}, api.WithWatch(api.NewHub(store), c))
+	viewer := e.as("eve@example.test", "readers")
+
+	open, cancel := context.WithCancel(ctx)
+	_, events := watchWith(open, t, http.DefaultClient, e.url, viewer, "/namespaces/team-a/watch")
+	next(t, events)
+	cancel()
+	deadline := time.Now().Add(time.Second)
+	for {
+		code, _ := watch(t, e.url, viewer, "/namespaces/team-a/watch")
+		if code == http.StatusOK {
+			return
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("a second after the stream closed: %d, want 200", code)
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+}
+
+// A HEAD is answered as a GET would be, but holds no slot.
+func TestWatchHead(t *testing.T) {
+	c := fastWatch
+	c.MaxStreams = 1
+	store := memory.NewBackend().Open()
+	e := startRolesWith(t, store, nil, &authz.Policy{}, api.WithWatch(api.NewHub(store), c))
+	viewer := e.as("eve@example.test", "readers")
+	// head fails if the HEAD does not return at once. Its connection is its
+	// own, kept open, as a health check's.
+	heads := &http.Client{Timeout: time.Second, Transport: &http.Transport{}}
+	t.Cleanup(heads.CloseIdleConnections)
+	head := func(ns string) int {
+		t.Helper()
+		req, _ := http.NewRequest(http.MethodHead, e.url+api.Base+"/namespaces/"+ns+"/watch", nil)
+		req.Header.Set("Authorization", "Bearer "+viewer)
+		res, err := heads.Do(req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		_ = res.Body.Close()
+		return res.StatusCode
+	}
+
+	if code := head("team-b"); code != http.StatusForbidden {
+		t.Errorf("HEAD without a role: %d, want 403", code)
+	}
+	if code := head("team-a"); code != http.StatusOK {
+		t.Fatalf("HEAD: %d", code)
+	}
+	code, events := watch(t, e.url, viewer, "/namespaces/team-a/watch")
+	if code != http.StatusOK {
+		t.Fatalf("GET after a HEAD: %d, want 200", code)
+	}
+	next(t, events)
+	if code := head("team-a"); code != http.StatusServiceUnavailable {
+		t.Errorf("HEAD past the cap: %d, want 503", code)
+	}
+}
+
+// A browser's session cookie opens a stream, as a token does.
+func TestWatchSession(t *testing.T) {
+	store := memory.NewBackend().Open()
+	e := startRolesWith(t, store, nil, &authz.Policy{}, api.WithWatch(api.NewHub(store), fastWatch))
+	e.as("eve@example.test", "readers")
+	jar, err := cookiejar.New(nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	browser := &http.Client{Jar: jar}
+	res, err := browser.Get(e.url + "/auth/login?next=/")
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = res.Body.Close()
+
+	open, cancel := context.WithCancel(ctx)
+	t.Cleanup(cancel)
+	res, events := watchWith(open, t, browser, e.url, "", "/namespaces/team-a/watch")
+	if res.StatusCode != http.StatusOK {
+		t.Fatalf("watch with a session: %d, want 200", res.StatusCode)
+	}
+	if ev := next(t, events); ev.kind != "hello" {
+		t.Fatalf("first event %+v, want hello", ev)
 	}
 }
 
