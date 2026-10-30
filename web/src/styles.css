@@ -2231,6 +2231,16 @@ main.board {
   min-width: 0;
 }
 
+/* A configuration resource's YAML (ui/Config.tsx): it scrolls inside its
+   card, both ways, and keeps its lines as they are. */
+
+.yaml {
+  margin: 0;
+  max-height: 60vh;
+  overflow: auto;
+  white-space: pre;
+}
+
 /* Dialog (ui/Dialog.tsx) and the keyboard shortcuts' help (shortcuts.tsx). */
 
 .dialog {
