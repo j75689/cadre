@@ -1,7 +1,9 @@
 package api
 
 import (
+	"strconv"
 	"testing"
+	"time"
 
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
@@ -33,5 +35,37 @@ func TestHubOverflow(t *testing.T) {
 	h.publishTask(task(string(rune('a' + (2*watchBuffer-1)%26))))
 	if len(w.events) != 0 {
 		t.Fatalf("%d hints for an unchanged task", len(w.events))
+	}
+}
+
+// A stream that reads while its buffer overflows must not leave the
+// publisher waiting on an empty channel with h.mu held.
+func TestHubOverflowWhileReading(t *testing.T) {
+	for round := range 200 {
+		h := NewHub(nil)
+		w, _ := h.subscribe("team-a", 1)
+		stop := make(chan struct{})
+		go func() {
+			for {
+				select {
+				case <-w.events:
+				case <-stop:
+					return
+				}
+			}
+		}()
+		done := make(chan struct{})
+		go func() {
+			defer close(done)
+			for i := range 20000 {
+				h.publishTask(&v1alpha1.Task{ObjectMeta: metav1.ObjectMeta{Namespace: "team-a", Name: "x" + strconv.Itoa(i%300)}, Spec: v1alpha1.TaskSpec{Title: strconv.Itoa(i)}})
+			}
+		}()
+		select {
+		case <-done:
+			close(stop)
+		case <-time.After(5 * time.Second):
+			t.Fatalf("round %d: publishTask is stuck holding h.mu", round)
+		}
 	}
 }

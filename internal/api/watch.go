@@ -140,8 +140,15 @@ func (h *Hub) publishTask(t *v1alpha1.Task) {
 		select {
 		case w.events <- ev:
 		default:
-			for len(w.events) > 0 {
-				<-w.events
+			// The stream reads too, so a receive could wait on an
+			// emptied channel: drain without blocking.
+		drain:
+			for {
+				select {
+				case <-w.events:
+				default:
+					break drain
+				}
 			}
 			// Only publishers send, under h.mu: there is room now.
 			w.events <- watchEvent{kind: "resync"}
