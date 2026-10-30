@@ -44,7 +44,7 @@ Not a SaaS. Not a workflow engine. Not an LLM gateway. Not a sandbox. Cadre inte
 
 ## Web UI
 
-cadre-server serves the web console at `/`: **Teams**, then a team's **Board** (its columns, or one sortable table under **List**), task pages with their threads, actions and live runs, **New task**, **Agents**, and **Settings**: the **Team** and, with logins, **Agent access** for its admins. Page by page: [docs/web-ui.md](docs/web-ui.md#pages). The web UI is built into cadre-server (`make ui` before `make build`; the image carries it). Developing it: [web/README.md](web/README.md).
+cadre-server serves the web console at `/`: **Teams**, then a team's **Board** (its columns, or one sortable table under **List**), task pages with their threads, actions and live runs, **New task**, **Agents** (each Agent's name opens its page: conditions, what it uses, its metadata and its YAML to copy), and **Settings**: the **Team** and, with logins, **Agent access** for its admins. Page by page: [docs/web-ui.md](docs/web-ui.md#pages). The web UI is built into cadre-server (`make ui` before `make build`; the image carries it). Developing it: [web/README.md](web/README.md).
 
 ### Keyboard shortcuts
 
