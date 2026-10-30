@@ -93,7 +93,9 @@ type Hub struct {
 	subs    map[string]map[*watcher]struct{} // by namespace
 	streams int
 	// digests are the board-visible fields of every Task seen, so a change
-	// the board does not show (a lease renewed) is no hint.
+	// the board does not show (a lease renewed) is no hint. They are never
+	// pruned: the Notifier reports no deletes, and Cadre deletes no Tasks,
+	// so only a kubectl delete leaves one behind (about 100 B).
 	digests map[storage.Key]uint64
 
 	done      chan struct{}
