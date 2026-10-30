@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"net/url"
 	"slices"
 	"strings"
 
@@ -59,6 +60,20 @@ var configKinds = []configKind{{
 		maskContainers(pod.Containers)
 		return *spec, a.Status
 	},
+}, {
+	plural: "modelproviders", kind: "ModelProvider",
+	newObj:  func() client.Object { return &v1alpha1.ModelProvider{} },
+	newList: func() client.ObjectList { return &v1alpha1.ModelProviderList{} },
+	status:  func(o client.Object) v1alpha1.ConfigStatus { return o.(*v1alpha1.ModelProvider).Status },
+	view: func(o client.Object, role authz.Role) (any, any) {
+		p := o.(*v1alpha1.ModelProvider)
+		if role >= authz.Admin {
+			return p.Spec, p.Status
+		}
+		spec := p.Spec
+		spec.BaseURL = maskURL(spec.BaseURL)
+		return spec, p.Status
+	},
 }}
 
 // set stands in for a value a member may know is there but not read.
@@ -82,6 +97,37 @@ func maskContainers(cs []corev1.Container) {
 			c.Args[j] = set
 		}
 	}
+}
+
+// maskURL hides what in u may hold a credential: its user info, and its
+// query's values, or a query part with no value, which may be a key
+// itself. A URL that does not parse is hidden whole.
+func maskURL(u string) string {
+	if u == "" {
+		return u
+	}
+	parsed, err := url.Parse(u)
+	if err != nil {
+		return set
+	}
+	user := parsed.User != nil
+	parsed.User = nil
+	if parsed.RawQuery != "" {
+		parts := strings.Split(parsed.RawQuery, "&")
+		for i, p := range parts {
+			if key, _, ok := strings.Cut(p, "="); ok {
+				parts[i] = key + "=" + set
+			} else {
+				parts[i] = set
+			}
+		}
+		parsed.RawQuery = strings.Join(parts, "&")
+	}
+	out := parsed.String()
+	if user { // url.User would escape set's parentheses
+		out = strings.Replace(out, "//", "//"+set+"@", 1)
+	}
+	return out
 }
 
 // WithConfig serves the configuration resources of a Team's namespace,
