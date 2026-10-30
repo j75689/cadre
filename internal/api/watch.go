@@ -28,12 +28,13 @@ const (
 	// watchBuffer is how many events wait for one stream before it is told
 	// to resync instead.
 	watchBuffer = 256
-	// watchWriteTimeout bounds each write to a stream, in place of the
-	// server's WriteTimeout, which would end it.
-	watchWriteTimeout = 30 * time.Second
 	// watchRetryMillis is how long a browser waits to reconnect.
 	watchRetryMillis = 3000
 )
+
+// watchWriteTimeout bounds each write to a stream, in place of the server's
+// WriteTimeout, which would end it. A var for tests.
+var watchWriteTimeout = 30 * time.Second
 
 // Reasons an end event gives.
 const (
@@ -78,8 +79,7 @@ func WithWatch(h *Hub, c WatchConfig) Option {
 func IsWatch(r *http.Request) bool {
 	rest, ok := strings.CutPrefix(r.URL.Path, Base+"/namespaces/")
 	ns, tail, _ := strings.Cut(rest, "/")
-	get := r.Method == http.MethodGet || r.Method == http.MethodHead // GET serves both
-	return get && ok && ns != "" && tail == "watch"
+	return r.Method == http.MethodGet && ok && ns != "" && tail == "watch"
 }
 
 // Hub hands each watch stream the hints for its namespace. There is one per
@@ -212,6 +212,13 @@ func (h *Hub) subscribe(ns string, limit int) (*watcher, bool) {
 	return w, true
 }
 
+// room reports whether fewer than limit streams are open.
+func (h *Hub) room(limit int) bool {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	return h.streams < limit
+}
+
 func (h *Hub) unsubscribe(ns string, w *watcher) {
 	h.mu.Lock()
 	defer h.mu.Unlock()
@@ -222,26 +229,46 @@ func (h *Hub) unsubscribe(ns string, w *watcher) {
 	}
 }
 
+// watchHeaders opens a stream's response.
+func watchHeaders(w http.ResponseWriter) {
+	h := w.Header()
+	h.Set("Content-Type", "text/event-stream")
+	h.Set("Cache-Control", "no-cache")
+	h.Set("X-Accel-Buffering", "no")
+	w.WriteHeader(http.StatusOK)
+}
+
 // watchStream serves one stream: hello, then hints as they come, a ping
 // that checks the caller's role again, and end before it closes. ?task= is
 // for run tailing, which is not served yet.
 func (s *Server) watchStream(w http.ResponseWriter, r *http.Request) {
 	c := s.watch
 	ns := r.PathValue("ns")
-	sub, ok := c.hub.subscribe(ns, c.MaxStreams)
+	// A HEAD is answered as a GET would be, but holds no slot: it has no
+	// stream.
+	head := r.Method == http.MethodHead
+	var (
+		sub *watcher
+		ok  bool
+	)
+	if head {
+		ok = c.hub.room(c.MaxStreams)
+	} else {
+		sub, ok = c.hub.subscribe(ns, c.MaxStreams)
+	}
 	if !ok {
 		httpjson.WriteError(w, http.StatusServiceUnavailable, httpjson.CodeUnavailable,
 			fmt.Sprintf("this replica serves %d watch streams already: retry later; the board polls meanwhile", c.MaxStreams))
 		return
 	}
+	if head {
+		watchHeaders(w)
+		return
+	}
 	defer c.hub.unsubscribe(ns, sub)
 
 	rc := http.NewResponseController(w)
-	h := w.Header()
-	h.Set("Content-Type", "text/event-stream")
-	h.Set("Cache-Control", "no-cache")
-	h.Set("X-Accel-Buffering", "no")
-	w.WriteHeader(http.StatusOK)
+	watchHeaders(w)
 	write := func(format string, args ...any) bool {
 		_ = rc.SetWriteDeadline(time.Now().Add(watchWriteTimeout))
 		if _, err := fmt.Fprintf(w, format, args...); err != nil {

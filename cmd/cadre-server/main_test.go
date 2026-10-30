@@ -69,9 +69,10 @@ func TestBoundRequests(t *testing.T) {
 	if bounded {
 		t.Fatal("a watch stream has a request deadline")
 	}
+	// A HEAD has no stream, and returns at once.
 	h.ServeHTTP(httptest.NewRecorder(), httptest.NewRequestWithContext(context.Background(), http.MethodHead, "/api/v1/namespaces/team-a/watch", nil))
-	if bounded {
-		t.Fatal("a HEAD of a watch stream has a request deadline")
+	if !bounded {
+		t.Fatal("a HEAD of the watch route has no request deadline")
 	}
 	h.ServeHTTP(httptest.NewRecorder(), httptest.NewRequestWithContext(context.Background(), http.MethodGet, "/api/v1/namespaces/team-a/tasks/watch", nil))
 	if !bounded {
