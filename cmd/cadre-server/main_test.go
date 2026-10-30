@@ -18,6 +18,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/cache"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
+	"github.com/j75689/cadre/internal/api"
 	"github.com/j75689/cadre/internal/auth"
 	"github.com/j75689/cadre/internal/auth/oidctest"
 	"github.com/j75689/cadre/internal/authz"
@@ -40,6 +41,26 @@ func TestValidateTimings(t *testing.T) {
 	} {
 		if err := validateTimings(tc.lease, tc.heartbeat); (err == nil) != tc.ok {
 			t.Errorf("lease %s heartbeat %s: %v, want ok=%v", tc.lease, tc.heartbeat, err, tc.ok)
+		}
+	}
+}
+
+func TestValidateStreams(t *testing.T) {
+	if api.DefaultWatchMaxStreams != 2000 {
+		t.Errorf("default --watch-max-streams %d, want 2000", api.DefaultWatchMaxStreams)
+	}
+	for _, tc := range []struct {
+		n  int
+		ok bool
+	}{
+		{api.DefaultWatchMaxStreams, true},
+		{1, true},
+		{2000, true},
+		{0, false},
+		{-1, false},
+	} {
+		if err := validateStreams(tc.n); (err == nil) != tc.ok {
+			t.Errorf("%d: %v, want ok=%v", tc.n, err, tc.ok)
 		}
 	}
 }

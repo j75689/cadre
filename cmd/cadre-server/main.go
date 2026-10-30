@@ -102,8 +102,8 @@ func run() error {
 	if err := validateTimings(*lease, *heartbeat); err != nil {
 		return err
 	}
-	if *streams < 1 {
-		return fmt.Errorf("--watch-max-streams %d: must be at least 1", *streams)
+	if err := validateStreams(*streams); err != nil {
+		return err
 	}
 
 	log := slog.New(slog.NewJSONHandler(os.Stderr, nil))
@@ -407,6 +407,14 @@ func validateTimings(lease, heartbeat time.Duration) error {
 	}
 	if heartbeat >= lease {
 		return fmt.Errorf("--heartbeat %s must be shorter than --lease %s", heartbeat, lease)
+	}
+	return nil
+}
+
+// validateStreams checks --watch-max-streams.
+func validateStreams(n int) error {
+	if n < 1 {
+		return fmt.Errorf("--watch-max-streams %d: must be at least 1", n)
 	}
 	return nil
 }
