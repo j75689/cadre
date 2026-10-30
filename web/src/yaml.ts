@@ -3,7 +3,9 @@
 // prints them, a multi-line string as a literal block. It is no YAML
 // library: the value is JSON, so it has strings, numbers, booleans, null,
 // lists and maps only, and a string YAML would read as something else is
-// quoted, as JSON quotes it, which YAML reads the same.
+// quoted, as JSON quotes it, which YAML reads the same, with the characters
+// JSON leaves raw and YAML does not (DEL, C1, the Unicode line breaks, BOM)
+// escaped too.
 export function toYAML(v: unknown): string {
   return lines(v, 0).join("\n") + "\n";
 }
@@ -15,16 +17,24 @@ const isMap = (v: unknown): v is Record<string, unknown> => typeof v === "object
 // nested is a value printed on the lines under its key or dash.
 const nested = (v: unknown) => (Array.isArray(v) ? v.length > 0 : isMap(v) && Object.keys(v).length > 0);
 
-const control = (s: string) => [...s].some((c) => c < " " || c === "\x7f");
+// control is a character YAML reads as a line break or rejects as
+// unprintable: such a string can only be quoted.
+const control = (s: string) => [...s].some((c) => c < " " || raw(c));
+
+// raw is a control character JSON.stringify leaves as it is.
+const raw = (c: string) => (c >= "\x7f" && c <= "\x9f") || c === "\u2028" || c === "\u2029" || c === "\ufeff";
+
+const quote = (s: string) => [...JSON.stringify(s)].map((c) => (raw(c) ? `\\u${c.charCodeAt(0).toString(16).padStart(4, "0")}` : c)).join("");
 
 // plain says whether a string can go unquoted: not empty, no word YAML
 // reads as a boolean, null or a merge, nothing that starts like a number, an
-// indicator (- ? : only before a space) or a comment, no space at an end.
+// indicator (- ? : only before a space), a comment or a document marker, no
+// space at an end.
 function plain(s: string): boolean {
   return (
     s !== "" &&
     !control(s) &&
-    !/^[\s,[\]{}#&*!|>'"%@`]|^[-?:](\s|$)|\s$|: |\s#|:$/.test(s) &&
+    !/^[\s,[\]{}#&*!|>'"%@`]|^[-?:](\s|$)|^(---|\.\.\.)(\s|$)|\s$|: |\s#|:$/.test(s) &&
     !/^(true|false|yes|no|on|off|y|n|null|~|<<|=)$/i.test(s) &&
     !/^[-+]?\.?\d|^[-+]?\.(inf|nan)$/i.test(s)
   );
@@ -33,7 +43,7 @@ function plain(s: string): boolean {
 function scalar(v: unknown): string {
   if (Array.isArray(v)) return "[]";
   if (isMap(v)) return "{}";
-  if (typeof v === "string") return plain(v) ? v : JSON.stringify(v);
+  if (typeof v === "string") return plain(v) ? v : quote(v);
   return String(v);
 }
 

@@ -45,6 +45,26 @@ describe("toYAML", () => {
     for (const s of quoted) expect(toYAML({ k: s })).toBe(`k: ${JSON.stringify(s)}\n`);
     for (const s of ["(set)", "bot-1", "claude-opus", "http://x:8080/p", "a:b", "a#b", "v1", "x y", "--fast", "-x", "?x", "::1"]) expect(toYAML({ k: s })).toBe(`k: ${s}\n`);
     expect(toYAML({ "a: b": 1, "": 2 })).toBe('"a: b": 1\n"": 2\n');
+    expect(toYAML({ "--- a": 1, "...": 2, "---x": 3 })).toBe('"--- a": 1\n"...": 2\n---x: 3\n');
+  });
+
+  it("escapes the characters YAML reads as line breaks or rejects, where JSON does not", () => {
+    const cases: [string, string][] = [
+      ["a\u2028b", "a\\u2028b"],
+      ["a\u2029b", "a\\u2029b"],
+      ["a\x85b", "a\\u0085b"],
+      ["a\x7fb", "a\\u007fb"],
+      ["a\x80b\x9f", "a\\u0080b\\u009f"],
+      ["\ufeffa", "\\ufeffa"],
+    ];
+    for (const [s, q] of cases) {
+      expect(toYAML({ k: s })).toBe(`k: "${q}"\n`);
+      expect(toYAML({ [s]: 1 })).toBe(`"${q}": 1\n`);
+      expect(toYAML([s])).toBe(`- "${q}"\n`);
+    }
+    // Not a literal block, where the break would be read as a line's end or lost.
+    expect(toYAML({ k: "Read the ticket.\u2028Then answer.\n" })).toBe('k: "Read the ticket.\\u2028Then answer.\\n"\n');
+    expect(toYAML({ k: "a\n\u2028" })).toBe('k: "a\\n\\u2028"\n');
   });
 
   it("prints multi-line strings as literal blocks, keeping their last line breaks", () => {
