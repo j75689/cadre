@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bufio"
 	"context"
 	"errors"
 	"io"
@@ -15,9 +16,11 @@ import (
 	"testing"
 	"time"
 
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"sigs.k8s.io/controller-runtime/pkg/cache"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
+	v1alpha1 "github.com/j75689/cadre/api/v1alpha1"
 	"github.com/j75689/cadre/internal/api"
 	"github.com/j75689/cadre/internal/auth"
 	"github.com/j75689/cadre/internal/auth/oidctest"
@@ -180,6 +183,39 @@ func TestWarmConfig(t *testing.T) {
 	c = &informers{fail: "Schedule"}
 	if err := warmConfig(context.Background(), c); err == nil || !strings.Contains(err.Error(), "v1alpha1.Schedule: no such kind") {
 		t.Errorf("a kind the cache cannot start: %v", err)
+	}
+}
+
+// The server's watch streams of a task get its run hints.
+func TestNewHub(t *testing.T) {
+	ctx := context.Background()
+	store := memory.NewBackend().Open()
+	if err := store.CreateTeam(ctx, &v1alpha1.Team{ObjectMeta: metav1.ObjectMeta{Namespace: "team-a", Name: v1alpha1.TeamName}}); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.CreateTask(ctx, &v1alpha1.Task{ObjectMeta: metav1.ObjectMeta{Namespace: "team-a", Name: "y"}, Spec: v1alpha1.TaskSpec{Title: "y"}}); err != nil {
+		t.Fatal(err)
+	}
+	hub := newHub(store)
+	log := slog.New(slog.NewTextHandler(io.Discard, nil))
+	srv := httptest.NewServer(newMux(manager.New(store, manager.Config{}), log, "http://localhost:8080", auth.None{}, nil, nil, []api.Option{api.WithWatch(hub, api.WatchConfig{})}))
+	t.Cleanup(srv.Close)
+	// Before the server's close, which waits for the stream.
+	t.Cleanup(hub.Close)
+	res, err := http.Get(srv.URL + api.Base + "/namespaces/team-a/watch?task=y")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = res.Body.Close() }()
+	// The hello's data is the stream's first.
+	var hello string
+	for lines := bufio.NewScanner(res.Body); hello == "" && lines.Scan(); {
+		if data, ok := strings.CutPrefix(lines.Text(), "data: "); ok {
+			hello = data
+		}
+	}
+	if res.StatusCode != http.StatusOK || !strings.Contains(hello, `"runs":true`) {
+		t.Errorf("watch ?task=y: %d %q, want a hello with runs", res.StatusCode, hello)
 	}
 }
 
