@@ -69,8 +69,11 @@ func configCluster(t *testing.T) api.Option {
 	gpt := provider("team-a", "gpt", v1alpha1.ModelProviderSpec{Type: v1alpha1.ProviderOpenAI, Model: "gpt", Auth: key})
 	gpt.Generation = 2
 	gateway := provider("team-a", "gateway", v1alpha1.ModelProviderSpec{Type: v1alpha1.ProviderOpenAI, Model: "gpt", Auth: key, BaseURL: "https://bot:sk_literal_user@gw.example.test/v1?api-key=sk_literal_query&sk_literal_bare"})
+	fragment := provider("team-a", "fragment", v1alpha1.ModelProviderSpec{Type: v1alpha1.ProviderOpenAI, Model: "gpt", Auth: key, BaseURL: "https://gw.example.test/v1#?k=sk_literal_fragment"})
+	badurl := provider("team-a", "badurl", v1alpha1.ModelProviderSpec{Type: v1alpha1.ProviderOpenAI, Model: "gpt", Auth: key, BaseURL: "https://u:sk_literal_bad@gw.example.test/%zz?k=sk_literal_bad"})
+	nohost := provider("team-a", "nohost", v1alpha1.ModelProviderSpec{Type: v1alpha1.ProviderOpenAI, Model: "gpt", Auth: key, BaseURL: "https://u:sk_literal_nohost@"})
 	vertex := provider("team-b", "vertex", v1alpha1.ModelProviderSpec{Type: v1alpha1.ProviderVertex, Model: "gemini", WorkloadIdentity: true, Project: "p", Location: "us-east5"})
-	return api.WithConfig(fake.NewClientBuilder().WithScheme(scheme).WithObjects(writer, reviewer, elsewhere, jobber, claude, gpt, gateway, vertex).Build())
+	return api.WithConfig(fake.NewClientBuilder().WithScheme(scheme).WithObjects(writer, reviewer, elsewhere, jobber, claude, gpt, gateway, fragment, badurl, nohost, vertex).Build())
 }
 
 // startConfig serves the API, with Teams in team-a and team-b, to callers
@@ -229,9 +232,12 @@ func TestListModelProviders(t *testing.T) {
 		t.Fatalf("%d %s", code, body)
 	}
 	want := []api.ConfigSummary{
+		{Name: "badurl", Ready: true},
 		{Name: "claude", Ready: true},
+		{Name: "fragment", Ready: true},
 		{Name: "gateway", Ready: true},
 		{Name: "gpt", Reason: "Pending", Message: "its current spec has not been checked yet"},
+		{Name: "nohost", Ready: true},
 	}
 	if !slices.Equal(got.Items, want) {
 		t.Errorf("got %+v, want %+v", got.Items, want)
@@ -316,32 +322,46 @@ func TestModelProviderByRole(t *testing.T) {
 	}
 }
 
-// A member sees that a ModelProvider's base URL has user info and query
-// values, not what they are; an admin sees them.
+// A member sees that a ModelProvider's base URL has user info, query
+// values or a fragment, not what they are, and sees none of a URL that
+// does not parse; an admin sees them.
 func TestModelProviderBaseURLByRole(t *testing.T) {
 	policy := &authz.Policy{FoldUsernames: true}
 	get := startConfig(t, api.WithAccess(auth.ModeOIDC, policy), configCluster(t))
-	literals := []string{"sk_literal_user", "sk_literal_query", "sk_literal_bare"}
-	for _, c := range []struct {
-		name, user, groups string
-		masked             bool
+	for _, p := range []struct {
+		name     string
+		literals []string
+		masked   string
 	}{
-		{"a member", "dana@example.test", "backend", true},
-		{"a member AgentAccess", "agentaccess/bot", "member", true},
-		{"an admin", "lead@example.test", "", false},
+		{"gateway", []string{"sk_literal_user", "sk_literal_query", "sk_literal_bare"}, `"baseURL":"https://(set)@gw.example.test/v1?api-key=(set)\u0026(set)"`},
+		{"fragment", []string{"sk_literal_fragment"}, `"baseURL":"https://gw.example.test/v1#(set)"`},
+		{"badurl", []string{"sk_literal_bad"}, `"baseURL":"(set)"`},
+		{"nohost", []string{"sk_literal_nohost"}, `"baseURL":"https://(set)@"`},
 	} {
-		code, body := get(c.user, c.groups, "/namespaces/team-a/modelproviders/gateway")
-		if code != 200 {
-			t.Fatalf("%s: %d %s", c.name, code, body)
-		}
-		for _, l := range literals {
-			if strings.Contains(body, l) == c.masked {
-				t.Errorf("%s: %q shown %v: %s", c.name, l, c.masked, body)
+		for _, c := range []struct {
+			name, user, groups string
+			masked             bool
+		}{
+			{"a member", "dana@example.test", "backend", true},
+			{"a member AgentAccess", "agentaccess/bot", "member", true},
+			{"an admin", "lead@example.test", "", false},
+		} {
+			code, body := get(c.user, c.groups, "/namespaces/team-a/modelproviders/"+p.name)
+			if code != 200 {
+				t.Fatalf("%s, %s: %d %s", p.name, c.name, code, body)
+			}
+			for _, l := range p.literals {
+				if strings.Contains(body, l) == c.masked {
+					t.Errorf("%s, %s: %q shown %v: %s", p.name, c.name, l, c.masked, body)
+				}
+			}
+			if c.masked && !strings.Contains(body, p.masked) {
+				t.Errorf("%s, %s: no (set) in place of the values: %s", p.name, c.name, body)
 			}
 		}
-		if c.masked && !strings.Contains(body, `"baseURL":"https://(set)@gw.example.test/v1?api-key=(set)\u0026(set)"`) {
-			t.Errorf("%s: no (set) in place of the values: %s", c.name, body)
-		}
+	}
+	if code, body := get("dana@example.test", "backend", "/namespaces/team-a/modelproviders/gpt"); code != 200 || strings.Contains(body, "baseURL") {
+		t.Errorf("a member, no base URL: %d %s", code, body)
 	}
 }
 

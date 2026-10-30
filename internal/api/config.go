@@ -99,9 +99,9 @@ func maskContainers(cs []corev1.Container) {
 	}
 }
 
-// maskURL hides what in u may hold a credential: its user info, and its
+// maskURL hides what in u may hold a credential: its user info, its
 // query's values, or a query part with no value, which may be a key
-// itself. A URL that does not parse is hidden whole.
+// itself, and its fragment. A URL that does not parse is hidden whole.
 func maskURL(u string) string {
 	if u == "" {
 		return u
@@ -111,7 +111,12 @@ func maskURL(u string) string {
 		return set
 	}
 	user := parsed.User != nil
-	parsed.User = nil
+	if user { // a stand-in, so the "//" before it is written with no host too
+		parsed.User = url.User("u")
+	}
+	if parsed.Fragment != "" {
+		parsed.Fragment, parsed.RawFragment = set, ""
+	}
 	if parsed.RawQuery != "" {
 		parts := strings.Split(parsed.RawQuery, "&")
 		for i, p := range parts {
@@ -125,7 +130,7 @@ func maskURL(u string) string {
 	}
 	out := parsed.String()
 	if user { // url.User would escape set's parentheses
-		out = strings.Replace(out, "//", "//"+set+"@", 1)
+		out = strings.Replace(out, "//u@", "//"+set+"@", 1)
 	}
 	return out
 }
