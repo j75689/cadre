@@ -98,7 +98,7 @@ func toolServers() []client.Object {
 	remote.Annotations = map[string]string{"cadre.dev/owner": "tools-team", "kubectl.kubernetes.io/last-applied-configuration": `{"spec":{"url":"https://mcp.example.test"}}`}
 	remote.ManagedFields = []metav1.ManagedFieldsEntry{{Manager: "kubectl-client-side-apply", Operation: metav1.ManagedFieldsOperationUpdate, APIVersion: "cadre.dev/v1alpha1", FieldsType: "FieldsV1", FieldsV1: metav1.NewFieldsV1(`{"f:spec":{"f:url":{}}}`)}}
 	prober := server("team-a", "prober", v1alpha1.ToolServerSpec{Managed: &v1alpha1.ManagedServer{Image: "mcp:1", Port: 8080, Path: "/mcp?key=tk_literal_path", ReadinessProbe: &corev1.Probe{
-		ProbeHandler: corev1.ProbeHandler{HTTPGet: &corev1.HTTPGetAction{Path: "/healthz?token=tk_literal_probe_path", Port: intstr.FromInt32(8080), HTTPHeaders: []corev1.HTTPHeader{{Name: "X-Probe-Key", Value: "tk_literal_header"}}}},
+		ProbeHandler: corev1.ProbeHandler{HTTPGet: &corev1.HTTPGetAction{Path: "/healthz?token=tk_literal_probe_path", Port: intstr.FromInt32(8080), HTTPHeaders: []corev1.HTTPHeader{{Name: "X-Probe-Key", Value: "tk_literal_header"}, {Name: "X-Probe-Tenant", Value: "tk_literal_tenant"}}}},
 	}}})
 	prober.Status.URL = "http://prober.team-a.svc:8080/mcp?key=tk_literal_status"
 	execer := server("team-a", "execer", v1alpha1.ToolServerSpec{Managed: &v1alpha1.ManagedServer{Image: "mcp:1", Port: 8080, ReadinessProbe: &corev1.Probe{
@@ -424,8 +424,12 @@ func TestListToolServers(t *testing.T) {
 		t.Errorf("a namespace without a Team: %d %s", code, body)
 	}
 	policy := &authz.Policy{FoldUsernames: true}
-	if code, body := startConfig(t, api.WithAccess(auth.ModeOIDC, policy), configCluster(t))("eve@example.test", "readers", "/namespaces/team-a/toolservers"); code != 200 || !strings.Contains(body, `"remote"`) {
+	withRoles := startConfig(t, api.WithAccess(auth.ModeOIDC, policy), configCluster(t))
+	if code, body := withRoles("eve@example.test", "readers", "/namespaces/team-a/toolservers"); code != 200 || !strings.Contains(body, `"remote"`) {
 		t.Errorf("a viewer: %d %s", code, body)
+	}
+	if code, body := withRoles("dana@example.test", "backend", "/namespaces/team-c/toolservers"); code != 403 || !strings.Contains(body, `"no_role"`) {
+		t.Errorf("with logins, a namespace without a Team: %d %s", code, body)
 	}
 }
 
@@ -512,8 +516,8 @@ func TestToolServerMaskedByRole(t *testing.T) {
 		masked   []string
 	}{
 		{"remote", []string{"tk_literal_user", "tk_literal_query"}, []string{`"url":"https://(set)@mcp.example.test/mcp?key=(set)"`}},
-		{"prober", []string{"tk_literal_path", "tk_literal_probe_path", "tk_literal_header", "tk_literal_status"}, []string{
-			`"path":"/mcp?key=(set)"`, `"path":"/healthz?token=(set)"`, `"httpHeaders":[{"name":"X-Probe-Key","value":"(set)"}]`,
+		{"prober", []string{"tk_literal_path", "tk_literal_probe_path", "tk_literal_header", "tk_literal_tenant", "tk_literal_status"}, []string{
+			`"path":"/mcp?key=(set)"`, `"path":"/healthz?token=(set)"`, `"httpHeaders":[{"name":"X-Probe-Key","value":"(set)"},{"name":"X-Probe-Tenant","value":"(set)"}]`,
 			`"url":"http://prober.team-a.svc:8080/mcp?key=(set)"`,
 		}},
 		{"execer", []string{"tk_literal_exec", `"check"`}, []string{`"exec":{"command":["(set)","(set)"]}`}},
