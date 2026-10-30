@@ -121,8 +121,9 @@ func TestConfigOverflowWhileReading(t *testing.T) {
 	}
 }
 
-// A burst of changes to one resource is one hint, kept apart from a task
-// and a resource of another kind with the same name.
+// A burst of changes to one resource is one hint, kept apart from a task,
+// a resource of another kind with the same name and another resource of
+// the same kind.
 func TestConfigCoalesce(t *testing.T) {
 	h := NewHub(nil)
 	mux := http.NewServeMux()
@@ -157,6 +158,7 @@ func TestConfigCoalesce(t *testing.T) {
 		}
 		on.OnUpdate(&v1alpha1.Agent{}, &v1alpha1.Agent{ObjectMeta: metav1.ObjectMeta{Namespace: "team-a", Name: "x", ResourceVersion: strconv.Itoa(i + 1)}})
 	}
+	agents.OnUpdate(&v1alpha1.Agent{}, &v1alpha1.Agent{ObjectMeta: metav1.ObjectMeta{Namespace: "team-a", Name: "y", ResourceVersion: "1"}})
 	h.publishTask(&v1alpha1.Task{ObjectMeta: metav1.ObjectMeta{Namespace: "team-a", Name: "x"}})
 	// Past the flush, and long enough for any second one.
 	var got []string
@@ -168,7 +170,7 @@ func TestConfigCoalesce(t *testing.T) {
 			timeout = nil
 		}
 	}
-	want := []string{`{"kind":"Agent","name":"x"}`, `{"kind":"Team","name":"x"}`, `{"name":"x","number":0,"phase":""}`}
+	want := []string{`{"kind":"Agent","name":"x"}`, `{"kind":"Team","name":"x"}`, `{"kind":"Agent","name":"y"}`, `{"name":"x","number":0,"phase":""}`}
 	if strings.Join(got, "\n") != strings.Join(want, "\n") {
 		t.Fatalf("hints %q, want %q", got, want)
 	}
