@@ -12,6 +12,9 @@ import { Time } from "./Time";
 // credential in (owner decisions 1 and 1b in internal/api/config.go).
 export const masked = "(set)";
 
+// hasMasked says whether a value holds one shown as masked.
+const hasMasked = (v: unknown): boolean => v === masked || (typeof v === "object" && v !== null && Object.values(v).some(hasMasked));
+
 // ConditionsCard is the resource's conditions, each with the generation
 // it is about: one older than the resource's is about a spec since changed.
 export function ConditionsCard({ resource }: { resource: ConfigResource }) {
@@ -128,7 +131,7 @@ export function YAMLCard({ resource }: { resource: ConfigResource }) {
           Copy
         </Button>
       </div>
-      {/^(.*: |\s*- )\(set\)$/m.test(text) && (
+      {hasMasked(spec) && (
         <p className="hint card-body">
           Values shown as <code>{masked}</code> are set but hidden from members; admins see them.
         </p>

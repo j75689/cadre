@@ -123,6 +123,12 @@ describe("AgentDetail", () => {
     expect(uses.getByText("None")).toBeTruthy();
   });
 
+  it("adds no note for (set) in an admin's text", async () => {
+    open(() => json({ ...admin, spec: { instructions: "Reply in this form:\nstatus: (set)\n" } }));
+    expect(await yaml()).toContain("  status: (set)\n");
+    expect(screen.queryByText(/hidden from members/)).toBeNull();
+  });
+
   it("copies the YAML", async () => {
     const writeText = vi.fn(() => Promise.resolve());
     vi.stubGlobal("navigator", { ...navigator, clipboard: { writeText } });
