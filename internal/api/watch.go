@@ -1,6 +1,7 @@
 package api
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -35,6 +36,10 @@ const (
 // watchWriteTimeout bounds each write to a stream, in place of the server's
 // WriteTimeout, which would end it. A var for tests.
 var watchWriteTimeout = 30 * time.Second
+
+// watchReadTimeout bounds a stream's read of its ?task=, as the request
+// bound would.
+const watchReadTimeout = 30 * time.Second
 
 // Reasons an end event gives.
 const (
@@ -255,9 +260,9 @@ func watchHeaders(w http.ResponseWriter) {
 
 // watchStream serves one stream: hello, then hints as they come, a ping
 // that checks the caller's role again, and end before it closes. ?task=
-// names a Task of ns, 404 if there is none, whose current run's events are
-// hinted too while the hub tails runs and has room (hello.runs), from the
-// run it has or gets.
+// names a Task of ns, 404 if there is none (on a HEAD too), whose current
+// run's events are hinted too while the hub tails runs and has room
+// (hello.runs), from the run it has or gets.
 func (s *Server) watchStream(w http.ResponseWriter, r *http.Request) {
 	c := s.watch
 	ns := r.PathValue("ns")
@@ -278,17 +283,20 @@ func (s *Server) watchStream(w http.ResponseWriter, r *http.Request) {
 			fmt.Sprintf("this replica serves %d watch streams already: retry later; the board polls meanwhile", c.MaxStreams))
 		return
 	}
-	if head {
-		watchHeaders(w)
-		return
+	if !head {
+		defer c.hub.unsubscribe(ns, sub)
 	}
-	defer c.hub.unsubscribe(ns, sub)
 	runs := false
 	if name := r.URL.Query().Get("task"); name != "" {
 		key := storage.Key{Namespace: ns, Name: name}
-		runs = c.hub.tailRun(key, sub)
-		defer c.hub.untailRun(key, sub)
-		t, err := s.m.GetTask(r.Context(), key)
+		if !head {
+			runs = c.hub.tailRun(key, sub)
+			defer c.hub.untailRun(key, sub)
+		}
+		// Bounded as a request is: the stream is not.
+		read, cancel := context.WithTimeout(r.Context(), watchReadTimeout)
+		t, err := s.m.GetTask(read, key)
+		cancel()
 		if err != nil {
 			httpjson.Fail(w, s.log, err)
 			return
@@ -300,6 +308,10 @@ func (s *Server) watchStream(w http.ResponseWriter, r *http.Request) {
 			}
 			c.hub.followRun(key, run)
 		}
+	}
+	if head {
+		watchHeaders(w)
+		return
 	}
 
 	rc := http.NewResponseController(w)

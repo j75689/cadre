@@ -236,10 +236,26 @@ func TestWatchRunsCap(t *testing.T) {
 
 func TestWatchRunsUnknownTask(t *testing.T) {
 	e, _, hub := runsEnv(t)
-	if code, _ := watch(t, e.url, e.as("eve@example.test", "readers"), "/namespaces/team-a/watch?task=nope"); code != http.StatusNotFound {
+	viewer := e.as("eve@example.test", "readers")
+	if code, _ := watch(t, e.url, viewer, "/namespaces/team-a/watch?task=nope"); code != http.StatusNotFound {
 		t.Errorf("an unknown task: %d, want 404", code)
 	}
 	tailers(t, hub, 0)
+	// A HEAD answers as the GET.
+	heads := &http.Client{Transport: &http.Transport{}}
+	t.Cleanup(heads.CloseIdleConnections)
+	for task, want := range map[string]int{"nope": http.StatusNotFound, "y": http.StatusOK} {
+		req, _ := http.NewRequest(http.MethodHead, e.url+api.Base+"/namespaces/team-a/watch?task="+task, nil)
+		req.Header.Set("Authorization", "Bearer "+viewer)
+		res, err := heads.Do(req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		_ = res.Body.Close()
+		if res.StatusCode != want {
+			t.Errorf("HEAD ?task=%s: %d, want %d", task, res.StatusCode, want)
+		}
+	}
 }
 
 // A hub without a Notifier cannot follow a run, so tails none.
