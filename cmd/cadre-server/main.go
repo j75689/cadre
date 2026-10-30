@@ -196,6 +196,7 @@ func run() error {
 		log.Warn("runners are not authenticated (--runner-auth=none): any client may claim and finish runs")
 	}
 	hub := api.NewHub(store)
+	hub.TailRuns(store)
 	apiOpts := []api.Option{
 		api.WithAgentAccesses(controller.AgentAccessStore(ctrls.GetClient(), ctrls.GetAPIReader(), ctrls.GetEventRecorder("cadre-server"))),
 		api.WithConfig(ctrls.GetClient()),

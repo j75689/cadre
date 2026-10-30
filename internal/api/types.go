@@ -197,6 +197,14 @@ type TaskHint struct {
 	Parent string         `json:"parent,omitempty"`
 }
 
+// RunHint says events up to seq were appended to the task's current run:
+// read its events again. It carries no event.
+type RunHint struct {
+	Task string `json:"task"`
+	Run  string `json:"run"`
+	Seq  int64  `json:"seq"`
+}
+
 // WatchEnd closes a watch stream, with one of EndLifetime, EndShutdown or
 // EndNoRole.
 type WatchEnd struct {
