@@ -74,6 +74,27 @@ var configKinds = []configKind{{
 		spec.BaseURL = maskURL(spec.BaseURL)
 		return spec, p.Status
 	},
+}, {
+	plural: "toolservers", kind: "ToolServer",
+	newObj:  func() client.Object { return &v1alpha1.ToolServer{} },
+	newList: func() client.ObjectList { return &v1alpha1.ToolServerList{} },
+	status:  func(o client.Object) v1alpha1.ConfigStatus { return o.(*v1alpha1.ToolServer).Status.ConfigStatus },
+	view: func(o client.Object, role authz.Role) (any, any) {
+		ts := o.(*v1alpha1.ToolServer)
+		if role >= authz.Admin {
+			return ts.Spec, ts.Status
+		}
+		spec, status := ts.Spec.DeepCopy(), ts.Status
+		spec.URL = maskURL(spec.URL)
+		status.URL = maskURL(status.URL) // a managed server's, after its path
+		if m := spec.Managed; m != nil {
+			m.Path = maskURL(m.Path)
+			if m.ReadinessProbe != nil {
+				maskProbe(m.ReadinessProbe)
+			}
+		}
+		return *spec, status
+	},
 }}
 
 // set stands in for a value a member may know is there but not read.
@@ -95,6 +116,23 @@ func maskContainers(cs []corev1.Container) {
 		}
 		for j := range c.Args {
 			c.Args[j] = set
+		}
+	}
+}
+
+// maskProbe hides what in p may hold a credential: an exec probe's
+// command, and an HTTP probe's header values and its path's query. Header
+// names stay; a TCP or gRPC probe holds none.
+func maskProbe(p *corev1.Probe) {
+	if p.Exec != nil {
+		for i := range p.Exec.Command {
+			p.Exec.Command[i] = set
+		}
+	}
+	if h := p.HTTPGet; h != nil {
+		h.Path = maskURL(h.Path)
+		for i := range h.HTTPHeaders {
+			h.HTTPHeaders[i].Value = set
 		}
 	}
 }
