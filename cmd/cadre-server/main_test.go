@@ -61,6 +61,18 @@ func TestBoundRequests(t *testing.T) {
 	if until := time.Until(deadline); until <= time.Minute || until > 2*time.Minute {
 		t.Fatalf("approval deadline in %s, want the longer bound", until)
 	}
+	var bounded bool
+	h = boundRequests(http.HandlerFunc(func(_ http.ResponseWriter, r *http.Request) {
+		_, bounded = r.Context().Deadline()
+	}), time.Minute, 2*time.Minute)
+	h.ServeHTTP(httptest.NewRecorder(), httptest.NewRequestWithContext(context.Background(), http.MethodGet, "/api/v1/namespaces/team-a/watch", nil))
+	if bounded {
+		t.Fatal("a watch stream has a request deadline")
+	}
+	h.ServeHTTP(httptest.NewRecorder(), httptest.NewRequestWithContext(context.Background(), http.MethodGet, "/api/v1/namespaces/team-a/tasks/watch", nil))
+	if !bounded {
+		t.Fatal("a task named watch has no request deadline")
+	}
 }
 
 func TestResolvePublicURL(t *testing.T) {
