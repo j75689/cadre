@@ -256,7 +256,8 @@ func watchHeaders(w http.ResponseWriter) {
 // watchStream serves one stream: hello, then hints as they come, a ping
 // that checks the caller's role again, and end before it closes. ?task=
 // names a Task of ns, 404 if there is none, whose current run's events are
-// hinted too while the hub tails runs and has room (hello.runs).
+// hinted too while the hub tails runs and has room (hello.runs), from the
+// run it has or gets.
 func (s *Server) watchStream(w http.ResponseWriter, r *http.Request) {
 	c := s.watch
 	ns := r.PathValue("ns")
@@ -285,19 +286,19 @@ func (s *Server) watchStream(w http.ResponseWriter, r *http.Request) {
 	runs := false
 	if name := r.URL.Query().Get("task"); name != "" {
 		key := storage.Key{Namespace: ns, Name: name}
-		tailing := c.hub.tailRun(key, sub)
+		runs = c.hub.tailRun(key, sub)
 		defer c.hub.untailRun(key, sub)
 		t, err := s.m.GetTask(r.Context(), key)
 		if err != nil {
 			httpjson.Fail(w, s.log, err)
 			return
 		}
-		if tailing {
+		if runs {
 			var run string
 			if t.Status.Run != nil {
 				run = t.Status.Run.ID
 			}
-			runs = c.hub.followRun(key, sub, run)
+			c.hub.followRun(key, run)
 		}
 	}
 

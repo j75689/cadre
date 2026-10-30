@@ -31,9 +31,10 @@ func tailHub(t *testing.T, l storage.Log) (*Hub, *watcher) {
 	h.TailRuns(l)
 	w, _ := h.subscribe("team-a", 10)
 	key := storage.Key{Namespace: "team-a", Name: "y"}
-	if !h.tailRun(key, w) || !h.followRun(key, w, "01J00000000000000000000001") {
+	if !h.tailRun(key, w) {
 		t.Fatal("y's run is not tailed")
 	}
+	h.followRun(key, "01J00000000000000000000001")
 	t.Cleanup(func() { h.untailRun(key, w) })
 	return h, w
 }
@@ -81,9 +82,10 @@ func TestRunTailNamespaces(t *testing.T) {
 	h, w := tailHub(t, store)
 	other, _ := h.subscribe("team-b", 10)
 	key := storage.Key{Namespace: "team-b", Name: "y"}
-	if !h.tailRun(key, other) || !h.followRun(key, other, "01J00000000000000000000001") {
+	if !h.tailRun(key, other) {
 		t.Fatal("team-b's y is not tailed")
 	}
+	h.followRun(key, "01J00000000000000000000001")
 	defer h.untailRun(key, other)
 	if err := store.Append(t.Context(), "team-b/y/events/01J00000000000000000000001", storage.SeqKey(1), []byte(`{}`)); err != nil {
 		t.Fatal(err)
@@ -108,7 +110,7 @@ func TestRunTailReadAfterPublish(t *testing.T) {
 	defer h.untailRun(key, w)
 	h.publishTask(&v1alpha1.Task{ObjectMeta: metav1.ObjectMeta{Namespace: "team-a", Name: "y"},
 		Status: v1alpha1.TaskStatus{Run: &v1alpha1.Run{ID: "01J00000000000000000000002"}}})
-	if !h.followRun(key, w, "01J00000000000000000000001") || h.runs.tasks[key].run != "01J00000000000000000000002" {
+	if h.followRun(key, "01J00000000000000000000001"); h.runs.tasks[key].run != "01J00000000000000000000002" {
 		t.Fatalf("tailing %q, want the published run", h.runs.tasks[key].run)
 	}
 	// A listing of the run before, done as it was switched, is no hint.

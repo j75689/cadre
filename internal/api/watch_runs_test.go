@@ -101,13 +101,15 @@ func TestWatchRuns(t *testing.T) {
 	if ev := next(t, events); ev.kind != "hello" || !strings.Contains(ev.data, `"runs":true`) {
 		t.Fatalf("first event %+v, want hello with runs", ev)
 	}
-	// Streams of another task, or of none, get no run hints.
+	// Streams of another task, or of none, get no run hints of y.
 	_, others := watch(t, e.url, viewer, "/namespaces/team-a/watch?task=x")
-	if ev := next(t, others); ev.kind != "hello" || !strings.Contains(ev.data, `"runs":false`) {
-		t.Fatalf("x's first event %+v, want hello without runs: x has no run", ev)
+	if ev := next(t, others); ev.kind != "hello" || !strings.Contains(ev.data, `"runs":true`) {
+		t.Fatalf("x's first event %+v, want hello with runs: x gets them once it has a run", ev)
 	}
 	_, board := watch(t, e.url, viewer, "/namespaces/team-a/watch")
-	next(t, board)
+	if ev := next(t, board); !strings.Contains(ev.data, `"runs":false`) {
+		t.Fatalf("the board's first event %+v, want hello without runs", ev)
+	}
 	tailers(t, hub, 1)
 
 	start := time.Now()
@@ -150,6 +152,28 @@ func TestWatchRuns(t *testing.T) {
 				t.Fatalf("run hint %s on a stream of another task", ev.data)
 			}
 		}
+	}
+}
+
+// A stream opened before its task has a run gets the run's hints once it
+// has one.
+func TestWatchRunsBeforeRun(t *testing.T) {
+	e, store, hub := runsEnv(t)
+	setRun(t, store, "")
+	_, events := watch(t, e.url, e.as("eve@example.test", "readers"), "/namespaces/team-a/watch?task=y")
+	if ev := next(t, events); ev.kind != "hello" || !strings.Contains(ev.data, `"runs":true`) {
+		t.Fatalf("first event %+v, want hello with runs", ev)
+	}
+	tailers(t, hub, 0)
+	setRun(t, store, run1)
+	taskHint(t, events, `"phase":"Running"`)
+	start := time.Now()
+	appendEvent(t, store, run1, 1)
+	if got := runHint(t, events); got != `{"task":"y","run":"`+run1+`","seq":1}` {
+		t.Fatalf("run hint %s, want seq 1 of run1", got)
+	}
+	if d := time.Since(start); d > time.Second {
+		t.Errorf("hint %s after the append, want ≤ 1s", d)
 	}
 }
 

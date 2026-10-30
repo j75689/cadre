@@ -13,8 +13,9 @@ import (
 // Run tail defaults: a run's events are log appends, which no Notifier
 // reports, so they are polled.
 const (
-	// MaxRunTails is how many streams of one replica get run hints at
-	// once; one more gets hello.runs false, and its page polls the run.
+	// MaxRunTails is how many streams of one replica watch a task's runs
+	// at once, with a run or not; one more gets hello.runs false, and its
+	// page polls the run.
 	MaxRunTails    = 200
 	defaultRunTail = 500 * time.Millisecond
 )
@@ -73,21 +74,15 @@ func (h *Hub) tailRun(key storage.Key, w *watcher) bool {
 	return true
 }
 
-// followRun says which run the task had when w's stream read it, and
-// reports whether w is tailing it; w is no watcher of key past this
-// unless it is.
-func (h *Hub) followRun(key storage.Key, w *watcher, run string) bool {
+// followRun says which run, "" for none, the task had when a stream that
+// tailRun added read it. A task without a run keeps its watchers, and
+// publishTask tails the run it gets.
+func (h *Hub) followRun(key storage.Key, run string) {
 	h.mu.Lock()
 	defer h.mu.Unlock()
-	t := h.runs.tasks[key]
-	if !t.known {
+	if t := h.runs.tasks[key]; !t.known {
 		h.switchRun(key, t, run)
 	}
-	if t.run == "" {
-		h.dropRun(key, t, w)
-		return false
-	}
-	return true
 }
 
 // untailRun removes w from key's watchers, if it is one.
