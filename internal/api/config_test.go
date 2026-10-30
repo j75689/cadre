@@ -83,10 +83,11 @@ func configCluster(t *testing.T) api.Option {
 }
 
 // toolServers are remote, an external ToolServer with a credential in its
-// URL, as kubectl apply leaves it; prober and execer, managed ones with
-// some in their path and readiness probes, execer edited since it was
-// checked; slashy, whose path reads as user info; grpc, whose probe holds
-// none; and faraway in team-b.
+// URL and an empty auth prefix, as kubectl apply leaves it; prober and
+// execer, managed ones with some in their path and readiness probes, execer
+// edited since it was checked and with some in its auth prefix; slashy,
+// whose path reads as user info; grpc, whose probe holds none, with a
+// Bearer prefix; and faraway in team-b.
 func toolServers() []client.Object {
 	server := func(ns, name string, spec v1alpha1.ToolServerSpec) *v1alpha1.ToolServer {
 		ts := &v1alpha1.ToolServer{ObjectMeta: metav1.ObjectMeta{Namespace: ns, Name: name, Generation: 1}, Spec: spec}
@@ -94,7 +95,7 @@ func toolServers() []client.Object {
 		ts.Status.Conditions = []metav1.Condition{{Type: v1alpha1.ConditionReady, Status: metav1.ConditionTrue, ObservedGeneration: 1, Reason: "Connected"}}
 		return ts
 	}
-	remote := server("team-a", "remote", v1alpha1.ToolServerSpec{URL: "https://bot:tk_literal_user@mcp.example.test/mcp?key=tk_literal_query", Auth: &v1alpha1.ToolServerAuth{SecretRef: v1alpha1.SecretKeyRef{Name: "mcp", Key: "token"}}})
+	remote := server("team-a", "remote", v1alpha1.ToolServerSpec{URL: "https://bot:tk_literal_user@mcp.example.test/mcp?key=tk_literal_query", Auth: &v1alpha1.ToolServerAuth{SecretRef: v1alpha1.SecretKeyRef{Name: "mcp", Key: "token"}, Prefix: ptr.To("")}})
 	remote.Annotations = map[string]string{"cadre.dev/owner": "tools-team", "kubectl.kubernetes.io/last-applied-configuration": `{"spec":{"url":"https://mcp.example.test"}}`}
 	remote.ManagedFields = []metav1.ManagedFieldsEntry{{Manager: "kubectl-client-side-apply", Operation: metav1.ManagedFieldsOperationUpdate, APIVersion: "cadre.dev/v1alpha1", FieldsType: "FieldsV1", FieldsV1: metav1.NewFieldsV1(`{"f:spec":{"f:url":{}}}`)}}
 	prober := server("team-a", "prober", v1alpha1.ToolServerSpec{Managed: &v1alpha1.ManagedServer{Image: "mcp:1", Port: 8080, Path: "/mcp?key=tk_literal_path", ReadinessProbe: &corev1.Probe{
@@ -103,13 +104,13 @@ func toolServers() []client.Object {
 	prober.Status.URL = "http://prober.team-a.svc:8080/mcp?key=tk_literal_status"
 	execer := server("team-a", "execer", v1alpha1.ToolServerSpec{Managed: &v1alpha1.ManagedServer{Image: "mcp:1", Port: 8080, ReadinessProbe: &corev1.Probe{
 		ProbeHandler: corev1.ProbeHandler{Exec: &corev1.ExecAction{Command: []string{"check", "--token=tk_literal_exec"}}},
-	}}})
+	}}, Auth: &v1alpha1.ToolServerAuth{SecretRef: v1alpha1.SecretKeyRef{Name: "mcp", Key: "token"}, Header: "X-Api-Key", Prefix: ptr.To("tenant-42:tk_literal_prefix.")}})
 	execer.Generation = 2
 	slashy := server("team-a", "slashy", v1alpha1.ToolServerSpec{Managed: &v1alpha1.ManagedServer{Image: "mcp:1", Port: 8080, Path: "//bot:tk_literal_slashy@evil/mcp"}})
 	slashy.Status.URL = "http://slashy.team-a.svc:8080//bot:tk_literal_slashy@evil/mcp"
 	grpc := server("team-a", "grpc", v1alpha1.ToolServerSpec{Managed: &v1alpha1.ManagedServer{Image: "mcp:1", Port: 8080, ReadinessProbe: &corev1.Probe{
 		ProbeHandler: corev1.ProbeHandler{GRPC: &corev1.GRPCAction{Port: 8080, Service: ptr.To("mcp.health")}},
-	}}})
+	}}, Auth: &v1alpha1.ToolServerAuth{SecretRef: v1alpha1.SecretKeyRef{Name: "mcp", Key: "token"}, Prefix: ptr.To("Bearer ")}})
 	faraway := server("team-b", "faraway", v1alpha1.ToolServerSpec{URL: "https://mcp.example.test/mcp"})
 	return []client.Object{remote, prober, execer, slashy, grpc, faraway}
 }
@@ -490,7 +491,7 @@ func TestToolServerByRole(t *testing.T) {
 		if (got.Spec != nil) != c.spec || (got.Status != nil) != c.status || (got.Metadata.Annotations != nil) != c.annotations {
 			t.Errorf("%s: spec %v, status %v, annotations %v: %s", c.name, got.Spec != nil, got.Status != nil, got.Metadata.Annotations != nil, body)
 		}
-		if c.spec && (!strings.Contains(body, `"auth":{"secretRef":{"name":"mcp","key":"token"}}`) || !strings.Contains(body, `"cadre.dev/owner":"tools-team"`)) {
+		if c.spec && (!strings.Contains(body, `"auth":{"secretRef":{"name":"mcp","key":"token"},"prefix":""}`) || !strings.Contains(body, `"cadre.dev/owner":"tools-team"`)) {
 			t.Errorf("%s: spec or annotations missing: %s", c.name, body)
 		}
 		for _, never := range []string{"last-applied", "managedFields", "f:url"} {
@@ -505,8 +506,8 @@ func TestToolServerByRole(t *testing.T) {
 }
 
 // A member sees that a ToolServer's URLs, managed path and readiness probe
-// hold a value, not what it is; an admin sees them. A gRPC probe is shown
-// as it is.
+// hold a value, not what it is; an admin sees them. A gRPC probe and a
+// Bearer auth prefix are shown as they are.
 func TestToolServerMaskedByRole(t *testing.T) {
 	policy := &authz.Policy{FoldUsernames: true}
 	get := startConfig(t, api.WithAccess(auth.ModeOIDC, policy), configCluster(t))
@@ -520,7 +521,7 @@ func TestToolServerMaskedByRole(t *testing.T) {
 			`"path":"/mcp?key=(set)"`, `"path":"/healthz?token=(set)"`, `"httpHeaders":[{"name":"X-Probe-Key","value":"(set)"},{"name":"X-Probe-Tenant","value":"(set)"}]`,
 			`"url":"http://prober.team-a.svc:8080/mcp?key=(set)"`,
 		}},
-		{"execer", []string{"tk_literal_exec", `"check"`}, []string{`"exec":{"command":["(set)","(set)"]}`}},
+		{"execer", []string{"tk_literal_exec", `"check"`, "tk_literal_prefix"}, []string{`"exec":{"command":["(set)","(set)"]}`, `"prefix":"(set)"`}},
 		{"slashy", []string{"tk_literal_slashy"}, []string{`"path":"//(set)@evil/mcp"`, `"url":"http://slashy.team-a.svc:8080//(set)@evil/mcp"`}},
 	} {
 		for _, c := range []struct {
@@ -547,8 +548,8 @@ func TestToolServerMaskedByRole(t *testing.T) {
 			}
 		}
 	}
-	if code, body := get("dana@example.test", "backend", "/namespaces/team-a/toolservers/grpc"); code != 200 || !strings.Contains(body, `"grpc":{"port":8080,"service":"mcp.health"}`) {
-		t.Errorf("a member, a gRPC probe: %d %s", code, body)
+	if code, body := get("dana@example.test", "backend", "/namespaces/team-a/toolservers/grpc"); code != 200 || !strings.Contains(body, `"grpc":{"port":8080,"service":"mcp.health"}`) || !strings.Contains(body, `"prefix":"Bearer "`) {
+		t.Errorf("a member, a gRPC probe and a Bearer prefix: %d %s", code, body)
 	}
 }
 

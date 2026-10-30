@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/url"
+	"regexp"
 	"slices"
 	"strings"
 
@@ -87,6 +88,9 @@ var configKinds = []configKind{{
 		spec, status := ts.Spec.DeepCopy(), ts.Status
 		spec.URL = maskURL(spec.URL)
 		status.URL = maskServiceURL(status.URL)
+		if a := spec.Auth; a != nil && a.Prefix != nil && !authScheme.MatchString(*a.Prefix) {
+			*a.Prefix = set
+		}
 		if m := spec.Managed; m != nil {
 			m.Path = maskURL(m.Path)
 			if m.ReadinessProbe != nil {
@@ -99,6 +103,10 @@ var configKinds = []configKind{{
 
 // set stands in for a value a member may know is there but not read.
 const set = "(set)"
+
+// authScheme is a ToolServer auth prefix a member sees: none, or a scheme
+// such as "Bearer ". Another may hold part of the credential.
+var authScheme = regexp.MustCompile(`^([A-Za-z]+ )?$`)
 
 // maskContainers hides what in cs may hold a credential: literal env
 // values, commands and arguments. An env var's valueFrom stays, as it
