@@ -87,7 +87,8 @@ func configCluster(t *testing.T) api.Option {
 // execer, managed ones with some in their path and readiness probes, execer
 // edited since it was checked and with some in its auth prefix; slashy,
 // whose path reads as user info; grpc, whose probe holds none, with a
-// Bearer prefix; and faraway in team-b.
+// Bearer prefix; keyed, whose prefix is one word and a space but not a
+// scheme; and faraway in team-b.
 func toolServers() []client.Object {
 	server := func(ns, name string, spec v1alpha1.ToolServerSpec) *v1alpha1.ToolServer {
 		ts := &v1alpha1.ToolServer{ObjectMeta: metav1.ObjectMeta{Namespace: ns, Name: name, Generation: 1}, Spec: spec}
@@ -111,8 +112,9 @@ func toolServers() []client.Object {
 	grpc := server("team-a", "grpc", v1alpha1.ToolServerSpec{Managed: &v1alpha1.ManagedServer{Image: "mcp:1", Port: 8080, ReadinessProbe: &corev1.Probe{
 		ProbeHandler: corev1.ProbeHandler{GRPC: &corev1.GRPCAction{Port: 8080, Service: ptr.To("mcp.health")}},
 	}}, Auth: &v1alpha1.ToolServerAuth{SecretRef: v1alpha1.SecretKeyRef{Name: "mcp", Key: "token"}, Prefix: ptr.To("Bearer ")}})
+	keyed := server("team-a", "keyed", v1alpha1.ToolServerSpec{URL: "https://mcp.example.test/mcp", Auth: &v1alpha1.ToolServerAuth{SecretRef: v1alpha1.SecretKeyRef{Name: "mcp", Key: "token"}, Prefix: ptr.To("sk_tk_literal_keyed9 ")}})
 	faraway := server("team-b", "faraway", v1alpha1.ToolServerSpec{URL: "https://mcp.example.test/mcp"})
-	return []client.Object{remote, prober, execer, slashy, grpc, faraway}
+	return []client.Object{remote, prober, execer, slashy, grpc, keyed, faraway}
 }
 
 // startConfig serves the API, with Teams in team-a and team-b, to callers
@@ -414,6 +416,7 @@ func TestListToolServers(t *testing.T) {
 	want := []api.ConfigSummary{
 		{Name: "execer", Reason: "Pending", Message: "its current spec has not been checked yet"},
 		{Name: "grpc", Ready: true},
+		{Name: "keyed", Ready: true},
 		{Name: "prober", Ready: true},
 		{Name: "remote", Ready: true},
 		{Name: "slashy", Ready: true},
@@ -523,6 +526,7 @@ func TestToolServerMaskedByRole(t *testing.T) {
 		}},
 		{"execer", []string{"tk_literal_exec", `"check"`, "tk_literal_prefix"}, []string{`"exec":{"command":["(set)","(set)"]}`, `"prefix":"(set)"`}},
 		{"slashy", []string{"tk_literal_slashy"}, []string{`"path":"//(set)@evil/mcp"`, `"url":"http://slashy.team-a.svc:8080//(set)@evil/mcp"`}},
+		{"keyed", []string{"tk_literal_keyed"}, []string{`"prefix":"(set)"`}},
 	} {
 		for _, c := range []struct {
 			name, user, groups string
