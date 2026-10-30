@@ -2,6 +2,7 @@ package api
 
 import (
 	"context"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -22,6 +23,17 @@ func (l stuckLog) Keys(ctx context.Context, _, _ string, _ int) ([]storage.KeyIn
 	l.listing <- struct{}{}
 	<-ctx.Done()
 	return nil, ctx.Err()
+}
+
+// countLog is a Log that counts its listings.
+type countLog struct {
+	storage.Log
+	n *atomic.Int64
+}
+
+func (l countLog) Keys(ctx context.Context, stream, after string, limit int) ([]storage.KeyInfo, error) {
+	l.n.Add(1)
+	return l.Log.Keys(ctx, stream, after, limit)
 }
 
 // tailHub is a hub that tails runs from l, with w watching team-a/y's run.
@@ -120,5 +132,54 @@ func TestRunTailReadAfterPublish(t *testing.T) {
 	h.publishRun(key, "01J00000000000000000000001", 9)
 	if len(w.events) != 0 {
 		t.Fatalf("hint %+v from the run before", <-w.events)
+	}
+}
+
+// A tailer lists its run every 500 ms.
+func TestRunTailInterval(t *testing.T) {
+	l := countLog{Log: memory.NewBackend().Open(), n: &atomic.Int64{}}
+	tailHub(t, l)
+	time.Sleep(1200 * time.Millisecond)
+	if n := l.n.Load(); n < 2 || n > 4 {
+		t.Errorf("%d listings in 1.2s, want 3", n)
+	}
+}
+
+// A run hint to a full stream is one resync, as a task hint is, and holds
+// up no publisher.
+func TestRunTailFullStream(t *testing.T) {
+	store := memory.NewBackend().Open()
+	h, w := tailHub(t, store)
+	// A send that waits would hold h.mu: free it for the cleanup.
+	t.Cleanup(func() {
+		select {
+		case <-w.events:
+		default:
+		}
+	})
+	for range cap(w.events) {
+		w.events <- watchEvent{kind: "task"}
+	}
+	if err := store.Append(t.Context(), "team-a/y/events/01J00000000000000000000001", storage.SeqKey(1), []byte(`{}`)); err != nil {
+		t.Fatal(err)
+	}
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		// After the tailer's next listing.
+		time.Sleep(2 * h.runs.every)
+		h.publishTask(&v1alpha1.Task{ObjectMeta: metav1.ObjectMeta{Namespace: "team-a", Name: "y"},
+			Status: v1alpha1.TaskStatus{Run: &v1alpha1.Run{ID: "01J00000000000000000000001"}}})
+	}()
+	select {
+	case <-done:
+	case <-time.After(3 * time.Second):
+		t.Fatal("the hub waits on a full stream")
+	}
+	if ev := <-w.events; ev.kind != "resync" {
+		t.Fatalf("event %+v, want a resync", ev)
+	}
+	if ev := <-w.events; ev.kind != "task" || len(w.events) != 0 {
+		t.Fatalf("event %+v and %d more, want the task hint alone", ev, len(w.events))
 	}
 }

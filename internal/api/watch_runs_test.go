@@ -198,8 +198,8 @@ func TestWatchRunsShared(t *testing.T) {
 	tailers(t, hub, 0)
 }
 
-// Past MaxRunTails tailed streams, a stream says runs false; a closed one
-// frees its place.
+// Past 200 tailed streams, a stream says runs false; a closed one frees
+// its place.
 func TestWatchRunsCap(t *testing.T) {
 	e, _, hub := runsEnv(t)
 	viewer := e.as("eve@example.test", "readers")
@@ -217,13 +217,14 @@ func TestWatchRunsCap(t *testing.T) {
 	if got := hello(first); !strings.Contains(got, `"runs":true`) {
 		t.Fatalf("stream 1: %s, want runs", got)
 	}
-	for i := 2; i <= api.MaxRunTails; i++ {
+	const limit = 200
+	for i := 2; i <= limit; i++ {
 		if got := hello(all); !strings.Contains(got, `"runs":true`) {
 			t.Fatalf("stream %d: %s, want runs", i, got)
 		}
 	}
 	if got := hello(all); !strings.Contains(got, `"runs":false`) {
-		t.Fatalf("stream %d: %s, want no runs", api.MaxRunTails+1, got)
+		t.Fatalf("stream %d: %s, want no runs", limit+1, got)
 	}
 	tailers(t, hub, 1)
 	cancel()
