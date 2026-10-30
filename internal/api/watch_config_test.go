@@ -99,5 +99,30 @@ func TestWatchConfigHints(t *testing.T) {
 			quiet(t, events, 3*fastWatch.Coalesce)
 		}
 	}
+
+	// An AgentAccess, applied, changed and deleted, is no hint: the next
+	// one is the Agent's written after it.
+	access := &v1alpha1.AgentAccess{ObjectMeta: meta("bot"), Spec: v1alpha1.AgentAccessSpec{Role: "viewer"}}
+	for _, step := range []struct {
+		what  string
+		write func() error
+	}{
+		{"apply", func() error { return c.Create(ctx, access) }},
+		{"spec", func() error {
+			return c.Patch(ctx, access, ctrlclient.RawPatch(types.MergePatchType, []byte(`{"spec":{"role":"member"}}`)))
+		}},
+		{"delete", func() error { return c.Delete(ctx, access) }},
+	} {
+		if err := step.write(); err != nil {
+			t.Fatalf("%s AgentAccess: %v", step.what, err)
+		}
+	}
+	if err := c.Create(ctx, &v1alpha1.Agent{ObjectMeta: meta("after"), Spec: v1alpha1.AgentSpec{ModelRef: "claude"}}); err != nil {
+		t.Fatal(err)
+	}
+	if ev := next(t, events); ev.kind != "config" || ev.data != `{"kind":"Agent","name":"after"}` {
+		t.Fatalf("after AgentAccess writes and an Agent: %+v, want only the Agent's hint", ev)
+	}
+	quiet(t, events, 3*fastWatch.Coalesce)
 	quiet(t, elsewhere, 100*time.Millisecond)
 }
