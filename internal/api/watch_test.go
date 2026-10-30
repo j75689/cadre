@@ -9,6 +9,7 @@ import (
 	"net/http/cookiejar"
 	"net/http/httptest"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -329,10 +330,16 @@ func waitClosed(t *testing.T, events <-chan sseEvent) {
 }
 
 // startPlain serves the API with --auth=none as cadre-server does: through
-// LogRequests, with its read and write timeouts, here short.
+// LogRequests, with its read and write timeouts, here short. team-a and
+// team-b have a Team.
 func startPlain(t *testing.T, hub *api.Hub, c api.WatchConfig) string {
 	t.Helper()
 	store := memory.NewBackend().Open()
+	for _, ns := range []string{"team-a", "team-b"} {
+		if err := store.CreateTeam(ctx, &v1alpha1.Team{ObjectMeta: metav1.ObjectMeta{Namespace: ns, Name: v1alpha1.TeamName}}); err != nil {
+			t.Fatal(err)
+		}
+	}
 	m := manager.New(store, manager.Config{})
 	log := slog.New(slog.NewTextHandler(io.Discard, nil))
 	mux := http.NewServeMux()
@@ -373,4 +380,66 @@ func TestWatchShutdown(t *testing.T) {
 		t.Fatalf("event %+v, want end shutdown", ev)
 	}
 	waitClosed(t, events)
+}
+
+// A namespace without a Team is a 404 to whoever the guard lets through,
+// before the cap: a refused stream takes no slot.
+func TestWatchWithoutTeam(t *testing.T) {
+	c := fastWatch
+	c.MaxStreams = 1
+	store := memory.NewBackend().Open()
+	e := startRolesWith(t, store, nil, &authz.Policy{AdminUsers: []string{"root@example.test"}}, api.WithWatch(api.NewHub(store), c))
+	root := e.as("root@example.test")
+
+	// The one slot is taken.
+	_, events := watch(t, e.url, root, "/namespaces/team-a/watch")
+	next(t, events)
+	for _, method := range []string{"GET", "HEAD"} {
+		for _, path := range []string{"/namespaces/team-c/watch", "/namespaces/team-c/watch?task=x"} {
+			code, out := e.do(root, method, path, "")
+			if code != http.StatusNotFound {
+				t.Errorf("%s %s as a bootstrap admin: %d, want 404", method, path, code)
+			}
+			if method == "GET" && !strings.Contains(out, `"not_found"`) {
+				t.Errorf("%s %s: %s, want not_found", method, path, out)
+			}
+		}
+	}
+	if code, out := e.do(root, "GET", "/namespaces/Team-C/watch", ""); code != http.StatusBadRequest {
+		t.Errorf("a namespace that is no label: %d %s, want 400", code, out)
+	}
+	if code, _ := e.do(e.as("eve@example.test", "readers"), "GET", "/namespaces/team-c/watch", ""); code != http.StatusForbidden {
+		t.Errorf("as a viewer of another team: %d, want 403", code)
+	}
+
+	url := startPlain(t, api.NewHub(nil), fastWatch)
+	if code, _ := watch(t, url, "", "/namespaces/team-c/watch"); code != http.StatusNotFound {
+		t.Errorf("with --auth=none: %d, want 404", code)
+	}
+}
+
+// A Team deleted ends its namespace's streams at the next ping, and the
+// reconnect is a 404.
+func TestWatchTeamDeleted(t *testing.T) {
+	store := memory.NewBackend().Open()
+	var mu sync.Mutex
+	teams := map[string]*v1alpha1.Team{"team-a": {ObjectMeta: metav1.ObjectMeta{Namespace: "team-a", Name: v1alpha1.TeamName}}}
+	e := startRolesWith(t, store, func(d storage.Driver) storage.Driver { return stale{Driver: d, mu: &mu, teams: teams} },
+		&authz.Policy{AdminUsers: []string{"root@example.test"}}, api.WithWatch(api.NewHub(store), fastWatch))
+	root := e.as("root@example.test")
+
+	_, events := watch(t, e.url, root, "/namespaces/team-a/watch")
+	if ev := next(t, events); ev.kind != "hello" {
+		t.Fatalf("first event %+v, want hello", ev)
+	}
+	mu.Lock()
+	delete(teams, "team-a")
+	mu.Unlock()
+	if ev := next(t, events); ev.kind != "end" || ev.data != `{"reason":"no_team"}` {
+		t.Fatalf("event %+v, want end no_team", ev)
+	}
+	waitClosed(t, events)
+	if code, _ := watch(t, e.url, root, "/namespaces/team-a/watch"); code != http.StatusNotFound {
+		t.Errorf("reconnect without the Team: %d, want 404", code)
+	}
 }

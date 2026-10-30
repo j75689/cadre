@@ -9,6 +9,7 @@ import (
 	"net/http/httptest"
 	"slices"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -34,13 +35,16 @@ type rolesEnv struct {
 }
 
 // stale serves Teams from an index that lags the store: what the cache says
-// is not what the store does.
+// is not what the store does. mu guards teams, which a test may change.
 type stale struct {
 	storage.Driver
+	mu    *sync.Mutex
 	teams map[string]*v1alpha1.Team
 }
 
 func (s stale) IndexedTeam(_ context.Context, ns string) (*v1alpha1.Team, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
 	if t, ok := s.teams[ns]; ok {
 		return t.DeepCopy(), nil
 	}
@@ -288,7 +292,7 @@ func TestWritesReadTheTeamLive(t *testing.T) {
 		ObjectMeta: metav1.ObjectMeta{Namespace: "team-b", Name: v1alpha1.TeamName},
 		Spec:       v1alpha1.TeamSpec{Roles: []v1alpha1.TeamRole{{Role: v1alpha1.RoleMember, Subjects: []v1alpha1.RoleSubject{{Kind: v1alpha1.SubjectUser, Name: "dana@example.test"}}}}},
 	}}
-	e := startRolesOn(t, memory.NewBackend().Open(), func(d storage.Driver) storage.Driver { return stale{Driver: d, teams: cached} })
+	e := startRolesOn(t, memory.NewBackend().Open(), func(d storage.Driver) storage.Driver { return stale{Driver: d, mu: new(sync.Mutex), teams: cached} })
 	dana := e.as("dana@example.test")
 	if code, out := e.do(dana, "GET", "/namespaces/team-b/tasks/x", ""); code != 200 {
 		t.Errorf("a read on the index's word: %d %s", code, out)

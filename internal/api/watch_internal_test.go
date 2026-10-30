@@ -1,6 +1,7 @@
 package api
 
 import (
+	"context"
 	"io"
 	"log/slog"
 	"net"
@@ -95,7 +96,11 @@ func TestWatchWriteTimeout(t *testing.T) {
 	watchWriteTimeout = 100 * time.Millisecond
 	h := NewHub(nil)
 	mux := http.NewServeMux()
-	m := manager.New(memory.NewBackend().Open(), manager.Config{})
+	store := memory.NewBackend().Open()
+	if err := store.CreateTeam(context.Background(), &v1alpha1.Team{ObjectMeta: metav1.ObjectMeta{Namespace: "team-a", Name: v1alpha1.TeamName}}); err != nil {
+		t.Fatal(err)
+	}
+	m := manager.New(store, manager.Config{})
 	NewServer(m, slog.New(slog.NewTextHandler(io.Discard, nil)), WithWatch(h, WatchConfig{MaxStreams: 1, Coalesce: time.Millisecond})).Register(mux)
 	srv := httptest.NewServer(mux)
 	t.Cleanup(srv.Close)

@@ -46,6 +46,7 @@ const (
 	EndLifetime = "lifetime"
 	EndShutdown = "shutdown"
 	EndNoRole   = "no_role"
+	EndNoTeam   = "no_team"
 )
 
 // WatchConfig bounds the watch streams of one replica. A zero field takes
@@ -259,13 +260,22 @@ func watchHeaders(w http.ResponseWriter) {
 }
 
 // watchStream serves one stream: hello, then hints as they come, a ping
-// that checks the caller's role again, and end before it closes. ?task=
+// that checks the caller's role and ns's Team again, and end before it
+// closes. A namespace without a Team is a 404, before the cap. ?task=
 // names a Task of ns, 404 if there is none (on a HEAD too), whose current
 // run's events are hinted too while the hub tails runs and has room
 // (hello.runs), from the run it has or gets.
 func (s *Server) watchStream(w http.ResponseWriter, r *http.Request) {
 	c := s.watch
 	ns := r.PathValue("ns")
+	// Bounded as a request is: the stream is not.
+	read, cancel := context.WithTimeout(r.Context(), watchReadTimeout)
+	_, err := s.configTeam(read, ns)
+	cancel()
+	if err != nil {
+		httpjson.Fail(w, s.log, err)
+		return
+	}
 	// A HEAD is answered as a GET would be, but holds no slot: it has no
 	// stream.
 	head := r.Method == http.MethodHead
@@ -356,6 +366,10 @@ func (s *Server) watchStream(w http.ResponseWriter, r *http.Request) {
 			var refused *Refused
 			if err := Check(r.Context(), s.m, s.policy, ns, authz.Read); errors.As(err, &refused) {
 				send("end", WatchEnd{Reason: EndNoRole})
+				return
+			}
+			if _, err := s.m.Team(r.Context(), ns); errors.Is(err, storage.ErrNotFound) {
+				send("end", WatchEnd{Reason: EndNoTeam})
 				return
 			}
 			if !write(": ping\n\n") {
