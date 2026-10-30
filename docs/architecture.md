@@ -152,7 +152,31 @@ Runtime-mode backends differ only in who starts the runner process. For the Kube
   - `: ping`, a comment, every 20 seconds. Each ping checks the caller's role again, from the board index; a role taken away ends the stream with `end` `{"reason":"no_role"}`, and the browser's reconnect is a 403.
   - `end` `{"reason"}` before the server closes the stream: `lifetime` after 300 seconds ±20 %, when the browser reconnects (so an expired session ends at that reconnect, a 401); `shutdown` when the replica stops; `no_role`.
 
-  Hints are lossy, like the driver's: one may be late, merged or lost, a reconnect does not replay what was missed, and a page reads what it shows from the API. The stream is not bound by the 30-second request timeout; each write is given 30 seconds instead. Each replica serves at most `--watch-max-streams` streams at once (default 2000; the chart's `server.watchMaxStreams`), and answers one more with a 503, after which a client polls instead. A proxy in front must not buffer the stream: nginx honours `X-Accel-Buffering: no`.
+  Hints are lossy, like the driver's: one may be late, merged or lost, a reconnect does not replay what was missed, and a page reads what it shows from the API. The stream is not bound by the 30-second request timeout; each write is given 30 seconds instead. Each replica serves at most `--watch-max-streams` streams at once (default 2000; the chart's `server.watchMaxStreams`), and answers one more with a 503, after which a client polls instead. A proxy in front must not buffer the stream: nginx honours `X-Accel-Buffering: no`. It should also let a connection sit idle for longer than the 20-second ping.
+
+  To watch a namespace from a shell, with an ID token from `cadre auth token` (with logins; without them, `--auth=none`, send no header), `-N` so curl does not buffer:
+
+  ```sh
+  curl -N -H "Authorization: Bearer $(cadre auth token)" \
+    "$CADRE_SERVER/api/v1/namespaces/demo/watch"
+  ```
+
+  It prints the stream as it comes, here after a member created the Task `release-notes`:
+
+  ```
+  retry: 3000
+  event: hello
+  data: {"tasks":true,"config":false,"runs":false,"lifetimeSeconds":300}
+
+  event: task
+  data: {"name":"release-notes","number":1,"phase":"Todo"}
+
+  : ping
+
+  ```
+
+  Read the Task again with `GET /api/v1/namespaces/demo/tasks/release-notes`. Without a token the answer is `401` `unauthenticated`; with no role on the Team, `403` `no_role`; past the limit, `503` `unavailable` ("this replica serves 1 watch streams already: retry later; the board polls meanwhile", with `--watch-max-streams=1`). `--watch-max-streams=0`, or less, stops cadre-server at start: `--watch-max-streams 0: must be at least 1`.
+- Upgrading to a cadre-server that serves the stream: nothing to apply. It adds one flag, `--watch-max-streams` (default 2000; the chart's `server.watchMaxStreams`, unset by default, and when set at least 1), and reads the Tasks the informers already hold: no RBAC or CRD change. Nothing in the web UI uses the stream yet, so an upgrade changes nothing a user sees.
 
 ## Identity and access
 
