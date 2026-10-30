@@ -24,6 +24,10 @@ server:
   # Timings, each passed only when set: lease, heartbeat, stepIdle,
   # reclaimInterval, dispatchInterval (Go durations such as 30s).
   timings: {}
+  # watchMaxStreams is how many live-update streams each replica serves at
+  # once (cadre-server's default, 2000, when unset); one more is answered
+  # 503 and its board polls instead.
+  watchMaxStreams: null
   resources: {}
   nodeSelector: {}
   tolerations: []

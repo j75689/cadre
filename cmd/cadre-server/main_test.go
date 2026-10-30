@@ -18,6 +18,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/cache"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
+	"github.com/j75689/cadre/internal/api"
 	"github.com/j75689/cadre/internal/auth"
 	"github.com/j75689/cadre/internal/auth/oidctest"
 	"github.com/j75689/cadre/internal/authz"
@@ -44,6 +45,26 @@ func TestValidateTimings(t *testing.T) {
 	}
 }
 
+func TestValidateStreams(t *testing.T) {
+	if api.DefaultWatchMaxStreams != 2000 {
+		t.Errorf("default --watch-max-streams %d, want 2000", api.DefaultWatchMaxStreams)
+	}
+	for _, tc := range []struct {
+		n  int
+		ok bool
+	}{
+		{api.DefaultWatchMaxStreams, true},
+		{1, true},
+		{2000, true},
+		{0, false},
+		{-1, false},
+	} {
+		if err := validateStreams(tc.n); (err == nil) != tc.ok {
+			t.Errorf("%d: %v, want ok=%v", tc.n, err, tc.ok)
+		}
+	}
+}
+
 func TestBoundRequests(t *testing.T) {
 	var deadline time.Time
 	h := boundRequests(http.HandlerFunc(func(_ http.ResponseWriter, r *http.Request) {
@@ -60,6 +81,23 @@ func TestBoundRequests(t *testing.T) {
 	h.ServeHTTP(httptest.NewRecorder(), httptest.NewRequestWithContext(context.Background(), http.MethodPost, "/api/v1/namespaces/team-a/tasks/fix-login/approve", nil))
 	if until := time.Until(deadline); until <= time.Minute || until > 2*time.Minute {
 		t.Fatalf("approval deadline in %s, want the longer bound", until)
+	}
+	var bounded bool
+	h = boundRequests(http.HandlerFunc(func(_ http.ResponseWriter, r *http.Request) {
+		_, bounded = r.Context().Deadline()
+	}), time.Minute, 2*time.Minute)
+	h.ServeHTTP(httptest.NewRecorder(), httptest.NewRequestWithContext(context.Background(), http.MethodGet, "/api/v1/namespaces/team-a/watch", nil))
+	if bounded {
+		t.Fatal("a watch stream has a request deadline")
+	}
+	// A HEAD has no stream, and returns at once.
+	h.ServeHTTP(httptest.NewRecorder(), httptest.NewRequestWithContext(context.Background(), http.MethodHead, "/api/v1/namespaces/team-a/watch", nil))
+	if !bounded {
+		t.Fatal("a HEAD of the watch route has no request deadline")
+	}
+	h.ServeHTTP(httptest.NewRecorder(), httptest.NewRequestWithContext(context.Background(), http.MethodGet, "/api/v1/namespaces/team-a/tasks/watch", nil))
+	if !bounded {
+		t.Fatal("a task named watch has no request deadline")
 	}
 }
 

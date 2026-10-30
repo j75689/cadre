@@ -105,6 +105,9 @@ spec:
             - --dispatch-interval={{ . }}
             {{- end }}
             {{- end }}
+            {{- with .Values.server.watchMaxStreams }}
+            - --watch-max-streams={{ . }}
+            {{- end }}
           {{- with $s3.credentialsSecret }}
           env:
             - name: CADRE_S3_ACCESS_KEY

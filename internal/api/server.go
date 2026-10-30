@@ -31,6 +31,7 @@ type Server struct {
 	policy *authz.Policy    // nil: everyone may do anything
 	access AgentAccessStore // nil: AgentAccesses are not served
 	config client.Reader    // nil: configuration resources are not served
+	watch  *watchServer     // nil: watch streams are not served
 }
 
 // Option adjusts NewServer.
@@ -107,6 +108,9 @@ func (s *Server) Register(mux *http.ServeMux) {
 			}
 			mux.HandleFunc("GET "+kind+"/{name}", s.guard(authz.Read, s.getConfig(k)))
 		}
+	}
+	if s.watch != nil {
+		mux.HandleFunc("GET "+Base+"/namespaces/{ns}/watch", s.guard(authz.Read, s.watchStream))
 	}
 	mux.HandleFunc("GET "+Base+"/teams", s.listTeams)
 	mux.HandleFunc("GET "+Base+"/me", s.me)
