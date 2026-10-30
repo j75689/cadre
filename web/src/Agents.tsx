@@ -1,7 +1,7 @@
 import { useState } from "react";
 import { Link, useParams } from "react-router";
 import { listAgents, type AgentSummary } from "./api";
-import { boardLink } from "./links";
+import { agentLink, boardLink } from "./links";
 import { useTeamName } from "./teamList";
 import { ReadyBadge } from "./ui/Badge";
 import { Banner } from "./ui/Banner";
@@ -71,7 +71,9 @@ export function Agents() {
             <tbody>
               {agents.map((a) => (
                 <tr key={a.name}>
-                  <td className="mono">{a.name}</td>
+                  <td className="mono">
+                    <Link to={agentLink(ns, a.name)}>{a.name}</Link>
+                  </td>
                   <td>
                     <ReadyBadge ready={a.ready} reason={a.reason} />
                   </td>

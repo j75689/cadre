@@ -26,6 +26,7 @@ export interface Condition {
   reason?: string;
   message?: string;
   lastTransitionTime?: string;
+  observedGeneration?: number;
 }
 
 export interface TaskStatus {
@@ -173,6 +174,25 @@ export interface AgentSummary {
   message?: string;
 }
 
+// ConfigResource is a configuration resource, such as an Agent, as the
+// caller may see it: a viewer gets no spec, status or annotations, a member
+// gets some of the spec's values as "(set)", an admin all of it.
+export interface ConfigResource extends AgentSummary {
+  kind: string;
+  generation: number;
+  observedGeneration: number;
+  conditions: Condition[];
+  metadata: {
+    uid: string;
+    resourceVersion: string;
+    creationTimestamp: string;
+    labels?: Record<string, string>;
+    annotations?: Record<string, string>;
+  };
+  spec?: Record<string, unknown>;
+  status?: Record<string, unknown>;
+}
+
 export class APIError extends Error {
   constructor(
     readonly status: number,
@@ -298,6 +318,9 @@ export const runEvents = (ns: string, name: string, run: string, signal?: AbortS
 
 export const listAgents = (ns: string, signal?: AbortSignal) =>
   get<{ items: AgentSummary[] }>(`/namespaces/${encodeURIComponent(ns)}/agents`, signal);
+
+export const getAgent = (ns: string, name: string, signal?: AbortSignal) =>
+  get<ConfigResource>(`/namespaces/${encodeURIComponent(ns)}/agents/${encodeURIComponent(name)}`, signal);
 
 export const getTeam = (ns: string, signal?: AbortSignal) => get<Team>(`/namespaces/${encodeURIComponent(ns)}/team`, signal);
 

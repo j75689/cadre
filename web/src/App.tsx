@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import { Link, Outlet, Route, Routes, useParams } from "react-router";
 import { AccessDetail, AccessList } from "./Access";
+import { AgentDetail } from "./AgentDetail";
 import { Agents } from "./Agents";
 import { Board } from "./Board";
 import { IdentityBox, IdentityProvider, roleOf, useIdentityDetails } from "./Identity";
@@ -34,6 +35,12 @@ function TeamNewTask() {
 function TeamAgents() {
   const { ns = "" } = useParams();
   return <Agents key={ns} />;
+}
+
+// an Agent's page to one Agent,
+function OneAgent() {
+  const { ns = "", name = "" } = useParams();
+  return <AgentDetail key={`${ns}/${name}`} />;
 }
 
 // the settings,
@@ -201,6 +208,7 @@ export function App() {
             <Route path="t/:ns" element={<TeamLayout />}>
               <Route index element={<TeamBoard />} />
               <Route path="agents" element={<TeamAgents />} />
+              <Route path="agents/:name" element={<OneAgent />} />
               <Route path="new" element={<TeamNewTask />} />
               <Route path="tasks/:name" element={<OneTask />} />
               <Route path="settings" element={<TeamSettings />} />

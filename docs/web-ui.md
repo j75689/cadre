@@ -155,9 +155,18 @@ The board's controls replace the history entry, so they do not flood Back, and a
     - One "Load more" below the table reads the next page of every column that has more, the board's paging.
     - The table fills the board's height and scrolls on its own, both ways, so the page does not; its header stays in view.
 - **Agents** (`/t/<ns>/agents`): the team's Agent resources and whether each can take work, read every 15 s. It is health only, so every role sees it.
-  - A table in a horizontal-scroll region named "Agents": Agent (mono), Status (the ready badge), Reason (muted, empty while Pending, which the badge says), Message, and Tasks, a link to the board with the agent as the assignee (`boardLink(ns, { assignee })`), which opens the board filtered to that agent.
+  - A table in a horizontal-scroll region named "Agents": Agent (mono, a link to its page, `agentLink(ns, name)`), Status (the ready badge), Reason (muted, empty while Pending, which the badge says), Message, and Tasks, a link to the board with the agent as the assignee (`boardLink(ns, { assignee })`), which opens the board filtered to that agent.
   - With no agents: "This team has no agents. Agents are Agent resources in the namespace, applied with kubectl or GitOps."
   - An error that stops the read shows the banner with Retry.
+- **One Agent** (`/t/<ns>/agents/<name>`): the Agent as `GET /agents/<name>` answers it for the caller's role, read every 15 s, read-only (GitOps owns it). The Agents tab stays current.
+  - The breadcrumb is the team, Agents, then the name; the `h1` is the name, then the kind and the ready badge. Under it, the reason (not when Pending, which the badge says, as the server decides it) and the message.
+  - Cards, each a `section` named by its `h2`, built from `ui/Config.tsx` so the other kinds' pages can reuse them:
+    - **Conditions**: a table in a horizontal-scroll region named "Conditions table": type, status, reason, message, last transition, and the generation it is about, "*observed* of *generation*", with "(older spec)" when it is about a spec since changed. With none: "No conditions yet: the controller has not reported on it."
+    - **Uses**: the ModelProvider (`spec.modelRef`) and the ToolServers (`spec.toolRefs`), as names until their pages exist (`Ref` in `AgentDetail.tsx` is where they become links). A viewer, who gets no spec, has no Uses card but "The spec and status are shown to the team's members and admins."
+    - **Metadata**: created, generation and observed generation, labels, annotations when the answer has them (members and admins), uid and resource version.
+    - **YAML**: the answer's `metadata`, `spec` and `status`, whichever it has, printed as YAML (`toYAML` in `yaml.ts`, no dependency; it prints the JSON, it is not `kubectl get -o yaml`), in a focusable `pre` named "YAML text" that scrolls both ways. Copy uses `navigator.clipboard.writeText`, then "Copied" in a `role="status"`; without a clipboard the text is selected and the status says "Press Ctrl+C to copy it." Values a member is shown masked stay `(set)` as served; when the YAML holds one, "Values shown as `(set)` are set but hidden from members; admins see them."
+  - An Agent that is not there (a 404 with the code `not_found`) reads "No agent named *name* in this team." with a link to All agents. A failed read shows the banner with Retry; a 403 (`no_role`) shows it without Retry.
+  - What uses the Agent (the Schedules that target it) is not shown yet: it needs the Schedule API.
 - **Task** (`/t/<ns>/tasks/<name>`):
   - **Header:**
     - a breadcrumb: the team, then `#number`;

@@ -2,7 +2,7 @@ import { act, cleanup, fireEvent, render, renderHook, screen } from "@testing-li
 import { createElement, useEffect, type ReactNode } from "react";
 import { Link, MemoryRouter, useLocation, useNavigationType } from "react-router";
 import { afterEach, describe, expect, it } from "vitest";
-import { boardLink, taskLink, teamPath, useParam } from "./links";
+import { agentLink, boardLink, taskLink, teamPath, useParam } from "./links";
 
 describe("links", () => {
   it("encodes the team's name", () => {
@@ -13,6 +13,10 @@ describe("links", () => {
     expect(boardLink("a")).toBe("/t/a");
     expect(boardLink("a", { assignee: "Agent/Engineer", phase: "Todo", view: "list" })).toBe("/t/a?assignee=Agent%2FEngineer&phase=Todo&view=list");
     expect(boardLink("a", { phase: "Done" })).toBe("/t/a?phase=Done");
+  });
+
+  it("builds an agent's link", () => {
+    expect(agentLink("a b", "x/y")).toBe("/t/a%20b/agents/x%2Fy");
   });
 
   it("builds a task's link, at a run when one is given", () => {
