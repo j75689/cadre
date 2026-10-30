@@ -86,7 +86,7 @@ var configKinds = []configKind{{
 		}
 		spec, status := ts.Spec.DeepCopy(), ts.Status
 		spec.URL = maskURL(spec.URL)
-		status.URL = maskURL(status.URL) // a managed server's, after its path
+		status.URL = maskServiceURL(status.URL)
 		if m := spec.Managed; m != nil {
 			m.Path = maskURL(m.Path)
 			if m.ReadinessProbe != nil {
@@ -135,6 +135,18 @@ func maskProbe(p *corev1.Probe) {
 			h.HTTPHeaders[i].Value = set
 		}
 	}
+}
+
+// maskServiceURL masks a managed server's URL, its Service's address then
+// its path, as its path is masked: a path such as //user:pw@host/mcp
+// parses as user info alone, not after a host.
+func maskServiceURL(u string) string {
+	addr, ok := strings.CutPrefix(u, "http://")
+	i := strings.IndexByte(addr, '/')
+	if !ok || i < 0 {
+		return maskURL(u)
+	}
+	return u[:len("http://")+i] + maskURL(addr[i:])
 }
 
 // maskURL hides what in u may hold a credential: its user info, its

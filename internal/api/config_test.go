@@ -85,7 +85,8 @@ func configCluster(t *testing.T) api.Option {
 // toolServers are remote, an external ToolServer with a credential in its
 // URL, as kubectl apply leaves it; prober and execer, managed ones with
 // some in their path and readiness probes, execer edited since it was
-// checked; grpc, whose probe holds none; and faraway in team-b.
+// checked; slashy, whose path reads as user info; grpc, whose probe holds
+// none; and faraway in team-b.
 func toolServers() []client.Object {
 	server := func(ns, name string, spec v1alpha1.ToolServerSpec) *v1alpha1.ToolServer {
 		ts := &v1alpha1.ToolServer{ObjectMeta: metav1.ObjectMeta{Namespace: ns, Name: name, Generation: 1}, Spec: spec}
@@ -104,11 +105,13 @@ func toolServers() []client.Object {
 		ProbeHandler: corev1.ProbeHandler{Exec: &corev1.ExecAction{Command: []string{"check", "--token=tk_literal_exec"}}},
 	}}})
 	execer.Generation = 2
+	slashy := server("team-a", "slashy", v1alpha1.ToolServerSpec{Managed: &v1alpha1.ManagedServer{Image: "mcp:1", Port: 8080, Path: "//bot:tk_literal_slashy@evil/mcp"}})
+	slashy.Status.URL = "http://slashy.team-a.svc:8080//bot:tk_literal_slashy@evil/mcp"
 	grpc := server("team-a", "grpc", v1alpha1.ToolServerSpec{Managed: &v1alpha1.ManagedServer{Image: "mcp:1", Port: 8080, ReadinessProbe: &corev1.Probe{
 		ProbeHandler: corev1.ProbeHandler{GRPC: &corev1.GRPCAction{Port: 8080, Service: ptr.To("mcp.health")}},
 	}}})
 	faraway := server("team-b", "faraway", v1alpha1.ToolServerSpec{URL: "https://mcp.example.test/mcp"})
-	return []client.Object{remote, prober, execer, grpc, faraway}
+	return []client.Object{remote, prober, execer, slashy, grpc, faraway}
 }
 
 // startConfig serves the API, with Teams in team-a and team-b, to callers
@@ -412,6 +415,7 @@ func TestListToolServers(t *testing.T) {
 		{Name: "grpc", Ready: true},
 		{Name: "prober", Ready: true},
 		{Name: "remote", Ready: true},
+		{Name: "slashy", Ready: true},
 	}
 	if !slices.Equal(got.Items, want) {
 		t.Errorf("got %+v, want %+v", got.Items, want)
@@ -513,6 +517,7 @@ func TestToolServerMaskedByRole(t *testing.T) {
 			`"url":"http://prober.team-a.svc:8080/mcp?key=(set)"`,
 		}},
 		{"execer", []string{"tk_literal_exec", `"check"`}, []string{`"exec":{"command":["(set)","(set)"]}`}},
+		{"slashy", []string{"tk_literal_slashy"}, []string{`"path":"//(set)@evil/mcp"`, `"url":"http://slashy.team-a.svc:8080//(set)@evil/mcp"`}},
 	} {
 		for _, c := range []struct {
 			name, user, groups string
