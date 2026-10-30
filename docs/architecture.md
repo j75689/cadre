@@ -83,6 +83,47 @@ Cadre is not a SaaS, not a workflow engine, not an LLM gateway and not a sandbox
   ```
 
   Only `spec.baseURL` is masked, and only for a member. For `https://svc:s3cret@gw.example.test:8443/v1?api-key=abc&debug#frag` a member reads `https://(set)@gw.example.test:8443/v1?api-key=(set)&(set)#(set)`: the user info, each query value, a query part with no `=` and the fragment are `(set)`, the scheme, host, port, path and query keys are not. A `baseURL` that does not parse as a URL (`https://gw.example.test/%zz?k=v`) is `(set)` whole. An admin gets the real value. `auth` is a reference to a Secret, not a credential, and every member sees it as it is. The failures are an Agent's: 401 `unauthenticated`, 403 `no_role` (a namespace without a Team included, for all but a bootstrap admin, who gets 404 `not_found` there, for the list as for one) and 404 `not_found` for a ModelProvider that is not there.
+- Reading the ToolServers (`GET /api/v1/namespaces/<namespace>/toolservers` and `…/toolservers/<name>`), like a ModelProvider, above. The list is `{"items":[…]}`, sorted by name, each item `name`, `ready` and, when it is not Ready, `reason` and `message`; the answer for one is an Agent's, with `"kind":"ToolServer"`:
+
+  ```sh
+  curl -s -H "Authorization: Bearer $(cadre auth token)" \
+    "$CADRE_SERVER/api/v1/namespaces/demo/toolservers"
+  curl -s -H "Authorization: Bearer $(cadre auth token)" \
+    "$CADRE_SERVER/api/v1/namespaces/demo/toolservers/github"
+  ```
+
+  The list (`docs` and `shell` are managed and their Deployments have not finished rolling out; `badauth` and `github` are Ready):
+
+  ```json
+  {"items":[{"name":"badauth","ready":true},{"name":"docs","ready":false,"reason":"Deploying","message":"its Deployment has not finished rolling out its current spec"},{"name":"github","ready":true},{"name":"shell","ready":false,"reason":"Deploying","message":"its Deployment has not finished rolling out its current spec"}]}
+  ```
+
+  A viewer, for `github`:
+
+  ```json
+  {"name":"github","ready":true,"kind":"ToolServer","generation":3,"observedGeneration":3,"conditions":[{"type":"Ready","status":"True","observedGeneration":3,"lastTransitionTime":"2026-10-30T15:11:37Z","reason":"SecretFound","message":""}],"metadata":{"uid":"afafe371-23de-432d-80c5-8fefc42dc57e","resourceVersion":"314","creationTimestamp":"2026-10-30T15:10:35Z","labels":{"tier":"gold"}}}
+  ```
+
+  A member gets the same, and `metadata.annotations`, `spec` and `status` besides (the API writes `&` as `\u0026`):
+
+  ```json
+  {"…":"…","metadata":{"…":"…","annotations":{"owner":"platform"}},"spec":{"transport":"streamable_http","url":"https://(set)@mcp.example.test:8443/mcp?api-key=(set)\u0026(set)#(set)","auth":{"secretRef":{"name":"github","key":"token"},"header":"Authorization","prefix":"Bearer "}},"status":{"observedGeneration":3,"conditions":[{"type":"Ready","status":"True","…":"…"}]}}
+  ```
+
+  An admin reads that `url` as `https://svc:s3cret@mcp.example.test:8443/mcp?api-key=abc&debug#frag`. What a member sees of each place a credential can be, for the ToolServers above:
+
+  | Field | Stored | A member reads |
+  | --- | --- | --- |
+  | `spec.url` (`github`) | `https://svc:s3cret@mcp.example.test:8443/mcp?api-key=abc&debug#frag` | `https://(set)@mcp.example.test:8443/mcp?api-key=(set)&(set)#(set)` |
+  | `spec.managed.path` (`docs`) | `/mcp?key=abc` | `/mcp?key=(set)` |
+  | `status.url` (`docs`) | `http://docs.demo.svc:8080/mcp?key=abc` | `http://docs.demo.svc:8080/mcp?key=(set)` |
+  | `spec.managed.readinessProbe.httpGet.path` (`docs`) | `/healthz?token=abc` | `/healthz?token=(set)` |
+  | `…httpGet.httpHeaders` (`docs`) | `{"name":"X-Probe-Key","value":"abc"}` | `{"name":"X-Probe-Key","value":"(set)"}` |
+  | `…readinessProbe.exec.command` (`shell`) | `["check","--token=abc"]` | `["(set)","(set)"]` |
+  | `spec.auth.prefix` (`badauth`) | `sk_abc ` | `(set)` |
+  | `spec.auth.prefix` (`github`) | `Bearer ` | `Bearer ` |
+
+  A `url` or path that does not parse as a URL is `(set)` whole, as a ModelProvider's `baseURL` is. An `auth.prefix` is shown only when it is empty or letters and a space (`Bearer `). Still shown to a member as they are: the host, port and path of a `url`, the Service's address in `status.url`, `managed.image`, `auth.secretRef`, `auth.header`, the probe's `port` and a `tcpSocket` or `grpc` probe; so keep a credential out of those too. The failures are the Agent's: 401 `unauthenticated`, 403 `no_role` (a namespace without a Team included, for all but a bootstrap admin, who gets 404 `not_found` there, for the list as for one) and 404 `not_found` for a ToolServer that is not there, or is in another namespace.
 - Reading one Agent (`GET /api/v1/namespaces/<namespace>/agents/<name>`), with an ID token from `cadre auth token` (with logins; without them, `--auth=none`, send no header). The answer is an object, `name`, `ready`, `reason` and `message` as in the list, then `kind`, `generation`, `observedGeneration`, `conditions` and `metadata` (`uid`, `resourceVersion`, `creationTimestamp`, and `labels` and, for a member and up, `annotations`, when there are any), and for a member and up `spec` and `status`. Which of them an answer carries is decided by the caller's role on the Team:
 
   ```sh
