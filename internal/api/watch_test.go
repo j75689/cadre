@@ -459,3 +459,29 @@ func TestWatchTeamDeleted(t *testing.T) {
 		t.Errorf("reconnect without the Team: %d, want 404", code)
 	}
 }
+
+// A viewer whose Team goes away ends no_role, not no_team.
+func TestWatchTeamDeletedViewer(t *testing.T) {
+	store := memory.NewBackend().Open()
+	var mu sync.Mutex
+	roles := []v1alpha1.TeamRole{{Role: v1alpha1.RoleViewer, Subjects: []v1alpha1.RoleSubject{{Kind: v1alpha1.SubjectGroup, Name: "readers"}}}}
+	teams := map[string]*v1alpha1.Team{"team-a": {ObjectMeta: metav1.ObjectMeta{Namespace: "team-a", Name: v1alpha1.TeamName}, Spec: v1alpha1.TeamSpec{Roles: roles}}}
+	e := startRolesWith(t, store, func(d storage.Driver) storage.Driver { return stale{Driver: d, mu: &mu, teams: teams} },
+		&authz.Policy{AdminUsers: []string{"root@example.test"}}, api.WithWatch(api.NewHub(store), fastWatch))
+	eve := e.as("eve@example.test", "readers")
+
+	_, events := watch(t, e.url, eve, "/namespaces/team-a/watch")
+	if ev := next(t, events); ev.kind != "hello" {
+		t.Fatalf("first event %+v, want hello", ev)
+	}
+	mu.Lock()
+	delete(teams, "team-a")
+	mu.Unlock()
+	if ev := next(t, events); ev.kind != "end" || ev.data != `{"reason":"no_role"}` {
+		t.Fatalf("event %+v, want end no_role", ev)
+	}
+	waitClosed(t, events)
+	if code, _ := watch(t, e.url, eve, "/namespaces/team-a/watch"); code != http.StatusForbidden {
+		t.Errorf("reconnect: %d, want 403", code)
+	}
+}
