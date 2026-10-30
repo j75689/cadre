@@ -1,6 +1,7 @@
 package api
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -35,6 +36,10 @@ const (
 // watchWriteTimeout bounds each write to a stream, in place of the server's
 // WriteTimeout, which would end it. A var for tests.
 var watchWriteTimeout = 30 * time.Second
+
+// watchReadTimeout bounds a stream's read of its ?task=, as the request
+// bound would.
+const watchReadTimeout = 30 * time.Second
 
 // Reasons an end event gives.
 const (
@@ -99,6 +104,7 @@ type Hub struct {
 	// pruned: the Notifier reports no deletes, and Cadre deletes no Tasks,
 	// so only a kubectl delete leaves one behind (about 100 B).
 	digests map[storage.Key]uint64
+	runs    runTails
 
 	done      chan struct{}
 	closeOnce sync.Once
@@ -107,9 +113,9 @@ type Hub struct {
 type watcher struct{ events chan watchEvent }
 
 type watchEvent struct {
-	kind string // "task", "config" or "resync"
+	kind string // "task", "config", "run" or "resync"
 	key  string // what a stream coalesces it by
-	data any    // a TaskHint or ConfigHint
+	data any    // a TaskHint, ConfigHint or RunHint
 }
 
 // NewHub returns a hub fed by n; with a nil n it has no task hints, and its
@@ -142,28 +148,40 @@ func (h *Hub) publishTask(t *v1alpha1.Task) {
 		hint.Parent = t.Spec.ParentRef.Name
 	}
 	h.send(t.Namespace, watchEvent{kind: "task", key: "task/" + t.Name, data: hint})
+	if rt := h.runs.tasks[key]; rt != nil {
+		var run string
+		if t.Status.Run != nil {
+			run = t.Status.Run.ID
+		}
+		h.switchRun(key, rt, run)
+	}
 }
 
-// send hands ev to ns's streams, with h.mu held. It never blocks: a stream
-// whose buffer is full loses what it holds and gets one resync instead.
+// send offers ev to ns's streams. Call it with h.mu held.
 func (h *Hub) send(ns string, ev watchEvent) {
 	for w := range h.subs[ns] {
-		select {
-		case w.events <- ev:
-		default:
-			// The stream reads too, so a receive could wait on an
-			// emptied channel: drain without blocking.
-		drain:
-			for {
-				select {
-				case <-w.events:
-				default:
-					break drain
-				}
+		h.offer(w, ev)
+	}
+}
+
+// offer queues ev for w, or, when w's buffer is full, one resync in place
+// of all it holds. Call it with h.mu held.
+func (h *Hub) offer(w *watcher, ev watchEvent) {
+	select {
+	case w.events <- ev:
+	default:
+		// The stream reads too, so a receive could wait on an
+		// emptied channel: drain without blocking.
+	drain:
+		for {
+			select {
+			case <-w.events:
+			default:
+				break drain
 			}
-			// Only publishers send, under h.mu: there is room now.
-			w.events <- watchEvent{kind: "resync"}
 		}
+		// Only publishers send, under h.mu: there is room now.
+		w.events <- watchEvent{kind: "resync"}
 	}
 }
 
@@ -247,8 +265,10 @@ func watchHeaders(w http.ResponseWriter) {
 }
 
 // watchStream serves one stream: hello, then hints as they come, a ping
-// that checks the caller's role again, and end before it closes. ?task= is
-// for run tailing, which is not served yet.
+// that checks the caller's role again, and end before it closes. ?task=
+// names a Task of ns, 404 if there is none (on a HEAD too), whose current
+// run's events are hinted too while the hub tails runs and has room
+// (hello.runs), from the run it has or gets.
 func (s *Server) watchStream(w http.ResponseWriter, r *http.Request) {
 	c := s.watch
 	ns := r.PathValue("ns")
@@ -269,11 +289,36 @@ func (s *Server) watchStream(w http.ResponseWriter, r *http.Request) {
 			fmt.Sprintf("this replica serves %d watch streams already: retry later; the board polls meanwhile", c.MaxStreams))
 		return
 	}
+	if !head {
+		defer c.hub.unsubscribe(ns, sub)
+	}
+	runs := false
+	if name := r.URL.Query().Get("task"); name != "" {
+		key := storage.Key{Namespace: ns, Name: name}
+		if !head {
+			runs = c.hub.tailRun(key, sub)
+			defer c.hub.untailRun(key, sub)
+		}
+		// Bounded as a request is: the stream is not.
+		read, cancel := context.WithTimeout(r.Context(), watchReadTimeout)
+		t, err := s.m.GetTask(read, key)
+		cancel()
+		if err != nil {
+			httpjson.Fail(w, s.log, err)
+			return
+		}
+		if runs {
+			var run string
+			if t.Status.Run != nil {
+				run = t.Status.Run.ID
+			}
+			c.hub.followRun(key, run)
+		}
+	}
 	if head {
 		watchHeaders(w)
 		return
 	}
-	defer c.hub.unsubscribe(ns, sub)
 
 	rc := http.NewResponseController(w)
 	watchHeaders(w)
@@ -289,7 +334,7 @@ func (s *Server) watchStream(w http.ResponseWriter, r *http.Request) {
 		return write("event: %s\ndata: %s\n\n", kind, b)
 	}
 
-	hello := WatchHello{Tasks: c.hub.tasks, Config: c.hub.config, LifetimeSeconds: int(c.Lifetime / time.Second)}
+	hello := WatchHello{Tasks: c.hub.tasks, Config: c.hub.config, Runs: runs, LifetimeSeconds: int(c.Lifetime / time.Second)}
 	if !write("retry: %d\n", watchRetryMillis) || !send("hello", hello) {
 		return
 	}
@@ -324,6 +369,13 @@ func (s *Server) watchStream(w http.ResponseWriter, r *http.Request) {
 				return
 			}
 		case ev := <-sub.events:
+			// A run's hints come at most once a tail interval already.
+			if ev.kind == "run" {
+				if !send("run", ev.data) {
+					return
+				}
+				continue
+			}
 			if ev.kind == "resync" {
 				order, pending, flush = nil, map[string]watchEvent{}, nil
 				if !send("resync", struct{}{}) {
