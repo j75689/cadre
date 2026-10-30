@@ -78,7 +78,8 @@ func WithWatch(h *Hub, c WatchConfig) Option {
 func IsWatch(r *http.Request) bool {
 	rest, ok := strings.CutPrefix(r.URL.Path, Base+"/namespaces/")
 	ns, tail, _ := strings.Cut(rest, "/")
-	return r.Method == http.MethodGet && ok && ns != "" && tail == "watch"
+	get := r.Method == http.MethodGet || r.Method == http.MethodHead // GET serves both
+	return get && ok && ns != "" && tail == "watch"
 }
 
 // Hub hands each watch stream the hints for its namespace. There is one per
