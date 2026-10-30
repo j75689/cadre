@@ -55,6 +55,12 @@ function open(...answers: (() => Promise<Response>)[]) {
 const yaml = async () => (await screen.findByRole("region", { name: "YAML text" })).textContent ?? "";
 
 describe("AgentDetail", () => {
+  it("shows a skeleton while the agent is read", async () => {
+    open(() => new Promise(() => {}));
+    expect(await screen.findByText(/Loading the agent/)).toBeTruthy();
+    expect(screen.queryByRole("heading", { name: "Conditions" })).toBeNull();
+  });
+
   it("heads the page with the name, the kind and the readiness as the server says it", async () => {
     open(() => json(viewer));
     expect(screen.getByRole("heading", { level: 1, name: "bot" })).toBeTruthy();
