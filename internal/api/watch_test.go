@@ -412,9 +412,25 @@ func TestWatchWithoutTeam(t *testing.T) {
 		t.Errorf("as a viewer of another team: %d, want 403", code)
 	}
 
-	url := startPlain(t, api.NewHub(nil), fastWatch)
+	// With --auth=none too, its one slot taken.
+	url := startPlain(t, api.NewHub(nil), c)
+	_, events = watch(t, url, "", "/namespaces/team-a/watch")
+	next(t, events)
 	if code, _ := watch(t, url, "", "/namespaces/team-c/watch"); code != http.StatusNotFound {
 		t.Errorf("with --auth=none: %d, want 404", code)
+	}
+	for _, method := range []string{"GET", "HEAD"} {
+		for path, want := range map[string]int{"/namespaces/team-c/watch": http.StatusNotFound, "/namespaces/team-c/watch?task=x": http.StatusNotFound, "/namespaces/Team-C/watch": http.StatusBadRequest} {
+			req, _ := http.NewRequest(method, url+api.Base+path, nil)
+			res, err := (&http.Client{Transport: &http.Transport{}}).Do(req)
+			if err != nil {
+				t.Fatal(err)
+			}
+			_ = res.Body.Close()
+			if res.StatusCode != want {
+				t.Errorf("--auth=none %s %s: %d, want %d", method, path, res.StatusCode, want)
+			}
+		}
 	}
 }
 
