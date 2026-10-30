@@ -130,6 +130,7 @@ describe("ModelProviderDetail", () => {
 
   it.each([
     ["the user info", "https://(set)@gw.example.test/v1"],
+    ["a query value", "https://gw.example.test/v1?api-key=(set)"],
     ["a fragment", "https://gw.example.test/v1#(set)"],
     ["a URL that does not parse", "(set)"],
   ])("notes a base URL masked in %s", async (_, baseURL) => {
@@ -141,6 +142,12 @@ describe("ModelProviderDetail", () => {
   it("shows an admin the whole base URL, with no note", async () => {
     open(() => json(admin));
     expect(await yaml()).toContain("baseURL: https://u:sk@gw.example.test/v1?api-key=sk\n");
+    expect(screen.queryByText(/hidden from members/)).toBeNull();
+  });
+
+  it("adds no note for a URL-like (set) outside an admin's base URL", async () => {
+    open(() => json({ ...admin, spec: { ...admin.spec, project: "p?x=(set)" } }));
+    expect(await yaml()).toContain("project: p?x=(set)\n");
     expect(screen.queryByText(/hidden from members/)).toBeNull();
   });
 
