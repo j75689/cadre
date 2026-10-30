@@ -51,6 +51,7 @@ chart in the repository has `appVersion` `main`, the images built from main.
 | `server.externalURL` | the Ingress host | where browsers reach cadre-server; required with `oidc` and no Ingress, and when TLS terminates before the Ingress (`https://<host>`) |
 | `runner.serverURL` | `server.publicURL` | where the chart's runner reaches cadre-server |
 | `server.publicURL` | the Service | where runners, the chart's included, reach cadre-server |
+| `server.watchMaxStreams` | 2000 | live-update streams each replica serves at once; one more is answered 503, and that board polls |
 | `workloads.clusterWide` | `false` | bind the workloads ClusterRole everywhere |
 
 ## The session key

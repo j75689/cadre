@@ -72,6 +72,10 @@
             }
           }
         },
+        "watchMaxStreams": {
+          "type": ["integer", "null"],
+          "minimum": 1
+        },
         "resources": {
           "type": "object"
         },

@@ -70,6 +70,7 @@ func run() error {
 		oidcCfg   oidcFlags
 		admins    = flag.String("admin-users", "", "comma-separated usernames who are admin on every team and may create teams, with --auth=oidc")
 		adminGrps = flag.String("admin-groups", "", "comma-separated groups whose members are admin on every team and may create teams, with --auth=oidc")
+		streams   = flag.Int("watch-max-streams", api.DefaultWatchMaxStreams, "how many live-update streams (GET /api/v1/namespaces/{ns}/watch) this replica serves at once; one more is answered 503, and its board polls instead")
 		s3cfg     kubernetes.S3Config
 	)
 	flag.StringVar(&oidcCfg.issuer, "oidc-issuer", "", "the OIDC provider's issuer URL")
@@ -99,6 +100,9 @@ func run() error {
 	s3cfg.AccessKey = os.Getenv("CADRE_S3_ACCESS_KEY")
 	s3cfg.SecretKey = os.Getenv("CADRE_S3_SECRET_KEY")
 	if err := validateTimings(*lease, *heartbeat); err != nil {
+		return err
+	}
+	if err := validateStreams(*streams); err != nil {
 		return err
 	}
 
@@ -191,9 +195,11 @@ func run() error {
 	} else {
 		log.Warn("runners are not authenticated (--runner-auth=none): any client may claim and finish runs")
 	}
+	hub := api.NewHub(store)
 	apiOpts := []api.Option{
 		api.WithAgentAccesses(controller.AgentAccessStore(ctrls.GetClient(), ctrls.GetAPIReader(), ctrls.GetEventRecorder("cadre-server"))),
 		api.WithConfig(ctrls.GetClient()),
+		api.WithWatch(hub, api.WatchConfig{MaxStreams: *streams}),
 	}
 	mux := newMux(m, log, *publicURL, authn, policy, runnerOpts, apiOpts, mcp.WithForwarder(forwarder))
 
@@ -205,6 +211,8 @@ func run() error {
 		WriteTimeout:      mcpRequestTimeout + 5*time.Second,
 		IdleTimeout:       2 * time.Minute,
 	}
+	// Shutdown waits for handlers, and a watch stream's ends only when told.
+	srv.RegisterOnShutdown(hub.Close)
 	loops := make(chan struct{})
 	go func() {
 		defer close(loops)
@@ -358,9 +366,14 @@ const (
 )
 
 // boundRequests gives every request a context that ends after d, or after
-// mcpBound for one that may make a tool call.
+// mcpBound for one that may make a tool call. A watch stream has none: it
+// bounds its own lifetime.
 func boundRequests(next http.Handler, d, mcpBound time.Duration) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if api.IsWatch(r) {
+			next.ServeHTTP(w, r)
+			return
+		}
 		bound := d
 		// The board endpoint has the per-run one's bound, as both are MCP.
 		if r.URL.Path == mcp.Path || r.URL.Path == mcp.BoardPath || api.IsApproval(r) {
@@ -394,6 +407,14 @@ func validateTimings(lease, heartbeat time.Duration) error {
 	}
 	if heartbeat >= lease {
 		return fmt.Errorf("--heartbeat %s must be shorter than --lease %s", heartbeat, lease)
+	}
+	return nil
+}
+
+// validateStreams checks --watch-max-streams.
+func validateStreams(n int) error {
+	if n < 1 {
+		return fmt.Errorf("--watch-max-streams %d: must be at least 1", n)
 	}
 	return nil
 }

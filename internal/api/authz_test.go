@@ -93,7 +93,7 @@ func startRolesWith(t *testing.T, store storage.Driver, wrap func(storage.Driver
 	srv := httptest.NewServer(nil)
 	t.Cleanup(srv.Close)
 	log := slog.New(slog.NewTextHandler(io.Discard, nil))
-	authn, err := auth.NewOIDC(ctx, auth.Config{Issuer: idp.URL, ClientID: oidctest.ClientID, UsernameClaim: "email", GroupsClaim: "groups",
+	authn, err := auth.NewOIDC(ctx, auth.Config{Issuer: idp.URL, ClientID: oidctest.ClientID, ClientSecret: oidctest.ClientSecret, UsernameClaim: "email", GroupsClaim: "groups",
 		PublicURL: srv.URL, SessionKey: []byte(strings.Repeat("k", 32)), Log: log, Agents: agentTokens})
 	if err != nil {
 		t.Fatal(err)

@@ -144,7 +144,15 @@ Runtime-mode backends differ only in who starts the runner process. For the Kube
 
 ### Events
 - Work hints ("run X has a next step") are optional and may be lost or duplicated. Correctness rests on conditional writes alone. The kubernetes driver gets hints for free from informer watches; a message queue is a later latency optimisation. Today they number a task applied with kubectl, and create a run's subtasks, as soon as the watch sees the change; the periodic scan (`--dispatch-interval`) stays as the fallback.
-- UI events are watch events on Task resources and only say "something changed, refetch". Until the API exposes them, the UI polls. `thread.revision` on the Task status makes thread appends visible through the same watch. No Redis, no message queue.
+- UI events are watch events on Task resources and only say "something changed, refetch". `thread.revision` on the Task status makes thread appends visible through the same watch. No Redis, no message queue. The UI still polls; the stream below is what it will use instead.
+- **The watch stream.** `GET /api/v1/namespaces/<namespace>/watch` is a server-sent event stream (`text/event-stream`, `Cache-Control: no-cache`, `X-Accel-Buffering: no`) of hints that the namespace's board changed, for a caller who may read it (`401` without a login, `403` without a role, as every route). A `HEAD` gets the same status and headers and returns at once, holding no stream. Its events carry JSON and no `id`, as they are never replayed:
+  - `hello` first: `{"tasks":true,"config":false,"runs":false,"lifetimeSeconds":300}`, what the stream will carry. `tasks` is false on a store that gives no change notifications (both of today's drivers give them); configuration and run hints are not served yet. A `retry: 3000` comes with it.
+  - `task` `{"name","number","phase","parent"}`: a Task changed in a way the board shows (its phase, priority, title, assignee, labels, waiting reason, number, parent, thread revision or run). A renewed lease is not a change. A hint carries no spec and no thread: read the task again. Changes to one task within 250 ms are one hint.
+  - `resync` `{}`: this stream fell behind (256 hints waiting) and lost what it held: read the board again.
+  - `: ping`, a comment, every 20 seconds. Each ping checks the caller's role again, from the board index; a role taken away ends the stream with `end` `{"reason":"no_role"}`, and the browser's reconnect is a 403.
+  - `end` `{"reason"}` before the server closes the stream: `lifetime` after 300 seconds ±20 %, when the browser reconnects (so an expired session ends at that reconnect, a 401); `shutdown` when the replica stops; `no_role`.
+
+  Hints are lossy, like the driver's: one may be late, merged or lost, a reconnect does not replay what was missed, and a page reads what it shows from the API. The stream is not bound by the 30-second request timeout; each write is given 30 seconds instead. Each replica serves at most `--watch-max-streams` streams at once (default 2000; the chart's `server.watchMaxStreams`), and answers one more with a 503, after which a client polls instead. A proxy in front must not buffer the stream: nginx honours `X-Accel-Buffering: no`.
 
 ## Identity and access
 
