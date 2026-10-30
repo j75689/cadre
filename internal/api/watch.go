@@ -166,23 +166,30 @@ func boardDigest(t *v1alpha1.Task) uint64 {
 	field(string(t.Status.Phase))
 	field(string(t.Spec.Priority))
 	field(t.Spec.Title)
+	// An absent field hashes as empty, so the next one keeps its place.
+	var assignee, waiting, parent, revision, run string
 	if a := t.Spec.Assignee; a != nil {
-		field(string(a.Kind) + "/" + a.Name)
+		assignee = string(a.Kind) + "/" + a.Name
 	}
+	field(assignee)
 	field(strings.Join(t.Spec.Labels, "\x01"))
 	if w := t.Status.Waiting; w != nil {
-		field(string(w.Reason))
+		waiting = string(w.Reason)
 	}
+	field(waiting)
 	field(strconv.FormatInt(t.Status.Number, 10))
 	if p := t.Spec.ParentRef; p != nil {
-		field(p.Name)
+		parent = p.Name
 	}
+	field(parent)
 	if th := t.Status.Thread; th != nil {
-		field(strconv.FormatInt(th.Revision, 10))
+		revision = strconv.FormatInt(th.Revision, 10)
 	}
+	field(revision)
 	if r := t.Status.Run; r != nil {
-		field(r.ID)
+		run = r.ID
 	}
+	field(run)
 	return f.Sum64()
 }
 

@@ -69,3 +69,13 @@ func TestHubOverflowWhileReading(t *testing.T) {
 		}
 	}
 }
+
+// An absent field is not skipped, so two boards that differ do not hash the
+// same.
+func TestBoardDigestAbsentFields(t *testing.T) {
+	assigned := &v1alpha1.Task{Spec: v1alpha1.TaskSpec{Assignee: &v1alpha1.Assignee{Kind: v1alpha1.AssigneeAgent, Name: "x"}}}
+	labelled := &v1alpha1.Task{Spec: v1alpha1.TaskSpec{Labels: []string{"Agent/x"}}, Status: v1alpha1.TaskStatus{Waiting: &v1alpha1.Waiting{}}}
+	if boardDigest(assigned) == boardDigest(labelled) {
+		t.Fatal("an assignee and a label of the same text hash the same")
+	}
+}
