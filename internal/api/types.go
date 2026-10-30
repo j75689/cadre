@@ -87,11 +87,45 @@ type AgentList struct {
 
 // AgentSummary is an Agent and whether it can take work: Ready for its
 // current spec, and if not, why.
-type AgentSummary struct {
+type AgentSummary = ConfigSummary
+
+// ConfigSummary is a configuration resource and whether it can be used:
+// Ready for its current spec, and if not, why.
+type ConfigSummary struct {
 	Name    string `json:"name"`
 	Ready   bool   `json:"ready"`
 	Reason  string `json:"reason,omitempty"`
 	Message string `json:"message,omitempty"`
+}
+
+// ConfigList is a namespace's resources of one configuration kind, by name.
+type ConfigList struct {
+	Items []ConfigSummary `json:"items"`
+}
+
+// ConfigResource is one configuration resource as the caller may see it:
+// a viewer its health and metadata, a member and an admin its spec and
+// status too, a member's with credentials a spec may hold redacted.
+type ConfigResource struct {
+	ConfigSummary
+	Kind               string             `json:"kind"`
+	Generation         int64              `json:"generation"`
+	ObservedGeneration int64              `json:"observedGeneration"`
+	Conditions         []metav1.Condition `json:"conditions"`
+	Metadata           ConfigMeta         `json:"metadata"`
+	Spec               any                `json:"spec,omitempty"`
+	Status             any                `json:"status,omitempty"`
+}
+
+// ConfigMeta is a configuration resource's metadata as the API shows it:
+// never its fields' owners, nor the last spec kubectl applied; annotations
+// for a member and up.
+type ConfigMeta struct {
+	UID               string            `json:"uid"`
+	ResourceVersion   string            `json:"resourceVersion"`
+	CreationTimestamp metav1.Time       `json:"creationTimestamp"`
+	Labels            map[string]string `json:"labels,omitempty"`
+	Annotations       map[string]string `json:"annotations,omitempty"`
 }
 
 // TeamRequest opts a namespace in, or edits its Team: its spec, replaced

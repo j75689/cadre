@@ -128,7 +128,7 @@ func (e *rolesEnv) do(token, method, path, body string) (int, string) {
 }
 
 func TestRoles(t *testing.T) {
-	e := startRoles(t)
+	e := startRolesWith(t, memory.NewBackend().Open(), nil, &authz.Policy{AdminUsers: []string{"Root@Example.test"}, FoldUsernames: true}, configCluster(t))
 	viewer := e.as("eve@example.test", "readers")
 	member := e.as("dana@example.test", "backend", "readers")
 	admin := e.as("lead@example.test")
@@ -144,6 +144,8 @@ func TestRoles(t *testing.T) {
 		{"a viewer lists", viewer, "GET", "/namespaces/team-a/tasks", "", 200, ""},
 		{"a viewer reads the thread", viewer, "GET", "/namespaces/team-a/tasks/x/thread", "", 200, ""},
 		{"a viewer lists agents", viewer, "GET", "/namespaces/team-a/agents", "", 200, ""},
+		{"a viewer reads an agent's health", viewer, "GET", "/namespaces/team-a/agents/writer", "", 200, `"ready":true`},
+		{"a stranger may not read an agent", stranger, "GET", "/namespaces/team-a/agents/writer", "", 403, "no role there"},
 		{"a viewer may not comment", viewer, "POST", "/namespaces/team-a/tasks/x/comments", comment, 403, "you are a viewer"},
 		{"a viewer may not create", viewer, "POST", "/namespaces/team-a/tasks", `{"spec":{"title":"y"}}`, 403, "needs the member role"},
 		{"a viewer may not cancel", viewer, "POST", "/namespaces/team-a/tasks/x/cancel", "{}", 403, ""},
@@ -170,6 +172,13 @@ func TestRoles(t *testing.T) {
 	if _, out := e.do(viewer, "GET", "/namespaces/team-a/tasks/x/thread", ""); !strings.Contains(out, `"name":"dana@example.test"`) {
 		t.Errorf("thread %s", out)
 	}
+	// An Agent's spec is a member's to see.
+	if _, out := e.do(viewer, "GET", "/namespaces/team-a/agents/writer", ""); strings.Contains(out, `"spec"`) {
+		t.Errorf("a viewer reads an agent's spec: %s", out)
+	}
+	if _, out := e.do(member, "GET", "/namespaces/team-a/agents/writer", ""); !strings.Contains(out, `"spec"`) {
+		t.Errorf("a member does not read an agent's spec: %s", out)
+	}
 }
 
 // agentTokens are two agents' tokens: a member of team-a, and a viewer
@@ -192,7 +201,7 @@ func (s staticAgents) Authenticate(_ context.Context, tok string) (*auth.Identit
 // no other; no Team role and no bootstrap admin entry gives it more; it
 // writes as itself; and GET /me says so.
 func TestAgentRoles(t *testing.T) {
-	e := startRolesWith(t, memory.NewBackend().Open(), nil, &authz.Policy{AdminUsers: []string{"agent:team-a/root"}})
+	e := startRolesWith(t, memory.NewBackend().Open(), nil, &authz.Policy{AdminUsers: []string{"agent:team-a/root"}}, configCluster(t))
 	comment := `{"body":"hello"}`
 	for _, c := range []struct {
 		name, token, method, path, body string
@@ -214,6 +223,13 @@ func TestAgentRoles(t *testing.T) {
 	}
 	if _, out := e.do("bot.member", "GET", "/namespaces/team-a/tasks/x/thread", ""); !strings.Contains(out, `"name":"agent:team-a/bot"`) {
 		t.Errorf("thread %s", out)
+	}
+	// A viewer AgentAccess reads an Agent's health, not its spec.
+	if code, out := e.do("root.agent", "GET", "/namespaces/team-a/agents/writer", ""); code != 200 || strings.Contains(out, `"spec"`) {
+		t.Errorf("a viewer agent reads an agent: %d %s", code, out)
+	}
+	if code, out := e.do("bot.member", "GET", "/namespaces/team-a/agents/writer", ""); code != 200 || !strings.Contains(out, `"spec"`) {
+		t.Errorf("a member agent reads an agent: %d %s", code, out)
 	}
 	code, out := e.do("root.agent", "GET", "/me", "")
 	var me auth.Me
