@@ -37,6 +37,7 @@ import (
 	"github.com/j75689/cadre/internal/manager"
 	"github.com/j75689/cadre/internal/mcp"
 	"github.com/j75689/cadre/internal/runner"
+	"github.com/j75689/cadre/internal/storage"
 	"github.com/j75689/cadre/internal/storage/kubernetes"
 	"github.com/j75689/cadre/internal/web"
 )
@@ -195,8 +196,7 @@ func run() error {
 	} else {
 		log.Warn("runners are not authenticated (--runner-auth=none): any client may claim and finish runs")
 	}
-	hub := api.NewHub(store)
-	hub.TailRuns(store)
+	hub := newHub(store)
 	apiOpts := []api.Option{
 		api.WithAgentAccesses(controller.AgentAccessStore(ctrls.GetClient(), ctrls.GetAPIReader(), ctrls.GetEventRecorder("cadre-server"))),
 		api.WithConfig(ctrls.GetClient()),
@@ -384,6 +384,17 @@ func boundRequests(next http.Handler, d, mcpBound time.Duration) http.Handler {
 		defer cancel()
 		next.ServeHTTP(w, r.WithContext(ctx))
 	})
+}
+
+// newHub returns the hub of the server's watch streams, with task hints
+// from store and run hints from its log.
+func newHub(store interface {
+	storage.Notifier
+	storage.Log
+}) *api.Hub {
+	hub := api.NewHub(store)
+	hub.TailRuns(store)
+	return hub
 }
 
 // warmConfig starts c's informers for the configuration kinds the API
