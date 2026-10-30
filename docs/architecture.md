@@ -55,6 +55,34 @@ Cadre is not a SaaS, not a workflow engine, not an LLM gateway and not a sandbox
   - **Connecting an agent.** `cadre auth token` prints the token `cadre login` stored, while it is good for more than a minute (refreshing it first, where the login has a refresh token), for example: `claude mcp add --transport http cadre https://cadre.example.test/mcp --header "Authorization: Bearer $(cadre auth token)"`.
   - **The limit.** An ID token lasts hours at most, so this suits an agent someone runs themselves and logs in for; an unattended agent needs a token of its own (#93).
 - Stateless and horizontally scalable. Every state change is delegated to the Task Manager.
+- Reading the ModelProviders (`GET /api/v1/namespaces/<namespace>/modelproviders` and `…/modelproviders/<name>`), like an Agent, below (`cadre auth token`, or no header under `--auth=none`). The list is `{"items":[…]}`, sorted by name, each item `name`, `ready` and, when it is not Ready, `reason` and `message`; the answer for one is an Agent's, with `"kind":"ModelProvider"`. It is decided by the caller's role on the Team:
+
+  ```sh
+  curl -s -H "Authorization: Bearer $(cadre auth token)" \
+    "$CADRE_SERVER/api/v1/namespaces/demo/modelproviders"
+  curl -s -H "Authorization: Bearer $(cadre auth token)" \
+    "$CADRE_SERVER/api/v1/namespaces/demo/modelproviders/gateway"
+  ```
+
+  The list (`bad` and `gateway` are Ready, `claude` is not yet):
+
+  ```json
+  {"items":[{"name":"bad","ready":true},{"name":"claude","ready":false,"reason":"SecretNotFound","message":"Secret anthropic does not exist"},{"name":"gateway","ready":true}]}
+  ```
+
+  A viewer, for `claude` once its Secret is there:
+
+  ```json
+  {"name":"claude","ready":true,"kind":"ModelProvider","generation":2,"observedGeneration":2,"conditions":[{"type":"Ready","status":"True","observedGeneration":2,"lastTransitionTime":"2026-10-30T07:56:04Z","reason":"SecretFound","message":""}],"metadata":{"uid":"ee494702-c726-4f01-adf1-d8197d5934d2","resourceVersion":"297","creationTimestamp":"2026-10-30T07:55:15Z","labels":{"tier":"gold"}}}
+  ```
+
+  A member gets the same, and `metadata.annotations`, `spec` and `status` besides:
+
+  ```json
+  {"…":"…","metadata":{"…":"…","annotations":{"owner":"platform"}},"spec":{"type":"anthropic","model":"claude-opus-5-5","auth":{"secretRef":{"name":"anthropic","key":"apiKey"}}},"status":{"observedGeneration":2,"conditions":[{"type":"Ready","status":"True","…":"…"}]}}
+  ```
+
+  Only `spec.baseURL` is masked, and only for a member. For `https://svc:s3cret@gw.example.test:8443/v1?api-key=abc&debug#frag` a member reads `https://(set)@gw.example.test:8443/v1?api-key=(set)&(set)#(set)`: the user info, each query value, a query part with no `=` and the fragment are `(set)`, the scheme, host, port, path and query keys are not. A `baseURL` that does not parse as a URL (`https://gw.example.test/%zz?k=v`) is `(set)` whole. An admin gets the real value. `auth` is a reference to a Secret, not a credential, and every member sees it as it is. The failures are an Agent's: 401 `unauthenticated`, 403 `no_role` (a namespace without a Team included, for all but a bootstrap admin, who gets 404 `not_found` there, for the list as for one) and 404 `not_found` for a ModelProvider that is not there.
 - Reading one Agent (`GET /api/v1/namespaces/<namespace>/agents/<name>`), with an ID token from `cadre auth token` (with logins; without them, `--auth=none`, send no header). The answer is an object, `name`, `ready`, `reason` and `message` as in the list, then `kind`, `generation`, `observedGeneration`, `conditions` and `metadata` (`uid`, `resourceVersion`, `creationTimestamp`, and `labels` and, for a member and up, `annotations`, when there are any), and for a member and up `spec` and `status`. Which of them an answer carries is decided by the caller's role on the Team:
 
   ```sh
