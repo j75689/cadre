@@ -12,8 +12,15 @@ import { Time } from "./Time";
 // credential in (owner decisions 1 and 1b in internal/api/config.go).
 export const masked = "(set)";
 
-// hasMasked says whether a value holds one shown as masked.
-const hasMasked = (v: unknown): boolean => v === masked || (typeof v === "object" && v !== null && Object.values(v).some(hasMasked));
+// maskedURL matches a URL with parts shown as masked: its user info, a
+// query value or a valueless query part, its fragment (maskURL in
+// internal/api/config.go).
+const maskedURL = /:\/\/\(set\)@|[?&]([^&#=]*=)?\(set\)(?=[&#]|$)|#\(set\)$/;
+
+// hasMasked says whether a value holds one shown as masked, whole or as
+// parts of a URL.
+const hasMasked = (v: unknown): boolean =>
+  v === masked || (typeof v === "string" && maskedURL.test(v)) || (typeof v === "object" && v !== null && Object.values(v).some(hasMasked));
 
 // ConditionsCard is the resource's conditions, each with the generation
 // it is about: one older than the resource's is about a spec since changed.

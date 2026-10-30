@@ -1,10 +1,18 @@
+import { Link, useParams } from "react-router";
 import { getAgent } from "./api";
 import { ConfigDetail } from "./ConfigDetail";
+import { modelProviderLink } from "./links";
 
-// Ref is a used resource's name. The ModelProvider and ToolServer pages
-// are not built yet: once they are, it links to them here.
-function Ref({ name }: { kind: "ModelProvider" | "ToolServer"; name: string }) {
-  return <code>{name}</code>;
+// Ref is a used resource's name, a link to its page. The ToolServer page
+// is not built yet: once it is, it links to it here.
+function Ref({ kind, name }: { kind: "ModelProvider" | "ToolServer"; name: string }) {
+  const { ns = "" } = useParams();
+  if (kind === "ToolServer") return <code>{name}</code>;
+  return (
+    <Link to={modelProviderLink(ns, name)}>
+      <code>{name}</code>
+    </Link>
+  );
 }
 
 // UsesCard is what the Agent's spec names: its ModelProvider and its
