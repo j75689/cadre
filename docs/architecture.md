@@ -55,6 +55,27 @@ Cadre is not a SaaS, not a workflow engine, not an LLM gateway and not a sandbox
   - **Connecting an agent.** `cadre auth token` prints the token `cadre login` stored, while it is good for more than a minute (refreshing it first, where the login has a refresh token), for example: `claude mcp add --transport http cadre https://cadre.example.test/mcp --header "Authorization: Bearer $(cadre auth token)"`.
   - **The limit.** An ID token lasts hours at most, so this suits an agent someone runs themselves and logs in for; an unattended agent needs a token of its own (#93).
 - Stateless and horizontally scalable. Every state change is delegated to the Task Manager.
+- Reading one Agent (`GET /api/v1/namespaces/<namespace>/agents/<name>`), with an ID token from `cadre auth token` (with logins; without them, `--auth=none`, send no header). The answer is an object, `name`, `ready`, `reason` and `message` as in the list, then `kind`, `generation`, `observedGeneration`, `conditions` and `metadata` (`uid`, `resourceVersion`, `creationTimestamp`, and `labels` and, for a member and up, `annotations`, when there are any), and for a member and up `spec` and `status`. Which of them an answer carries is decided by the caller's role on the Team:
+
+  ```sh
+  curl -s -H "Authorization: Bearer $(cadre auth token)" \
+    "$CADRE_SERVER/api/v1/namespaces/demo/agents/writer"
+  ```
+
+  A viewer (an Agent that is not Ready, as the list shows):
+
+  ```json
+  {"name":"writer","ready":false,"reason":"ModelProviderNotFound","message":"ModelProvider claude does not exist","kind":"Agent","generation":1,"observedGeneration":1,"conditions":[{"type":"Ready","status":"False","observedGeneration":1,"lastTransitionTime":"2026-10-30T00:33:26Z","reason":"ModelProviderNotFound","message":"ModelProvider claude does not exist"}],"metadata":{"uid":"e0ca9698-dc16-45a5-9bef-291fad590b36","resourceVersion":"261","creationTimestamp":"2026-10-30T00:33:23Z","labels":{"tier":"gold"}}}
+  ```
+
+  A member gets the same, and `metadata.annotations`, `spec` and `status` besides:
+
+  ```json
+  {"…":"…","metadata":{"…":"…","labels":{"tier":"gold"},"annotations":{"owner":"platform"}},"spec":{"description":"writes things","modelRef":"claude","effort":"high","runtime":{"type":"builtin"}},"status":{"observedGeneration":1,"conditions":[{"type":"Ready","status":"False","…":"…"}]}}
+  ```
+
+  For an Agent with a job template, a member sees each container's and init container's env `value`, `command` and `args` as `(set)`: `"env":[{"name":"GH_TOKEN","value":"(set)"},{"name":"FROM_SECRET","valueFrom":{"secretKeyRef":{"name":"gh","key":"token"}}}]`, `"command":["(set)","(set)"]`. An admin gets the real values. Only those fields are masked: `envFrom`, probes' and lifecycle hooks' commands, and the rest of the spec are shown to a member as they are, so keep a credential out of them too. The failures are the API's usual: 401 `unauthenticated` without a token, 403 `no_role` for a caller with no role on the Team (a namespace without a Team included, for all but a bootstrap admin, who gets 404 `not_found`), and 404 `not_found` for an Agent that is not there.
+- Upgrading to a cadre-server that serves it: nothing to apply. The route reads the `agents`, `modelproviders`, `toolservers`, `schedules`, `notifiers` and `runners` that cadre-server's ClusterRole already allows (`get`, `list`, `watch`), and adds no flag, value or CRD change. cadre-server starts the informers for those six kinds at boot, so a replica that does not lead answers too. What changes is who reads what: a member can now read the spec of every Agent in the team's namespace, with the masking above. Before upgrading, move any credential an Agent's spec holds into a Secret, and refer to it with `valueFrom`.
 
 ### Task Manager
 - The only place that changes task state: claim, lease, finish, hand-off, wait, approve.
