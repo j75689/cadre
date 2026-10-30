@@ -178,3 +178,27 @@ type AgentAccessToken struct {
 type TeamList struct {
 	Items []v1alpha1.Team `json:"items"`
 }
+
+// WatchHello opens a watch stream: which hints it carries, and how long it
+// stays open before the browser reconnects.
+type WatchHello struct {
+	Tasks           bool `json:"tasks"`
+	Config          bool `json:"config"`
+	Runs            bool `json:"runs"`
+	LifetimeSeconds int  `json:"lifetimeSeconds"`
+}
+
+// TaskHint says a Task changed in a way the board shows: read it again. It
+// carries no spec and no thread.
+type TaskHint struct {
+	Name   string         `json:"name"`
+	Number int64          `json:"number"`
+	Phase  v1alpha1.Phase `json:"phase"`
+	Parent string         `json:"parent,omitempty"`
+}
+
+// WatchEnd closes a watch stream, with one of EndLifetime, EndShutdown or
+// EndNoRole.
+type WatchEnd struct {
+	Reason string `json:"reason"`
+}
