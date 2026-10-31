@@ -167,6 +167,25 @@ The board's controls replace the history entry, so they do not flood Back, and a
     - **Uses**: the ModelProvider (`spec.modelRef`), a link to its page (`modelProviderLink(ns, name)`), and the ToolServers (`spec.toolRefs`), as names until their page exists (`Ref` in `AgentDetail.tsx` is where they become links). A viewer, who gets no spec, has no Uses card but "The spec and status are shown to the team's members and admins."
     - **Metadata**: created, generation and observed generation, labels, annotations when the answer has them (members and admins), uid and resource version.
     - **YAML**: the resource as a manifest, printed as YAML (`toYAML` in `yaml.ts`, no dependency): `apiVersion` (`cadre.dev/v1alpha1`, the one `apiVersion` constant in `ui/Config.tsx`, matching `GroupVersion` in `api/v1alpha1`), `kind`, `metadata` with the name, the namespace (the page's), and the labels and annotations as served, then `spec`. It has none of the fields the server sets (uid, resource version, creation time, `managedFields`, `status`), so a whole one applies with `kubectl apply -f`. It is in a focusable `pre` named "YAML text" that scrolls both ways. The `status`, when the answer has one, is shown under it as YAML in a region named "Status", marked "Not copied". Copy uses `navigator.clipboard.writeText`, then "Copied" in a `role="status"`; without a clipboard the text is selected and the status says "Press Ctrl+C to copy it." The button reads "Copy manifest" only when the copy applies as is. Otherwise it reads "Copy", with a note beside it (its `aria-describedby`): "No spec; not a manifest to apply." for a viewer, and "Contains hidden values; not applyable as is." when a value is masked, since applying `(set)` would overwrite the real value. Values a member is shown masked stay `(set)` as served; when the YAML holds one, whole, or a URL the server masks holds one as its user info, a query value or its fragment (`maskURL` in `internal/api/config.go`: a ModelProvider's `spec.baseURL`, a ToolServer's `spec.url`, `spec.managed.path` and `spec.managed.readinessProbe.httpGet.path`; the `maskedURLs` table in `ui/Config.tsx`), the note shows, and so does "Values shown as `(set)` are set but hidden from members; admins see them." A `(set)` elsewhere in a text, even one that looks like a masked URL, is an admin's as written and adds no note.
+  - To apply an Agent from its page (as an admin, everyone under `--auth=none`): open `/t/<ns>/agents/<name>`, press **Copy manifest**, then paste into `kubectl apply -f -` (end the input with Ctrl+D), or into `kubectl apply --dry-run=server -f -` first to see what the API server would do. Pasted from an Agent `bot` in `demo`, the text is:
+
+    ```yaml
+    apiVersion: cadre.dev/v1alpha1
+    kind: Agent
+    metadata:
+      name: bot
+      namespace: demo
+      labels:
+        x: "y"
+    spec:
+      description: "on"
+      modelRef: claude
+      effort: high
+      runtime:
+        type: builtin
+    ```
+
+    A member's button reads "Copy" when the spec holds a `(set)`, and a viewer's always (no spec): the copy is made, but it is not to be applied. Nothing is written by the page itself; GitOps still owns the resource.
   - An Agent that is not there (a 404 with the code `not_found`) reads "No agent named *name* in this team." with a link to All agents. A failed read shows the banner with Retry; a 403 (`no_role`) shows it without Retry.
   - What uses the Agent (the Schedules that target it) is not shown yet: it needs the Schedule API.
   - The page is `ConfigDetail.tsx`, any kind's; the Agent adds its Uses card. The list is `ConfigList.tsx`, which the Agents page fills with its Tasks column.
