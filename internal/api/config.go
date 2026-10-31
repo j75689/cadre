@@ -122,13 +122,17 @@ var configKinds = []configKind{{
 		}
 		spec := n.Spec.DeepCopy()
 		if wh := spec.Webhook; wh != nil {
-			wh.URL = maskURL(wh.URL)
+			wh.URL = maskWebhookURL(wh.URL)
 			maskValues(wh.Headers)
 		}
 		if ts := spec.ToolServer; ts != nil {
 			maskValues(ts.Arguments)
 		}
-		return *spec, n.Status
+		status := n.Status.DeepCopy()
+		if e := status.LastError; e != nil { // its message may quote the URL
+			e.Message = set
+		}
+		return *spec, *status
 	},
 }}
 
@@ -181,6 +185,20 @@ func maskValues(m map[string]string) {
 	for k := range m {
 		m[k] = set
 	}
+}
+
+// maskWebhookURL masks a webhook URL as maskURL does, and its path too, as
+// a chat service's holds its token (https://hooks.slack.com/services/...):
+// only its scheme, host and port are shown. A path of "/" holds none.
+func maskWebhookURL(u string) string {
+	parsed, err := url.Parse(u)
+	if err != nil {
+		return set
+	}
+	if p := parsed.EscapedPath(); p != "" && p != "/" {
+		parsed.Path, parsed.RawPath = "/"+set, "/"+set // so its parentheses are not escaped
+	}
+	return maskURL(parsed.String())
 }
 
 // maskServiceURL masks a managed server's URL, its Service's address then

@@ -133,6 +133,20 @@ func notifiers() []client.Object {
 	return []client.Object{hook, caller, badhook, distant}
 }
 
+// slackURL holds its token in its path, as Slack's and Discord's do.
+const slackURL = "https://hooks.slack.com/services/T0000/B0000/XXSECRETXX"
+
+// webhooks are slack, whose last delivery failed with an error quoting its
+// URL; rooted, on a port with a path of "/"; and bare, with no path.
+func webhooks() []client.Object {
+	webhook := func(name, url string) *v1alpha1.Notifier {
+		return &v1alpha1.Notifier{ObjectMeta: metav1.ObjectMeta{Namespace: "team-a", Name: name}, Spec: v1alpha1.NotifierSpec{On: []v1alpha1.NotifyEvent{v1alpha1.NotifyDone}, Webhook: &v1alpha1.Webhook{URL: url}}}
+	}
+	slack := webhook("slack", slackURL)
+	slack.Status.LastError = &v1alpha1.DeliveryError{Message: `Post "` + slackURL + `": context deadline exceeded`, At: metav1.Time{Time: time.Date(2026, 10, 31, 9, 0, 0, 0, time.UTC)}}
+	return []client.Object{slack, webhook("rooted", "https://hooks.example.test:8443/?k=nf_literal_root"), webhook("bare", "https://hooks.example.test:8443")}
+}
+
 // toolServers are remote, an external ToolServer with a credential in its
 // URL and an empty auth prefix, as kubectl apply leaves it; prober and
 // execer, managed ones with some in their path and readiness probes, execer
@@ -892,7 +906,7 @@ func TestNotifierMaskedByRole(t *testing.T) {
 		masked   []string
 	}{
 		{"hook", []string{"nf_literal_query", "nf_literal_bare", "nf_literal_fragment", "nf_literal_header", "nf_literal_tenant"}, []string{
-			`"url":"https://hooks.example.test/notify?token=(set)\u0026(set)#(set)"`, `"headers":{"X-Api-Key":"(set)","X-Tenant":"(set)"}`,
+			`"url":"https://hooks.example.test/(set)?token=(set)\u0026(set)#(set)"`, `"headers":{"X-Api-Key":"(set)","X-Tenant":"(set)"}`,
 		}},
 		{"caller", []string{"nf_literal_channel", "nf_literal_arg"}, []string{`"arguments":{"channel":"(set)","token":"(set)"}`}},
 		{"badhook", []string{"nf_literal_bad"}, []string{`"url":"(set)"`}},
@@ -923,6 +937,54 @@ func TestNotifierMaskedByRole(t *testing.T) {
 	}
 }
 
+// A member sees a webhook URL's scheme, host and port, not its path, and
+// that the last delivery failed, not the error, which may quote the URL; an
+// admin sees them.
+func TestNotifierWebhookPathMaskedByRole(t *testing.T) {
+	scheme := runtime.NewScheme()
+	if err := v1alpha1.AddToScheme(scheme); err != nil {
+		t.Fatal(err)
+	}
+	get := startConfig(t, api.WithAccess(auth.ModeOIDC, &authz.Policy{FoldUsernames: true}),
+		api.WithConfig(fake.NewClientBuilder().WithScheme(scheme).WithObjects(webhooks()...).Build()))
+	for _, nf := range []struct {
+		name   string
+		admin  []string
+		member []string
+	}{
+		{"slack", []string{`"url":"` + slackURL + `"`, `"message":"Post \"` + slackURL + `\": context deadline exceeded"`}, []string{
+			`"url":"https://hooks.slack.com/(set)"`, `"lastError":{"message":"(set)","at":"2026-10-31T09:00:00Z"}`,
+		}},
+		{"rooted", []string{`"url":"https://hooks.example.test:8443/?k=nf_literal_root"`}, []string{`"url":"https://hooks.example.test:8443/?k=(set)"`}},
+		{"bare", []string{`"url":"https://hooks.example.test:8443"`}, []string{`"url":"https://hooks.example.test:8443"`}},
+	} {
+		for _, c := range []struct {
+			name, user, groups string
+			want               []string
+		}{
+			{"a member", "dana@example.test", "backend", nf.member},
+			{"a member AgentAccess", "agentaccess/bot", "member", nf.member},
+			{"an admin", "lead@example.test", "", nf.admin},
+		} {
+			code, body := get(c.user, c.groups, "/namespaces/team-a/notifiers/"+nf.name)
+			if code != 200 {
+				t.Fatalf("%s, %s: %d %s", nf.name, c.name, code, body)
+			}
+			for _, w := range c.want {
+				if !strings.Contains(body, w) {
+					t.Errorf("%s, %s: no %s: %s", nf.name, c.name, w, body)
+				}
+			}
+			if c.user != "lead@example.test" && (strings.Contains(body, "XXSECRETXX") || strings.Contains(body, "nf_literal")) {
+				t.Errorf("%s, %s: a literal shown: %s", nf.name, c.name, body)
+			}
+			if nf.name != "slack" && strings.Contains(body, "lastError") {
+				t.Errorf("%s, %s: a lastError with none: %s", nf.name, c.name, body)
+			}
+		}
+	}
+}
+
 func TestNotifierMaskLeavesTheCache(t *testing.T) {
 	nfs := notifiers()
 	for _, c := range []struct {
@@ -942,6 +1004,14 @@ func TestNotifierMaskLeavesTheCache(t *testing.T) {
 				t.Errorf("an admin after a member, %s: %q gone: %d %s", c.nf.Name, l, code, body)
 			}
 		}
+	}
+	slack := webhooks()[0].(*v1alpha1.Notifier)
+	get := startConfig(t, api.WithAccess(auth.ModeOIDC, &authz.Policy{FoldUsernames: true}), api.WithConfig(shared{nf: slack}))
+	if code, body := get("dana@example.test", "backend", "/namespaces/team-a/notifiers/slack"); code != 200 || strings.Contains(body, "XXSECRETXX") {
+		t.Fatalf("a member, slack: %d %s", code, body)
+	}
+	if code, body := get("lead@example.test", "", "/namespaces/team-a/notifiers/slack"); code != 200 || strings.Count(body, "XXSECRETXX") != 2 {
+		t.Errorf("an admin after a member, slack: its URL gone from the spec or lastError: %d %s", code, body)
 	}
 }
 
