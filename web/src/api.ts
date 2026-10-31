@@ -328,6 +328,12 @@ export const listModelProviders = (ns: string, signal?: AbortSignal) =>
 export const getModelProvider = (ns: string, name: string, signal?: AbortSignal) =>
   get<ConfigResource>(`/namespaces/${encodeURIComponent(ns)}/modelproviders/${encodeURIComponent(name)}`, signal);
 
+export const listToolServers = (ns: string, signal?: AbortSignal) =>
+  get<{ items: AgentSummary[] }>(`/namespaces/${encodeURIComponent(ns)}/toolservers`, signal);
+
+export const getToolServer = (ns: string, name: string, signal?: AbortSignal) =>
+  get<ConfigResource>(`/namespaces/${encodeURIComponent(ns)}/toolservers/${encodeURIComponent(name)}`, signal);
+
 export const getTeam = (ns: string, signal?: AbortSignal) => get<Team>(`/namespaces/${encodeURIComponent(ns)}/team`, signal);
 
 // putTeam replaces a Team's spec, made from the Team at resourceVersion;

@@ -3,7 +3,7 @@
 **A self-hosted, cloud-native platform for humans and AI agents to work together.**
 Declare agents, models and tools as Kubernetes CRDs. Run the work on a board. Keep every credential inside the cluster.
 
-> Status: M0, M1 and M2 complete (October 2026). Agents, models and tool servers are CRDs; `cadre-runner` runs builtin agents on Claude or any OpenAI-compatible endpoint, a step at a time by default, so any worker continues a run; runner agents' work can run in Kubernetes Jobs; Cadre can run a ToolServer itself; runs reach their tools through a per-run MCP endpoint; runners authenticate with ServiceAccount tokens. cadre-server serves the web console: the board (also as a list), task pages with live runs, Agents, Model providers, and the team's Settings with its agent access ([Web UI](#web-ui)). See [Roadmap](#roadmap).
+> Status: M0, M1 and M2 complete (October 2026). Agents, models and tool servers are CRDs; `cadre-runner` runs builtin agents on Claude or any OpenAI-compatible endpoint, a step at a time by default, so any worker continues a run; runner agents' work can run in Kubernetes Jobs; Cadre can run a ToolServer itself; runs reach their tools through a per-run MCP endpoint; runners authenticate with ServiceAccount tokens. cadre-server serves the web console: the board (also as a list), task pages with live runs, Agents, Model providers, Tool servers, and the team's Settings with its agent access ([Web UI](#web-ui)). See [Roadmap](#roadmap).
 
 ## What it is
 
@@ -44,7 +44,7 @@ Not a SaaS. Not a workflow engine. Not an LLM gateway. Not a sandbox. Cadre inte
 
 ## Web UI
 
-cadre-server serves the web console at `/`: **Teams**, then a team's **Board** (its columns, or one sortable table under **List**), task pages with their threads, actions and live runs, **New task**, **Agents** (each Agent's name opens its page: conditions, what it uses, its metadata and its manifest to copy), **Model providers** (each with its page, read-only: GitOps owns them), and **Settings**: the **Team** and, with logins, **Agent access** for its admins. Page by page: [docs/web-ui.md](docs/web-ui.md#pages). The web UI is built into cadre-server (`make ui` before `make build`; the image carries it). Developing it: [web/README.md](web/README.md).
+cadre-server serves the web console at `/`: **Teams**, then a team's **Board** (its columns, or one sortable table under **List**), task pages with their threads, actions and live runs, **New task**, **Agents** (each Agent's name opens its page: conditions, what it uses, its metadata and its manifest to copy), **Model providers** and **Tool servers** (each with its page, read-only: GitOps owns them), and **Settings**: the **Team** and, with logins, **Agent access** for its admins. Page by page: [docs/web-ui.md](docs/web-ui.md#pages). The web UI is built into cadre-server (`make ui` before `make build`; the image carries it). Developing it: [web/README.md](web/README.md).
 
 ### Keyboard shortcuts
 

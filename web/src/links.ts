@@ -32,6 +32,9 @@ export const agentLink = (ns: string, name: string) => `${teamPath(ns)}/agents/$
 // modelProviderLink is a ModelProvider's page.
 export const modelProviderLink = (ns: string, name: string) => `${teamPath(ns)}/modelproviders/${encodeURIComponent(name)}`;
 
+// toolServerLink is a ToolServer's page.
+export const toolServerLink = (ns: string, name: string) => `${teamPath(ns)}/toolservers/${encodeURIComponent(name)}`;
+
 // taskLink is a task's page, opened at one of its runs when run is set.
 export function taskLink(ns: string, name: string, run?: string): string {
   return withQuery(`${teamPath(ns)}/tasks/${encodeURIComponent(name)}`, [[params.run, run]]);
