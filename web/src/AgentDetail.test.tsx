@@ -135,6 +135,12 @@ describe("AgentDetail", () => {
     expect(screen.queryByText(/hidden from members/)).toBeNull();
   });
 
+  it("adds no note for a URL in an admin's text that looks masked", async () => {
+    open(() => json({ ...admin, spec: { instructions: "Reply with the form at https://forms.example.test/?status=(set)" } }));
+    expect(await yaml()).toContain("https://forms.example.test/?status=(set)");
+    expect(screen.queryByText(/hidden from members/)).toBeNull();
+  });
+
   it("copies the YAML", async () => {
     const writeText = vi.fn(() => Promise.resolve());
     vi.stubGlobal("navigator", { ...navigator, clipboard: { writeText } });
