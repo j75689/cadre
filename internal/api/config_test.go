@@ -27,8 +27,8 @@ import (
 	"github.com/j75689/cadre/internal/storage/memory"
 )
 
-// configCluster is a cluster's Agents, ModelProviders and ToolServers as
-// the controllers' cache holds them: writer and claude as kubectl apply
+// configCluster is a cluster's Agents, ModelProviders, ToolServers and
+// Schedules as the controllers' cache holds them: writer and claude as kubectl apply
 // leaves them, reviewer, gpt and execer edited since they were checked,
 // gateway and remote with a credential in their URL, prober with some in
 // its path and readiness probe, and elsewhere in team-b.
@@ -79,7 +79,27 @@ func configCluster(t *testing.T) api.Option {
 	nohost := provider("team-a", "nohost", v1alpha1.ModelProviderSpec{Type: v1alpha1.ProviderOpenAI, Model: "gpt", Auth: key, BaseURL: "https://u:sk_literal_nohost@"})
 	vertex := provider("team-b", "vertex", v1alpha1.ModelProviderSpec{Type: v1alpha1.ProviderVertex, Model: "gemini", WorkloadIdentity: true, Project: "p", Location: "us-east5"})
 	return api.WithConfig(fake.NewClientBuilder().WithScheme(scheme).WithObjects(writer, reviewer, elsewhere, jobber, claude, gpt, gateway, fragment, badurl, nohost, vertex).
-		WithObjects(toolServers()...).Build())
+		WithObjects(toolServers()...).WithObjects(schedules()...).Build())
+}
+
+// schedules are daily, as kubectl apply leaves it, nightly, edited since it
+// was checked, and yonder in team-b.
+func schedules() []client.Object {
+	schedule := func(ns, name string, spec v1alpha1.ScheduleSpec) *v1alpha1.Schedule {
+		s := &v1alpha1.Schedule{ObjectMeta: metav1.ObjectMeta{Namespace: ns, Name: name, Generation: 1}, Spec: spec}
+		s.Status.ObservedGeneration = 1
+		s.Status.Conditions = []metav1.Condition{{Type: v1alpha1.ConditionReady, Status: metav1.ConditionTrue, ObservedGeneration: 1, Reason: "Scheduled"}}
+		return s
+	}
+	daily := schedule("team-a", "daily", v1alpha1.ScheduleSpec{Cron: "@daily", Task: v1alpha1.TaskSpec{Title: "Today's thread", Description: "post the daily thread"}})
+	daily.Status.LastTask = "daily-202610310000"
+	daily.Labels = map[string]string{"tier": "one"}
+	daily.Annotations = map[string]string{"cadre.dev/owner": "ops-team", "kubectl.kubernetes.io/last-applied-configuration": `{"spec":{"cron":"@daily"}}`}
+	daily.ManagedFields = []metav1.ManagedFieldsEntry{{Manager: "kubectl-client-side-apply", Operation: metav1.ManagedFieldsOperationUpdate, APIVersion: "cadre.dev/v1alpha1", FieldsType: "FieldsV1", FieldsV1: metav1.NewFieldsV1(`{"f:spec":{"f:cron":{}}}`)}}
+	nightly := schedule("team-a", "nightly", v1alpha1.ScheduleSpec{Cron: "0 2 * * *", Task: v1alpha1.TaskSpec{Title: "Nightly sweep"}})
+	nightly.Generation = 2
+	yonder := schedule("team-b", "yonder", v1alpha1.ScheduleSpec{Cron: "@weekly", Task: v1alpha1.TaskSpec{Title: "Weekly"}})
+	return []client.Object{nightly, daily, yonder}
 }
 
 // toolServers are remote, an external ToolServer with a credential in its
@@ -554,6 +574,124 @@ func TestToolServerMaskedByRole(t *testing.T) {
 	}
 	if code, body := get("dana@example.test", "backend", "/namespaces/team-a/toolservers/grpc"); code != 200 || !strings.Contains(body, `"grpc":{"port":8080,"service":"mcp.health"}`) || !strings.Contains(body, `"prefix":"Bearer "`) {
 		t.Errorf("a member, a gRPC probe and a Bearer prefix: %d %s", code, body)
+	}
+}
+
+func TestListSchedules(t *testing.T) {
+	get := startConfig(t, configCluster(t))
+	code, body := get("", "", "/namespaces/team-a/schedules")
+	var got api.ConfigList
+	if err := json.Unmarshal([]byte(body), &got); err != nil || code != 200 {
+		t.Fatalf("%d %s", code, body)
+	}
+	want := []api.ConfigSummary{
+		{Name: "daily", Ready: true},
+		{Name: "nightly", Reason: "Pending", Message: "its current spec has not been checked yet"},
+	}
+	if !slices.Equal(got.Items, want) {
+		t.Errorf("got %+v, want %+v", got.Items, want)
+	}
+	if code, body := get("", "", "/namespaces/team-c/schedules"); code != 404 {
+		t.Errorf("a namespace without a Team: %d %s", code, body)
+	}
+	policy := &authz.Policy{FoldUsernames: true}
+	withRoles := startConfig(t, api.WithAccess(auth.ModeOIDC, policy), configCluster(t))
+	for _, c := range []struct{ name, user, groups string }{
+		{"a viewer", "eve@example.test", "readers"},
+		{"a viewer AgentAccess", "agentaccess/bot", "viewer"},
+		{"a member", "dana@example.test", "backend"},
+		{"a member AgentAccess", "agentaccess/bot", "member"},
+		{"an admin", "lead@example.test", ""},
+	} {
+		if code, body := withRoles(c.user, c.groups, "/namespaces/team-a/schedules"); code != 200 || !strings.Contains(body, `"daily"`) {
+			t.Errorf("%s: %d %s", c.name, code, body)
+		}
+	}
+	if code, body := withRoles("mallory@example.test", "", "/namespaces/team-a/schedules"); code != 403 {
+		t.Errorf("a stranger: %d %s", code, body)
+	}
+	if code, body := withRoles("dana@example.test", "backend", "/namespaces/team-c/schedules"); code != 403 || !strings.Contains(body, `"no_role"`) {
+		t.Errorf("with logins, a namespace without a Team: %d %s", code, body)
+	}
+	boot := startConfig(t, api.WithAccess(auth.ModeOIDC, &authz.Policy{FoldUsernames: true, AdminUsers: []string{"root@example.test"}}), configCluster(t))
+	for _, p := range []string{"/namespaces/team-c/schedules", "/namespaces/team-c/schedules/daily"} {
+		if code, body := boot("root@example.test", "", p); code != 404 {
+			t.Errorf("a bootstrap admin, a namespace without a Team, %s: %d %s", p, code, body)
+		}
+	}
+}
+
+func TestGetSchedule(t *testing.T) {
+	get := startConfig(t, configCluster(t))
+	for _, c := range []struct {
+		name, path string
+		code       int
+	}{
+		{"a namespace without a Team", "/namespaces/team-c/schedules/daily", 404},
+		{"a Schedule that is not there", "/namespaces/team-a/schedules/nope", 404},
+		{"another namespace's Schedule", "/namespaces/team-a/schedules/yonder", 404},
+		{"in its own namespace", "/namespaces/team-b/schedules/yonder", 200},
+	} {
+		if code, body := get("", "", c.path); code != c.code {
+			t.Errorf("%s: %d %s, want %d", c.name, code, body, c.code)
+		}
+	}
+
+	code, body := get("", "", "/namespaces/team-a/schedules/nightly")
+	var got api.ConfigResource
+	if err := json.Unmarshal([]byte(body), &got); err != nil || code != 200 {
+		t.Fatalf("nightly: %d %s", code, body)
+	}
+	want := api.ConfigSummary{Name: "nightly", Reason: "Pending", Message: "its current spec has not been checked yet"}
+	if got.ConfigSummary != want || got.Kind != "Schedule" || got.Generation != 2 || got.ObservedGeneration != 1 || len(got.Conditions) != 1 {
+		t.Errorf("a Schedule edited since it was checked: %s", body)
+	}
+}
+
+// What each role sees of a Schedule: its task template unmasked, as the
+// Tasks it creates show it to everyone; nobody sees its fields' owners, nor
+// the spec kubectl last applied.
+func TestScheduleByRole(t *testing.T) {
+	policy := &authz.Policy{FoldUsernames: true}
+	withRoles := startConfig(t, api.WithAccess(auth.ModeOIDC, policy), configCluster(t))
+	withoutLogins := startConfig(t, configCluster(t))
+	for _, c := range []struct {
+		name                      string
+		get                       func(user, groups, path string) (int, string)
+		user, groups              string
+		spec, status, annotations bool
+	}{
+		{"a viewer", withRoles, "eve@example.test", "readers", false, false, false},
+		{"a viewer AgentAccess", withRoles, "agentaccess/bot", "viewer", false, false, false},
+		{"a member", withRoles, "dana@example.test", "backend", true, true, true},
+		{"a member AgentAccess", withRoles, "agentaccess/bot", "member", true, true, true},
+		{"an admin", withRoles, "lead@example.test", "", true, true, true},
+		{"--auth=none", withoutLogins, "", "", true, true, true},
+	} {
+		code, body := c.get(c.user, c.groups, "/namespaces/team-a/schedules/daily")
+		var got api.ConfigResource
+		if err := json.Unmarshal([]byte(body), &got); err != nil || code != 200 {
+			t.Fatalf("%s: %d %s", c.name, code, body)
+		}
+		if !got.Ready || len(got.Conditions) != 1 || got.Metadata.ResourceVersion == "" || got.Metadata.Labels["tier"] != "one" {
+			t.Errorf("%s: no health: %s", c.name, body)
+		}
+		if (got.Spec != nil) != c.spec || (got.Status != nil) != c.status || (got.Metadata.Annotations != nil) != c.annotations {
+			t.Errorf("%s: spec %v, status %v, annotations %v: %s", c.name, got.Spec != nil, got.Status != nil, got.Metadata.Annotations != nil, body)
+		}
+		for _, s := range []string{`"description":"post the daily thread"`, `"lastTask":"daily-202610310000"`, `"cadre.dev/owner":"ops-team"`} {
+			if strings.Contains(body, s) != c.spec {
+				t.Errorf("%s: %s shown %v: %s", c.name, s, !c.spec, body)
+			}
+		}
+		for _, never := range []string{"last-applied", "managedFields", "f:cron"} {
+			if strings.Contains(body, never) {
+				t.Errorf("%s sees %q: %s", c.name, never, body)
+			}
+		}
+	}
+	if code, body := withRoles("mallory@example.test", "", "/namespaces/team-a/schedules/daily"); code != 403 {
+		t.Errorf("a stranger: %d %s", code, body)
 	}
 }
 
