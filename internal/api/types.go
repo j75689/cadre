@@ -212,8 +212,8 @@ type RunHint struct {
 	Seq  int64  `json:"seq"`
 }
 
-// WatchEnd closes a watch stream, with one of EndLifetime, EndShutdown or
-// EndNoRole.
+// WatchEnd closes a watch stream, with one of EndLifetime, EndShutdown,
+// EndNoRole or EndNoTeam.
 type WatchEnd struct {
 	Reason string `json:"reason"`
 }
