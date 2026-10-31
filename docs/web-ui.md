@@ -240,6 +240,10 @@ A page falls back to its interval (the board, the task page and its subtasks eve
 
 A browser without `EventSource`, Web Locks or BroadcastChannel opens no stream and polls, as every page did before it. Web Locks need a secure context: HTTPS, or `http://localhost` as `kubectl port-forward` gives; a page served over plain HTTP on another host (`http://<ip>:8080`) polls.
 
+Nothing on a page says whether it is live or polling, and a fallback shows no banner: the board's "Updated 12 s ago" only says when it was last read. To see it, look in the browser's network panel at the tab holding the Web Lock `cadre-live` (only that tab opens the streams; with several tabs open, check each) for a request to `/api/v1/namespaces/<namespace>/watch` that stays open: a team without one polls. The page opens at most 2 streams per browser profile however it is served. Behind an Ingress that speaks HTTP/2 to the browser, requests share one connection and the 6-connection limit above is not the constraint; over HTTP/1.1 the 2 streams are what keep 4 connections free.
+
+Upgrading: nothing to apply for the web UI. There is no flag, RBAC, CRD or chart change; it needs a cadre-server that serves the watch stream with `task` and `config` hints and, for the run in progress, `run` hints (see [Events](architecture.md#events)). Against an older cadre-server the stream answers `404` and every page polls as before.
+
 ## Components
 
 Shared pieces live in `web/src/ui/`.
