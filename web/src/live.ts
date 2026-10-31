@@ -77,6 +77,8 @@ interface Feed {
   hello: Hello | null;
   // dead is set by end no_role or no_team: it is not opened again.
   dead: boolean;
+  // due is set when a refused stream may be opened again.
+  due?: boolean;
   retry?: ReturnType<typeof setTimeout>;
 }
 
@@ -180,20 +182,30 @@ export function tab(page: EventTarget = window): Tab {
 
   // reconcileFeeds opens, reopens and closes the leader's streams for the
   // tabs' demand: the namespaces of the latest, up to maxStreams, each
-  // with the ?task= of the latest that has one.
+  // with the ?task= of the latest that has one. A refused stream (closed)
+  // holds no slot: it is opened again once its retry is due and a slot is
+  // free.
   const reconcileFeeds = () => {
-    const want = new Map<string, string>();
+    const demanded = new Map<string, string>();
     for (const d of [...demands.values()].sort((a, b) => b.at - a.at)) {
-      for (const w of d.wants) {
-        if (!want.has(w.ns) && want.size === maxStreams) continue;
-        if (!want.get(w.ns)) want.set(w.ns, w.task);
-      }
+      for (const w of d.wants) if (!demanded.get(w.ns)) demanded.set(w.ns, w.task);
     }
+    const refused = (ns: string) => {
+      const f = feeds.get(ns);
+      return f !== undefined && f.source.readyState === EventSource.CLOSED && f.task === demanded.get(ns);
+    };
+    const want = new Map<string, string>();
+    demanded.forEach((task, ns) => refused(ns) || want.size === maxStreams || want.set(ns, task));
     feeds.forEach((f, ns) => {
-      if (want.get(ns) === f.task) return;
+      if (want.get(ns) === f.task || refused(ns)) return;
       close(f);
       feeds.delete(ns);
       send({ type: "state", ns, task: "", hello: null });
+    });
+    feeds.forEach((f, ns) => {
+      if (!f.due || want.size === maxStreams) return;
+      feeds.delete(ns);
+      want.set(ns, f.task);
     });
     want.forEach((task, ns) => feeds.has(ns) || open(ns, task));
     // Tell a tab that just asked what the open streams serve.
@@ -229,19 +241,21 @@ export function tab(page: EventTarget = window): Tab {
         src.close();
         f.dead = true;
         state(null);
+        reconcileFeeds();
       }
     });
     // An error while open is a dropped connection, which EventSource retries;
     // one at open (401, 403, 404, 503) closes it, and it is opened again
-    // after retryMs, as a 502 or 503 may be a server being replaced.
+    // after retryMs, as a 502 or 503 may be a server being replaced. Its slot
+    // goes to another namespace meanwhile.
     src.addEventListener("error", () => {
       state(null);
       if (src.readyState !== EventSource.CLOSED || f.dead) return;
       f.retry = setTimeout(() => {
-        if (feeds.get(ns) !== f) return;
-        feeds.delete(ns);
+        f.due = true;
         reconcileFeeds();
       }, retryMs);
+      reconcileFeeds();
     });
   };
 

@@ -231,6 +231,31 @@ describe("subscribe in many tabs", () => {
     expect(pages.map((p) => p.got.live)).toEqual([false, true, true]);
   });
 
+  it("gives a refused stream's slot to another team, and opens it again only when a slot is free", async () => {
+    const demo = sub("demo", "tasks");
+    await vi.advanceTimersByTimeAsync(1);
+    sub("other", "tasks", {}, other());
+    await vi.advanceTimersByTimeAsync(1);
+    const empty = sub("empty", "tasks", {}, other());
+    await vi.advanceTimersByTimeAsync(1);
+    const url = (ns: string) => `/api/v1/namespaces/${ns}/watch`;
+    expect(FakeEventSource.open().map((s) => s.url)).toEqual([url("other"), url("empty")]);
+    FakeEventSource.open()[0].fail(true);
+    await settle();
+    expect(FakeEventSource.open().map((s) => s.url)).toEqual([url("empty"), url("demo")]);
+    FakeEventSource.open().forEach((s) => s.emit("hello", hello));
+    await settle();
+    expect([demo.got.live, empty.got.live]).toEqual([true, true]);
+    // Its retry waits for a slot, and takes the one a team leaves.
+    await vi.advanceTimersByTimeAsync(retryMs);
+    expect(FakeEventSource.instances.filter((s) => s.url === url("other"))).toHaveLength(1);
+    expect(FakeEventSource.open().map((s) => s.url)).toEqual([url("empty"), url("demo")]);
+    empty.off();
+    await settle();
+    expect(FakeEventSource.open().map((s) => s.url)).toEqual([url("demo"), url("other")]);
+    expect(demo.got.live).toBe(true);
+  });
+
   it("opens the stream with ?task= of the tab that asked last; the other's run polls", async () => {
     const x = sub("team-a", "runs", { task: "x" });
     await vi.advanceTimersByTimeAsync(1);
