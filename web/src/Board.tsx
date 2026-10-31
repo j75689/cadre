@@ -94,6 +94,7 @@ export function Board() {
     },
     pollMs,
     [ns, pages, retry, phase],
+    { ns, topic: "tasks" },
   );
   const board = `/t/${encodeURIComponent(ns)}`;
   // Until the read for a new phase filter is back, the columns read before

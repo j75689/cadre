@@ -70,6 +70,7 @@ export function TaskPage() {
     },
     5000,
     [ns, name, refresh],
+    { ns, topic: "tasks", match: (h) => h.event === "task" && h.name === name },
   );
 
   const number = task?.status?.number;
