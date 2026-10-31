@@ -65,12 +65,17 @@ export class FakeEventSource extends EventTarget {
 }
 
 // FakeLocks stands in for navigator.locks: a lock goes to the next request
-// once the promise of the one holding it settles.
+// once the promise of the one holding it settles, unless its signal was
+// aborted by then.
 export class FakeLocks {
   private last = new Map<string, Promise<unknown>>();
-  request(name: string, granted: () => Promise<unknown>) {
-    const held = (this.last.get(name) ?? Promise.resolve()).then(granted);
-    this.last.set(name, held);
+  request(name: string, ...args: [() => Promise<unknown>] | [{ signal?: AbortSignal }, () => Promise<unknown>]) {
+    const [options, granted] = args.length === 1 ? [{}, args[0]] : args;
+    const held = (this.last.get(name) ?? Promise.resolve()).then(() => {
+      options.signal?.throwIfAborted();
+      return granted();
+    });
+    this.last.set(name, held.catch(() => {}));
     return held;
   }
 }

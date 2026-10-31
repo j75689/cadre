@@ -264,6 +264,107 @@ describe("subscribe in many tabs", () => {
     expect(page.got.hints).toBe(3);
   });
 
+  // away and back are a page that is left and kept in the back/forward
+  // cache, and shown from it again, on page (window for this tab).
+  const away = (page: EventTarget = window) => page.dispatchEvent(new PageTransitionEvent("pagehide", { persisted: true }));
+  const back = (page: EventTarget = window) => page.dispatchEvent(new PageTransitionEvent("pageshow", { persisted: true }));
+
+  it("hands the stream over when the leader's page is left for the back/forward cache, and takes it back there when shown", async () => {
+    const leader = sub("team-a", "tasks");
+    const t = tab(new EventTarget());
+    tabs.push(t);
+    const page = sub("team-a", "tasks", {}, t);
+    await settle();
+    const first = only();
+    first.emit("hello", hello);
+    await settle();
+    expect(page.got).toEqual({ live: true, hints: 1 });
+    // The leader's tab goes to another URL; the browser keeps the page.
+    away();
+    await settle();
+    expect(first.closed).toBe(true);
+    expect(leader.got.live).toBe(false);
+    // The other tab polls at once, not on a hello of a stream gone.
+    expect(page.got.live).toBe(false);
+    const next = only();
+    expect(next).not.toBe(first);
+    next.emit("hello", hello);
+    await settle();
+    expect(page.got).toEqual({ live: true, hints: 2 });
+    // Back: the page asks the new leader again, which keeps its one stream.
+    back();
+    await settle();
+    expect(only()).toBe(next);
+    expect(leader.got.live).toBe(true);
+    next.emit("task", { name: "x", phase: "Todo" });
+    await settle();
+    expect([leader.got.hints, page.got.hints]).toEqual([3, 3]);
+  });
+
+  it("polls when the leader's page is left and no tab takes the lock yet", async () => {
+    sub("team-a", "tasks");
+    // The tab next in line for the lock is frozen: it gets it late.
+    const locks = navigator.locks;
+    Object.defineProperty(navigator, "locks", { value: { request: () => new Promise(() => {}) }, configurable: true });
+    const t = tab(new EventTarget());
+    tabs.push(t);
+    Object.defineProperty(navigator, "locks", { value: locks, configurable: true });
+    const page = sub("team-a", "tasks", {}, t);
+    await settle();
+    only().emit("hello", hello);
+    await settle();
+    expect(page.got.live).toBe(true);
+    away();
+    await settle();
+    expect(FakeEventSource.open()).toHaveLength(0);
+    expect(page.got.live).toBe(false);
+  });
+
+  it("takes the lock again in a page shown from the back/forward cache with no other tab", async () => {
+    const board = sub("team-a", "tasks");
+    await settle();
+    const first = only();
+    away();
+    await settle();
+    expect(FakeEventSource.open()).toHaveLength(0);
+    back();
+    await settle();
+    const next = only();
+    expect(next).not.toBe(first);
+    next.emit("hello", hello);
+    expect(board.got.live).toBe(true);
+  });
+
+  it("gives the lock to no page in the back/forward cache, and serves it again when shown", async () => {
+    sub("team-a", "tasks");
+    const cached = new EventTarget();
+    const t = tab(cached);
+    tabs.push(t);
+    const page = sub("team-b", "tasks", {}, t);
+    await settle();
+    expect(FakeEventSource.open()).toHaveLength(2);
+    // The waiting tab is left: its stream closes, and it stops waiting.
+    away(cached);
+    await settle();
+    expect(only().url).toBe("/api/v1/namespaces/team-a/watch");
+    // The leader goes, and a third tab takes the lock, not the cached one.
+    const third = tab(new EventTarget());
+    tabs.push(third);
+    sub("team-a", "tasks", {}, third);
+    offs = offs.slice(1);
+    restart();
+    await settle();
+    only().emit("hello", hello);
+    await settle();
+    // Shown again, it asks the third tab: 2 streams, its own live.
+    back(cached);
+    await settle();
+    expect(FakeEventSource.open().map((s) => s.url)).toEqual(["/api/v1/namespaces/team-a/watch", "/api/v1/namespaces/team-b/watch"]);
+    FakeEventSource.open()[1].emit("hello", hello);
+    await settle();
+    expect(page.got.live).toBe(true);
+  });
+
   it("polls in a tab the new leader holds no stream for", async () => {
     let visibility: DocumentVisibilityState = "visible";
     vi.spyOn(document, "visibilityState", "get").mockImplementation(() => visibility);

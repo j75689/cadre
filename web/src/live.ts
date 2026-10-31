@@ -10,7 +10,9 @@
 // maxStreams streams, for the namespaces the tabs' pages subscribe to, and
 // relays what they send over the BroadcastChannel "cadre-live". The other
 // tabs wait for the lock, so one takes over when the leader goes. A tab
-// asks for streams only while it is visible. Without Web Locks (not a
+// asks for streams only while it is visible. A page that is left lets go
+// of the lock and the streams, also when the browser keeps it in its
+// back/forward cache, and starts again when it is shown from there. Without Web Locks (not a
 // secure context) or BroadcastChannel no tab opens a stream: they all poll.
 
 export type Topic = "tasks" | "config" | "runs";
@@ -54,6 +56,7 @@ interface Want {
 type Message =
   | { type: "demand"; tab: string; at: number; wants: Want[] }
   | { type: "who" }
+  | { type: "bye" }
   | { type: "state"; ns: string; task: string; hello: Hello | null }
   | { type: "hint"; ns: string; hint: Hint }
   | { type: "resync"; ns: string };
@@ -86,13 +89,15 @@ export interface Tab {
   leave(): void;
 }
 
-// tab starts this tab's share, with the browser's locks and channel.
-export function tab(): Tab {
+// tab starts this tab's share, with the browser's locks and channel. page
+// is what fires the tab's pagehide and pageshow, for tests.
+export function tab(page: EventTarget = window): Tab {
   const id = Math.random().toString(36).slice(2);
   const locals = new Map<string, Local>();
   const shared = typeof navigator !== "undefined" && navigator.locks !== undefined && typeof BroadcastChannel !== "undefined";
   let channel: BroadcastChannel | undefined;
   let release: (() => void) | undefined;
+  let abort: AbortController | undefined;
   let leader = false;
   let queued = false;
   // Leader only: each tab's demand, and the streams held for it.
@@ -115,7 +120,8 @@ export function tab(): Tab {
         reconcileFeeds();
         return;
       case "who":
-        // A new leader: the old one's streams are gone.
+      case "bye":
+        // A new leader, or the leader went: the old one's streams are gone.
         locals.forEach((_, ns) => apply(ns, "", null));
         announce();
         return;
@@ -243,19 +249,51 @@ export function tab(): Tab {
     channel = new BroadcastChannel("cadre-live");
     channel.onmessage = (e: MessageEvent<Message>) => receive(e.data);
     document.addEventListener("visibilitychange", demand);
-    void navigator.locks.request(
-      "cadre-live",
-      () =>
-        new Promise<void>((resolve) => {
-          release = resolve;
-          leader = true;
-          demands.clear();
-          send({ type: "who" });
-        }),
-    );
+    abort = new AbortController();
+    navigator.locks
+      .request(
+        "cadre-live",
+        { signal: abort.signal },
+        () =>
+          new Promise<void>((resolve) => {
+            release = resolve;
+            leader = true;
+            demands.clear();
+            send({ type: "who" });
+          }),
+      )
+      .catch(() => {});
   };
 
-  if (shared) start();
+  // stop leaves the streams to the other tabs: the leader closes them and
+  // says it goes, so their pages poll even if the next tab to get the lock
+  // is frozen and late; another tab says it wants none. A tab still
+  // waiting for the lock stops waiting, so a page in the back/forward
+  // cache never holds it. This tab's pages poll until a hello after start.
+  const stop = () => {
+    feeds.forEach(close);
+    feeds.clear();
+    channel?.postMessage(leader ? { type: "bye" } : { type: "demand", tab: id, at: Date.now(), wants: [] });
+    leader = false;
+    release?.();
+    abort?.abort();
+    channel?.close();
+    channel = undefined;
+    document.removeEventListener("visibilitychange", demand);
+    locals.forEach((_, ns) => apply(ns, "", null));
+  };
+
+  const show = (e: Event) => {
+    if (!(e as PageTransitionEvent).persisted) return;
+    start();
+    announce();
+  };
+
+  if (shared) {
+    start();
+    page.addEventListener("pagehide", stop);
+    page.addEventListener("pageshow", show);
+  }
   return {
     subscribe(ns, sub) {
       if (!shared) {
@@ -277,12 +315,9 @@ export function tab(): Tab {
       };
     },
     leave() {
-      feeds.forEach(close);
-      feeds.clear();
-      leader = false;
-      release?.();
-      channel?.close();
-      document.removeEventListener("visibilitychange", demand);
+      stop();
+      page.removeEventListener("pagehide", stop);
+      page.removeEventListener("pageshow", show);
     },
   };
 }
