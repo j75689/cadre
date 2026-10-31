@@ -110,6 +110,26 @@ var configKinds = []configKind{{
 		s := o.(*v1alpha1.Schedule)
 		return s.Spec, s.Status
 	},
+}, {
+	plural: "notifiers", kind: "Notifier",
+	newObj:  func() client.Object { return &v1alpha1.Notifier{} },
+	newList: func() client.ObjectList { return &v1alpha1.NotifierList{} },
+	status:  func(o client.Object) v1alpha1.ConfigStatus { return o.(*v1alpha1.Notifier).Status.ConfigStatus },
+	view: func(o client.Object, role authz.Role) (any, any) {
+		n := o.(*v1alpha1.Notifier)
+		if role >= authz.Admin {
+			return n.Spec, n.Status
+		}
+		spec := n.Spec.DeepCopy()
+		if wh := spec.Webhook; wh != nil {
+			wh.URL = maskURL(wh.URL)
+			maskValues(wh.Headers)
+		}
+		if ts := spec.ToolServer; ts != nil {
+			maskValues(ts.Arguments)
+		}
+		return *spec, n.Status
+	},
 }}
 
 // set stands in for a value a member may know is there but not read.
@@ -153,6 +173,13 @@ func maskProbe(p *corev1.Probe) {
 		for i := range h.HTTPHeaders {
 			h.HTTPHeaders[i].Value = set
 		}
+	}
+}
+
+// maskValues hides m's values, which may hold a credential; its keys stay.
+func maskValues(m map[string]string) {
+	for k := range m {
+		m[k] = set
 	}
 }
 

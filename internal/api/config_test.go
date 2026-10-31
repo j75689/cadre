@@ -10,6 +10,7 @@ import (
 	"slices"
 	"strings"
 	"testing"
+	"time"
 
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -27,8 +28,8 @@ import (
 	"github.com/j75689/cadre/internal/storage/memory"
 )
 
-// configCluster is a cluster's Agents, ModelProviders, ToolServers and
-// Schedules as the controllers' cache holds them: writer and claude as kubectl apply
+// configCluster is a cluster's Agents, ModelProviders, ToolServers,
+// Schedules and Notifiers as the controllers' cache holds them: writer and claude as kubectl apply
 // leaves them, reviewer, gpt and execer edited since they were checked,
 // gateway and remote with a credential in their URL, prober with some in
 // its path and readiness probe, and elsewhere in team-b.
@@ -79,7 +80,7 @@ func configCluster(t *testing.T) api.Option {
 	nohost := provider("team-a", "nohost", v1alpha1.ModelProviderSpec{Type: v1alpha1.ProviderOpenAI, Model: "gpt", Auth: key, BaseURL: "https://u:sk_literal_nohost@"})
 	vertex := provider("team-b", "vertex", v1alpha1.ModelProviderSpec{Type: v1alpha1.ProviderVertex, Model: "gemini", WorkloadIdentity: true, Project: "p", Location: "us-east5"})
 	return api.WithConfig(fake.NewClientBuilder().WithScheme(scheme).WithObjects(writer, reviewer, elsewhere, jobber, claude, gpt, gateway, fragment, badurl, nohost, vertex).
-		WithObjects(toolServers()...).WithObjects(schedules()...).Build())
+		WithObjects(toolServers()...).WithObjects(schedules()...).WithObjects(notifiers()...).Build())
 }
 
 // schedules are daily, as kubectl apply leaves it, nightly, edited since it
@@ -100,6 +101,36 @@ func schedules() []client.Object {
 	nightly.Generation = 2
 	yonder := schedule("team-b", "yonder", v1alpha1.ScheduleSpec{Cron: "@weekly", Task: v1alpha1.TaskSpec{Title: "Weekly"}})
 	return []client.Object{nightly, daily, yonder}
+}
+
+// notifiers are hook, a webhook with values in its URL's query and fragment
+// and in its headers, as kubectl apply leaves it; caller, a tool with values
+// in its arguments, edited since it was checked; badhook, whose URL does not
+// parse; and distant in team-b.
+func notifiers() []client.Object {
+	notifier := func(ns, name string, spec v1alpha1.NotifierSpec) *v1alpha1.Notifier {
+		n := &v1alpha1.Notifier{ObjectMeta: metav1.ObjectMeta{Namespace: ns, Name: name, Generation: 1}, Spec: spec}
+		n.Status.ObservedGeneration = 1
+		n.Status.Conditions = []metav1.Condition{{Type: v1alpha1.ConditionReady, Status: metav1.ConditionTrue, ObservedGeneration: 1, Reason: "Ready"}}
+		return n
+	}
+	on := []v1alpha1.NotifyEvent{v1alpha1.NotifyQuestion, v1alpha1.NotifyDone}
+	hook := notifier("team-a", "hook", v1alpha1.NotifierSpec{On: on, Webhook: &v1alpha1.Webhook{
+		URL:       "https://hooks.example.test/notify?token=nf_literal_query&nf_literal_bare#nf_literal_fragment",
+		SecretRef: &v1alpha1.SecretKeyRef{Name: "hook", Key: "signing"},
+		Headers:   map[string]string{"X-Api-Key": "nf_literal_header", "X-Tenant": "nf_literal_tenant"},
+	}})
+	hook.Status.LastSent = &metav1.Time{Time: time.Date(2026, 10, 31, 9, 0, 0, 0, time.UTC)}
+	hook.Labels = map[string]string{"tier": "one"}
+	hook.Annotations = map[string]string{"cadre.dev/owner": "ops-team", "kubectl.kubernetes.io/last-applied-configuration": `{"spec":{"on":["Done"]}}`}
+	hook.ManagedFields = []metav1.ManagedFieldsEntry{{Manager: "kubectl-client-side-apply", Operation: metav1.ManagedFieldsOperationUpdate, APIVersion: "cadre.dev/v1alpha1", FieldsType: "FieldsV1", FieldsV1: metav1.NewFieldsV1(`{"f:spec":{"f:on":{}}}`)}}
+	caller := notifier("team-a", "caller", v1alpha1.NotifierSpec{On: on, ToolServer: &v1alpha1.NotifierToolServer{
+		Name: "remote", Tool: "notify", Arguments: map[string]string{"channel": "nf_literal_channel", "token": "nf_literal_arg"},
+	}})
+	caller.Generation = 2
+	badhook := notifier("team-a", "badhook", v1alpha1.NotifierSpec{On: on, Webhook: &v1alpha1.Webhook{URL: "https://hooks.example.test/%zz?k=nf_literal_bad"}})
+	distant := notifier("team-b", "distant", v1alpha1.NotifierSpec{On: on, Webhook: &v1alpha1.Webhook{URL: "https://hooks.example.test/notify"}})
+	return []client.Object{hook, caller, badhook, distant}
 }
 
 // toolServers are remote, an external ToolServer with a credential in its
@@ -695,15 +726,21 @@ func TestScheduleByRole(t *testing.T) {
 	}
 }
 
-// shared hands out ts without copying what it points to, as a cache may:
-// a member's view masks a copy of its own.
+// shared hands out ts or nf without copying what it points to, as a cache
+// may: a member's view masks a copy of its own.
 type shared struct {
 	client.Reader
 	ts *v1alpha1.ToolServer
+	nf *v1alpha1.Notifier
 }
 
 func (s shared) Get(_ context.Context, _ client.ObjectKey, obj client.Object, _ ...client.GetOption) error {
-	*obj.(*v1alpha1.ToolServer) = *s.ts
+	switch o := obj.(type) {
+	case *v1alpha1.ToolServer:
+		*o = *s.ts
+	case *v1alpha1.Notifier:
+		*o = *s.nf
+	}
 	return nil
 }
 
@@ -717,6 +754,193 @@ func TestToolServerMaskLeavesTheCache(t *testing.T) {
 	for _, l := range []string{"tk_literal_path", "tk_literal_probe_path", "tk_literal_header"} {
 		if code != 200 || !strings.Contains(body, l) {
 			t.Errorf("an admin after a member: %q gone: %d %s", l, code, body)
+		}
+	}
+}
+
+func TestListNotifiers(t *testing.T) {
+	get := startConfig(t, configCluster(t))
+	code, body := get("", "", "/namespaces/team-a/notifiers")
+	var got api.ConfigList
+	if err := json.Unmarshal([]byte(body), &got); err != nil || code != 200 {
+		t.Fatalf("%d %s", code, body)
+	}
+	want := []api.ConfigSummary{
+		{Name: "badhook", Ready: true},
+		{Name: "caller", Reason: "Pending", Message: "its current spec has not been checked yet"},
+		{Name: "hook", Ready: true},
+	}
+	if !slices.Equal(got.Items, want) {
+		t.Errorf("got %+v, want %+v", got.Items, want)
+	}
+	if code, body := get("", "", "/namespaces/team-c/notifiers"); code != 404 {
+		t.Errorf("a namespace without a Team: %d %s", code, body)
+	}
+	policy := &authz.Policy{FoldUsernames: true}
+	withRoles := startConfig(t, api.WithAccess(auth.ModeOIDC, policy), configCluster(t))
+	for _, c := range []struct{ name, user, groups string }{
+		{"a viewer", "eve@example.test", "readers"},
+		{"a viewer AgentAccess", "agentaccess/bot", "viewer"},
+		{"a member", "dana@example.test", "backend"},
+		{"a member AgentAccess", "agentaccess/bot", "member"},
+		{"an admin", "lead@example.test", ""},
+	} {
+		if code, body := withRoles(c.user, c.groups, "/namespaces/team-a/notifiers"); code != 200 || !strings.Contains(body, `"hook"`) {
+			t.Errorf("%s: %d %s", c.name, code, body)
+		}
+	}
+	if code, body := withRoles("mallory@example.test", "", "/namespaces/team-a/notifiers"); code != 403 {
+		t.Errorf("a stranger: %d %s", code, body)
+	}
+	if code, body := withRoles("dana@example.test", "backend", "/namespaces/team-c/notifiers"); code != 403 || !strings.Contains(body, `"no_role"`) {
+		t.Errorf("with logins, a namespace without a Team: %d %s", code, body)
+	}
+	boot := startConfig(t, api.WithAccess(auth.ModeOIDC, &authz.Policy{FoldUsernames: true, AdminUsers: []string{"root@example.test"}}), configCluster(t))
+	for _, p := range []string{"/namespaces/team-c/notifiers", "/namespaces/team-c/notifiers/hook"} {
+		if code, body := boot("root@example.test", "", p); code != 404 {
+			t.Errorf("a bootstrap admin, a namespace without a Team, %s: %d %s", p, code, body)
+		}
+	}
+}
+
+func TestGetNotifier(t *testing.T) {
+	get := startConfig(t, configCluster(t))
+	for _, c := range []struct {
+		name, path string
+		code       int
+	}{
+		{"a namespace without a Team", "/namespaces/team-c/notifiers/hook", 404},
+		{"a Notifier that is not there", "/namespaces/team-a/notifiers/nope", 404},
+		{"another namespace's Notifier", "/namespaces/team-a/notifiers/distant", 404},
+		{"in its own namespace", "/namespaces/team-b/notifiers/distant", 200},
+	} {
+		if code, body := get("", "", c.path); code != c.code {
+			t.Errorf("%s: %d %s, want %d", c.name, code, body, c.code)
+		}
+	}
+
+	code, body := get("", "", "/namespaces/team-a/notifiers/caller")
+	var got api.ConfigResource
+	if err := json.Unmarshal([]byte(body), &got); err != nil || code != 200 {
+		t.Fatalf("caller: %d %s", code, body)
+	}
+	want := api.ConfigSummary{Name: "caller", Reason: "Pending", Message: "its current spec has not been checked yet"}
+	if got.ConfigSummary != want || got.Kind != "Notifier" || got.Generation != 2 || got.ObservedGeneration != 1 || len(got.Conditions) != 1 {
+		t.Errorf("a Notifier edited since it was checked: %s", body)
+	}
+	withRoles := startConfig(t, api.WithAccess(auth.ModeOIDC, &authz.Policy{FoldUsernames: true}), configCluster(t))
+	if code, body := withRoles("mallory@example.test", "", "/namespaces/team-a/notifiers/hook"); code != 403 {
+		t.Errorf("a stranger: %d %s", code, body)
+	}
+}
+
+// What each role sees of a Notifier; nobody sees its fields' owners, nor
+// the spec kubectl last applied.
+func TestNotifierByRole(t *testing.T) {
+	policy := &authz.Policy{FoldUsernames: true}
+	withRoles := startConfig(t, api.WithAccess(auth.ModeOIDC, policy), configCluster(t))
+	withoutLogins := startConfig(t, configCluster(t))
+	for _, c := range []struct {
+		name                      string
+		get                       func(user, groups, path string) (int, string)
+		user, groups              string
+		spec, status, annotations bool
+	}{
+		{"a viewer", withRoles, "eve@example.test", "readers", false, false, false},
+		{"a viewer AgentAccess", withRoles, "agentaccess/bot", "viewer", false, false, false},
+		{"a member", withRoles, "dana@example.test", "backend", true, true, true},
+		{"a member AgentAccess", withRoles, "agentaccess/bot", "member", true, true, true},
+		{"an admin", withRoles, "lead@example.test", "", true, true, true},
+		{"--auth=none", withoutLogins, "", "", true, true, true},
+	} {
+		code, body := c.get(c.user, c.groups, "/namespaces/team-a/notifiers/hook")
+		var got api.ConfigResource
+		if err := json.Unmarshal([]byte(body), &got); err != nil || code != 200 {
+			t.Fatalf("%s: %d %s", c.name, code, body)
+		}
+		if !got.Ready || len(got.Conditions) != 1 || got.Metadata.ResourceVersion == "" || got.Metadata.Labels["tier"] != "one" {
+			t.Errorf("%s: no health: %s", c.name, body)
+		}
+		if (got.Spec != nil) != c.spec || (got.Status != nil) != c.status || (got.Metadata.Annotations != nil) != c.annotations {
+			t.Errorf("%s: spec %v, status %v, annotations %v: %s", c.name, got.Spec != nil, got.Status != nil, got.Metadata.Annotations != nil, body)
+		}
+		for _, s := range []string{`"on":["Question","Done"]`, `"secretRef":{"name":"hook","key":"signing"}`, `"lastSent":"2026-10-31T09:00:00Z"`, `"cadre.dev/owner":"ops-team"`} {
+			if strings.Contains(body, s) != c.spec {
+				t.Errorf("%s: %s shown %v: %s", c.name, s, !c.spec, body)
+			}
+		}
+		for _, never := range []string{"last-applied", "managedFields", "f:on"} {
+			if strings.Contains(body, never) {
+				t.Errorf("%s sees %q: %s", c.name, never, body)
+			}
+		}
+	}
+	if code, body := withRoles("mallory@example.test", "", "/namespaces/team-a/notifiers/hook"); code != 403 {
+		t.Errorf("a stranger: %d %s", code, body)
+	}
+}
+
+// A member sees that a Notifier's webhook URL, headers and tool arguments
+// hold a value, not what it is, and none of a URL that does not parse; an
+// admin sees them.
+func TestNotifierMaskedByRole(t *testing.T) {
+	policy := &authz.Policy{FoldUsernames: true}
+	get := startConfig(t, api.WithAccess(auth.ModeOIDC, policy), configCluster(t))
+	for _, nf := range []struct {
+		name     string
+		literals []string
+		masked   []string
+	}{
+		{"hook", []string{"nf_literal_query", "nf_literal_bare", "nf_literal_fragment", "nf_literal_header", "nf_literal_tenant"}, []string{
+			`"url":"https://hooks.example.test/notify?token=(set)\u0026(set)#(set)"`, `"headers":{"X-Api-Key":"(set)","X-Tenant":"(set)"}`,
+		}},
+		{"caller", []string{"nf_literal_channel", "nf_literal_arg"}, []string{`"arguments":{"channel":"(set)","token":"(set)"}`}},
+		{"badhook", []string{"nf_literal_bad"}, []string{`"url":"(set)"`}},
+	} {
+		for _, c := range []struct {
+			name, user, groups string
+			masked             bool
+		}{
+			{"a member", "dana@example.test", "backend", true},
+			{"a member AgentAccess", "agentaccess/bot", "member", true},
+			{"an admin", "lead@example.test", "", false},
+		} {
+			code, body := get(c.user, c.groups, "/namespaces/team-a/notifiers/"+nf.name)
+			if code != 200 {
+				t.Fatalf("%s, %s: %d %s", nf.name, c.name, code, body)
+			}
+			for _, l := range nf.literals {
+				if strings.Contains(body, l) == c.masked {
+					t.Errorf("%s, %s: %q shown %v: %s", nf.name, c.name, l, c.masked, body)
+				}
+			}
+			for _, m := range nf.masked {
+				if strings.Contains(body, m) != c.masked {
+					t.Errorf("%s, %s: %s shown %v: %s", nf.name, c.name, m, !c.masked, body)
+				}
+			}
+		}
+	}
+}
+
+func TestNotifierMaskLeavesTheCache(t *testing.T) {
+	nfs := notifiers()
+	for _, c := range []struct {
+		nf       *v1alpha1.Notifier
+		literals []string
+	}{
+		{nfs[0].(*v1alpha1.Notifier), []string{"nf_literal_query", "nf_literal_header", "nf_literal_tenant"}},
+		{nfs[1].(*v1alpha1.Notifier), []string{"nf_literal_channel", "nf_literal_arg"}},
+	} {
+		get := startConfig(t, api.WithAccess(auth.ModeOIDC, &authz.Policy{FoldUsernames: true}), api.WithConfig(shared{nf: c.nf}))
+		if code, body := get("dana@example.test", "backend", "/namespaces/team-a/notifiers/"+c.nf.Name); code != 200 || strings.Contains(body, "nf_literal") {
+			t.Fatalf("a member, %s: %d %s", c.nf.Name, code, body)
+		}
+		code, body := get("lead@example.test", "", "/namespaces/team-a/notifiers/"+c.nf.Name)
+		for _, l := range c.literals {
+			if code != 200 || !strings.Contains(body, l) {
+				t.Errorf("an admin after a member, %s: %q gone: %d %s", c.nf.Name, l, code, body)
+			}
 		}
 	}
 }
