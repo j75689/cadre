@@ -6,9 +6,10 @@ import { EventList, totals, useLinkScroll } from "./Runs";
 import { Loading, Skeleton } from "./ui/Skeleton";
 import { usePolling } from "./usePolling";
 
-// LiveRun is the run in progress: its events, read again every four seconds
-// while the page is visible (so an event shows within five while a read
-// takes up to one), and its token totals. The list is no live region, so a
+// LiveRun is the run in progress: its events, read again on the watch
+// stream's run hints, or every four seconds without them, while the page is
+// visible (so an event shows within five while a read takes up to one),
+// and its token totals. The list is no live region, so a
 // screen reader is not read each poll; RunEnded says when the run ends. A
 // linked run (?run=<id>) is scrolled into view as an ended one is, once
 // ready.
@@ -28,6 +29,7 @@ export function LiveRun({ ns, name, run, linked, ready }: { ns: string; name: st
     },
     4000,
     [ns, name, run.id],
+    { ns, topic: "runs", task: name, match: (h) => h.event === "run" && h.task === name && h.run === run.id },
   );
   const t = totals(events ?? []);
   const n = (v: number) => v.toLocaleString();

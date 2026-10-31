@@ -103,6 +103,7 @@ export function Settings() {
     },
     15000,
     [ns, retry],
+    { ns, topic: "config", match: (h) => h.event === "config" && h.kind === "Team" },
   );
   const admin = can(role, "manage") && !demoted && !lost;
   return (
