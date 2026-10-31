@@ -7,7 +7,9 @@
 // A third of the tasks are run a step at a time by step workers that die in
 // the middle of steps too (steps_test.go checks step mode's own invariants),
 // and a third by Jobs cadre-server starts, whose pods a fake kubelet runs,
-// kills and leaves Pending (jobs_test.go).
+// kills and leaves Pending (jobs_test.go). Browsers keep watch streams open
+// through it all, and must show what the store holds once it quiesces
+// (watch_test.go).
 //
 // CADRE_CHAOS_SEED replays a seed; CADRE_CHAOS_DURATION sets how long the
 // chaos lasts (60s by default, 20s with -short).
@@ -146,6 +148,7 @@ func TestChaos(t *testing.T) {
 	var start, kill func(name string)
 	var restarts sync.WaitGroup
 	var stopping atomic.Bool
+	watches := newWatches()
 	start = func(name string) {
 		s, err := startServer(name, cfg, rnd, px.URL)
 		if err != nil {
@@ -182,7 +185,8 @@ func TestChaos(t *testing.T) {
 		srvMu.Unlock()
 		if s != nil {
 			px.set(name, "")
-			s.kill()
+			watches.killed(s.id)
+			s.kill(rnd.Float64() < 0.5)
 		}
 	}
 	start("server-1")
@@ -193,6 +197,9 @@ func TestChaos(t *testing.T) {
 		kill("server-2")
 		restarts.Wait()
 	}()
+	// Browsers watch the boards through the chaos and the quiescence.
+	watches.start(t, cl, px.URL)
+	defer watches.stop()
 
 	rec := newRecorder()
 	chaos, stopChaos := context.WithTimeout(ctx, duration)
@@ -278,6 +285,7 @@ func TestChaos(t *testing.T) {
 	began := time.Now()
 	quiesce(t, admin)
 	t.Logf("quiesced in %s", time.Since(began).Round(100*time.Millisecond))
+	checkWatches(t, admin, cfg, watches)
 
 	check(t, admin, cfg, rec)
 	checkSteps(t, cfg, steps)

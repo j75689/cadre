@@ -110,6 +110,30 @@ var configKinds = []configKind{{
 		s := o.(*v1alpha1.Schedule)
 		return s.Spec, s.Status
 	},
+}, {
+	plural: "notifiers", kind: "Notifier",
+	newObj:  func() client.Object { return &v1alpha1.Notifier{} },
+	newList: func() client.ObjectList { return &v1alpha1.NotifierList{} },
+	status:  func(o client.Object) v1alpha1.ConfigStatus { return o.(*v1alpha1.Notifier).Status.ConfigStatus },
+	view: func(o client.Object, role authz.Role) (any, any) {
+		n := o.(*v1alpha1.Notifier)
+		if role >= authz.Admin {
+			return n.Spec, n.Status
+		}
+		spec := n.Spec.DeepCopy()
+		if wh := spec.Webhook; wh != nil {
+			wh.URL = maskWebhookURL(wh.URL)
+			maskValues(wh.Headers)
+		}
+		if ts := spec.ToolServer; ts != nil {
+			maskValues(ts.Arguments)
+		}
+		status := n.Status.DeepCopy()
+		if e := status.LastError; e != nil { // its message may quote the URL
+			e.Message = set
+		}
+		return *spec, *status
+	},
 }}
 
 // set stands in for a value a member may know is there but not read.
@@ -154,6 +178,27 @@ func maskProbe(p *corev1.Probe) {
 			h.HTTPHeaders[i].Value = set
 		}
 	}
+}
+
+// maskValues hides m's values, which may hold a credential; its keys stay.
+func maskValues(m map[string]string) {
+	for k := range m {
+		m[k] = set
+	}
+}
+
+// maskWebhookURL masks a webhook URL as maskURL does, and its path too, as
+// a chat service's holds its token (https://hooks.slack.com/services/...):
+// only its scheme, host and port are shown. A path of "/" holds none.
+func maskWebhookURL(u string) string {
+	parsed, err := url.Parse(u)
+	if err != nil {
+		return set
+	}
+	if p := parsed.EscapedPath(); p != "" && p != "/" {
+		parsed.Path, parsed.RawPath = "/"+set, "/"+set // so its parentheses are not escaped
+	}
+	return maskURL(parsed.String())
 }
 
 // maskServiceURL masks a managed server's URL, its Service's address then
