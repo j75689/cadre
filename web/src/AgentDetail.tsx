@@ -1,15 +1,13 @@
 import { Link, useParams } from "react-router";
 import { getAgent } from "./api";
 import { ConfigDetail } from "./ConfigDetail";
-import { modelProviderLink } from "./links";
+import { modelProviderLink, toolServerLink } from "./links";
 
-// Ref is a used resource's name, a link to its page. The ToolServer page
-// is not built yet: once it is, it links to it here.
+// Ref is a used resource's name, a link to its page.
 function Ref({ kind, name }: { kind: "ModelProvider" | "ToolServer"; name: string }) {
   const { ns = "" } = useParams();
-  if (kind === "ToolServer") return <code>{name}</code>;
   return (
-    <Link to={modelProviderLink(ns, name)}>
+    <Link to={(kind === "ToolServer" ? toolServerLink : modelProviderLink)(ns, name)}>
       <code>{name}</code>
     </Link>
   );

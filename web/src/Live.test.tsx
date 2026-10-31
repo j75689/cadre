@@ -32,6 +32,8 @@ const routes: [string, (url: string) => boolean, () => unknown][] = [
   ["agent", (u) => u.endsWith("/namespaces/a/agents/writer"), () => resource("Agent", "writer")],
   ["modelproviders", (u) => u.endsWith("/namespaces/a/modelproviders"), () => ({ items: [] })],
   ["modelprovider", (u) => u.endsWith("/namespaces/a/modelproviders/claude"), () => resource("ModelProvider", "claude")],
+  ["toolservers", (u) => u.endsWith("/namespaces/a/toolservers"), () => ({ items: [] })],
+  ["toolserver", (u) => u.endsWith("/namespaces/a/toolservers/github"), () => resource("ToolServer", "github")],
 ];
 
 beforeEach(() => {
@@ -93,6 +95,8 @@ describe("Live pages", () => {
     ["/t/a/agents/writer", "agent", ["config", { kind: "Agent", name: "writer" }], ["config", { kind: "Agent", name: "reader" }]],
     ["/t/a/modelproviders", "modelproviders", ["config", { kind: "ModelProvider", name: "claude" }], ["config", { kind: "ToolServer", name: "claude" }]],
     ["/t/a/modelproviders/claude", "modelprovider", ["config", { kind: "ModelProvider", name: "claude" }], ["config", { kind: "Agent", name: "claude" }]],
+    ["/t/a/toolservers", "toolservers", ["config", { kind: "ToolServer", name: "github" }], ["config", { kind: "ModelProvider", name: "github" }]],
+    ["/t/a/toolservers/github", "toolserver", ["config", { kind: "ToolServer", name: "github" }], ["config", { kind: "ToolServer", name: "jira" }]],
     ["/t/a/settings", "team", ["config", { kind: "Team", name: "team" }], ["config", { kind: "Agent", name: "team" }]],
   ] as const)("%s reads %s again on its hint, within a second, and not on another's", async (path, read, [event, data], [otherEvent, otherData]) => {
     const stream = await open(path, read);

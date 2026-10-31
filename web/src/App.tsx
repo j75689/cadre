@@ -11,6 +11,7 @@ import { Settings } from "./Settings";
 import { HelpDialog, useShortcuts } from "./shortcuts";
 import { TaskPage } from "./TaskPage";
 import { TeamLayout } from "./TeamNav";
+import { ToolServerDetail, ToolServers } from "./ToolServers";
 import { Teams } from "./Teams";
 import { teamName, TeamsProvider, useTeams } from "./teamList";
 import { applyTheme, loadTheme, nextTheme, saveTheme, systemDark, type Theme } from "./theme";
@@ -54,6 +55,18 @@ function TeamModelProviders() {
 function OneModelProvider() {
   const { ns = "", name = "" } = useParams();
   return <ModelProviderDetail key={`${ns}/${name}`} />;
+}
+
+// the tool servers,
+function TeamToolServers() {
+  const { ns = "" } = useParams();
+  return <ToolServers key={ns} />;
+}
+
+// a ToolServer's page to one ToolServer,
+function OneToolServer() {
+  const { ns = "", name = "" } = useParams();
+  return <ToolServerDetail key={`${ns}/${name}`} />;
 }
 
 // the settings,
@@ -224,6 +237,8 @@ export function App() {
               <Route path="agents/:name" element={<OneAgent />} />
               <Route path="modelproviders" element={<TeamModelProviders />} />
               <Route path="modelproviders/:name" element={<OneModelProvider />} />
+              <Route path="toolservers" element={<TeamToolServers />} />
+              <Route path="toolservers/:name" element={<OneToolServer />} />
               <Route path="new" element={<TeamNewTask />} />
               <Route path="tasks/:name" element={<OneTask />} />
               <Route path="settings" element={<TeamSettings />} />
