@@ -178,6 +178,28 @@ Runtime-mode backends differ only in who starts the runner process. For the Kube
   ```
 
   Read the Task again with `GET /api/v1/namespaces/demo/tasks/release-notes`. Without a token the answer is `401` `unauthenticated`; with no role on the Team, `403` `no_role`; past the limit, `503` `unavailable` ("this replica serves 1 watch streams already: retry later; the board polls meanwhile", with `--watch-max-streams=1`). `--watch-max-streams=0`, or less, stops cadre-server at start: `--watch-max-streams 0: must be at least 1`.
+
+  To follow one Task's run, name it with `?task=`:
+
+  ```sh
+  curl -N -H "Authorization: Bearer $(cadre auth token)" \
+    "$CADRE_SERVER/api/v1/namespaces/demo/watch?task=release-notes"
+  ```
+
+  `hello` now says `"runs":true`, and a `run` comes each time events were appended to the Task's current run, here after the runner sent its first:
+
+  ```
+  retry: 3000
+  event: hello
+  data: {"tasks":true,"config":false,"runs":true,"lifetimeSeconds":300}
+
+  event: run
+  data: {"task":"release-notes","run":"run-1","seq":1}
+
+  ```
+
+  Read the run's events again with `GET /api/v1/namespaces/demo/tasks/release-notes/runs/run-1/events`. `seq` is the last event the hint covers: events appended close together come as one hint. A Task that does not exist is a `404` `not_found` ("not found"), for a `HEAD` too, after the role check. At 200 streams with `?task=` on a replica, the next one is still served, with `"runs":false` in its `hello` and no `run` events: it polls the run's events itself, and takes run hints again when it reconnects under the cap, as a closed stream frees its slot. Streams without `?task=` do not count towards the 200.
+- Upgrading to a cadre-server that gives run hints: nothing to apply. There is no flag for the 200 streams (`MaxRunTails`) or the 500 ms interval, and no RBAC, CRD or chart change. A replica lists the keys of the run's events in the log store every 500 ms for each Task and run that a stream watches, so at the cap that is at most 200 lists every 500 ms against the store. Nothing in the web UI uses `?task=` yet, so an upgrade changes nothing a user sees.
 - Upgrading to a cadre-server that serves the stream: nothing to apply. It adds one flag, `--watch-max-streams` (default 2000; the chart's `server.watchMaxStreams`, unset by default, and when set at least 1), and reads the Tasks the informers already hold: no RBAC or CRD change. Nothing in the web UI uses the stream yet, so an upgrade changes nothing a user sees.
 
 ## Identity and access
