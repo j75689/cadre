@@ -43,6 +43,9 @@ ingress:
   host: ""
   # tlsSecret, when set, serves the host over https from that Secret.
   tlsSecret: ""
+  # annotations for your controller. The live-update stream needs no
+  # buffering and an idle timeout over 20 s, which ingress-nginx's defaults
+  # give; see docs/architecture.md ("Behind a proxy or an Ingress").
   annotations: {}
 
 auth:
