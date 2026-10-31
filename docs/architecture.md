@@ -161,6 +161,34 @@ Cadre is not a SaaS, not a workflow engine, not an LLM gateway and not a sandbox
   | `spec.auth.prefix` (`github`) | `Bearer ` | `Bearer ` |
 
   A `url` or path that does not parse as a URL is `(set)` whole, as a ModelProvider's `baseURL` is. An `auth.prefix` is shown only when it is empty or letters and a space (`Bearer `). Still shown to a member as they are: the host, port and path of a `url`, the Service's address in `status.url`, `managed.image`, `auth.secretRef`, `auth.header`, the probe's `port` and a `tcpSocket` or `grpc` probe; so keep a credential out of those too. The failures are the Agent's: 401 `unauthenticated`, 403 `no_role` (a namespace without a Team included, for all but a bootstrap admin, who gets 404 `not_found` there, for the list as for one) and 404 `not_found` for a ToolServer that is not there, or is in another namespace.
+- Reading the Runners (`GET /api/v1/namespaces/<namespace>/runners` and `…/runners/<name>`), like an Agent (`cadre auth token`, or no header under `--auth=none`). The list is `{"items":[…]}`, sorted by name, each item `name`, `ready` and, when it is not Ready, `reason` and `message`; the answer for one is an Agent's, with `"kind":"Runner"`:
+
+  ```sh
+  curl -s -H "Authorization: Bearer $(cadre auth token)" \
+    "$CADRE_SERVER/api/v1/namespaces/demo/runners"
+  curl -s -H "Authorization: Bearer $(cadre auth token)" \
+    "$CADRE_SERVER/api/v1/namespaces/demo/runners/ci-box"
+  ```
+
+  The list (`gpu` and `clash` name the same ServiceAccount, and `clash` is the older, so `gpu` is not Ready):
+
+  ```json
+  {"items":[{"name":"ci-box","ready":true},{"name":"clash","ready":true},{"name":"gpu","ready":false,"reason":"ServiceAccountInUse","message":"ServiceAccount gpu-runner is Runner clash's, the oldest Runner naming it (then by name); give this Runner a ServiceAccount of its own"}]}
+  ```
+
+  A viewer, and an AgentAccess with the viewer role, for `ci-box`:
+
+  ```json
+  {"name":"ci-box","ready":true,"kind":"Runner","generation":1,"observedGeneration":1,"conditions":[{"type":"Ready","status":"True","observedGeneration":1,"lastTransitionTime":"2026-10-31T16:56:15Z","reason":"TokenMinted","message":""}],"metadata":{"uid":"4e2c8a8c-c985-438f-b7cd-01e1f24b93e8","resourceVersion":"261","creationTimestamp":"2026-10-31T16:56:07Z","labels":{"tier":"gold"}}}
+  ```
+
+  A member, an AgentAccess with the member role and an admin (everyone under `--auth=none`) get the same, and `metadata.annotations`, `spec` and `status` besides, all as they are:
+
+  ```json
+  {"…":"…","metadata":{"…":"…","annotations":{"owner":"platform"}},"spec":{"labels":{"arch":"arm64","pool":"ci"}},"status":{"observedGeneration":1,"conditions":[{"type":"Ready","status":"True","…":"…"}],"tokenSecret":"ci-box-token","mintedAt":"2026-10-31T16:56:15Z"}}
+  ```
+
+  `status.tokenHash`, the SHA-256 of the token Cadre minted for a Runner without a `serviceAccount`, is in the Runner object but in no answer, an admin's or `--auth=none`'s included; `tokenSecret` names the Secret the token is in, and `mintedAt` changes when the token does, which is enough to tell a rotation. Nothing else of a Runner is masked: its `spec.labels` and `spec.serviceAccount`, the name of its Secret and its conditions hold no credential. The failures are the Agent's: 401 `unauthenticated`, 403 `no_role` (a namespace without a Team included, for all but a bootstrap admin, who gets 404 `not_found` there, and under `--auth=none` too, for the list as for one) and 404 `not_found` for a Runner that is not there, or is in another namespace.
 - Reading one Agent (`GET /api/v1/namespaces/<namespace>/agents/<name>`), with an ID token from `cadre auth token` (with logins; without them, `--auth=none`, send no header). The answer is an object, `name`, `ready`, `reason` and `message` as in the list, then `kind`, `generation`, `observedGeneration`, `conditions` and `metadata` (`uid`, `resourceVersion`, `creationTimestamp`, and `labels` and, for a member and up, `annotations`, when there are any), and for a member and up `spec` and `status`. Which of them an answer carries is decided by the caller's role on the Team:
 
   ```sh
