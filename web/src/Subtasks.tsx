@@ -40,6 +40,7 @@ export function Subtasks({ ns, name, onRead }: { ns: string; name: string; onRea
     },
     5000,
     [ns, name, pages],
+    { ns, topic: "tasks", match: (h) => h.event === "task" && h.parent === name },
   );
 
   // Until a page has loaded, an error is all there is to show; after, what

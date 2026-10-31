@@ -8,6 +8,7 @@ import { agentLink, boardLink } from "./links";
 export function Agents() {
   return (
     <ConfigList
+      kind="Agent"
       title="Agents"
       noun="agent"
       link={agentLink}

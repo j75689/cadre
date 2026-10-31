@@ -8,6 +8,7 @@ import { modelProviderLink } from "./links";
 export function ModelProviders() {
   return (
     <ConfigList
+      kind="ModelProvider"
       title="Model providers"
       noun="model provider"
       link={modelProviderLink}
@@ -23,5 +24,5 @@ export function ModelProviders() {
 // list is summary-only and a viewer gets no Agent spec, so it needs an
 // API that answers them. TODO(used-by): a Used by card here.
 export function ModelProviderDetail() {
-  return <ConfigDetail noun="model provider" title="Model providers" section="modelproviders" load={getModelProvider} />;
+  return <ConfigDetail kind="ModelProvider" noun="model provider" title="Model providers" section="modelproviders" load={getModelProvider} />;
 }

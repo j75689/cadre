@@ -92,7 +92,9 @@ func TestBoardDigestAbsentFields(t *testing.T) {
 // A stream whose client reads nothing is dropped at the write deadline, and
 // its slot freed.
 func TestWatchWriteTimeout(t *testing.T) {
-	defer func(d time.Duration) { watchWriteTimeout = d }(watchWriteTimeout)
+	// Runs after srv.Close (cleanups are LIFO), which waits for the handler that reads it.
+	saved := watchWriteTimeout
+	t.Cleanup(func() { watchWriteTimeout = saved })
 	watchWriteTimeout = 100 * time.Millisecond
 	h := NewHub(nil)
 	mux := http.NewServeMux()
