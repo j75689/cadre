@@ -216,24 +216,29 @@ The board's controls replace the history entry, so they do not flood Back, and a
 
 ### Live updates
 
-The pages of a team read what they show again as soon as cadre-server hints that it changed, on its [watch stream](architecture.md#events) (`web/src/live.ts`). A tab holds one stream per team, shared by its pages, opened by the first page that wants it and closed when the last one goes, so leaving the team closes it. Only the task page's run in progress opens it with `?task=<name>`, so a page holds one stream at most; another task reopens it. The stream only says what to read: each page reads with the route and the role it reads with anyway.
+The pages of a team read what they show again as soon as cadre-server hints that it changed, on its [watch stream](architecture.md#events) (`web/src/live.ts`). The stream only says what to read: each page reads with the route and the role it reads with anyway.
+
+The tabs of a browser profile share the streams, since a browser keeps at most 6 connections to a host over HTTP/1.1 (as cadre-server is served, behind `kubectl port-forward` or on `:8080`), for every tab together, and a stream holds one for as long as it is open. One tab, the one holding the Web Lock `cadre-live`, opens the streams and passes what they send to the others over the BroadcastChannel `cadre-live`; each tab's pages take what concerns them from it. A tab asks for the streams of the teams its pages show while it is visible, and for none while it is hidden. The tab that holds them opens one stream per team asked for, **2 at most however many tabs and teams are open**, so 4 connections stay free for the pages' reads: the teams the tabs asked for last get them, and a page of another team polls. When that tab is closed or reloaded, another one takes the lock at once and opens the streams again; until their `hello`, the pages poll.
+
+A stream is opened with `?task=<name>` for the run in progress of the task page that was shown last, so a team holds one stream however many runs are open; another task reopens it. The run in progress on another tab polls every 4 s, as before.
 
 | Hint | What is read again |
 | --- | --- |
 | `task` | The board and its list, every task; the task page, its own task; its Subtasks, a task whose parent it is |
 | `config` | The Agents and Model providers lists, a resource of their kind; one Agent or ModelProvider, itself; Settings, the Team |
 | `run` | The run in progress's events, its own run |
-| `resync`, or a `hello` after a reconnect | Everything the tab shows from the stream, as hints in between were lost |
+| `resync`, or a `hello` (a stream opened, reconnected or taken over) | Everything the tab shows from the stream, as hints in between were not seen |
 
 A hint reads 100 ms after it comes, so hints that come together are one read, and a read already under way finishes first and is followed by one more: a change shows within a second. While a page is live it still reads every 60 seconds (or its own interval if longer), as hints may be lost. The Agent access pages and the team list get no hints and poll as before.
 
 A page falls back to its interval (the board, the task page and its subtasks every 5 s, the run in progress every 4 s, the other pages every 15 s) whenever its hints do not come:
-- the stream is refused when opened: `401`, `403`, `404` (a namespace without a Team, or a cadre-server without the route) or `503` (the replica's cap). The browser does not retry these, and the tab polls until the team is opened again;
+- the stream is refused when opened: `401`, `403`, `404` (a namespace without a Team, or a cadre-server without the route) or `503` (the replica's cap, or a proxy while cadre-server is being replaced). The browser does not retry these; the stream is opened again a minute later;
 - its `hello` says the topic is not served (`tasks`, `config` or `runs` false);
 - it ends with `no_role` or `no_team`: it is not opened again, and the next poll shows the 403 or the 404 as the page does today;
-- it drops: the browser reconnects every 3 s, and the page polls until the next `hello`. `end` `lifetime` or `shutdown` is such a reconnect.
+- it drops: the browser reconnects every 3 s, and the page polls until the next `hello`. `end` `lifetime` or `shutdown` is such a reconnect;
+- the team is not one of the 2 that have a stream, or no tab holds the streams (while one takes over from a closed one).
 
-A browser without `EventSource` polls, as every page did before the stream.
+A browser without `EventSource`, Web Locks or BroadcastChannel opens no stream and polls, as every page did before it. Web Locks need a secure context: HTTPS, or `http://localhost` as `kubectl port-forward` gives; a page served over plain HTTP on another host (`http://<ip>:8080`) polls.
 
 ## Components
 
