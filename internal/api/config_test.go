@@ -600,6 +600,7 @@ func TestListSchedules(t *testing.T) {
 		{"a viewer", "eve@example.test", "readers"},
 		{"a viewer AgentAccess", "agentaccess/bot", "viewer"},
 		{"a member", "dana@example.test", "backend"},
+		{"a member AgentAccess", "agentaccess/bot", "member"},
 		{"an admin", "lead@example.test", ""},
 	} {
 		if code, body := withRoles(c.user, c.groups, "/namespaces/team-a/schedules"); code != 200 || !strings.Contains(body, `"daily"`) {
@@ -611,6 +612,12 @@ func TestListSchedules(t *testing.T) {
 	}
 	if code, body := withRoles("dana@example.test", "backend", "/namespaces/team-c/schedules"); code != 403 || !strings.Contains(body, `"no_role"`) {
 		t.Errorf("with logins, a namespace without a Team: %d %s", code, body)
+	}
+	boot := startConfig(t, api.WithAccess(auth.ModeOIDC, &authz.Policy{FoldUsernames: true, AdminUsers: []string{"root@example.test"}}), configCluster(t))
+	for _, p := range []string{"/namespaces/team-c/schedules", "/namespaces/team-c/schedules/daily"} {
+		if code, body := boot("root@example.test", "", p); code != 404 {
+			t.Errorf("a bootstrap admin, a namespace without a Team, %s: %d %s", p, code, body)
+		}
 	}
 }
 
