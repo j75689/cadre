@@ -113,12 +113,27 @@ export function MetadataCard({ resource }: { resource: ConfigResource }) {
   );
 }
 
-// YAMLCard is the resource's metadata, spec and status as the server
-// answered them, printed as YAML, to read and copy; never to edit, as Git
-// owns them.
-export function YAMLCard({ resource }: { resource: ConfigResource }) {
-  const { metadata, spec, status } = resource;
-  const text = toYAML({ metadata, ...(spec && { spec }), ...(status && { status }) });
+// apiVersion is every configuration kind's group and version
+// (GroupVersion in api/v1alpha1/groupversion_info.go).
+export const apiVersion = "cadre.dev/v1alpha1";
+
+// manifest is the resource as one to kubectl apply: what Git holds, so not
+// the fields the server sets (uid, resourceVersion, creationTimestamp,
+// status), with the name and namespace in its metadata.
+function manifest({ kind, name, metadata: { labels, annotations }, spec }: ConfigResource, namespace: string) {
+  return { apiVersion, kind, metadata: { name, namespace, ...(labels && { labels }), ...(annotations && { annotations }) }, ...(spec && { spec }) };
+}
+
+// YAMLCard is the resource as a manifest, printed as YAML, to read and
+// copy; never to edit, as Git owns it. Its status is shown under it, not
+// copied. A copy applies as is only with the whole spec: a viewer's has
+// none, a member's may hold masked values, and the note beside Copy says
+// so.
+export function YAMLCard({ resource, namespace }: { resource: ConfigResource; namespace: string }) {
+  const { spec, status } = resource;
+  const text = toYAML(manifest(resource, namespace));
+  const hidden = hasMasked(spec) || hasMaskedURL(resource);
+  const note = !spec ? "No spec; not a manifest to apply." : hidden ? "Contains hidden values; not applyable as is." : "";
   const pre = useRef<HTMLPreElement>(null);
   const [copied, setCopied] = useState("");
   const copy = async () => {
@@ -138,11 +153,16 @@ export function YAMLCard({ resource }: { resource: ConfigResource }) {
         <span role="status" className="hint">
           {copied}
         </span>
-        <Button small onClick={copy}>
-          Copy
+        {note && (
+          <span id="yaml-note" className="hint">
+            {note}
+          </span>
+        )}
+        <Button small onClick={copy} aria-describedby={note ? "yaml-note" : undefined}>
+          {note ? "Copy" : "Copy manifest"}
         </Button>
       </div>
-      {(hasMasked(spec) || hasMaskedURL(resource)) && (
+      {hidden && (
         <p className="hint card-body">
           Values shown as <code>{masked}</code> are set but hidden from members; admins see them.
         </p>
@@ -150,6 +170,17 @@ export function YAMLCard({ resource }: { resource: ConfigResource }) {
       <pre ref={pre} className="yaml card-body" tabIndex={0} role="region" aria-label="YAML text">
         {text}
       </pre>
+      {status && (
+        <>
+          <div className="card-head">
+            <h3 id="yaml-status">Status</h3>
+            <span className="hint">Not copied</span>
+          </div>
+          <pre className="yaml card-body" tabIndex={0} role="region" aria-labelledby="yaml-status">
+            {toYAML(status)}
+          </pre>
+        </>
+      )}
     </section>
   );
 }
