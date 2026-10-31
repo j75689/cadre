@@ -77,3 +77,4 @@ Every driver must pass the same suite, or one of them will silently misbehave:
 - The process is killed and restarted; the index rebuilds completely.
 - Outbox items are reprocessed after the dispatcher dies, and take effect exactly once.
 - Two managers run at once under chaos (kills, restarts, delayed writes); no task ever runs twice.
+- Browsers watch the boards through that chaos: every watch stream ends within 5 s of its server's kill, no hint carries spec or thread text, and within 10 s of quiescence every board and task page shows what the store holds.
