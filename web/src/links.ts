@@ -29,6 +29,9 @@ export function boardLink(ns: string, f: { assignee?: string; phase?: string; vi
 // agentLink is an Agent's page.
 export const agentLink = (ns: string, name: string) => `${teamPath(ns)}/agents/${encodeURIComponent(name)}`;
 
+// modelProviderLink is a ModelProvider's page.
+export const modelProviderLink = (ns: string, name: string) => `${teamPath(ns)}/modelproviders/${encodeURIComponent(name)}`;
+
 // taskLink is a task's page, opened at one of its runs when run is set.
 export function taskLink(ns: string, name: string, run?: string): string {
   return withQuery(`${teamPath(ns)}/tasks/${encodeURIComponent(name)}`, [[params.run, run]]);

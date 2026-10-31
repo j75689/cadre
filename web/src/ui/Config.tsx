@@ -15,6 +15,17 @@ export const masked = "(set)";
 // hasMasked says whether a value holds one shown as masked.
 const hasMasked = (v: unknown): boolean => v === masked || (typeof v === "object" && v !== null && Object.values(v).some(hasMasked));
 
+// maskedURL matches a URL with parts shown as masked: its user info, a
+// query value or a valueless query part, its fragment (maskURL in
+// internal/api/config.go).
+const maskedURL = /:\/\/\(set\)@|[?&]([^&#=]*=)?\(set\)(?=[&#]|$)|#\(set\)$/;
+
+// hasMaskedURL says whether the resource holds a URL shown with masked
+// parts: only a ModelProvider's spec.baseURL, the one the server masks so.
+// Elsewhere such a text is an admin's, as written.
+const hasMaskedURL = ({ kind, spec }: ConfigResource): boolean =>
+  kind === "ModelProvider" && typeof spec?.baseURL === "string" && maskedURL.test(spec.baseURL);
+
 // ConditionsCard is the resource's conditions, each with the generation
 // it is about: one older than the resource's is about a spec since changed.
 export function ConditionsCard({ resource }: { resource: ConfigResource }) {
@@ -131,7 +142,7 @@ export function YAMLCard({ resource }: { resource: ConfigResource }) {
           Copy
         </Button>
       </div>
-      {hasMasked(spec) && (
+      {(hasMasked(spec) || hasMaskedURL(resource)) && (
         <p className="hint card-body">
           Values shown as <code>{masked}</code> are set but hidden from members; admins see them.
         </p>

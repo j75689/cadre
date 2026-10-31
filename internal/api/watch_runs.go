@@ -162,7 +162,7 @@ func (h *Hub) publishRun(key storage.Key, run string, seq int64) {
 	if t == nil || t.run != run {
 		return
 	}
-	ev := watchEvent{kind: "run", run: RunHint{Task: key.Name, Run: run, Seq: seq}}
+	ev := watchEvent{kind: "run", data: RunHint{Task: key.Name, Run: run, Seq: seq}}
 	for w := range t.subs {
 		h.offer(w, ev)
 	}
