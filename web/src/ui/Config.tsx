@@ -15,10 +15,10 @@ export const masked = "(set)";
 // hasMasked says whether a value holds one shown as masked.
 const hasMasked = (v: unknown): boolean => v === masked || (typeof v === "object" && v !== null && Object.values(v).some(hasMasked));
 
-// maskedURL matches a URL with parts shown as masked: its user info, a
-// query value or a valueless query part, its fragment (maskURL in
-// internal/api/config.go).
-const maskedURL = /:\/\/\(set\)@|[?&]([^&#=]*=)?\(set\)(?=[&#]|$)|#\(set\)$/;
+// maskedURL matches a URL with parts shown as masked: its user info (also
+// in a scheme-less "//" path), a query value or a valueless query part, its
+// fragment (maskURL in internal/api/config.go).
+const maskedURL = /(?:^|:)\/\/\(set\)@|[?&]([^&#=]*=)?\(set\)(?=[&#]|$)|#\(set\)$/;
 
 // maskedURLs are, by kind, the paths in a spec to the URLs the server masks
 // so (maskURL's callers in internal/api/config.go).

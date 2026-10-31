@@ -23,6 +23,8 @@ describe("YAMLCard", () => {
     ["its URL", { url: "https://(set)@api.example.test/mcp/?k=(set)#(set)" }],
     ["a managed server's path", { managed: { ...managed, path: "/mcp?k=(set)" } }],
     ["a managed server's probe path", { managed: { ...managed, readinessProbe: { httpGet: { path: "/healthz#(set)", port: 8080 } } } }],
+    ["a managed server's scheme-less path", { managed: { ...managed, path: "//(set)@mcp.internal/mcp" } }],
+    ["a managed server's scheme-less probe path", { managed: { ...managed, readinessProbe: { httpGet: { path: "//(set)@h/healthz", port: 8080 } } } }],
   ])("notes a ToolServer's URL masked in %s", (_, spec) => {
     render(<YAMLCard resource={tool(spec)} namespace="a" />);
     const copy = screen.getByRole("button", { name: "Copy" });
@@ -32,7 +34,7 @@ describe("YAMLCard", () => {
   });
 
   it("adds no note for a URL-like (set) outside a ToolServer's masked URLs", () => {
-    render(<YAMLCard resource={tool({ managed: { ...managed, image: "registry.example.test/mcp?x=(set)", path: "/mcp" } })} namespace="a" />);
+    render(<YAMLCard resource={tool({ managed: { ...managed, image: "//(set)@registry.example.test/mcp?x=(set)", path: "/mcp" } })} namespace="a" />);
     expect(screen.getByRole("button", { name: "Copy manifest" })).toBeTruthy();
     expect(screen.queryByText(/hidden/)).toBeNull();
   });
