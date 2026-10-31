@@ -214,6 +214,27 @@ The board's controls replace the history entry, so they do not flood Back, and a
     - The token lives only in the AgentAccess card's React state: never in a context, `localStorage` or `sessionStorage`, the URL or history state, the title, an `Error`, the console or a live region. Leaving the page drops it, and so does `pagehide` before the browser keeps the page in its back/forward cache, so Back cannot show it again. cadre-server also sends `Cache-Control: no-store` with the app's pages and with the rotation's answer: Chrome then keeps a page that rotated a token out of its back/forward cache, and Back loads it again. A page that rotated nothing is still restored there, unless Log out changed the session cookie meanwhile. A rotation answered after the page was left shows no token either: the card says "Rotated while the page was left, so the token is not shown: it is in Secret *secret*; rotate again to see one here". An AgentAccess found gone drops the token, an open Edit form and a pending confirm, so one made again with the name brings none of them back.
     - **Delete** asks inline (a group named "Delete *name*?"): "Delete *name*? Its agent loses access at once." (Yes, delete it / Keep it). A 204, or a 404 (already gone), goes back to the list, whose status mounts empty and then says "Deleted *name*.", so that it is announced. Any other refusal shows the server's message as it is in an alert.
 
+### Live updates
+
+The pages of a team read what they show again as soon as cadre-server hints that it changed, on its [watch stream](architecture.md#events) (`web/src/live.ts`). A tab holds one stream per team, shared by its pages, opened by the first page that wants it and closed when the last one goes, so leaving the team closes it. Only the task page's run in progress opens it with `?task=<name>`, so a page holds one stream at most; another task reopens it. The stream only says what to read: each page reads with the route and the role it reads with anyway.
+
+| Hint | What is read again |
+| --- | --- |
+| `task` | The board and its list, every task; the task page, its own task; its Subtasks, a task whose parent it is |
+| `config` | The Agents and Model providers lists, a resource of their kind; one Agent or ModelProvider, itself; Settings, the Team |
+| `run` | The run in progress's events, its own run |
+| `resync`, or a `hello` after a reconnect | Everything the tab shows from the stream, as hints in between were lost |
+
+A hint reads 100 ms after it comes, so hints that come together are one read, and a read already under way finishes first and is followed by one more: a change shows within a second. While a page is live it still reads every 60 seconds (or its own interval if longer), as hints may be lost. The Agent access pages and the team list get no hints and poll as before.
+
+A page falls back to its interval (the board, the task page and its subtasks every 5 s, the run in progress every 4 s, the other pages every 15 s) whenever its hints do not come:
+- the stream is refused when opened: `401`, `403`, `404` (a namespace without a Team, or a cadre-server without the route) or `503` (the replica's cap). The browser does not retry these, and the tab polls until the team is opened again;
+- its `hello` says the topic is not served (`tasks`, `config` or `runs` false);
+- it ends with `no_role` or `no_team`: it is not opened again, and the next poll shows the 403 or the 404 as the page does today;
+- it drops: the browser reconnects every 3 s, and the page polls until the next `hello`. `end` `lifetime` or `shutdown` is such a reconnect.
+
+A browser without `EventSource` polls, as every page did before the stream.
+
 ## Components
 
 Shared pieces live in `web/src/ui/`.
