@@ -99,6 +99,17 @@ var configKinds = []configKind{{
 		}
 		return *spec, status
 	},
+}, {
+	// A Schedule's task template is not masked: each Task it creates holds
+	// it as it is, and a viewer reads those.
+	plural: "schedules", kind: "Schedule",
+	newObj:  func() client.Object { return &v1alpha1.Schedule{} },
+	newList: func() client.ObjectList { return &v1alpha1.ScheduleList{} },
+	status:  func(o client.Object) v1alpha1.ConfigStatus { return o.(*v1alpha1.Schedule).Status.ConfigStatus },
+	view: func(o client.Object, _ authz.Role) (any, any) {
+		s := o.(*v1alpha1.Schedule)
+		return s.Spec, s.Status
+	},
 }}
 
 // set stands in for a value a member may know is there but not read.
