@@ -4,7 +4,7 @@ import { ConfigDetail } from "./ConfigDetail";
 import { modelProviderLink, toolServerLink } from "./links";
 
 // Ref is a used resource's name, a link to its page.
-function Ref({ kind, name }: { kind: "ModelProvider" | "ToolServer"; name: string }) {
+export function Ref({ kind, name }: { kind: "ModelProvider" | "ToolServer"; name: string }) {
   const { ns = "" } = useParams();
   return (
     <Link to={(kind === "ToolServer" ? toolServerLink : modelProviderLink)(ns, name)}>

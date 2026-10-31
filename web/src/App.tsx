@@ -7,6 +7,7 @@ import { ModelProviderDetail, ModelProviders } from "./ModelProviders";
 import { Board } from "./Board";
 import { IdentityBox, IdentityProvider, roleOf, useIdentityDetails } from "./Identity";
 import { NewTask } from "./NewTask";
+import { NotifierDetail, Notifiers } from "./Notifiers";
 import { Settings } from "./Settings";
 import { HelpDialog, useShortcuts } from "./shortcuts";
 import { TaskPage } from "./TaskPage";
@@ -67,6 +68,18 @@ function TeamToolServers() {
 function OneToolServer() {
   const { ns = "", name = "" } = useParams();
   return <ToolServerDetail key={`${ns}/${name}`} />;
+}
+
+// the notifiers,
+function TeamNotifiers() {
+  const { ns = "" } = useParams();
+  return <Notifiers key={ns} />;
+}
+
+// a Notifier's page to one Notifier,
+function OneNotifier() {
+  const { ns = "", name = "" } = useParams();
+  return <NotifierDetail key={`${ns}/${name}`} />;
 }
 
 // the settings,
@@ -239,6 +252,8 @@ export function App() {
               <Route path="modelproviders/:name" element={<OneModelProvider />} />
               <Route path="toolservers" element={<TeamToolServers />} />
               <Route path="toolservers/:name" element={<OneToolServer />} />
+              <Route path="notifiers" element={<TeamNotifiers />} />
+              <Route path="notifiers/:name" element={<OneNotifier />} />
               <Route path="new" element={<TeamNewTask />} />
               <Route path="tasks/:name" element={<OneTask />} />
               <Route path="settings" element={<TeamSettings />} />
