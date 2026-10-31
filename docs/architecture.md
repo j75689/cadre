@@ -176,8 +176,27 @@ Runtime-mode backends differ only in who starts the runner process. For the Kube
 
   ```
 
+  In a namespace without a Team (here `empty`, as a bootstrap admin, or under `--auth=none`) the same request is refused before any stream starts, and a name that is not a lowercase DNS label (`Team-C`) is a `400` `invalid`:
+
+  ```
+  $ curl -i -H "Authorization: Bearer $(cadre auth token)" "$CADRE_SERVER/api/v1/namespaces/empty/watch"
+  HTTP/1.1 404 Not Found
+
+  {"error":{"code":"not_found","message":"not found"}}
+  ```
+
+  If the Team is deleted while a stream is open, the next ping ends it for a caller who keeps a role without the Team, and a reconnect is the `404` above:
+
+  ```
+  event: end
+  data: {"reason":"no_team"}
+
+  ```
+
+  A client handles these ends: `lifetime` and `shutdown`, reconnect; `no_role`, stop (a reconnect is a 403); `no_team`, stop (a reconnect is a 404). A browser's `EventSource` does not reconnect after a 404 or a 403, so a page that gets either polls the API instead.
+
   Read the Task again with `GET /api/v1/namespaces/demo/tasks/release-notes`. Without a token the answer is `401` `unauthenticated`; with no role on the Team, `403` `no_role`; in a namespace without a Team, `404` `not_found` for a bootstrap admin or under `--auth=none`; past the limit, `503` `unavailable` ("this replica serves 1 watch streams already: retry later; the board polls meanwhile", with `--watch-max-streams=1`). `--watch-max-streams=0`, or less, stops cadre-server at start: `--watch-max-streams 0: must be at least 1`.
-- Upgrading to a cadre-server that serves the stream: nothing to apply. It adds one flag, `--watch-max-streams` (default 2000; the chart's `server.watchMaxStreams`, unset by default, and when set at least 1), and reads the Tasks the informers already hold: no RBAC or CRD change. Nothing in the web UI uses the stream yet, so an upgrade changes nothing a user sees.
+- Upgrading to a cadre-server that serves the stream: nothing to apply. It adds one flag, `--watch-max-streams` (default 2000; the chart's `server.watchMaxStreams`, unset by default, and when set at least 1), and reads the Tasks the informers already hold: no RBAC or CRD change. Nothing in the web UI uses the stream yet, so an upgrade changes nothing a user sees. One behaviour changes: a client that opened the stream in a namespace without a Team (a bootstrap admin, or `--auth=none`) got a `200` stream; it now gets a `404` and, if it reads `end`, learns of `no_team`. No flag, RBAC, CRD or chart value changes.
 
 ## Identity and access
 
