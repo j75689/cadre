@@ -54,7 +54,7 @@ type WatchConfig struct {
 	MaxStreams int           // streams open at once; one more is answered 503 (2000)
 	Ping       time.Duration // between pings, each of which checks the role again (20s)
 	Lifetime   time.Duration // of a stream, ±20 %, before it ends and the browser reconnects (300s)
-	Coalesce   time.Duration // a task's changes within it are one hint (250ms)
+	Coalesce   time.Duration // a task's or resource's changes within it are one hint (250ms)
 }
 
 type watchServer struct {
@@ -88,11 +88,13 @@ func IsWatch(r *http.Request) bool {
 }
 
 // Hub hands each watch stream the hints for its namespace. There is one per
-// server, fed by the store's Notifier. Hints are lossy: a stream that falls
+// server, fed by the store's Notifier and, through ConfigEvents, the
+// informers of the configuration kinds. Hints are lossy: a stream that falls
 // behind is told to resync, and a browser that reconnects reads its board
 // again.
 type Hub struct {
-	tasks bool // a Notifier feeds it
+	tasks  bool // a Notifier feeds it
+	config bool // ConfigEvents feeds it
 
 	mu      sync.Mutex
 	subs    map[string]map[*watcher]struct{} // by namespace
@@ -111,9 +113,9 @@ type Hub struct {
 type watcher struct{ events chan watchEvent }
 
 type watchEvent struct {
-	kind string // "task", "run" or "resync"
-	task TaskHint
-	run  RunHint
+	kind string // "task", "config", "run" or "resync"
+	key  string // what a stream coalesces it by
+	data any    // a TaskHint, ConfigHint or RunHint
 }
 
 // NewHub returns a hub fed by n; with a nil n it has no task hints, and its
@@ -131,8 +133,7 @@ func NewHub(n storage.Notifier) *Hub {
 func (h *Hub) Close() { h.closeOnce.Do(func() { close(h.done) }) }
 
 // publishTask hints t's namespace's streams that t changed, if it changed
-// in a way the board shows. It never blocks: a stream whose buffer is full
-// loses what it holds and gets one resync instead.
+// in a way the board shows. It never blocks.
 func (h *Hub) publishTask(t *v1alpha1.Task) {
 	key := storage.Key{Namespace: t.Namespace, Name: t.Name}
 	d := boardDigest(t)
@@ -142,19 +143,24 @@ func (h *Hub) publishTask(t *v1alpha1.Task) {
 		return
 	}
 	h.digests[key] = d
-	ev := watchEvent{kind: "task", task: TaskHint{Name: t.Name, Number: t.Status.Number, Phase: t.Status.Phase}}
+	hint := TaskHint{Name: t.Name, Number: t.Status.Number, Phase: t.Status.Phase}
 	if t.Spec.ParentRef != nil {
-		ev.task.Parent = t.Spec.ParentRef.Name
+		hint.Parent = t.Spec.ParentRef.Name
 	}
-	for w := range h.subs[t.Namespace] {
-		h.offer(w, ev)
-	}
+	h.send(t.Namespace, watchEvent{kind: "task", key: "task/" + t.Name, data: hint})
 	if rt := h.runs.tasks[key]; rt != nil {
 		var run string
 		if t.Status.Run != nil {
 			run = t.Status.Run.ID
 		}
 		h.switchRun(key, rt, run)
+	}
+}
+
+// send offers ev to ns's streams. Call it with h.mu held.
+func (h *Hub) send(ns string, ev watchEvent) {
+	for w := range h.subs[ns] {
+		h.offer(w, ev)
 	}
 }
 
@@ -328,7 +334,7 @@ func (s *Server) watchStream(w http.ResponseWriter, r *http.Request) {
 		return write("event: %s\ndata: %s\n\n", kind, b)
 	}
 
-	hello := WatchHello{Tasks: c.hub.tasks, Runs: runs, LifetimeSeconds: int(c.Lifetime / time.Second)}
+	hello := WatchHello{Tasks: c.hub.tasks, Config: c.hub.config, Runs: runs, LifetimeSeconds: int(c.Lifetime / time.Second)}
 	if !write("retry: %d\n", watchRetryMillis) || !send("hello", hello) {
 		return
 	}
@@ -336,10 +342,11 @@ func (s *Server) watchStream(w http.ResponseWriter, r *http.Request) {
 	defer lifetime.Stop()
 	ping := time.NewTicker(c.Ping)
 	defer ping.Stop()
-	// A task's hints wait for the flush, so a burst of changes to it is one.
+	// A task's or resource's hints wait for the flush, so a burst of
+	// changes to it is one.
 	var (
 		order   []string
-		pending = map[string]TaskHint{}
+		pending = map[string]watchEvent{}
 		flush   <-chan time.Time
 	)
 	for {
@@ -364,32 +371,32 @@ func (s *Server) watchStream(w http.ResponseWriter, r *http.Request) {
 		case ev := <-sub.events:
 			// A run's hints come at most once a tail interval already.
 			if ev.kind == "run" {
-				if !send("run", ev.run) {
+				if !send("run", ev.data) {
 					return
 				}
 				continue
 			}
 			if ev.kind == "resync" {
-				order, pending, flush = nil, map[string]TaskHint{}, nil
+				order, pending, flush = nil, map[string]watchEvent{}, nil
 				if !send("resync", struct{}{}) {
 					return
 				}
 				continue
 			}
-			if _, ok := pending[ev.task.Name]; !ok {
-				order = append(order, ev.task.Name)
+			if _, ok := pending[ev.key]; !ok {
+				order = append(order, ev.key)
 			}
-			pending[ev.task.Name] = ev.task
+			pending[ev.key] = ev
 			if flush == nil {
 				flush = time.After(c.Coalesce)
 			}
 		case <-flush:
-			for _, name := range order {
-				if !send("task", pending[name]) {
+			for _, key := range order {
+				if ev := pending[key]; !send(ev.kind, ev.data) {
 					return
 				}
 			}
-			order, pending, flush = nil, map[string]TaskHint{}, nil
+			order, pending, flush = nil, map[string]watchEvent{}, nil
 		}
 	}
 }

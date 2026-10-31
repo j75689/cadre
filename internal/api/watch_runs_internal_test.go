@@ -102,7 +102,7 @@ func TestRunTailNamespaces(t *testing.T) {
 	if err := store.Append(t.Context(), "team-b/y/events/01J00000000000000000000001", storage.SeqKey(1), []byte(`{}`)); err != nil {
 		t.Fatal(err)
 	}
-	if ev := <-other.events; ev.kind != "run" || ev.run.Task != "y" || ev.run.Seq != 1 {
+	if ev := <-other.events; ev.kind != "run" || ev.data.(RunHint).Task != "y" || ev.data.(RunHint).Seq != 1 {
 		t.Fatalf("team-b's event %+v, want a run hint", ev)
 	}
 	time.Sleep(2 * h.runs.every)
