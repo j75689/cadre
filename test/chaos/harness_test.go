@@ -3,7 +3,9 @@ package chaos_test
 import (
 	"context"
 	"errors"
+	"fmt"
 	"io"
+	stdlog "log"
 	"log/slog"
 	"math/rand/v2"
 	"net/http"
@@ -100,6 +102,7 @@ var (
 // Manager, loops and listener.
 type server struct {
 	name   string
+	id     string // this instance's, in instanceHeader
 	srv    *httptest.Server
 	driver *kubernetes.Driver
 	cancel context.CancelFunc
@@ -108,7 +111,26 @@ type server struct {
 	// leader that missed its renewal): cadre-server exits then, so the
 	// server is to die and be started again.
 	lost chan error
+	hub  *api.Hub
+	// streams is how many watch streams it serves.
+	streams atomic.Int64
 }
+
+// instanceHeader names the instance that answered, so a watch client knows
+// which stream a kill ends.
+const instanceHeader = "X-Chaos-Instance"
+
+// instances numbers the instances started.
+var instances atomic.Int64
+
+// watchConfig pings often, so pings are among the writes the chaos cuts,
+// and serves fewer streams than there are browsers, so some are refused and
+// poll.
+var watchConfig = api.WatchConfig{MaxStreams: 3, Ping: 2 * time.Second}
+
+// drainTimeout is how long a drain waits for the streams to end, as
+// cadre-server's shutdown waits for its handlers.
+const drainTimeout = 10 * time.Second
 
 // startServer starts an instance; publicURL is where runners reach the
 // servers, for the per-run MCP endpoint.
@@ -148,11 +170,23 @@ func startServer(name string, cfg kubernetes.Config, rnd *lockedRand, publicURL 
 	mcfg.Agents = controller.Agents(ctrls)
 	m := manager.New(&chaosStore{Driver: drv, rnd: rnd}, mcfg)
 	log := slog.New(slog.NewTextHandler(io.Discard, nil))
+	// The hub is fed as cadre-server's is: task hints from the driver's
+	// informer, run hints from its log.
+	hub := api.NewHub(drv)
+	hub.TailRuns(drv)
 	mux := http.NewServeMux()
 	runner.NewServer(m, log, publicURL).Register(mux)
-	api.NewServer(m, log).Register(mux)
+	api.NewServer(m, log, api.WithWatch(hub, watchConfig)).Register(mux)
 	mcp.NewServer(m, log).Register(mux)
-	s := &server{name: name, srv: httptest.NewServer(mux), driver: drv, cancel: cancel, loops: make(chan struct{}), lost: lost}
+	s := &server{name: name, id: fmt.Sprintf("%s#%d", name, instances.Add(1)), driver: drv, cancel: cancel, loops: make(chan struct{}), lost: lost, hub: hub}
+	s.srv = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set(instanceHeader, s.id)
+		if api.IsWatch(r) {
+			s.streams.Add(1)
+			defer s.streams.Add(-1)
+		}
+		mux.ServeHTTP(w, r)
+	}))
 	go func() {
 		defer close(s.loops)
 		m.Run(ctx, loopConfig, log)
@@ -161,8 +195,16 @@ func startServer(name string, cfg kubernetes.Config, rnd *lockedRand, publicURL 
 }
 
 // kill stops the instance abruptly: in-flight requests are cut, the loops
-// stop and the informer is closed.
-func (s *server) kill() {
+// stop and the informer is closed. With drain, it first ends its watch
+// streams as cadre-server's shutdown does (hub.Close), and waits up to
+// drainTimeout for them to close.
+func (s *server) kill(drain bool) {
+	if drain {
+		s.hub.Close()
+		for deadline := time.Now().Add(drainTimeout); s.streams.Load() > 0 && time.Now().Before(deadline); {
+			time.Sleep(10 * time.Millisecond)
+		}
+	}
 	s.cancel()
 	s.srv.CloseClientConnections()
 	s.srv.Close()
@@ -191,6 +233,8 @@ func newProxy(rnd *lockedRand) *proxy {
 		ErrorHandler: func(w http.ResponseWriter, _ *http.Request, err error) {
 			httpjson.WriteError(w, http.StatusServiceUnavailable, httpjson.CodeUnavailable, err.Error())
 		},
+		// A kill cuts the watch streams it relays: that is no news.
+		ErrorLog: stdlog.New(io.Discard, "", 0),
 	}
 	p.Server = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		p.count.Add(1)

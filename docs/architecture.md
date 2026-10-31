@@ -232,7 +232,21 @@ Runtime-mode backends differ only in who starts the runner process. For the Kube
   - `: ping`, a comment, every 20 seconds. Each ping checks the caller's role and the namespace's Team again, from the board index; a role taken away ends the stream with `end` `{"reason":"no_role"}`, and the browser's reconnect is a 403. The Team deleted ends it with `end` `{"reason":"no_team"}` where the caller keeps a role without it (a bootstrap admin, everyone under `--auth=none`), and the reconnect is a 404; anyone else gets `no_role`.
   - `end` `{"reason"}` before the server closes the stream: `lifetime` after 300 seconds ±20 %, when the browser reconnects (so an expired session ends at that reconnect, a 401); `shutdown` when the replica stops; `no_role`; `no_team`.
 
-  Hints are lossy, like the driver's: one may be late, merged or lost, a reconnect does not replay what was missed, and a page reads what it shows from the API. The stream is not bound by the 30-second request timeout; each write is given 30 seconds instead. Each replica serves at most `--watch-max-streams` streams at once (default 2000; the chart's `server.watchMaxStreams`), and answers one more with a 503, after which a client polls instead. A proxy in front must not buffer the stream: nginx honours `X-Accel-Buffering: no`. It should also let a connection sit idle for longer than the 20-second ping.
+  Hints are lossy, like the driver's: one may be late, merged or lost, a reconnect does not replay what was missed, and a page reads what it shows from the API. The stream is not bound by the 30-second request timeout; each write is given 30 seconds instead. Each replica serves at most `--watch-max-streams` streams at once (default 2000; the chart's `server.watchMaxStreams`), and answers one more with a 503, after which a client polls instead.
+
+  **Behind a proxy or an Ingress.** A proxy in front of cadre-server needs to do three things for the stream. If it does not, nothing is lost: a page whose stream does not open, or does not say `hello`, polls as it did before the stream existed. Nothing in the chart needs to change.
+  - Pass the stream through without buffering it. cadre-server sends `X-Accel-Buffering: no`, which nginx honours unless `proxy_ignore_headers` drops it. ingress-nginx does not buffer by default anyway (its `proxy-buffering` is `"off"`), so do not set `nginx.ingress.kubernetes.io/proxy-buffering: "on"` for this host. A proxy that buffers holds the hints back until its buffer fills, and the page polls while it waits for `hello`.
+  - Let a connection sit idle for longer than the 20-second ping. nginx's `proxy_read_timeout` is the longest gap between two reads from cadre-server, not the life of the response. So ingress-nginx's default of 60 seconds (`nginx.ingress.kubernetes.io/proxy-read-timeout`) is enough, and it need not outlast the stream's 300-second lifetime. A load balancer with a shorter idle timeout ends the stream; the browser reconnects 3 seconds later and its page reads again. `proxy-send-timeout` bounds sending the request to cadre-server, and the stream's request has no body, so it needs no change. If your controller's defaults differ, set them on the chart's Ingress:
+
+    ```yaml
+    ingress:
+      annotations:
+        nginx.ingress.kubernetes.io/proxy-buffering: "off"
+        nginx.ingress.kubernetes.io/proxy-read-timeout: "60"
+    ```
+  - Need no affinity. Any replica serves any stream, so no sticky sessions are needed. A replica that stops ends its streams with `end` `shutdown`, and the browser's reconnect reaches another replica. The chaos test (`test/chaos`) kills replicas under browsers that watch, and checks that each stream ends with its replica and that each page then shows what the store holds.
+
+  HTTP/2 to the browser is the proxy's choice: ingress-nginx speaks it over TLS by default (`use-http2`), and still reaches cadre-server over HTTP/1.1. Over HTTP/2, a browser's requests to the host share one connection. Over HTTP/1.1, as with `kubectl port-forward` or `:8080`, a browser keeps at most 6 connections to a host, which is why the UI opens 2 streams at most (see [web-ui.md](web-ui.md#live-updates)).
 
   To watch a namespace from a shell, with an ID token from `cadre auth token` (with logins; without them, `--auth=none`, send no header), `-N` so curl does not buffer:
 
