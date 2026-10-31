@@ -127,7 +127,11 @@ func TestConfigOverflowWhileReading(t *testing.T) {
 func TestConfigCoalesce(t *testing.T) {
 	h := NewHub(nil)
 	mux := http.NewServeMux()
-	m := manager.New(memory.NewBackend().Open(), manager.Config{})
+	store := memory.NewBackend().Open()
+	if err := store.CreateTeam(t.Context(), &v1alpha1.Team{ObjectMeta: metav1.ObjectMeta{Namespace: "team-a", Name: v1alpha1.TeamName}}); err != nil {
+		t.Fatal(err)
+	}
+	m := manager.New(store, manager.Config{})
 	NewServer(m, slog.New(slog.NewTextHandler(io.Discard, nil)), WithWatch(h, WatchConfig{Coalesce: 200 * time.Millisecond})).Register(mux)
 	srv := httptest.NewServer(mux)
 	t.Cleanup(srv.Close)

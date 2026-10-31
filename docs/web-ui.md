@@ -167,6 +167,25 @@ The board's controls replace the history entry, so they do not flood Back, and a
     - **Uses**: the ModelProvider (`spec.modelRef`), a link to its page (`modelProviderLink(ns, name)`), and the ToolServers (`spec.toolRefs`), each a link to its page (`toolServerLink(ns, name)`), both made by `Ref` in `AgentDetail.tsx`. A viewer, who gets no spec, has no Uses card but "The spec and status are shown to the team's members and admins."
     - **Metadata**: created, generation and observed generation, labels, annotations when the answer has them (members and admins), uid and resource version.
     - **YAML**: the resource as a manifest, printed as YAML (`toYAML` in `yaml.ts`, no dependency): `apiVersion` (`cadre.dev/v1alpha1`, the one `apiVersion` constant in `ui/Config.tsx`, matching `GroupVersion` in `api/v1alpha1`), `kind`, `metadata` with the name, the namespace (the page's), and the labels and annotations as served, then `spec`. It has none of the fields the server sets (uid, resource version, creation time, `managedFields`, `status`), so a whole one applies with `kubectl apply -f`. It is in a focusable `pre` named "YAML text" that scrolls both ways. The `status`, when the answer has one, is shown under it as YAML in a region named "Status", marked "Not copied". Copy uses `navigator.clipboard.writeText`, then "Copied" in a `role="status"`; without a clipboard the text is selected and the status says "Press Ctrl+C to copy it." The button reads "Copy manifest" only when the copy applies as is. Otherwise it reads "Copy", with a note beside it (its `aria-describedby`): "No spec; not a manifest to apply." for a viewer, and "Contains hidden values; not applyable as is." when a value is masked, since applying `(set)` would overwrite the real value. Values a member is shown masked stay `(set)` as served; when the YAML holds one, whole, or a URL the server masks holds one as its user info, a query value or its fragment (`maskURL` in `internal/api/config.go`: a ModelProvider's `spec.baseURL`, a ToolServer's `spec.url`, `spec.managed.path` and `spec.managed.readinessProbe.httpGet.path`; the `maskedURLs` table in `ui/Config.tsx`), the note shows, and so does "Values shown as `(set)` are set but hidden from members; admins see them." A `(set)` elsewhere in a text, even one that looks like a masked URL, is an admin's as written and adds no note.
+  - To apply an Agent from its page (as an admin, everyone under `--auth=none`): open `/t/<ns>/agents/<name>`, press **Copy manifest**, then paste into `kubectl apply -f -` (end the input with Ctrl+D), or into `kubectl apply --dry-run=server -f -` first to see what the API server would do. Pasted from an Agent `bot` in `demo`, the text is:
+
+    ```yaml
+    apiVersion: cadre.dev/v1alpha1
+    kind: Agent
+    metadata:
+      name: bot
+      namespace: demo
+      labels:
+        x: "y"
+    spec:
+      description: "on"
+      modelRef: claude
+      effort: high
+      runtime:
+        type: builtin
+    ```
+
+    A member's button reads "Copy" when the spec holds a `(set)`, and a viewer's always (no spec): the copy is made, but it is not to be applied. Nothing is written by the page itself; GitOps still owns the resource.
   - An Agent that is not there (a 404 with the code `not_found`) reads "No agent named *name* in this team." with a link to All agents. A failed read shows the banner with Retry; a 403 (`no_role`) shows it without Retry.
   - What uses the Agent (the Schedules that target it) is not shown yet: it needs the Schedule API.
   - The page is `ConfigDetail.tsx`, any kind's; the Agent adds its Uses card. The list is `ConfigList.tsx`, which the Agents page fills with its Tasks column.
@@ -242,6 +261,10 @@ A page falls back to its interval (the board, the task page and its subtasks eve
 - the team is not one of the 2 that have a stream, or no tab holds the streams (while one takes over from one closed or left).
 
 A browser without `EventSource`, Web Locks or BroadcastChannel opens no stream and polls, as every page did before it. Web Locks need a secure context: HTTPS, or `http://localhost` as `kubectl port-forward` gives; a page served over plain HTTP on another host (`http://<ip>:8080`) polls.
+
+Nothing on a page says whether it is live or polling, and a fallback shows no banner: the board's "Updated 12 s ago" only says when it was last read. To see it, look in the browser's network panel at the tab holding the Web Lock `cadre-live` (only that tab opens the streams; with several tabs open, check each) for a request to `/api/v1/namespaces/<namespace>/watch` that stays open: a team without one polls. The page opens at most 2 streams per browser profile however it is served. Behind an Ingress that speaks HTTP/2 to the browser, requests share one connection and the 6-connection limit above is not the constraint; over HTTP/1.1 the 2 streams are what keep 4 connections free.
+
+Upgrading: nothing to apply for the web UI. There is no flag, RBAC, CRD or chart change; it needs a cadre-server that serves the watch stream with `task` and `config` hints and, for the run in progress, `run` hints (see [Events](architecture.md#events)). Against an older cadre-server the stream answers `404` and every page polls as before.
 
 ## Components
 
