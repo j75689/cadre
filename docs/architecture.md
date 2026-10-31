@@ -149,7 +149,7 @@ Runtime-mode backends differ only in who starts the runner process. For the Kube
 - **The watch stream.** `GET /api/v1/namespaces/<namespace>/watch` is a server-sent event stream (`text/event-stream`, `Cache-Control: no-cache`, `X-Accel-Buffering: no`) of hints that the namespace's board changed, for a caller who may read it (`401` without a login, `403` without a role, as every route). A `HEAD` gets the same status and headers, `?task=` included, and returns at once, holding no stream. Its events carry JSON and no `id`, as they are never replayed:
   - `hello` first: `{"tasks":true,"config":true,"runs":false,"lifetimeSeconds":300}`, what the stream will carry. `tasks` is false on a store that gives no change notifications (both of today's drivers give them); `config` is true where cadre-server watches the configuration kinds (always, as it starts; false only in a test server without them), and a page that sees it false polls. `runs` is true when the stream names a task with `?task=<name>` and this replica can give it run hints: the store gives change notifications and the stream fits under the cap below. It does not wait for the task to have a run: a stream opened while the task is queued gets the hints of the run it starts. A `retry: 3000` comes with it.
   - `task` `{"name","number","phase","parent"}`: a Task changed in a way the board shows (its phase, priority, title, assignee, labels, waiting reason, number, parent, thread revision or run). A renewed lease is not a change. A hint carries no spec and no thread: read the task again. Changes to one task within 250 ms are one hint.
-  - `config` `{"kind","name"}`: an Agent, ModelProvider, ToolServer, Schedule, Notifier, Runner or the Team of the namespace was applied, changed (spec, status or metadata) or deleted. Every replica sees it from the informers it already keeps, and a resync or relist that brings nothing new is no hint. AgentAccess is not hinted: only those who manage access may list it. The hint carries no spec and no status: read the resource again. Changes to one resource within 250 ms are one hint.
+  - `config` `{"kind","name"}`: an Agent, ModelProvider, ToolServer, Schedule, Notifier, Runner or the Team of the namespace was applied, changed (spec, status or metadata) or deleted. Every replica sees it from the informers it already keeps, and a resync or relist that brings nothing new is no hint. AgentAccess is not hinted: only those who manage access may list it. The hint carries no spec and no status: read the resource again. Changes to one resource within 250 ms are one hint, and two resources of one kind each get theirs. What is already there when the stream opens is no hint (read it once, then follow), and neither is another namespace's change. To act on a hint, read the resource: `GET /api/v1/namespaces/<namespace>/agents/<name>` for an `Agent`, `.../modelproviders/<name>` for a `ModelProvider`, `.../toolservers/<name>` for a `ToolServer`, `.../team` for the `Team` (its `name` is `team`); a resource that is gone answers 404. A Schedule, Notifier or Runner has no read route yet, so a page that shows them polls.
   - `run` `{"task","run","seq"}`, on a stream with `runs` true: events up to `seq` were appended to the task's current run. It carries no event: read the run's events again. A run's events are log appends, which no store notifies, so each replica lists the keys of the run's events every 500 ms, with one tailer per task and run however many streams watch it, so a hint comes within about a second of the append. When the task's run changes, the stream follows the new run; when the run ends, or the last stream of the task closes, the tailer stops. A store that gives no change notifications gives no run hints either, as the stream could not follow the run. Each replica gives run hints to at most 200 streams at once, whether their tasks have a run or not; one more gets `runs` false, and its page polls the run as it does without a stream. `?task=` naming no task of the namespace is a 404.
   - `resync` `{}`: this stream fell behind (256 hints waiting) and lost what it held: read the board again.
   - `: ping`, a comment, every 20 seconds. Each ping checks the caller's role again, from the board index; a role taken away ends the stream with `end` `{"reason":"no_role"}`, and the browser's reconnect is a 403.
@@ -164,7 +164,7 @@ Runtime-mode backends differ only in who starts the runner process. For the Kube
     "$CADRE_SERVER/api/v1/namespaces/demo/watch"
   ```
 
-  It prints the stream as it comes, here after a member created the Task `release-notes`:
+  It prints the stream as it comes, here after a member created the Task `release-notes` and an admin then changed the ModelProvider `claude` (the Agent `bot` and the Team would each give a `config` like it; an AgentAccess gives none):
 
   ```
   retry: 3000
@@ -173,6 +173,9 @@ Runtime-mode backends differ only in who starts the runner process. For the Kube
 
   event: task
   data: {"name":"release-notes","number":1,"phase":"Todo"}
+
+  event: config
+  data: {"kind":"ModelProvider","name":"claude"}
 
   : ping
 
@@ -192,7 +195,7 @@ Runtime-mode backends differ only in who starts the runner process. For the Kube
   ```
   retry: 3000
   event: hello
-  data: {"tasks":true,"config":false,"runs":true,"lifetimeSeconds":300}
+  data: {"tasks":true,"config":true,"runs":true,"lifetimeSeconds":300}
 
   event: run
   data: {"task":"release-notes","run":"run-1","seq":1}
@@ -201,7 +204,7 @@ Runtime-mode backends differ only in who starts the runner process. For the Kube
 
   Read the run's events again with `GET /api/v1/namespaces/demo/tasks/release-notes/runs/run-1/events`. `seq` is the last event the hint covers: events appended close together come as one hint. A Task that does not exist is a `404` `not_found` ("not found"), for a `HEAD` too, after the role check. At 200 streams with `?task=` on a replica, the next one is still served, with `"runs":false` in its `hello` and no `run` events: it polls the run's events itself, and takes run hints again when it reconnects under the cap, as a closed stream frees its slot. Streams without `?task=` do not count towards the 200.
 - Upgrading to a cadre-server that gives run hints: nothing to apply. There is no flag for the 200 streams (`MaxRunTails`) or the 500 ms interval, and no RBAC, CRD or chart change. A replica lists the keys of the run's events in the log store every 500 ms for each Task and run that a stream watches, so at the cap that is at most 200 lists every 500 ms against the store. Nothing in the web UI uses `?task=` yet, so an upgrade changes nothing a user sees.
-- Upgrading to a cadre-server that serves the stream: nothing to apply. It adds one flag, `--watch-max-streams` (default 2000; the chart's `server.watchMaxStreams`, unset by default, and when set at least 1), and reads the Tasks the informers already hold: no RBAC or CRD change. Nothing in the web UI uses the stream yet, so an upgrade changes nothing a user sees.
+- Upgrading to a cadre-server that serves the stream: nothing to apply. It adds one flag, `--watch-max-streams` (default 2000; the chart's `server.watchMaxStreams`, unset by default, and when set at least 1), and reads the Tasks the informers already hold: no RBAC or CRD change. A cadre-server that sends `config` hints (`"config":true` in `hello`) adds no flag, value, RBAC or CRD change either: it hangs a handler on the Agent, ModelProvider, ToolServer, Schedule, Notifier, Runner and Team informers it already keeps. A client that read `"config":false` from `hello` and polls can keep polling, or follow the hints. Nothing in the web UI uses the stream yet, so an upgrade changes nothing a user sees.
 
 ## Identity and access
 
