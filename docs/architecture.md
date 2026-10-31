@@ -160,6 +160,48 @@ Cadre is not a SaaS, not a workflow engine, not an LLM gateway and not a sandbox
   | `spec.auth.prefix` (`github`) | `Bearer ` | `Bearer ` |
 
   A `url` or path that does not parse as a URL is `(set)` whole, as a ModelProvider's `baseURL` is. An `auth.prefix` is shown only when it is empty or letters and a space (`Bearer `). Still shown to a member as they are: the host, port and path of a `url`, the Service's address in `status.url`, `managed.image`, `auth.secretRef`, `auth.header`, the probe's `port` and a `tcpSocket` or `grpc` probe; so keep a credential out of those too. The failures are the Agent's: 401 `unauthenticated`, 403 `no_role` (a namespace without a Team included, for all but a bootstrap admin, who gets 404 `not_found` there, for the list as for one) and 404 `not_found` for a ToolServer that is not there, or is in another namespace.
+- Reading the Notifiers (`GET /api/v1/namespaces/<namespace>/notifiers` and `…/notifiers/<name>`), like an Agent (`cadre auth token`, or no header under `--auth=none`). The list is `{"items":[…]}`, sorted by name, each item `name`, `ready` and, when it is not Ready, `reason` and `message`. The answer for one is an Agent's, with `"kind":"Notifier"`:
+
+  ```sh
+  curl -s -H "Authorization: Bearer $(cadre auth token)" \
+    "$CADRE_SERVER/api/v1/namespaces/demo/notifiers"
+  curl -s -H "Authorization: Bearer $(cadre auth token)" \
+    "$CADRE_SERVER/api/v1/namespaces/demo/notifiers/slack"
+  ```
+
+  The list (`pager` signs its deliveries with a Secret that is not there):
+
+  ```json
+  {"items":[{"name":"ops-chat","ready":true},{"name":"pager","ready":false,"reason":"SecretMissing","message":"Secret pager-signing does not exist"},{"name":"slack","ready":true}]}
+  ```
+
+  A viewer, and an AgentAccess with the viewer role, read health, conditions and metadata, and no `spec` or `status`:
+
+  ```json
+  {"name":"slack","ready":true,"kind":"Notifier","generation":1,"observedGeneration":1,"conditions":[{"type":"Ready","status":"True","observedGeneration":1,"lastTransitionTime":"2026-10-31T13:26:29Z","reason":"Ready","message":""}],"metadata":{"uid":"9eed3ace-25fe-4293-871a-42b5a81cbe3b","resourceVersion":"293","creationTimestamp":"2026-10-31T13:26:29Z","labels":{"tier":"gold"}}}
+  ```
+
+  A member and an AgentAccess with the member role get the same, and `metadata.annotations`, `spec` and `status` besides, with the values that can hold a credential `(set)`:
+
+  ```json
+  {"…":"…","metadata":{"…":"…","annotations":{"cadre.dev/owner":"platform"}},"spec":{"on":["Question","ToolApproval","Failed"],"webhook":{"url":"https://hooks.slack.com/(set)","secretRef":{"name":"slack-signing","key":"key"},"headers":{"X-Team":"(set)"}}},"status":{"observedGeneration":1,"conditions":[{"type":"Ready","status":"True","…":"…"}],"lastSent":"2026-10-31T12:58:02Z","lastError":{"message":"(set)","at":"2026-10-31T13:01:44Z"}}}
+  ```
+
+  For a Notifier that calls a tool (`ops-chat`), a member reads `"toolServer":{"name":"chat","tool":"post_message","arguments":{"api_key":"(set)","channel":"(set)"}}`. An admin, and everyone under `--auth=none`, get the real values: `"url":"https://hooks.slack.com/services/T0123/B0456/XXXXSECRET"`, `"headers":{"X-Team":"platform"}`, `"arguments":{"api_key":"abc123","channel":"#ops"}` and the delivery's own `lastError.message`. What a member sees of each place a credential can be:
+
+  | Field | Stored | A member reads |
+  | --- | --- | --- |
+  | `spec.webhook.url` (Slack) | `https://hooks.slack.com/services/T0123/B0456/XXXXSECRET` | `https://hooks.slack.com/(set)` |
+  | `spec.webhook.url` (Discord) | `https://discord.com/api/webhooks/123/TOKEN` | `https://discord.com/(set)` |
+  | `spec.webhook.url` (`pager`) | `https://events.pagerduty.test:8443/v2/enqueue?routing_key=abc#frag` | `https://events.pagerduty.test:8443/(set)?routing_key=(set)#(set)` |
+  | `spec.webhook.url`, path `/` | `https://hooks.example.test:8443/?token=abc&x#f` | `https://hooks.example.test:8443/?token=(set)&(set)#(set)` |
+  | `spec.webhook.url`, no path | `https://hooks.example.test` | `https://hooks.example.test` |
+  | `spec.webhook.url`, not a URL | `https://hooks.example.test/%zz?k=v` | `(set)` |
+  | `spec.webhook.headers` | `{"X-Team":"platform"}` | `{"X-Team":"(set)"}` |
+  | `spec.toolServer.arguments` | `{"channel":"#ops"}` | `{"channel":"(set)"}` |
+  | `status.lastError.message` | `Post https://hooks.slack.com/services/T0123/B0456/XXXXSECRET: dial tcp: …` | `(set)` |
+
+  A webhook URL is shown to a member as its scheme, host and port: a path other than empty or `/` is `/(set)`, as Slack and Discord keep the token there, and the user info, each query value (or a query part with no `=`) and the fragment are `(set)` as in a ModelProvider's `baseURL`. Header and argument names, `on`, `webhook.secretRef`, the ToolServer's name and the tool, `lastError.at`, `lastSent` and the conditions stay, so keep a credential out of those; a Ready condition's message, for example, names the Secret that is missing. Nobody gets `managedFields` or the `kubectl.kubernetes.io/last-applied-configuration` annotation. The failures are an Agent's: 401 `unauthenticated` without a token, 403 `no_role` for a caller with no role on the Team (a namespace without a Team included, for all but a bootstrap admin, who gets 404 `not_found` there, for the list as for one), and 404 `not_found` for a Notifier that is not there, or that is in another namespace.
 - Reading one Agent (`GET /api/v1/namespaces/<namespace>/agents/<name>`), with an ID token from `cadre auth token` (with logins; without them, `--auth=none`, send no header). The answer is an object, `name`, `ready`, `reason` and `message` as in the list, then `kind`, `generation`, `observedGeneration`, `conditions` and `metadata` (`uid`, `resourceVersion`, `creationTimestamp`, and `labels` and, for a member and up, `annotations`, when there are any), and for a member and up `spec` and `status`. Which of them an answer carries is decided by the caller's role on the Team:
 
   ```sh
