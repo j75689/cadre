@@ -85,6 +85,40 @@ Cadre is not a SaaS, not a workflow engine, not an LLM gateway and not a sandbox
   ```
 
   Only `spec.baseURL` is masked, and only for a member. For `https://svc:s3cret@gw.example.test:8443/v1?api-key=abc&debug#frag` a member reads `https://(set)@gw.example.test:8443/v1?api-key=(set)&(set)#(set)`: the user info, each query value, a query part with no `=` and the fragment are `(set)`, the scheme, host, port, path and query keys are not. A `baseURL` that does not parse as a URL (`https://gw.example.test/%zz?k=v`) is `(set)` whole. An admin gets the real value. `auth` is a reference to a Secret, not a credential, and every member sees it as it is. The failures are an Agent's: 401 `unauthenticated`, 403 `no_role` (a namespace without a Team included, for all but a bootstrap admin, who gets 404 `not_found` there, for the list as for one) and 404 `not_found` for a ModelProvider that is not there.
+- Reading the Schedules (`GET /api/v1/namespaces/<namespace>/schedules` and `…/schedules/<name>`), like an Agent (`cadre auth token`, or no header under `--auth=none`). The list is `{"items":[…]}`, sorted by name, each item `name`, `ready` and, when it is not Ready, `reason` and `message`; a suspended Schedule is Ready (reason `Suspended`), so the list does not tell it from a running one: read it. The answer for one is an Agent's, with `"kind":"Schedule"`:
+
+  ```sh
+  curl -s -H "Authorization: Bearer $(cadre auth token)" \
+    "$CADRE_SERVER/api/v1/namespaces/demo/schedules"
+  curl -s -H "Authorization: Bearer $(cadre auth token)" \
+    "$CADRE_SERVER/api/v1/namespaces/demo/schedules/nightly-report"
+  ```
+
+  The list (`broken` has a cron that does not parse):
+
+  ```json
+
+  {"items":[{"name":"broken","ready":false,"reason":"InvalidSchedule","message":"cron \"not a cron\": expected exactly 5 fields, found 3: [not a cron]"},{"name":"nightly-report","ready":true},{"name":"weekly-cleanup","ready":true}]}
+
+  ```
+
+  A viewer, and an AgentAccess with the viewer role, read health, conditions and metadata, and no `spec` or `status`:
+
+  ```json
+
+  {"name":"nightly-report","ready":true,"kind":"Schedule","generation":1,"observedGeneration":1,"conditions":[{"type":"Ready","status":"True","observedGeneration":1,"lastTransitionTime":"2026-10-31T09:18:33Z","reason":"Scheduled","message":""}],"metadata":{"uid":"a28d2347-7c0c-43b8-8d39-81cac3e8dfbf","resourceVersion":"269","creationTimestamp":"2026-10-31T09:18:30Z","labels":{"tier":"gold"}}}
+
+  ```
+
+  A member, an AgentAccess with the member role and an admin get the same, and `metadata.annotations`, `spec` and `status` besides, all as they are (a Schedule has no masked field):
+
+  ```json
+
+  {"…":"…","metadata":{"…":"…","annotations":{"owner":"platform"}},"spec":{"cron":"0 2 * * *","timezone":"Europe/Berlin","task":{"title":"Nightly report","description":"Summarise yesterday's merged pull requests.","priority":"medium","labels":["report"]}},"status":{"observedGeneration":1,"conditions":[{"type":"Ready","status":"True","…":"…"}],"nextScheduleTime":"2026-11-01T01:00:00Z","activeSince":"2026-10-31T09:18:30Z"}}
+
+  ```
+
+  The failures are an Agent's: 401 `unauthenticated` without a token, 403 `no_role` for a caller with no role on the Team (a namespace without a Team included, for all but a bootstrap admin, who gets 404 `not_found` there, for the list as for one), and 404 `not_found` for a Schedule that is not there, or that is in another namespace.
 - Reading the ToolServers (`GET /api/v1/namespaces/<namespace>/toolservers` and `…/toolservers/<name>`), like a ModelProvider, above. The list is `{"items":[…]}`, sorted by name, each item `name`, `ready` and, when it is not Ready, `reason` and `message`; the answer for one is an Agent's, with `"kind":"ToolServer"`:
 
   ```sh
