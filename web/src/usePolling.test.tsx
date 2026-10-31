@@ -1,6 +1,6 @@
 import { cleanup, renderHook } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { FakeEventSource } from "./testing";
+import { FakeEventSource, fakeTabs } from "./testing";
 import { hintDelayMs, livePollMs, usePolling, type Live } from "./usePolling";
 
 beforeEach(() => vi.useFakeTimers());
@@ -127,8 +127,7 @@ describe("usePolling with live", () => {
   let t0 = 0;
 
   beforeEach(() => {
-    FakeEventSource.instances = [];
-    vi.stubGlobal("EventSource", FakeEventSource);
+    fakeTabs();
     t0 = Date.now();
   });
   afterEach(async () => {
@@ -140,6 +139,7 @@ describe("usePolling with live", () => {
 
   // live renders the hook with a load of loadMs, polling every 5s, opens
   // its stream and returns the loads' start times since t0 and the stream.
+  // The hello makes the page read again, at 100 for a load of 100ms.
   async function live(opts: Live = board, helloData: object | null = hello, loadMs = 100) {
     const starts: number[] = [];
     const { unmount } = renderHook(() => usePolling(slowLoad(starts, loadMs), 5000, [], opts));
@@ -152,15 +152,15 @@ describe("usePolling with live", () => {
 
   it("reads within a second of a matching hint", async () => {
     const { at, stream } = await live({ ...board, match: (h) => h.event === "task" && h.name === "x" });
-    expect(at()).toEqual([0]);
+    expect(at()).toEqual([0, 100]);
     stream.emit("task", { name: "y", number: 2, phase: "Todo" });
     await vi.advanceTimersByTimeAsync(1000);
-    expect(at()).toEqual([0]);
+    expect(at()).toEqual([0, 100]);
     stream.emit("task", { name: "x", number: 1, phase: "Done" });
     await vi.advanceTimersByTimeAsync(hintDelayMs);
     // The hint came at 1100: the load starts the debounce after, and its
     // 100ms make what it read show by 1300.
-    expect(at()).toEqual([0, 1100 + hintDelayMs]);
+    expect(at()).toEqual([0, 100, 1100 + hintDelayMs]);
     expect(hintDelayMs).toBeLessThanOrEqual(250);
   });
 
@@ -171,7 +171,7 @@ describe("usePolling with live", () => {
       await vi.advanceTimersByTimeAsync(20);
     }
     await vi.advanceTimersByTimeAsync(500);
-    expect(at()).toHaveLength(2);
+    expect(at()).toEqual([0, 100, 180 + hintDelayMs]);
   });
 
   it("reads once more after a load that a hint came during, without ending it", async () => {
@@ -188,15 +188,16 @@ describe("usePolling with live", () => {
   it("polls every livePollMs while live, and at its interval again when the stream drops", async () => {
     const { at, stream } = await live();
     await vi.advanceTimersByTimeAsync(livePollMs);
-    expect(at()).toEqual([0, livePollMs]);
+    const live1 = 100 + livePollMs;
+    expect(at()).toEqual([0, 100, live1]);
     stream.fail();
     // Down, the next read is due an interval after the last one began.
     await vi.advanceTimersByTimeAsync(5000);
-    expect(at()).toEqual([0, livePollMs, livePollMs + 5000]);
+    expect(at()).toEqual([0, 100, live1, live1 + 5000]);
     // Reconnected: its hello reads at once, as hints may have been missed.
     stream.emit("hello", hello);
     await vi.advanceTimersByTimeAsync(hintDelayMs);
-    expect(at()).toEqual([0, livePollMs, livePollMs + 5000, livePollMs + 5100 + hintDelayMs]);
+    expect(at()).toEqual([0, 100, live1, live1 + 5000, live1 + 5000 + hintDelayMs]);
   });
 
   it.each([
@@ -208,7 +209,7 @@ describe("usePolling with live", () => {
     const { at, stream } = await live();
     end(stream);
     await vi.advanceTimersByTimeAsync(10_000);
-    expect(at()).toEqual([0, 5000, 10_000]);
+    expect(at()).toEqual([0, 100, 5100, 10_100]);
   });
 
   it("polls at its interval when hello does not serve the topic", async () => {
@@ -233,7 +234,7 @@ describe("usePolling with live", () => {
     document.dispatchEvent(new Event("visibilitychange"));
     stream.emit("task", { name: "x", phase: "Todo" });
     await vi.advanceTimersByTimeAsync(livePollMs * 2);
-    expect(at()).toEqual([0]);
+    expect(at()).toEqual([0, 100]);
     vi.restoreAllMocks();
   });
 

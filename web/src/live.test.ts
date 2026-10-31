@@ -1,19 +1,21 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { subscribe, type Subscriber, type Topic } from "./live";
-import { FakeEventSource } from "./testing";
+import { maxStreams, restart, retryMs, subscribe, tab, type Subscriber, type Tab, type Topic } from "./live";
+import { FakeEventSource, fakeTabs } from "./testing";
 
 const hello = { tasks: true, config: true, runs: false, lifetimeSeconds: 300 };
 
 let offs: (() => void)[] = [];
+let tabs: Tab[] = [];
 
 beforeEach(() => {
   vi.useFakeTimers();
-  FakeEventSource.instances = [];
-  vi.stubGlobal("EventSource", FakeEventSource);
+  fakeTabs();
 });
 afterEach(async () => {
   offs.forEach((off) => off());
   offs = [];
+  tabs.forEach((t) => t.leave());
+  tabs = [];
   await vi.runAllTimersAsync();
   vi.unstubAllGlobals();
   vi.useRealTimers();
@@ -21,9 +23,10 @@ afterEach(async () => {
 
 // sub subscribes to ns's stream and records what it is told: hints as a
 // count, and whether it is live.
-function sub(ns: string, topic: Topic, extra: Partial<Subscriber> = {}) {
+// With t, it is one of another tab.
+function sub(ns: string, topic: Topic, extra: Partial<Subscriber> = {}, t?: Tab) {
   const got = { hints: 0, live: false };
-  const off = subscribe(ns, { topic, onHint: () => got.hints++, onLive: (on) => (got.live = on), ...extra });
+  const off = (t?.subscribe ?? subscribe)(ns, { topic, onHint: () => got.hints++, onLive: (on) => (got.live = on), ...extra });
   offs.push(off);
   return { got, off };
 }
@@ -95,15 +98,16 @@ describe("subscribe", () => {
     await settle();
     const s = only();
     s.emit("hello", { ...hello, runs: true });
+    // The hello is one each.
     s.emit("task", { name: "y", number: 2, phase: "Todo" });
-    expect([board.got.hints, page.got.hints, agents.got.hints, run.got.hints]).toEqual([1, 0, 0, 0]);
+    expect([board.got.hints, page.got.hints, agents.got.hints, run.got.hints]).toEqual([2, 1, 1, 1]);
     s.emit("task", { name: "x", number: 1, phase: "Running" });
-    expect([board.got.hints, page.got.hints, agents.got.hints, run.got.hints]).toEqual([2, 1, 0, 0]);
+    expect([board.got.hints, page.got.hints, agents.got.hints, run.got.hints]).toEqual([3, 2, 1, 1]);
     s.emit("config", { kind: "ModelProvider", name: "claude" });
     s.emit("config", { kind: "Agent", name: "writer" });
-    expect([board.got.hints, page.got.hints, agents.got.hints, run.got.hints]).toEqual([2, 1, 1, 0]);
+    expect([board.got.hints, page.got.hints, agents.got.hints, run.got.hints]).toEqual([3, 2, 2, 1]);
     s.emit("run", { task: "x", run: "r1", seq: 4 });
-    expect([board.got.hints, page.got.hints, agents.got.hints, run.got.hints]).toEqual([2, 1, 1, 1]);
+    expect([board.got.hints, page.got.hints, agents.got.hints, run.got.hints]).toEqual([3, 2, 2, 2]);
   });
 
   it("gives no hint to a topic hello did not serve", async () => {
@@ -115,19 +119,19 @@ describe("subscribe", () => {
     expect(agents.got.hints).toBe(0);
   });
 
-  it("tells every subscriber on resync, and on a hello after a reconnect", async () => {
+  it("tells every subscriber on resync, and at every hello, as hints before it were not seen", async () => {
     const board = sub("team-a", "tasks");
     const page = sub("team-a", "tasks", { match: () => false });
     const agents = sub("team-a", "config", { match: () => false });
     await settle();
     const s = only();
     s.emit("hello", hello);
-    expect([board.got.hints, page.got.hints, agents.got.hints]).toEqual([0, 0, 0]);
-    s.emit("resync");
     expect([board.got.hints, page.got.hints, agents.got.hints]).toEqual([1, 1, 1]);
+    s.emit("resync");
+    expect([board.got.hints, page.got.hints, agents.got.hints]).toEqual([2, 2, 2]);
     s.fail();
     s.emit("hello", hello);
-    expect([board.got.hints, page.got.hints, agents.got.hints]).toEqual([2, 2, 2]);
+    expect([board.got.hints, page.got.hints, agents.got.hints]).toEqual([3, 3, 3]);
   });
 
   it("polls while a dropped stream reconnects, and is live again at its hello", async () => {
@@ -152,7 +156,7 @@ describe("subscribe", () => {
     expect(board.got.live).toBe(false);
     s.emit("hello", hello);
     expect(board.got.live).toBe(true);
-    expect(board.got.hints).toBe(1);
+    expect(board.got.hints).toBe(2);
   });
 
   it.each(["no_role", "no_team"])("closes the stream for good after end %s", async (reason) => {
@@ -162,21 +166,23 @@ describe("subscribe", () => {
     only().emit("end", { reason });
     expect(FakeEventSource.open()).toHaveLength(0);
     expect(board.got.live).toBe(false);
-    // Another page of the team does not open it again.
+    // Neither another page of the team nor time opens it again.
     sub("team-a", "config");
-    await settle();
+    await vi.advanceTimersByTimeAsync(retryMs);
     expect(FakeEventSource.instances).toHaveLength(1);
   });
 
-  it("polls for good after a refused open (401, 403, 404 or 503)", async () => {
+  it("polls after a refused open (401, 403, 404 or 503), and opens the stream again a minute later", async () => {
     const board = sub("team-a", "tasks");
     await settle();
     only().fail(true);
     expect(board.got.live).toBe(false);
     sub("team-a", "config");
-    await vi.advanceTimersByTimeAsync(60_000);
-    expect(FakeEventSource.instances).toHaveLength(1);
+    await vi.advanceTimersByTimeAsync(retryMs - 1);
     expect(FakeEventSource.open()).toHaveLength(0);
+    await vi.advanceTimersByTimeAsync(1);
+    only().emit("hello", hello);
+    expect(board.got.live).toBe(true);
   });
 
   it("opens nothing where there is no EventSource", async () => {
@@ -185,5 +191,124 @@ describe("subscribe", () => {
     await settle();
     expect(FakeEventSource.instances).toHaveLength(0);
     expect(board.got.live).toBe(false);
+  });
+});
+
+describe("subscribe in many tabs", () => {
+  // other opens another tab of the profile: it waits for the lock this
+  // tab holds.
+  const other = () => {
+    const t = tab();
+    tabs.push(t);
+    return t;
+  };
+
+  it("holds one stream for every tab of the profile, and gives each tab its hints", async () => {
+    const pages = [sub("team-a", "tasks")];
+    for (let i = 1; i < 8; i++) pages.push(sub("team-a", "tasks", {}, other()));
+    await settle();
+    only().emit("hello", hello);
+    await settle();
+    expect(pages.map((p) => p.got.live)).toEqual(Array(8).fill(true));
+    only().emit("task", { name: "x", phase: "Todo" });
+    await settle();
+    // One read at the hello, one at the hint.
+    expect(pages.map((p) => p.got.hints)).toEqual(Array(8).fill(2));
+    expect(FakeEventSource.instances).toHaveLength(1);
+  });
+
+  it("holds maxStreams streams at most, for the teams of the tabs that asked last", async () => {
+    const teams = ["team-a", "team-b", "team-c"];
+    const pages = [];
+    for (const ns of teams) {
+      pages.push(sub(ns, "tasks", {}, other()));
+      await vi.advanceTimersByTimeAsync(1);
+    }
+    expect(maxStreams).toBe(2);
+    expect(FakeEventSource.open().map((s) => s.url)).toEqual(["/api/v1/namespaces/team-b/watch", "/api/v1/namespaces/team-c/watch"]);
+    FakeEventSource.open().forEach((s) => s.emit("hello", hello));
+    await settle();
+    expect(pages.map((p) => p.got.live)).toEqual([false, true, true]);
+  });
+
+  it("opens the stream with ?task= of the tab that asked last; the other's run polls", async () => {
+    const x = sub("team-a", "runs", { task: "x" });
+    await vi.advanceTimersByTimeAsync(1);
+    const y = sub("team-a", "runs", { task: "y" }, other());
+    await settle();
+    expect(only().url).toBe("/api/v1/namespaces/team-a/watch?task=y");
+    only().emit("hello", { ...hello, runs: true });
+    await settle();
+    expect([x.got.live, y.got.live]).toEqual([false, true]);
+  });
+
+  it("hands the stream over when the leader's tab goes, polling till the new one's hello", async () => {
+    sub("team-a", "tasks");
+    const page = sub("team-a", "tasks", {}, other());
+    await settle();
+    const first = only();
+    first.emit("hello", hello);
+    await settle();
+    expect(page.got).toEqual({ live: true, hints: 1 });
+    // The leader's tab closes, or reloads.
+    offs = [];
+    restart();
+    await settle();
+    expect(first.closed).toBe(true);
+    expect(page.got.live).toBe(false);
+    const next = only();
+    expect(next).not.toBe(first);
+    next.emit("hello", hello);
+    expect(page.got).toEqual({ live: true, hints: 2 });
+    next.emit("task", { name: "x", phase: "Todo" });
+    expect(page.got.hints).toBe(3);
+  });
+
+  it("polls in a tab the new leader holds no stream for", async () => {
+    let visibility: DocumentVisibilityState = "visible";
+    vi.spyOn(document, "visibilityState", "get").mockImplementation(() => visibility);
+    sub("team-a", "tasks");
+    const page = sub("team-a", "tasks", {}, other());
+    await settle();
+    only().emit("hello", hello);
+    await settle();
+    expect(page.got.live).toBe(true);
+    // Both tabs are hidden; the leader's goes, and the other asks for none.
+    visibility = "hidden";
+    offs = [];
+    restart();
+    await settle();
+    expect(FakeEventSource.open()).toHaveLength(0);
+    expect(page.got.live).toBe(false);
+    vi.restoreAllMocks();
+  });
+
+  it("asks for no stream while the tab is hidden", async () => {
+    let visibility: DocumentVisibilityState = "visible";
+    vi.spyOn(document, "visibilityState", "get").mockImplementation(() => visibility);
+    sub("team-a", "tasks");
+    await settle();
+    const first = only();
+    visibility = "hidden";
+    // At once: a tab being closed runs no more timers.
+    document.dispatchEvent(new Event("visibilitychange"));
+    expect(first.closed).toBe(true);
+    expect(FakeEventSource.open()).toHaveLength(0);
+    visibility = "visible";
+    document.dispatchEvent(new Event("visibilitychange"));
+    await settle();
+    expect(only()).not.toBe(first);
+    vi.restoreAllMocks();
+  });
+
+  it.each([
+    ["Web Locks (not a secure context)", { locks: false }],
+    ["BroadcastChannel", { channel: false }],
+  ])("opens no stream in any tab without %s", async (_, missing) => {
+    fakeTabs(missing);
+    const pages = [sub("team-a", "tasks"), sub("team-a", "tasks", {}, other()), sub("team-a", "tasks", {}, other())];
+    await vi.advanceTimersByTimeAsync(1000);
+    expect(FakeEventSource.instances).toHaveLength(0);
+    expect(pages.map((p) => p.got.live)).toEqual([false, false, false]);
   });
 });

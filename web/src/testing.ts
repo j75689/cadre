@@ -1,4 +1,6 @@
+import { vi } from "vitest";
 import type { AgentAccess, Phase, Task, Team, ThreadEntry } from "./api";
+import { restart } from "./live";
 
 // Fixtures for the UI's tests.
 
@@ -60,4 +62,48 @@ export class FakeEventSource extends EventTarget {
   static open() {
     return FakeEventSource.instances.filter((s) => !s.closed);
   }
+}
+
+// FakeLocks stands in for navigator.locks: a lock goes to the next request
+// once the promise of the one holding it settles.
+export class FakeLocks {
+  private last = new Map<string, Promise<unknown>>();
+  request(name: string, granted: () => Promise<unknown>) {
+    const held = (this.last.get(name) ?? Promise.resolve()).then(granted);
+    this.last.set(name, held);
+    return held;
+  }
+}
+
+// FakeBroadcastChannel stands in for the browser's between the tabs of a
+// test: a message goes to every other open channel of its name, a moment
+// later.
+export class FakeBroadcastChannel {
+  static all: FakeBroadcastChannel[] = [];
+  onmessage: ((e: MessageEvent) => void) | null = null;
+  constructor(readonly name: string) {
+    FakeBroadcastChannel.all.push(this);
+  }
+  postMessage(data: unknown) {
+    const copy = structuredClone(data);
+    for (const c of FakeBroadcastChannel.all) {
+      if (c === this || c.name !== this.name) continue;
+      queueMicrotask(() => FakeBroadcastChannel.all.includes(c) && c.onmessage?.(new MessageEvent("message", { data: copy })));
+    }
+  }
+  close() {
+    FakeBroadcastChannel.all = FakeBroadcastChannel.all.filter((c) => c !== this);
+  }
+}
+
+// fakeTabs gives the tabs of a test fakes of EventSource, Web Locks and
+// BroadcastChannel (none for those set false), and makes this tab a new
+// one.
+export function fakeTabs({ locks = true, channel = true } = {}) {
+  FakeEventSource.instances = [];
+  FakeBroadcastChannel.all = [];
+  vi.stubGlobal("EventSource", FakeEventSource);
+  vi.stubGlobal("BroadcastChannel", channel ? FakeBroadcastChannel : undefined);
+  Object.defineProperty(navigator, "locks", { value: locks ? new FakeLocks() : undefined, configurable: true });
+  restart();
 }

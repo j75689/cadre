@@ -3,7 +3,7 @@ import { MemoryRouter } from "react-router";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { App } from "./App";
 import type { ConfigResource } from "./api";
-import { FakeEventSource, json, team } from "./testing";
+import { FakeEventSource, fakeTabs, json, team } from "./testing";
 import { hintDelayMs } from "./usePolling";
 
 const runId = "01JRUN0000000000000000000A";
@@ -36,8 +36,7 @@ const routes: [string, (url: string) => boolean, () => unknown][] = [
 
 beforeEach(() => {
   vi.useFakeTimers({ shouldAdvanceTime: true });
-  FakeEventSource.instances = [];
-  vi.stubGlobal("EventSource", FakeEventSource);
+  fakeTabs();
   reads = {};
   vi.stubGlobal("fetch", (url: string) => {
     if (url.endsWith("/me")) return json({ mode: "none", admin: true });
