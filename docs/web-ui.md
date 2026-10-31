@@ -214,6 +214,32 @@ The board's controls replace the history entry, so they do not flood Back, and a
     - The token lives only in the AgentAccess card's React state: never in a context, `localStorage` or `sessionStorage`, the URL or history state, the title, an `Error`, the console or a live region. Leaving the page drops it, and so does `pagehide` before the browser keeps the page in its back/forward cache, so Back cannot show it again. cadre-server also sends `Cache-Control: no-store` with the app's pages and with the rotation's answer: Chrome then keeps a page that rotated a token out of its back/forward cache, and Back loads it again. A page that rotated nothing is still restored there, unless Log out changed the session cookie meanwhile. A rotation answered after the page was left shows no token either: the card says "Rotated while the page was left, so the token is not shown: it is in Secret *secret*; rotate again to see one here". An AgentAccess found gone drops the token, an open Edit form and a pending confirm, so one made again with the name brings none of them back.
     - **Delete** asks inline (a group named "Delete *name*?"): "Delete *name*? Its agent loses access at once." (Yes, delete it / Keep it). A 204, or a 404 (already gone), goes back to the list, whose status mounts empty and then says "Deleted *name*.", so that it is announced. Any other refusal shows the server's message as it is in an alert.
 
+### Live updates
+
+The pages of a team read what they show again as soon as cadre-server hints that it changed, on its [watch stream](architecture.md#events) (`web/src/live.ts`). The stream only says what to read: each page reads with the route and the role it reads with anyway.
+
+The tabs of a browser profile share the streams, since a browser keeps at most 6 connections to a host over HTTP/1.1 (as cadre-server is served, behind `kubectl port-forward` or on `:8080`), for every tab together, and a stream holds one for as long as it is open. One tab, the one holding the Web Lock `cadre-live`, opens the streams and passes what they send to the others over the BroadcastChannel `cadre-live`; each tab's pages take what concerns them from it. A tab asks for the streams of the teams its pages show while it is visible, and for none while it is hidden. The tab that holds them opens one stream per team asked for, **2 at most however many tabs and teams are open**, so 4 connections stay free for the pages' reads: the teams the tabs asked for last get them, and a page of another team polls. A team whose stream is refused (below) holds none of the 2 meanwhile: the next team asked for gets it, and the refused one is opened again a minute later only if one of the 2 is free then. When that tab is closed, reloaded or left for another page (also one the browser keeps in its back/forward cache, as the page lets go of the lock and its streams when it is left), another one takes the lock at once and opens the streams again; until their `hello`, the pages poll. A page shown again from that cache asks for its streams again, as a tab just opened does.
+
+A stream is opened with `?task=<name>` for the run in progress of the task page that was shown last, so a team holds one stream however many runs are open; another task reopens it. The run in progress on another tab polls every 4 s, as before.
+
+| Hint | What is read again |
+| --- | --- |
+| `task` | The board and its list, every task; the task page, its own task; its Subtasks, a task whose parent it is |
+| `config` | The Agents and Model providers lists, a resource of their kind; one Agent or ModelProvider, itself; Settings, the Team |
+| `run` | The run in progress's events, its own run |
+| `resync`, or a `hello` (a stream opened, reconnected or taken over) | Everything the tab shows from the stream, as hints in between were not seen |
+
+A hint reads 100 ms after it comes, so hints that come together are one read, and a read already under way finishes first and is followed by one more: a change shows within a second. While a page is live it still reads every 60 seconds (or its own interval if longer), as hints may be lost. The Agent access pages and the team list get no hints and poll as before.
+
+A page falls back to its interval (the board, the task page and its subtasks every 5 s, the run in progress every 4 s, the other pages every 15 s) whenever its hints do not come:
+- the stream is refused when opened: `401`, `403`, `404` (a namespace without a Team, or a cadre-server without the route) or `503` (the replica's cap, or a proxy while cadre-server is being replaced). The browser does not retry these; the stream is opened again a minute later, when one of the 2 streams is free;
+- its `hello` says the topic is not served (`tasks`, `config` or `runs` false);
+- it ends with `no_role` or `no_team`: it is not opened again, and the next poll shows the 403 or the 404 as the page does today;
+- it drops: the browser reconnects every 3 s, and the page polls until the next `hello`. `end` `lifetime` or `shutdown` is such a reconnect;
+- the team is not one of the 2 that have a stream, or no tab holds the streams (while one takes over from one closed or left).
+
+A browser without `EventSource`, Web Locks or BroadcastChannel opens no stream and polls, as every page did before it. Web Locks need a secure context: HTTPS, or `http://localhost` as `kubectl port-forward` gives; a page served over plain HTTP on another host (`http://<ip>:8080`) polls.
+
 ## Components
 
 Shared pieces live in `web/src/ui/`.

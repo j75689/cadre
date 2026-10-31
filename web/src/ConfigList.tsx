@@ -14,8 +14,10 @@ const pollMs = 15000;
 // ConfigList is the team's configuration resources of one kind: whether
 // each is ready, and why not. title names the list ("Agents"), noun one
 // in its first column and sentences ("agent"); link is one's page. empty
-// says how one is added; extra is a last column, if any.
+// says how one is added; extra is a last column, if any. kind is the
+// resources' kind ("Agent"), whose watch hints read them again.
 export function ConfigList({
+  kind,
   title,
   noun,
   link,
@@ -23,6 +25,7 @@ export function ConfigList({
   empty,
   extra,
 }: {
+  kind: string;
   title: string;
   noun: string;
   link: (ns: string, name: string) => string;
@@ -49,6 +52,7 @@ export function ConfigList({
     },
     pollMs,
     [ns, retry],
+    { ns, topic: "config", match: (h) => h.event === "config" && h.kind === kind },
   );
   return (
     <main id="main" className="page">
