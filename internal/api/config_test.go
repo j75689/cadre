@@ -1,6 +1,7 @@
 package api_test
 
 import (
+	"context"
 	"encoding/json"
 	"io"
 	"log/slog"
@@ -13,6 +14,9 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/apimachinery/pkg/util/intstr"
+	"k8s.io/utils/ptr"
+	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 
 	v1alpha1 "github.com/j75689/cadre/api/v1alpha1"
@@ -23,10 +27,11 @@ import (
 	"github.com/j75689/cadre/internal/storage/memory"
 )
 
-// configCluster is a cluster's Agents and ModelProviders as the
-// controllers' cache holds them: writer and claude as kubectl apply leaves
-// them, reviewer and gpt edited since they were checked, gateway with a
-// credential in its URL, and elsewhere in team-b.
+// configCluster is a cluster's Agents, ModelProviders and ToolServers as
+// the controllers' cache holds them: writer and claude as kubectl apply
+// leaves them, reviewer, gpt and execer edited since they were checked,
+// gateway and remote with a credential in their URL, prober with some in
+// its path and readiness probe, and elsewhere in team-b.
 func configCluster(t *testing.T) api.Option {
 	t.Helper()
 	scheme := runtime.NewScheme()
@@ -73,7 +78,43 @@ func configCluster(t *testing.T) api.Option {
 	badurl := provider("team-a", "badurl", v1alpha1.ModelProviderSpec{Type: v1alpha1.ProviderOpenAI, Model: "gpt", Auth: key, BaseURL: "https://u:sk_literal_bad@gw.example.test/%zz?k=sk_literal_bad"})
 	nohost := provider("team-a", "nohost", v1alpha1.ModelProviderSpec{Type: v1alpha1.ProviderOpenAI, Model: "gpt", Auth: key, BaseURL: "https://u:sk_literal_nohost@"})
 	vertex := provider("team-b", "vertex", v1alpha1.ModelProviderSpec{Type: v1alpha1.ProviderVertex, Model: "gemini", WorkloadIdentity: true, Project: "p", Location: "us-east5"})
-	return api.WithConfig(fake.NewClientBuilder().WithScheme(scheme).WithObjects(writer, reviewer, elsewhere, jobber, claude, gpt, gateway, fragment, badurl, nohost, vertex).Build())
+	return api.WithConfig(fake.NewClientBuilder().WithScheme(scheme).WithObjects(writer, reviewer, elsewhere, jobber, claude, gpt, gateway, fragment, badurl, nohost, vertex).
+		WithObjects(toolServers()...).Build())
+}
+
+// toolServers are remote, an external ToolServer with a credential in its
+// URL and an empty auth prefix, as kubectl apply leaves it; prober and
+// execer, managed ones with some in their path and readiness probes, execer
+// edited since it was checked and with some in its auth prefix; slashy,
+// whose path reads as user info; grpc, whose probe holds none, with a
+// Bearer prefix; keyed, whose prefix is one word and a space but not a
+// scheme; and faraway in team-b.
+func toolServers() []client.Object {
+	server := func(ns, name string, spec v1alpha1.ToolServerSpec) *v1alpha1.ToolServer {
+		ts := &v1alpha1.ToolServer{ObjectMeta: metav1.ObjectMeta{Namespace: ns, Name: name, Generation: 1}, Spec: spec}
+		ts.Status.ObservedGeneration = 1
+		ts.Status.Conditions = []metav1.Condition{{Type: v1alpha1.ConditionReady, Status: metav1.ConditionTrue, ObservedGeneration: 1, Reason: "Connected"}}
+		return ts
+	}
+	remote := server("team-a", "remote", v1alpha1.ToolServerSpec{URL: "https://bot:tk_literal_user@mcp.example.test/mcp?key=tk_literal_query", Auth: &v1alpha1.ToolServerAuth{SecretRef: v1alpha1.SecretKeyRef{Name: "mcp", Key: "token"}, Prefix: ptr.To("")}})
+	remote.Annotations = map[string]string{"cadre.dev/owner": "tools-team", "kubectl.kubernetes.io/last-applied-configuration": `{"spec":{"url":"https://mcp.example.test"}}`}
+	remote.ManagedFields = []metav1.ManagedFieldsEntry{{Manager: "kubectl-client-side-apply", Operation: metav1.ManagedFieldsOperationUpdate, APIVersion: "cadre.dev/v1alpha1", FieldsType: "FieldsV1", FieldsV1: metav1.NewFieldsV1(`{"f:spec":{"f:url":{}}}`)}}
+	prober := server("team-a", "prober", v1alpha1.ToolServerSpec{Managed: &v1alpha1.ManagedServer{Image: "mcp:1", Port: 8080, Path: "/mcp?key=tk_literal_path", ReadinessProbe: &corev1.Probe{
+		ProbeHandler: corev1.ProbeHandler{HTTPGet: &corev1.HTTPGetAction{Path: "/healthz?token=tk_literal_probe_path", Port: intstr.FromInt32(8080), HTTPHeaders: []corev1.HTTPHeader{{Name: "X-Probe-Key", Value: "tk_literal_header"}, {Name: "X-Probe-Tenant", Value: "tk_literal_tenant"}}}},
+	}}})
+	prober.Status.URL = "http://prober.team-a.svc:8080/mcp?key=tk_literal_status"
+	execer := server("team-a", "execer", v1alpha1.ToolServerSpec{Managed: &v1alpha1.ManagedServer{Image: "mcp:1", Port: 8080, ReadinessProbe: &corev1.Probe{
+		ProbeHandler: corev1.ProbeHandler{Exec: &corev1.ExecAction{Command: []string{"check", "--token=tk_literal_exec"}}},
+	}}, Auth: &v1alpha1.ToolServerAuth{SecretRef: v1alpha1.SecretKeyRef{Name: "mcp", Key: "token"}, Header: "X-Api-Key", Prefix: ptr.To("tenant-42:tk_literal_prefix.")}})
+	execer.Generation = 2
+	slashy := server("team-a", "slashy", v1alpha1.ToolServerSpec{Managed: &v1alpha1.ManagedServer{Image: "mcp:1", Port: 8080, Path: "//bot:tk_literal_slashy@evil/mcp"}})
+	slashy.Status.URL = "http://slashy.team-a.svc:8080//bot:tk_literal_slashy@evil/mcp"
+	grpc := server("team-a", "grpc", v1alpha1.ToolServerSpec{Managed: &v1alpha1.ManagedServer{Image: "mcp:1", Port: 8080, ReadinessProbe: &corev1.Probe{
+		ProbeHandler: corev1.ProbeHandler{GRPC: &corev1.GRPCAction{Port: 8080, Service: ptr.To("mcp.health")}},
+	}}, Auth: &v1alpha1.ToolServerAuth{SecretRef: v1alpha1.SecretKeyRef{Name: "mcp", Key: "token"}, Prefix: ptr.To("Bearer ")}})
+	keyed := server("team-a", "keyed", v1alpha1.ToolServerSpec{URL: "https://mcp.example.test/mcp", Auth: &v1alpha1.ToolServerAuth{SecretRef: v1alpha1.SecretKeyRef{Name: "mcp", Key: "token"}, Prefix: ptr.To("sk_tk_literal_keyed9 ")}})
+	faraway := server("team-b", "faraway", v1alpha1.ToolServerSpec{URL: "https://mcp.example.test/mcp"})
+	return []client.Object{remote, prober, execer, slashy, grpc, keyed, faraway}
 }
 
 // startConfig serves the API, with Teams in team-a and team-b, to callers
@@ -362,6 +403,183 @@ func TestModelProviderBaseURLByRole(t *testing.T) {
 	}
 	if code, body := get("dana@example.test", "backend", "/namespaces/team-a/modelproviders/gpt"); code != 200 || strings.Contains(body, "baseURL") {
 		t.Errorf("a member, no base URL: %d %s", code, body)
+	}
+}
+
+func TestListToolServers(t *testing.T) {
+	get := startConfig(t, configCluster(t))
+	code, body := get("", "", "/namespaces/team-a/toolservers")
+	var got api.ConfigList
+	if err := json.Unmarshal([]byte(body), &got); err != nil || code != 200 {
+		t.Fatalf("%d %s", code, body)
+	}
+	want := []api.ConfigSummary{
+		{Name: "execer", Reason: "Pending", Message: "its current spec has not been checked yet"},
+		{Name: "grpc", Ready: true},
+		{Name: "keyed", Ready: true},
+		{Name: "prober", Ready: true},
+		{Name: "remote", Ready: true},
+		{Name: "slashy", Ready: true},
+	}
+	if !slices.Equal(got.Items, want) {
+		t.Errorf("got %+v, want %+v", got.Items, want)
+	}
+	if code, body := get("", "", "/namespaces/team-c/toolservers"); code != 404 {
+		t.Errorf("a namespace without a Team: %d %s", code, body)
+	}
+	policy := &authz.Policy{FoldUsernames: true}
+	withRoles := startConfig(t, api.WithAccess(auth.ModeOIDC, policy), configCluster(t))
+	if code, body := withRoles("eve@example.test", "readers", "/namespaces/team-a/toolservers"); code != 200 || !strings.Contains(body, `"remote"`) {
+		t.Errorf("a viewer: %d %s", code, body)
+	}
+	if code, body := withRoles("dana@example.test", "backend", "/namespaces/team-c/toolservers"); code != 403 || !strings.Contains(body, `"no_role"`) {
+		t.Errorf("with logins, a namespace without a Team: %d %s", code, body)
+	}
+}
+
+func TestGetToolServer(t *testing.T) {
+	get := startConfig(t, configCluster(t))
+	for _, c := range []struct {
+		name, path string
+		code       int
+	}{
+		{"a namespace without a Team", "/namespaces/team-c/toolservers/remote", 404},
+		{"a ToolServer that is not there", "/namespaces/team-a/toolservers/nope", 404},
+		{"another namespace's ToolServer", "/namespaces/team-a/toolservers/faraway", 404},
+		{"in its own namespace", "/namespaces/team-b/toolservers/faraway", 200},
+	} {
+		if code, body := get("", "", c.path); code != c.code {
+			t.Errorf("%s: %d %s, want %d", c.name, code, body, c.code)
+		}
+	}
+
+	code, body := get("", "", "/namespaces/team-a/toolservers/execer")
+	var got api.ConfigResource
+	if err := json.Unmarshal([]byte(body), &got); err != nil || code != 200 {
+		t.Fatalf("execer: %d %s", code, body)
+	}
+	want := api.ConfigSummary{Name: "execer", Reason: "Pending", Message: "its current spec has not been checked yet"}
+	if got.ConfigSummary != want || got.Kind != "ToolServer" || got.Generation != 2 || got.ObservedGeneration != 1 || len(got.Conditions) != 1 {
+		t.Errorf("a ToolServer edited since it was checked: %s", body)
+	}
+}
+
+// What each role sees of a ToolServer; nobody sees its fields' owners, nor
+// the spec kubectl last applied.
+func TestToolServerByRole(t *testing.T) {
+	policy := &authz.Policy{FoldUsernames: true}
+	withRoles := startConfig(t, api.WithAccess(auth.ModeOIDC, policy), configCluster(t))
+	withoutLogins := startConfig(t, configCluster(t))
+	for _, c := range []struct {
+		name                      string
+		get                       func(user, groups, path string) (int, string)
+		user, groups              string
+		spec, status, annotations bool
+	}{
+		{"a viewer", withRoles, "eve@example.test", "readers", false, false, false},
+		{"a viewer AgentAccess", withRoles, "agentaccess/bot", "viewer", false, false, false},
+		{"a member", withRoles, "dana@example.test", "backend", true, true, true},
+		{"a member AgentAccess", withRoles, "agentaccess/bot", "member", true, true, true},
+		{"an admin", withRoles, "lead@example.test", "", true, true, true},
+		{"--auth=none", withoutLogins, "", "", true, true, true},
+	} {
+		code, body := c.get(c.user, c.groups, "/namespaces/team-a/toolservers/remote")
+		var got api.ConfigResource
+		if err := json.Unmarshal([]byte(body), &got); err != nil || code != 200 {
+			t.Fatalf("%s: %d %s", c.name, code, body)
+		}
+		if !got.Ready || len(got.Conditions) != 1 || got.Metadata.ResourceVersion == "" {
+			t.Errorf("%s: no health: %s", c.name, body)
+		}
+		if (got.Spec != nil) != c.spec || (got.Status != nil) != c.status || (got.Metadata.Annotations != nil) != c.annotations {
+			t.Errorf("%s: spec %v, status %v, annotations %v: %s", c.name, got.Spec != nil, got.Status != nil, got.Metadata.Annotations != nil, body)
+		}
+		if c.spec && (!strings.Contains(body, `"auth":{"secretRef":{"name":"mcp","key":"token"},"prefix":""}`) || !strings.Contains(body, `"cadre.dev/owner":"tools-team"`)) {
+			t.Errorf("%s: spec or annotations missing: %s", c.name, body)
+		}
+		for _, never := range []string{"last-applied", "managedFields", "f:url"} {
+			if strings.Contains(body, never) {
+				t.Errorf("%s sees %q: %s", c.name, never, body)
+			}
+		}
+	}
+	if code, body := withRoles("mallory@example.test", "", "/namespaces/team-a/toolservers/remote"); code != 403 {
+		t.Errorf("a stranger: %d %s", code, body)
+	}
+}
+
+// A member sees that a ToolServer's URLs, managed path and readiness probe
+// hold a value, not what it is; an admin sees them. A gRPC probe and a
+// Bearer auth prefix are shown as they are.
+func TestToolServerMaskedByRole(t *testing.T) {
+	policy := &authz.Policy{FoldUsernames: true}
+	get := startConfig(t, api.WithAccess(auth.ModeOIDC, policy), configCluster(t))
+	for _, ts := range []struct {
+		name     string
+		literals []string
+		masked   []string
+	}{
+		{"remote", []string{"tk_literal_user", "tk_literal_query"}, []string{`"url":"https://(set)@mcp.example.test/mcp?key=(set)"`}},
+		{"prober", []string{"tk_literal_path", "tk_literal_probe_path", "tk_literal_header", "tk_literal_tenant", "tk_literal_status"}, []string{
+			`"path":"/mcp?key=(set)"`, `"path":"/healthz?token=(set)"`, `"httpHeaders":[{"name":"X-Probe-Key","value":"(set)"},{"name":"X-Probe-Tenant","value":"(set)"}]`,
+			`"url":"http://prober.team-a.svc:8080/mcp?key=(set)"`,
+		}},
+		{"execer", []string{"tk_literal_exec", `"check"`, "tk_literal_prefix"}, []string{`"exec":{"command":["(set)","(set)"]}`, `"prefix":"(set)"`}},
+		{"slashy", []string{"tk_literal_slashy"}, []string{`"path":"//(set)@evil/mcp"`, `"url":"http://slashy.team-a.svc:8080//(set)@evil/mcp"`}},
+		{"keyed", []string{"tk_literal_keyed"}, []string{`"prefix":"(set)"`}},
+	} {
+		for _, c := range []struct {
+			name, user, groups string
+			masked             bool
+		}{
+			{"a member", "dana@example.test", "backend", true},
+			{"a member AgentAccess", "agentaccess/bot", "member", true},
+			{"an admin", "lead@example.test", "", false},
+		} {
+			code, body := get(c.user, c.groups, "/namespaces/team-a/toolservers/"+ts.name)
+			if code != 200 {
+				t.Fatalf("%s, %s: %d %s", ts.name, c.name, code, body)
+			}
+			for _, l := range ts.literals {
+				if strings.Contains(body, l) == c.masked {
+					t.Errorf("%s, %s: %q shown %v: %s", ts.name, c.name, l, c.masked, body)
+				}
+			}
+			for _, m := range ts.masked {
+				if strings.Contains(body, m) != c.masked {
+					t.Errorf("%s, %s: %s shown %v: %s", ts.name, c.name, m, !c.masked, body)
+				}
+			}
+		}
+	}
+	if code, body := get("dana@example.test", "backend", "/namespaces/team-a/toolservers/grpc"); code != 200 || !strings.Contains(body, `"grpc":{"port":8080,"service":"mcp.health"}`) || !strings.Contains(body, `"prefix":"Bearer "`) {
+		t.Errorf("a member, a gRPC probe and a Bearer prefix: %d %s", code, body)
+	}
+}
+
+// shared hands out ts without copying what it points to, as a cache may:
+// a member's view masks a copy of its own.
+type shared struct {
+	client.Reader
+	ts *v1alpha1.ToolServer
+}
+
+func (s shared) Get(_ context.Context, _ client.ObjectKey, obj client.Object, _ ...client.GetOption) error {
+	*obj.(*v1alpha1.ToolServer) = *s.ts
+	return nil
+}
+
+func TestToolServerMaskLeavesTheCache(t *testing.T) {
+	prober := toolServers()[1].(*v1alpha1.ToolServer)
+	get := startConfig(t, api.WithAccess(auth.ModeOIDC, &authz.Policy{FoldUsernames: true}), api.WithConfig(shared{ts: prober}))
+	if code, body := get("dana@example.test", "backend", "/namespaces/team-a/toolservers/prober"); code != 200 || strings.Contains(body, "tk_literal_header") {
+		t.Fatalf("a member: %d %s", code, body)
+	}
+	code, body := get("lead@example.test", "", "/namespaces/team-a/toolservers/prober")
+	for _, l := range []string{"tk_literal_path", "tk_literal_probe_path", "tk_literal_header"} {
+		if code != 200 || !strings.Contains(body, l) {
+			t.Errorf("an admin after a member: %q gone: %d %s", l, code, body)
+		}
 	}
 }
 

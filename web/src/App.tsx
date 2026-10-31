@@ -3,6 +3,7 @@ import { Link, Outlet, Route, Routes, useParams } from "react-router";
 import { AccessDetail, AccessList } from "./Access";
 import { AgentDetail } from "./AgentDetail";
 import { Agents } from "./Agents";
+import { ModelProviderDetail, ModelProviders } from "./ModelProviders";
 import { Board } from "./Board";
 import { IdentityBox, IdentityProvider, roleOf, useIdentityDetails } from "./Identity";
 import { NewTask } from "./NewTask";
@@ -41,6 +42,18 @@ function TeamAgents() {
 function OneAgent() {
   const { ns = "", name = "" } = useParams();
   return <AgentDetail key={`${ns}/${name}`} />;
+}
+
+// the model providers,
+function TeamModelProviders() {
+  const { ns = "" } = useParams();
+  return <ModelProviders key={ns} />;
+}
+
+// a ModelProvider's page to one ModelProvider,
+function OneModelProvider() {
+  const { ns = "", name = "" } = useParams();
+  return <ModelProviderDetail key={`${ns}/${name}`} />;
 }
 
 // the settings,
@@ -209,6 +222,8 @@ export function App() {
               <Route index element={<TeamBoard />} />
               <Route path="agents" element={<TeamAgents />} />
               <Route path="agents/:name" element={<OneAgent />} />
+              <Route path="modelproviders" element={<TeamModelProviders />} />
+              <Route path="modelproviders/:name" element={<OneModelProvider />} />
               <Route path="new" element={<TeamNewTask />} />
               <Route path="tasks/:name" element={<OneTask />} />
               <Route path="settings" element={<TeamSettings />} />
