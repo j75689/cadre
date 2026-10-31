@@ -38,5 +38,5 @@ function UsesCard({ spec }: { spec: Record<string, unknown> }) {
 // AgentDetail is one Agent: whether it can take work and why, its
 // conditions, what it uses, and its YAML, as the caller's role is shown it.
 export function AgentDetail() {
-  return <ConfigDetail noun="agent" title="Agents" section="agents" load={getAgent} spec={(spec) => <UsesCard spec={spec} />} />;
+  return <ConfigDetail kind="Agent" noun="agent" title="Agents" section="agents" load={getAgent} spec={(spec) => <UsesCard spec={spec} />} />;
 }

@@ -24,13 +24,16 @@ interface Failure {
 // caller's role is shown it. noun names one in a sentence ("agent"),
 // title names the kind's list ("Agents"), at section/<name> under the
 // team. spec is the kind's own cards, given a spec: a viewer gets none.
+// kind is the resource's kind ("Agent"), whose watch hints read it again.
 export function ConfigDetail({
+  kind,
   noun,
   title,
   section,
   load,
   spec,
 }: {
+  kind: string;
   noun: string;
   title: string;
   section: string;
@@ -67,6 +70,7 @@ export function ConfigDetail({
     },
     pollMs,
     [ns, name, retry],
+    { ns, topic: "config", match: (h) => h.event === "config" && h.kind === kind && h.name === name },
   );
   return (
     <main id="main" className="page">
@@ -130,7 +134,7 @@ export function ConfigDetail({
             <p className="hint">The spec and status are shown to the team&apos;s members and admins.</p>
           )}
           <MetadataCard resource={resource} />
-          <YAMLCard resource={resource} />
+          <YAMLCard resource={resource} namespace={ns} />
         </div>
       )}
     </main>
