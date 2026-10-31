@@ -118,6 +118,7 @@ describe("ModelProviderDetail", () => {
     expect(screen.getByText("The spec and status are shown to the team's members and admins.")).toBeTruthy();
     expect(screen.getAllByRole("heading", { level: 2 }).map((h) => h.textContent)).toEqual(["Conditions", "Metadata", "YAML"]);
     expect(await yaml()).not.toContain("spec:");
+    expect(screen.getByText("No spec; not a manifest to apply.")).toBeTruthy();
   });
 
   it("shows a member the base URL masked as served, with the note", async () => {
@@ -137,18 +138,24 @@ describe("ModelProviderDetail", () => {
     open(() => json({ ...member, spec: { ...spec, baseURL } }));
     expect(await yaml()).toContain(`baseURL: ${baseURL}\n`);
     expect(screen.getByText(/are set but hidden from members/)).toBeTruthy();
+    expect(screen.getByText("Contains hidden values; not applyable as is.")).toBeTruthy();
   });
 
   it("shows an admin the whole base URL, with no note", async () => {
     open(() => json(admin));
-    expect(await yaml()).toContain("baseURL: https://u:sk@gw.example.test/v1?api-key=sk\n");
-    expect(screen.queryByText(/hidden from members/)).toBeNull();
+    const text = await yaml();
+    expect(text.slice(0, text.indexOf("spec:\n"))).toBe(
+      "apiVersion: cadre.dev/v1alpha1\nkind: ModelProvider\nmetadata:\n  name: claude\n  namespace: a\n  labels:\n    team: a\n  annotations:\n    owner: dana\n",
+    );
+    expect(text).toContain("baseURL: https://u:sk@gw.example.test/v1?api-key=sk\n");
+    expect(screen.queryByText(/hidden from members|not applyable/)).toBeNull();
+    expect(screen.getByRole("button", { name: "Copy manifest" })).toBeTruthy();
   });
 
   it("adds no note for a URL-like (set) outside an admin's base URL", async () => {
     open(() => json({ ...admin, spec: { ...admin.spec, project: "p?x=(set)" } }));
     expect(await yaml()).toContain("project: p?x=(set)\n");
-    expect(screen.queryByText(/hidden from members/)).toBeNull();
+    expect(screen.queryByText(/hidden/)).toBeNull();
   });
 
   it("says when there is no such provider, with a way back", async () => {
