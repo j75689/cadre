@@ -20,11 +20,21 @@ const hasMasked = (v: unknown): boolean => v === masked || (typeof v === "object
 // internal/api/config.go).
 const maskedURL = /:\/\/\(set\)@|[?&]([^&#=]*=)?\(set\)(?=[&#]|$)|#\(set\)$/;
 
+// maskedURLs are, by kind, the paths in a spec to the URLs the server masks
+// so (maskURL's callers in internal/api/config.go).
+const maskedURLs: Record<string, string[][]> = {
+  ModelProvider: [["baseURL"]],
+  ToolServer: [["url"], ["managed", "path"], ["managed", "readinessProbe", "httpGet", "path"]],
+};
+
 // hasMaskedURL says whether the resource holds a URL shown with masked
-// parts: only a ModelProvider's spec.baseURL, the one the server masks so.
-// Elsewhere such a text is an admin's, as written.
+// parts, at one of its kind's maskedURLs. Elsewhere such a text is an
+// admin's, as written.
 const hasMaskedURL = ({ kind, spec }: ConfigResource): boolean =>
-  kind === "ModelProvider" && typeof spec?.baseURL === "string" && maskedURL.test(spec.baseURL);
+  (maskedURLs[kind] ?? []).some((path) => {
+    const v = path.reduce<unknown>((o, k) => (o as Record<string, unknown> | undefined)?.[k], spec);
+    return typeof v === "string" && maskedURL.test(v);
+  });
 
 // ConditionsCard is the resource's conditions, each with the generation
 // it is about: one older than the resource's is about a spec since changed.
