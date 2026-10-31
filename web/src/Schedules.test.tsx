@@ -32,25 +32,25 @@ function at(path: string, answers: Record<string, (() => Promise<Response>)[]>) 
 const list = "/namespaces/a/schedules";
 const one = "/namespaces/a/schedules/nightly";
 
-// As schedules.go in internal/controller reports them: a suspended one is Ready.
+// As GET /schedules answers them (readiness() in internal/api/server.go): why
+// only when not Ready, so a suspended one (paused) reads as a running one.
 const schedules: AgentSummary[] = [
-  { name: "nightly", ready: true, reason: "Scheduled", message: "next at 2026-11-01T03:00:00Z" },
-  { name: "paused", ready: true, reason: "Suspended" },
+  { name: "nightly", ready: true },
+  { name: "paused", ready: true },
   { name: "broken", ready: false, reason: "InvalidSchedule", message: "unknown time zone Mars/Base" },
   { name: "fresh", ready: false, reason: "Pending", message: "its current spec has not been checked yet" },
 ];
 
 describe("Schedules", () => {
-  it("shows each schedule's readiness, reason and message, linked to its page", async () => {
+  it("shows each schedule's readiness, and why not, linked to its page", async () => {
     at("/t/a/schedules", { [list]: [() => json({ items: schedules })] });
     const rows = await screen.findAllByRole("row");
     expect(rows).toHaveLength(5);
     const [, nightly, paused, broken, fresh] = rows.map((r) => within(r));
     expect(nightly.getByText("Ready")).toBeTruthy();
-    expect(nightly.getByText("Scheduled")).toBeTruthy();
     expect(nightly.getByRole("link", { name: "nightly" }).getAttribute("href")).toBe("/t/a/schedules/nightly");
     expect(paused.getByText("Ready")).toBeTruthy();
-    expect(paused.getByText("Suspended")).toBeTruthy();
+    expect(paused.queryByText("Suspended")).toBeNull();
     expect(broken.getByText("InvalidSchedule")).toBeTruthy();
     expect(broken.getByText("unknown time zone Mars/Base")).toBeTruthy();
     expect(fresh.getAllByText("Pending")).toHaveLength(1);
@@ -92,14 +92,14 @@ describe("Schedules", () => {
   });
 });
 
-// The Schedule nightly as each role is shown it (project() in internal/api/config.go):
-// nothing is masked, so a member's is an admin's.
+// The Schedule nightly, suspended, as each role is shown it (configView() in
+// internal/api/config.go): Ready with no reason, which only its Ready condition
+// has; nothing is masked, so a member's is an admin's.
 const viewer: ConfigResource = {
   name: "nightly",
   ready: true,
-  reason: "Suspended",
   kind: "Schedule",
-  generation: 3,
+  generation: 2,
   observedGeneration: 2,
   conditions: [{ type: "Ready", status: "True", reason: "Suspended", message: "", observedGeneration: 2 }],
   metadata: { uid: "u-7", resourceVersion: "9", creationTimestamp: "2026-10-25T08:00:00Z", labels: { team: "a" } },
@@ -132,12 +132,21 @@ describe("ScheduleDetail", () => {
     expect(document.title).toBe("nightly · Schedules · a · Cadre");
     const crumbs = within(screen.getByRole("navigation", { name: "Breadcrumb" }));
     expect(crumbs.getByRole("link", { name: "Schedules" }).getAttribute("href")).toBe("/t/a/schedules");
-    expect(within(screen.getByRole("region", { name: "Conditions table" })).getByText("(older spec)")).toBeTruthy();
     expect(screen.getByText("u-7")).toBeTruthy();
     expect(screen.getByText("The spec and status are shown to the team's members and admins.")).toBeTruthy();
     expect(screen.getAllByRole("heading", { level: 2 }).map((h) => h.textContent)).toEqual(["Conditions", "Metadata", "YAML"]);
     expect(await yaml()).not.toContain("spec:");
     expect(screen.getByText("No spec; not a manifest to apply.")).toBeTruthy();
+  });
+
+  // Its spec changed since the condition: the server says Pending, and the
+  // page does not take the older condition's Suspended for it.
+  it("shows Pending as the server says it, not the older condition's reason", async () => {
+    open(() => json({ ...viewer, ready: false, reason: "Pending", message: "its current spec has not been checked yet", generation: 3 }));
+    expect(await screen.findByText("its current spec has not been checked yet")).toBeTruthy();
+    expect(screen.getByText("Pending", { selector: ".badge" })).toBeTruthy();
+    expect(screen.queryByText("Suspended:")).toBeNull();
+    expect(within(screen.getByRole("region", { name: "Conditions table" })).getByText("(older spec)")).toBeTruthy();
   });
 
   // A member's and an admin's answers are the same: the task template is not masked.
