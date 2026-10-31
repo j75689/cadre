@@ -99,10 +99,11 @@ describe("AgentDetail", () => {
     expect(screen.getByText("team=a")).toBeTruthy();
     expect(screen.getByText("u-1")).toBeTruthy();
     expect(screen.getByText("42")).toBeTruthy();
-    const text = await yaml();
-    expect(text).toContain("metadata:\n  uid: u-1\n");
-    expect(text).not.toContain("spec:");
-    expect(text).not.toContain("status:");
+    expect(await yaml()).toBe("apiVersion: cadre.dev/v1alpha1\nkind: Agent\nmetadata:\n  name: bot\n  namespace: a\n  labels:\n    team: a\n");
+    // With no spec, the copy is no manifest, and says so.
+    expect(screen.getByRole("button", { name: "Copy" }).getAttribute("aria-describedby")).toBe("yaml-note");
+    expect(screen.getByText("No spec; not a manifest to apply.").id).toBe("yaml-note");
+    expect(screen.queryByRole("region", { name: "Status" })).toBeNull();
   });
 
   it("shows a member what the agent uses, and masked values as (set)", async () => {
@@ -115,8 +116,29 @@ describe("AgentDetail", () => {
     const text = await yaml();
     expect(text).toMatch(/- name: TOKEN\n\s+value: \(set\)\n/);
     expect(text).toMatch(/command:\n\s+- \(set\)\n/);
-    expect(text).toContain("status:\n  observedGeneration: 3\n");
+    expect(text).toContain("  annotations:\n    owner: dana\nspec:\n");
     expect(screen.getByText(/are set but hidden from members; admins see them/)).toBeTruthy();
+    // Applying (set) would overwrite the real values: the copy says it is no manifest.
+    expect(screen.getByRole("button", { name: "Copy" }).getAttribute("aria-describedby")).toBe("yaml-note");
+    expect(screen.getByText("Contains hidden values; not applyable as is.").id).toBe("yaml-note");
+    expect(screen.queryByRole("button", { name: "Copy manifest" })).toBeNull();
+  });
+
+  it("copies a manifest: the header, the name and namespace, no server-set fields, no status", async () => {
+    const writeText = vi.fn(() => Promise.resolve());
+    vi.stubGlobal("navigator", { ...navigator, clipboard: { writeText } });
+    open(() => json(admin));
+    const text = await yaml();
+    expect(text.slice(0, text.indexOf("spec:\n"))).toBe(
+      "apiVersion: cadre.dev/v1alpha1\nkind: Agent\nmetadata:\n  name: bot\n  namespace: a\n  labels:\n    team: a\n  annotations:\n    owner: dana\n",
+    );
+    for (const field of ["uid", "resourceVersion", "creationTimestamp", "managedFields", "status:"]) expect(text).not.toContain(field);
+    // The status is shown under it, not copied.
+    expect(screen.getByRole("region", { name: "Status" }).textContent).toBe("observedGeneration: 3\n");
+    expect(screen.queryByText(/not applyable|not a manifest/)).toBeNull();
+    fireEvent.click(screen.getByRole("button", { name: "Copy manifest" }));
+    expect(await screen.findByText("Copied")).toBeTruthy();
+    expect(writeText).toHaveBeenCalledWith(text);
   });
 
   it("shows an admin the whole spec, with no note on masked values", async () => {
@@ -124,7 +146,7 @@ describe("AgentDetail", () => {
     const text = await yaml();
     expect(text).toContain("value: hunter2\n");
     expect(text).toMatch(/command:\n\s+- run\n\s+- --fast\n/);
-    expect(screen.queryByText(/hidden from members/)).toBeNull();
+    expect(screen.queryByText(/hidden/)).toBeNull();
     const uses = within(screen.getByRole("heading", { name: "Uses" }).closest("section")!);
     expect(uses.getByText("None")).toBeTruthy();
   });
@@ -132,13 +154,13 @@ describe("AgentDetail", () => {
   it("adds no note for (set) in an admin's text", async () => {
     open(() => json({ ...admin, spec: { instructions: "Reply in this form:\nstatus: (set)\n" } }));
     expect(await yaml()).toContain("  status: (set)\n");
-    expect(screen.queryByText(/hidden from members/)).toBeNull();
+    expect(screen.queryByText(/hidden/)).toBeNull();
   });
 
   it("adds no note for a URL in an admin's text that looks masked", async () => {
     open(() => json({ ...admin, spec: { instructions: "Reply with the form at https://forms.example.test/?status=(set)" } }));
     expect(await yaml()).toContain("https://forms.example.test/?status=(set)");
-    expect(screen.queryByText(/hidden from members/)).toBeNull();
+    expect(screen.queryByText(/hidden/)).toBeNull();
   });
 
   it("copies the YAML", async () => {

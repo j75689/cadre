@@ -130,7 +130,7 @@ export function ConfigDetail({
             <p className="hint">The spec and status are shown to the team&apos;s members and admins.</p>
           )}
           <MetadataCard resource={resource} />
-          <YAMLCard resource={resource} />
+          <YAMLCard resource={resource} namespace={ns} />
         </div>
       )}
     </main>
