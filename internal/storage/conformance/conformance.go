@@ -51,6 +51,7 @@ func Run(t *testing.T, f Factory) {
 		{"TeamSemaphoreAndCounter", testTeamSemaphoreAndCounter},
 		{"IndexRebuildsAfterRestart", testIndexRebuilds},
 		{"IndexQuery", testIndexQuery},
+		{"IndexFilters", testIndexFilters},
 		{"IndexRejectsInvalidQueries", testIndexRejectsInvalidQueries},
 		{"IndexListsTeams", testIndexListsTeams},
 		{"LogAppend", testLogAppend},

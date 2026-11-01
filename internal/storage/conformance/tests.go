@@ -457,6 +457,117 @@ func testIndexQuery(t *testing.T, s *suite) {
 	}
 }
 
+// Assignee, Labels and Text filter the index, alone and with the other
+// filters, and CountTasks counts what ListTasks selects before paging.
+func testIndexFilters(t *testing.T, s *suite) {
+	d := s.open()
+	for _, tc := range []struct {
+		name, title string
+		assignee    *v1alpha1.Assignee
+		labels      []string
+		number      int64
+	}{
+		{"alpha", "Fix Login Bug", &v1alpha1.Assignee{Kind: v1alpha1.AssigneeAgent, Name: "coder"}, []string{"ui", "defect"}, 11},
+		{"beta", "Write guide", &v1alpha1.Assignee{Kind: v1alpha1.AssigneeUser, Name: "coder"}, []string{"docs"}, 12},
+		{"gamma", "Refactor", &v1alpha1.Assignee{Kind: v1alpha1.AssigneeAgent, Name: "reviewer"}, []string{"ui"}, 120},
+		{"delta", "Spike", nil, nil, 3},
+	} {
+		tk := &v1alpha1.Task{
+			ObjectMeta: metav1.ObjectMeta{Name: tc.name, Namespace: s.ns},
+			Spec: v1alpha1.TaskSpec{
+				Title: tc.title, Assignee: tc.assignee, Labels: tc.labels,
+				Description: "zebra",
+			},
+		}
+		if err := d.CreateTask(s.ctx, tk); err != nil {
+			t.Fatalf("create %s: %v", tc.name, err)
+		}
+		if err := transition(s.ctx, d, s.key(tc.name), task.Create{Number: tc.number}); err != nil {
+			t.Fatalf("number %s: %v", tc.name, err)
+		}
+		if err := d.Append(s.ctx, s.ns+"/"+tc.name+"/thread", storage.SeqKey(1), []byte(`{"body":"giraffe"}`)); err != nil {
+			t.Fatalf("thread %s: %v", tc.name, err)
+		}
+	}
+	if err := transition(s.ctx, d, s.key("gamma"), task.Cancel{}); err != nil {
+		t.Fatalf("cancel gamma: %v", err)
+	}
+
+	names := func(q storage.Query) ([]string, error) {
+		ts, err := d.ListTasks(s.ctx, q)
+		out := make([]string, 0, len(ts))
+		for _, tk := range ts {
+			out = append(out, tk.Name)
+		}
+		return out, err
+	}
+	todo, cancelled := []v1alpha1.Phase{v1alpha1.PhaseTodo}, []v1alpha1.Phase{v1alpha1.PhaseCancelled}
+	for _, tc := range []struct {
+		q    storage.Query
+		want []string
+	}{
+		{storage.Query{Namespace: s.ns}, []string{"delta", "alpha", "beta", "gamma"}},
+		// Assignee: the exact name, of either kind.
+		{storage.Query{Namespace: s.ns, Assignee: "coder"}, []string{"alpha", "beta"}},
+		{storage.Query{Namespace: s.ns, Assignee: "Coder"}, []string{}},
+		{storage.Query{Namespace: s.ns, Assignee: "code"}, []string{}},
+		// Labels: every one, exactly.
+		{storage.Query{Namespace: s.ns, Labels: []string{"ui"}}, []string{"alpha", "gamma"}},
+		{storage.Query{Namespace: s.ns, Labels: []string{"ui", "defect"}}, []string{"alpha"}},
+		{storage.Query{Namespace: s.ns, Labels: []string{"ui", "docs"}}, []string{}},
+		{storage.Query{Namespace: s.ns, Labels: []string{"UI"}}, []string{}},
+		{storage.Query{Namespace: s.ns, Labels: []string{"u"}}, []string{}},
+		// Text: a substring of title, name, assignee name, a label or
+		// "#<number>", trimmed, in any case.
+		{storage.Query{Namespace: s.ns, Text: "login"}, []string{"alpha"}},
+		{storage.Query{Namespace: s.ns, Text: "  LOGIN\t"}, []string{"alpha"}},
+		{storage.Query{Namespace: s.ns, Text: "ELT"}, []string{"delta"}},
+		{storage.Query{Namespace: s.ns, Text: "Review"}, []string{"gamma"}},
+		{storage.Query{Namespace: s.ns, Text: "DEFECT"}, []string{"alpha"}},
+		{storage.Query{Namespace: s.ns, Text: "doc"}, []string{"beta"}},
+		{storage.Query{Namespace: s.ns, Text: "#12"}, []string{"beta", "gamma"}},
+		{storage.Query{Namespace: s.ns, Text: "#3"}, []string{"delta"}},
+		{storage.Query{Namespace: s.ns, Text: "20"}, []string{"gamma"}},
+		{storage.Query{Namespace: s.ns, Text: "   "}, []string{"delta", "alpha", "beta", "gamma"}},
+		// Never the description or the thread.
+		{storage.Query{Namespace: s.ns, Text: "zebra"}, []string{}},
+		{storage.Query{Namespace: s.ns, Text: "giraffe"}, []string{}},
+		// With each other, the other filters and paging.
+		{storage.Query{Namespace: s.ns, Text: "ui"}, []string{"alpha", "beta", "gamma"}},
+		{storage.Query{Namespace: s.ns, Text: "ui", Phases: todo}, []string{"alpha", "beta"}},
+		{storage.Query{Namespace: s.ns, Text: "ui", Phases: cancelled}, []string{"gamma"}},
+		{storage.Query{Namespace: s.ns, Text: "ui", Labels: []string{"ui"}, Assignee: "coder"}, []string{"alpha"}},
+		{storage.Query{Namespace: s.ns, Assignee: "coder", Number: 12}, []string{"beta"}},
+		{storage.Query{Namespace: s.ns, Text: "#1", Offset: 1, Limit: 1}, []string{"beta"}},
+		{storage.Query{Namespace: s.ns, Text: "#1", Offset: 3}, []string{}},
+		{storage.Query{Namespace: "elsewhere", Assignee: "coder"}, []string{}},
+	} {
+		eventually(t, fmt.Sprintf("query %+v", tc.q), func() error {
+			got, err := names(tc.q)
+			if err != nil {
+				return err
+			}
+			if !slices.Equal(got, tc.want) {
+				return fmt.Errorf("got %v, want %v", got, tc.want)
+			}
+			unpaged := tc.q
+			unpaged.Offset, unpaged.Limit = 0, 0
+			all, err := names(unpaged)
+			if err != nil {
+				return err
+			}
+			n, err := d.CountTasks(s.ctx, tc.q)
+			if err != nil {
+				return err
+			}
+			if n != len(all) {
+				return fmt.Errorf("count %d, want %d (%v)", n, len(all), all)
+			}
+			return nil
+		})
+	}
+}
+
 func testLogAppend(t *testing.T, s *suite) {
 	a, b := s.open(), s.open()
 	stream := s.ns + "/t/thread"
@@ -546,6 +657,9 @@ func testIndexRejectsInvalidQueries(t *testing.T, s *suite) {
 	} {
 		if _, err := d.ListTasks(s.ctx, q); !errors.Is(err, storage.ErrInvalidQuery) {
 			t.Errorf("query %+v: got %v, want ErrInvalidQuery", q, err)
+		}
+		if _, err := d.CountTasks(s.ctx, q); !errors.Is(err, storage.ErrInvalidQuery) {
+			t.Errorf("count %+v: got %v, want ErrInvalidQuery", q, err)
 		}
 	}
 }

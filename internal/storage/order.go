@@ -3,6 +3,7 @@ package storage
 import (
 	"cmp"
 	"slices"
+	"strconv"
 	"strings"
 
 	v1alpha1 "github.com/j75689/cadre/api/v1alpha1"
@@ -39,7 +40,28 @@ func CompareTasks(a, b *v1alpha1.Task) int {
 func (q Query) Matches(t *v1alpha1.Task) bool {
 	return t.Namespace == q.Namespace && (len(q.Phases) == 0 || slices.Contains(q.Phases, t.Status.Phase)) &&
 		(q.Parent == "" || t.Spec.ParentRef != nil && t.Spec.ParentRef.Name == q.Parent) &&
-		(q.Number == 0 || t.Status.Number == q.Number)
+		(q.Number == 0 || t.Status.Number == q.Number) &&
+		(q.Assignee == "" || t.Spec.Assignee != nil && t.Spec.Assignee.Name == q.Assignee) &&
+		!slices.ContainsFunc(q.Labels, func(l string) bool { return !slices.Contains(t.Spec.Labels, l) }) &&
+		q.matchesText(t)
+}
+
+// matchesText is Query.Text's half of Matches, the web board's search: a
+// case-insensitive substring of the fields a card shows, never the
+// description or the thread.
+func (q Query) matchesText(t *v1alpha1.Task) bool {
+	text := strings.ToLower(strings.TrimSpace(q.Text))
+	if text == "" {
+		return true
+	}
+	fields := append([]string{t.Spec.Title, t.Name}, t.Spec.Labels...)
+	if t.Spec.Assignee != nil {
+		fields = append(fields, t.Spec.Assignee.Name)
+	}
+	if t.Status.Number > 0 {
+		fields = append(fields, "#"+strconv.FormatInt(t.Status.Number, 10))
+	}
+	return slices.ContainsFunc(fields, func(f string) bool { return strings.Contains(strings.ToLower(f), text) })
 }
 
 // Page applies q's offset and limit to sorted results. q must be valid.

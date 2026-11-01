@@ -154,6 +154,9 @@ type Query struct {
 	Phases    []v1alpha1.Phase // any of these; empty means all
 	Parent    string           // subtasks of this task (spec.parentRef.name); empty means any
 	Number    int64            // the task with this status.number, unique in a namespace; zero means any
+	Assignee  string           // tasks assigned to this name, of either kind; empty means any
+	Labels    []string         // tasks that have every one of these labels; empty means any
+	Text      string           // tasks whose title, name, assignee name, a label or "#<number>" contain it, trimmed, in any case (see Matches); empty means any
 	Offset    int              // not negative
 	Limit     int              // not negative; zero means no limit
 }
@@ -186,6 +189,9 @@ type Index interface {
 	// then by number, then by name. It fails with ErrInvalidQuery if
 	// q.Validate does.
 	ListTasks(ctx context.Context, q Query) ([]v1alpha1.Task, error)
+	// CountTasks returns how many Tasks ListTasks selects before its offset
+	// and limit apply. It fails with ErrInvalidQuery if q.Validate does.
+	CountTasks(ctx context.Context, q Query) (int, error)
 	// ListTeams returns every Team, ordered by namespace. The namespaces
 	// that have one are the namespaces Cadre serves.
 	ListTeams(ctx context.Context) ([]v1alpha1.Team, error)
