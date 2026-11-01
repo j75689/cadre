@@ -172,9 +172,20 @@ func listFilters(t *testing.T, store storage.Driver, settle func(*manager.Manage
 	}
 
 	// The Go client sends each filter.
-	list, err := client.New(srv.URL, nil).ListTasks(ctx, ns, client.TaskQuery{Assignee: "coder", Labels: []string{"docs"}, Text: "WRITE", Phases: []v1alpha1.Phase{v1alpha1.PhaseCancelled}})
-	if err != nil || len(list.Items) != 1 || list.Items[0].Name != "docs" || list.Total != 1 {
-		t.Errorf("client: %+v, %v", list, err)
+	c := client.New(srv.URL, nil)
+	for _, tc := range []struct {
+		q    client.TaskQuery
+		want string
+	}{
+		{client.TaskQuery{Assignee: "alice"}, "signup"},
+		{client.TaskQuery{Labels: []string{"auth", "bug"}}, "login-bug"},
+		{client.TaskQuery{Text: "HIRES"}, "coder-guide"},
+		{client.TaskQuery{Assignee: "coder", Labels: []string{"docs"}, Text: "write", Phases: []v1alpha1.Phase{v1alpha1.PhaseCancelled}}, "docs"},
+	} {
+		list, err := c.ListTasks(ctx, ns, tc.q)
+		if err != nil || len(list.Items) != 1 || list.Items[0].Name != tc.want || list.Total != 1 {
+			t.Errorf("client %+v: %+v, %v; want %s", tc.q, list, err, tc.want)
+		}
 	}
 }
 
