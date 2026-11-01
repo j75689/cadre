@@ -1,4 +1,4 @@
-import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { MemoryRouter } from "react-router";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { AgentSummary, ConfigResource } from "./api";
@@ -70,6 +70,19 @@ describe("Runners", () => {
     expect(tab.getAttribute("href")).toBe("/t/a/runners");
     expect(tab.getAttribute("aria-current")).toBe("page");
     expect(await screen.findByText(/Loading the runner/)).toBeTruthy();
+  });
+
+  it.each(["viewer", "member", "admin"])("is a tab for a %s", async (role) => {
+    let me = false;
+    at("/t/a/runners", {
+      "/me": [() => ((me = true), json({ mode: "oidc", username: "dana@example.test", name: "Dana", roles: { a: role } }))],
+      [list]: [() => json({ items: [] })],
+    });
+    expect(await screen.findByText(/This team has no runners/)).toBeTruthy();
+    await waitFor(() => expect(me).toBe(true));
+    await act(() => new Promise((r) => setTimeout(r, 0)));
+    const nav = within(screen.getByRole("navigation", { name: "Team" }));
+    expect(nav.getByRole("link", { name: "Runners" }).getAttribute("href")).toBe("/t/a/runners");
   });
 });
 
