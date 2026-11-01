@@ -15,6 +15,7 @@ const items: { to: string; label: string; icon: IconName; end?: boolean; show: (
   { to: "toolservers", label: "Tool servers", icon: "wrench", show: () => true },
   { to: "schedules", label: "Schedules", icon: "clock", show: () => true },
   { to: "notifiers", label: "Notifiers", icon: "bell", show: () => true },
+  { to: "runners", label: "Runners", icon: "server", show: () => true },
   { to: "settings", label: "Settings", icon: "settings", show: () => true },
 ];
 

@@ -4,8 +4,8 @@ import { ConfigList } from "./ConfigList";
 import { scheduleLink } from "./links";
 
 // Schedules is the team's schedules: whether each is ready, and why not.
-// A suspended one is Ready, and the list says why only when not, so it
-// reads as a running one; its page says Suspended.
+// A suspended one is Ready, with the reason Suspended as the server serves
+// it.
 export function Schedules() {
   return (
     <ConfigList

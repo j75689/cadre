@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"slices"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -132,8 +133,9 @@ func TestASharedCache(t *testing.T) {
 	if err := shared.Get(ctx, client.ObjectKey{Namespace: "default", Name: "shared"}, &got); err != nil {
 		t.Fatalf("the shared cache: %v", err)
 	}
-	// Subtasks are listed from a parent index on the cache, which a second
-	// driver on the same cache finds there and keeps.
+	// Subtasks are listed from a parent index on the cache, and a board
+	// column from a phase index, which a second driver on the same cache
+	// finds there and keeps.
 	child := &v1alpha1.Task{ObjectMeta: metav1.ObjectMeta{Name: "child", Namespace: "default"},
 		Spec: v1alpha1.TaskSpec{Title: "t", ParentRef: &v1alpha1.TaskReference{Name: "shared"}}}
 	if err := d.CreateTask(ctx, child); err != nil {
@@ -155,6 +157,11 @@ func TestASharedCache(t *testing.T) {
 		if time.Now().After(deadline) {
 			t.Fatalf("children of shared by the parent index: %v, %v", children.Items, err)
 		}
+	}
+	var unphased v1alpha1.TaskList
+	if err := shared.List(ctx, &unphased, client.InNamespace("default"), client.MatchingFields{"status.phase": ""}); err != nil ||
+		!slices.ContainsFunc(unphased.Items, func(tk v1alpha1.Task) bool { return tk.Name == "child" }) {
+		t.Fatalf("tasks without a phase by the phase index: %v, %v", unphased.Items, err)
 	}
 	if err := d.Close(); err != nil {
 		t.Fatal(err)
