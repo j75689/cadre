@@ -43,6 +43,9 @@ type configKind struct {
 	// them: without secrets, and redacted for a member where the spec may
 	// hold a credential. Viewers never get here.
 	view func(obj client.Object, role authz.Role) (spec, status any)
+	// summary, if set, adds to obj's list item, out, what role may see of
+	// it beyond whether it is Ready.
+	summary func(obj client.Object, role authz.Role, out *ConfigSummary)
 }
 
 var configKinds = []configKind{{
@@ -110,6 +113,17 @@ var configKinds = []configKind{{
 		s := o.(*v1alpha1.Schedule)
 		return s.Spec, s.Status
 	},
+	// A suspended Schedule is Ready, so its list item says it is
+	// suspended; a member and up also see whom its Tasks go to.
+	summary: func(o client.Object, role authz.Role, out *ConfigSummary) {
+		s := o.(*v1alpha1.Schedule)
+		if c := meta.FindStatusCondition(s.Status.Conditions, v1alpha1.ConditionReady); out.Ready && c.Reason == suspended {
+			out.Reason = suspended
+		}
+		if role >= authz.Member {
+			out.Assignee = s.Spec.Task.Assignee
+		}
+	},
 }, {
 	plural: "notifiers", kind: "Notifier",
 	newObj:  func() client.Object { return &v1alpha1.Notifier{} },
@@ -148,6 +162,9 @@ var configKinds = []configKind{{
 		return rn.Spec, status
 	},
 }}
+
+// suspended is the reason a suspended Schedule is Ready.
+const suspended = "Suspended"
 
 // set stands in for a value a member may know is there but not read.
 const set = "(set)"
@@ -287,7 +304,8 @@ func (s *Server) configTeam(ctx context.Context, ns string) (*v1alpha1.Team, err
 func (s *Server) listConfig(k configKind) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		ns := r.PathValue("ns")
-		if _, err := s.configTeam(r.Context(), ns); err != nil {
+		team, err := s.configTeam(r.Context(), ns)
+		if err != nil {
 			httpjson.Fail(w, s.log, err)
 			return
 		}
@@ -301,9 +319,14 @@ func (s *Server) listConfig(k configKind) http.HandlerFunc {
 			httpjson.Fail(w, s.log, err)
 			return
 		}
+		role := s.configRole(r.Context(), team)
 		items := make([]ConfigSummary, 0, len(objs))
 		for _, o := range objs {
-			items = append(items, configSummary(k, o.(client.Object)))
+			item := configSummary(k, o.(client.Object))
+			if k.summary != nil {
+				k.summary(o.(client.Object), role, &item)
+			}
+			items = append(items, item)
 		}
 		slices.SortFunc(items, func(a, b ConfigSummary) int { return strings.Compare(a.Name, b.Name) })
 		httpjson.Write(w, http.StatusOK, ConfigList{Items: items})
@@ -343,11 +366,7 @@ func configSummary(k configKind, o client.Object) ConfigSummary {
 // as k's view gives them. Fields' owners and the last applied spec are
 // nobody's to see.
 func (s *Server) configView(ctx context.Context, k configKind, o client.Object, team *v1alpha1.Team) ConfigResource {
-	role := authz.Admin // without logins everyone may do anything
-	if s.policy != nil {
-		id, _ := auth.FromContext(ctx)
-		role, _ = s.policy.Role(id, team)
-	}
+	role := s.configRole(ctx, team)
 	st := k.status(o)
 	out := ConfigResource{
 		ConfigSummary: configSummary(k, o), Kind: k.kind,
@@ -361,6 +380,16 @@ func (s *Server) configView(ctx context.Context, k configKind, o client.Object, 
 		out.Spec, out.Status = k.view(o, role)
 	}
 	return out
+}
+
+// configRole is the caller's role on team.
+func (s *Server) configRole(ctx context.Context, team *v1alpha1.Team) authz.Role {
+	if s.policy == nil {
+		return authz.Admin // without logins everyone may do anything
+	}
+	id, _ := auth.FromContext(ctx)
+	role, _ := s.policy.Role(id, team)
+	return role
 }
 
 // projectMeta is o's metadata as role may see it: never its fields'
