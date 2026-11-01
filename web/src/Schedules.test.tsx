@@ -240,6 +240,20 @@ describe("An Agent's Used by", () => {
     expect(await screen.findByRole("heading", { level: 1, name: "nightly" })).toBeTruthy();
   });
 
+  it("reads the list again every 15 seconds without a watch stream, and still no Schedule on its own", async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    try {
+      const items = [{ name: "nightly", ready: true, assignee: { kind: "Agent", name: "bot" } }];
+      at("/t/a/agents/bot", { [agent]: [() => json(bot)], [list]: [() => json({ items })], [one]: [() => json(member)] });
+      expect(await (await usedBy()).findByRole("link", { name: "nightly" })).toBeTruthy();
+      expect(schedules()).toEqual(["/api/v1/namespaces/a/schedules"]);
+      await act(() => vi.advanceTimersByTimeAsync(15000));
+      expect(schedules()).toEqual(["/api/v1/namespaces/a/schedules", "/api/v1/namespaces/a/schedules"]);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it("says None when no Schedule creates tasks for it", async () => {
     at("/t/a/agents/bot", { [agent]: [() => json(bot)], [list]: [() => json({ items: [] })] });
     expect(await (await usedBy()).findByText("None")).toBeTruthy();
