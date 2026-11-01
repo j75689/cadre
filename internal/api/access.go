@@ -87,6 +87,7 @@ func (s *Server) putAgentAccess(w http.ResponseWriter, r *http.Request) {
 			s.failAccess(w, name, err)
 			return
 		}
+		s.emit(aa, "AccessCreated", "CreateAgentAccess", "AgentAccess %s created by %s", name, caller(r.Context()))
 		httpjson.Write(w, http.StatusCreated, viewAccess(aa))
 		return
 	case err != nil:
@@ -101,6 +102,7 @@ func (s *Server) putAgentAccess(w http.ResponseWriter, r *http.Request) {
 		s.failAccess(w, name, err)
 		return
 	}
+	s.emit(cur, "AccessUpdated", "UpdateAgentAccess", "AgentAccess %s updated by %s", name, caller(r.Context()))
 	httpjson.Write(w, http.StatusOK, viewAccess(cur))
 }
 
@@ -130,10 +132,13 @@ func (s *Server) rotateAgentAccessToken(w http.ResponseWriter, r *http.Request) 
 }
 
 func (s *Server) deleteAgentAccess(w http.ResponseWriter, r *http.Request) {
-	if err := s.access.DeleteAgentAccess(r.Context(), r.PathValue("ns"), r.PathValue("name")); err != nil {
-		s.failAccess(w, r.PathValue("name"), err)
+	ns, name := r.PathValue("ns"), r.PathValue("name")
+	if err := s.access.DeleteAgentAccess(r.Context(), ns, name); err != nil {
+		s.failAccess(w, name, err)
 		return
 	}
+	// On the AgentAccess as named: the object is gone.
+	s.emit(&v1alpha1.AgentAccess{ObjectMeta: metav1.ObjectMeta{Namespace: ns, Name: name}}, "AccessDeleted", "DeleteAgentAccess", "AgentAccess %s deleted by %s", name, caller(r.Context()))
 	w.WriteHeader(http.StatusNoContent)
 }
 

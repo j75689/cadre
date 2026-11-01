@@ -200,8 +200,10 @@ func run() error {
 	if err := api.ConfigEvents(ctx, ctrls.GetCache(), hub); err != nil {
 		return err
 	}
+	recorder := ctrls.GetEventRecorder("cadre-server")
 	apiOpts := []api.Option{
-		api.WithAgentAccesses(controller.AgentAccessStore(ctrls.GetClient(), ctrls.GetAPIReader(), ctrls.GetEventRecorder("cadre-server"))),
+		api.WithAgentAccesses(controller.AgentAccessStore(ctrls.GetClient(), ctrls.GetAPIReader(), recorder)),
+		api.WithEvents(recorder),
 		api.WithConfig(ctrls.GetClient()),
 		api.WithWatch(hub, api.WatchConfig{MaxStreams: *streams}),
 	}

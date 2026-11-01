@@ -13,6 +13,7 @@ import (
 
 	"k8s.io/apimachinery/pkg/api/meta"
 	"k8s.io/apimachinery/pkg/util/validation"
+	"k8s.io/client-go/tools/events"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	v1alpha1 "github.com/j75689/cadre/api/v1alpha1"
@@ -25,13 +26,14 @@ import (
 
 // Server serves /api/v1 on a Task Manager.
 type Server struct {
-	m      *manager.Manager
-	log    *slog.Logger
-	mode   string           // auth.ModeOIDC or auth.ModeNone
-	policy *authz.Policy    // nil: everyone may do anything
-	access AgentAccessStore // nil: AgentAccesses are not served
-	config client.Reader    // nil: configuration resources are not served
-	watch  *watchServer     // nil: watch streams are not served
+	m        *manager.Manager
+	log      *slog.Logger
+	mode     string               // auth.ModeOIDC or auth.ModeNone
+	policy   *authz.Policy        // nil: everyone may do anything
+	access   AgentAccessStore     // nil: AgentAccesses are not served
+	config   client.Reader        // nil: configuration resources are not served
+	watch    *watchServer         // nil: watch streams are not served
+	recorder events.EventRecorder // nil: no Events are emitted
 }
 
 // Option adjusts NewServer.
@@ -478,6 +480,7 @@ func (s *Server) putTeam(w http.ResponseWriter, r *http.Request) {
 			httpjson.Fail(w, s.log, err)
 			return
 		}
+		s.emit(team, "TeamCreated", "CreateTeam", "Team created by %s", caller(r.Context()))
 		httpjson.Write(w, http.StatusCreated, team)
 		return
 	case err != nil:
@@ -501,6 +504,9 @@ func (s *Server) putTeam(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		httpjson.Fail(w, s.log, err)
 		return
+	}
+	if changed := changedFields(cur.Spec, team.Spec); len(changed) > 0 {
+		s.emit(team, "TeamUpdated", "UpdateTeam", "Team %s changed by %s", strings.Join(changed, ", "), caller(r.Context()))
 	}
 	// As the edit left the caller: an admin who gave the role away sees
 	// what anyone else does.
