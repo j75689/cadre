@@ -59,7 +59,13 @@ ORDER BY <priority rank>, number, name
 OFFSET $offset LIMIT $limit                     -- ListTasks only
 ```
 
-where `$q` is `'%' || lower(trimmed Text) || '%'` with `%`, `_` and the escape character escaped (`LIKE … ESCAPE '\'`). `lower()` must fold non-ASCII letters too, which the `C` collation does not, and final `ς` as `σ`.
+where `$q` is `'%' || lower(trimmed Text) || '%'` with `%`, `_` and the escape character escaped (`LIKE … ESCAPE '\'`). `lower()` here stands for the per-rune fold the other drivers use (`fold` in `internal/storage/order.go`), not plain SQL `lower()`: each rune becomes its `unicode.ToLower`, then the smallest rune of that rune's `unicode.SimpleFold` orbit. So it folds non-ASCII letters too, which the `C` collation does not, and it also joins the 23 groups whose members `lower()` leaves apart:
+
+- Latin: `s` `ſ` (U+017F); `ṡ` `ẛ` (U+1E9B); `ﬅ` `ﬆ` (U+FB05, U+FB06)
+- Greek: `μ` `µ` (U+00B5); `ι` `ι` (U+1FBE) `ͅ` (U+0345); `ΐ` (U+0390) `ΐ` (U+1FD3); `ΰ` (U+03B0) `ΰ` (U+1FE3); `β` `ϐ`; `ε` `ϵ`; `θ` `ϑ` `ϴ`; `κ` `ϰ`; `π` `ϖ`; `ρ` `ϱ`; `σ` `ς`; `φ` `ϕ`
+- Cyrillic: `в` `ᲀ`, `д` `ᲁ`, `о` `ᲂ`, `с` `ᲃ`, `т` `ᲄ` `ᲅ`, `ъ` `ᲆ`, `ѣ` `ᲇ`, `ꙋ` `ᲈ` (U+1C80–U+1C88)
+
+with each group's upper case, so `Text: "s"` finds a title with `ſ`. Any other two runes are equal under the fold exactly when `unicode.ToLower` makes them equal.
 
 ## Object store requirements
 
