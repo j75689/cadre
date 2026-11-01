@@ -40,3 +40,28 @@ func TestPage(t *testing.T) {
 		}
 	}
 }
+
+// Text ignores case by simple folding: Greek final sigma too, which
+// strings.ToLower keeps apart from σ.
+func TestMatchesTextFoldsCase(t *testing.T) {
+	for _, tc := range []struct {
+		title, text string
+		want        bool
+	}{
+		{"ΟΔΌΣ", "οδός", true},
+		{"οδός", "ΟΔΌΣ", true},
+		{"ΟΔΌΣ", "όσ", true},
+		{"Été", "ÉTÉ", true},
+		{"İstanbul", "istanbul", true},
+		{"\u212Aelvin", "KELVIN", true},
+		{"Fix Login Bug", "login", true},
+		{"οδός", "οδό σ", false},
+		{"straße", "STRASSE", false},
+	} {
+		tk := &v1alpha1.Task{Spec: v1alpha1.TaskSpec{Title: tc.title}}
+		tk.Namespace, tk.Name = "ns", "t"
+		if got := (Query{Namespace: "ns", Text: tc.text}).Matches(tk); got != tc.want {
+			t.Errorf("Text %q on title %q: got %v, want %v", tc.text, tc.title, got, tc.want)
+		}
+	}
+}

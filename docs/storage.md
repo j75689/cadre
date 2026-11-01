@@ -39,7 +39,7 @@ The kubernetes driver uses object storage for its log. A separate `objectstore` 
 | `Number` | the task with this number |
 | `Assignee` | tasks assigned to exactly this name, whatever its kind (Agent or User) |
 | `Labels` | tasks that have every one of these labels, each matched exactly |
-| `Text` | tasks whose title, name, assignee name, a label or `#<number>` (when numbered) contains it, after trimming surrounding space, ignoring case as Go's `strings.ToLower` does (all of Unicode, not only ASCII: `ÉTÉ` finds `été`); never the description or the thread |
+| `Text` | tasks whose title, name, assignee name, a label or `#<number>` (when numbered) contains it, after trimming surrounding space, ignoring case per rune, by Go's `unicode.ToLower` and then simple case folding (all of Unicode, not only ASCII: `ÉTÉ` finds `été`, `ΟΔΌΣ` finds `οδός`); never the description or the thread |
 
 `ListTasks` returns the matches in board order (priority, urgent first, then number, then name), then applies `Offset` and `Limit`. `CountTasks` takes the same query and returns how many tasks it matches before paging, from the same index, so a page and its count agree.
 
@@ -59,7 +59,7 @@ ORDER BY <priority rank>, number, name
 OFFSET $offset LIMIT $limit                     -- ListTasks only
 ```
 
-where `$q` is `'%' || lower(trimmed Text) || '%'` with `%`, `_` and the escape character escaped (`LIKE … ESCAPE '\'`). `lower()` must fold non-ASCII letters too, which the `C` collation does not.
+where `$q` is `'%' || lower(trimmed Text) || '%'` with `%`, `_` and the escape character escaped (`LIKE … ESCAPE '\'`). `lower()` must fold non-ASCII letters too, which the `C` collation does not, and final `ς` as `σ`.
 
 ## Object store requirements
 

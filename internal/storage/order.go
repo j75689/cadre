@@ -5,6 +5,7 @@ import (
 	"slices"
 	"strconv"
 	"strings"
+	"unicode"
 
 	v1alpha1 "github.com/j75689/cadre/api/v1alpha1"
 )
@@ -50,7 +51,7 @@ func (q Query) Matches(t *v1alpha1.Task) bool {
 // case-insensitive substring of the fields a card shows, never the
 // description or the thread.
 func (q Query) matchesText(t *v1alpha1.Task) bool {
-	text := strings.ToLower(strings.TrimSpace(q.Text))
+	text := fold(strings.TrimSpace(q.Text))
 	if text == "" {
 		return true
 	}
@@ -61,7 +62,21 @@ func (q Query) matchesText(t *v1alpha1.Task) bool {
 	if t.Status.Number > 0 {
 		fields = append(fields, "#"+strconv.FormatInt(t.Status.Number, 10))
 	}
-	return slices.ContainsFunc(fields, func(f string) bool { return strings.Contains(strings.ToLower(f), text) })
+	return slices.ContainsFunc(fields, func(f string) bool { return strings.Contains(fold(f), text) })
+}
+
+// fold maps each rune of s to one rune of its case: the smallest of the simple
+// case folding orbit of its lower case, so σ, ς and Σ are one rune, and runes
+// that lower to the same rune stay one (İ and i).
+func fold(s string) string {
+	return strings.Map(func(r rune) rune {
+		r = unicode.ToLower(r)
+		m := r
+		for f := unicode.SimpleFold(r); f != r; f = unicode.SimpleFold(f) {
+			m = min(m, f)
+		}
+		return m
+	}, s)
 }
 
 // Page applies q's offset and limit to sorted results. q must be valid.
