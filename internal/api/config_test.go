@@ -83,8 +83,9 @@ func configCluster(t *testing.T) api.Option {
 		WithObjects(toolServers()...).WithObjects(schedules()...).WithObjects(notifiers()...).WithObjects(runners()...).Build())
 }
 
-// schedules are daily, as kubectl apply leaves it, nightly, edited since it
-// was checked, and yonder in team-b.
+// schedules are daily, as kubectl apply leaves it, with no assignee;
+// nightly, edited since it was checked; paused, suspended; held, suspended
+// and edited since; and yonder in team-b.
 func schedules() []client.Object {
 	schedule := func(ns, name string, spec v1alpha1.ScheduleSpec) *v1alpha1.Schedule {
 		s := &v1alpha1.Schedule{ObjectMeta: metav1.ObjectMeta{Namespace: ns, Name: name, Generation: 1}, Spec: spec}
@@ -99,8 +100,14 @@ func schedules() []client.Object {
 	daily.ManagedFields = []metav1.ManagedFieldsEntry{{Manager: "kubectl-client-side-apply", Operation: metav1.ManagedFieldsOperationUpdate, APIVersion: "cadre.dev/v1alpha1", FieldsType: "FieldsV1", FieldsV1: metav1.NewFieldsV1(`{"f:spec":{"f:cron":{}}}`)}}
 	nightly := schedule("team-a", "nightly", v1alpha1.ScheduleSpec{Cron: "0 2 * * *", Task: v1alpha1.TaskSpec{Title: "Nightly sweep"}})
 	nightly.Generation = 2
+	writer := &v1alpha1.Assignee{Kind: v1alpha1.AssigneeAgent, Name: "writer"}
+	paused := schedule("team-a", "paused", v1alpha1.ScheduleSpec{Cron: "@hourly", Suspend: true, Task: v1alpha1.TaskSpec{Title: "Hourly", Assignee: writer}})
+	paused.Status.Conditions[0].Reason = "Suspended"
+	held := schedule("team-a", "held", v1alpha1.ScheduleSpec{Cron: "@hourly", Suspend: true, Task: v1alpha1.TaskSpec{Title: "Held", Assignee: &v1alpha1.Assignee{Kind: v1alpha1.AssigneeUser, Name: "dana@example.test"}}})
+	held.Status.Conditions[0].Reason = "Suspended"
+	held.Generation = 2
 	yonder := schedule("team-b", "yonder", v1alpha1.ScheduleSpec{Cron: "@weekly", Task: v1alpha1.TaskSpec{Title: "Weekly"}})
-	return []client.Object{nightly, daily, yonder}
+	return []client.Object{nightly, daily, paused, held, yonder}
 }
 
 // notifiers are hook, a webhook with values in its URL's query and fragment
@@ -646,34 +653,32 @@ func TestToolServerMaskedByRole(t *testing.T) {
 	}
 }
 
+// A Schedule's list item says it is suspended, unless its current spec has
+// not been checked, and whom its Tasks go to for a member and up.
 func TestListSchedules(t *testing.T) {
 	get := startConfig(t, configCluster(t))
-	code, body := get("", "", "/namespaces/team-a/schedules")
-	var got api.ConfigList
-	if err := json.Unmarshal([]byte(body), &got); err != nil || code != 200 {
-		t.Fatalf("%d %s", code, body)
-	}
-	want := []api.ConfigSummary{
-		{Name: "daily", Ready: true},
-		{Name: "nightly", Reason: "Pending", Message: "its current spec has not been checked yet"},
-	}
-	if !slices.Equal(got.Items, want) {
-		t.Errorf("got %+v, want %+v", got.Items, want)
+	const (
+		pending = `"ready":false,"reason":"Pending","message":"its current spec has not been checked yet"`
+		viewer  = `{"items":[{"name":"daily","ready":true},{"name":"held",` + pending + `},{"name":"nightly",` + pending + `},{"name":"paused","ready":true,"reason":"Suspended"}]}` + "\n"
+		member  = `{"items":[{"name":"daily","ready":true},{"name":"held",` + pending + `,"assignee":{"kind":"User","name":"dana@example.test"}},{"name":"nightly",` + pending + `},{"name":"paused","ready":true,"reason":"Suspended","assignee":{"kind":"Agent","name":"writer"}}]}` + "\n"
+	)
+	if code, body := get("", "", "/namespaces/team-a/schedules"); code != 200 || body != member {
+		t.Errorf("--auth=none: %d %s, want %s", code, body, member)
 	}
 	if code, body := get("", "", "/namespaces/team-c/schedules"); code != 404 {
 		t.Errorf("a namespace without a Team: %d %s", code, body)
 	}
 	policy := &authz.Policy{FoldUsernames: true}
 	withRoles := startConfig(t, api.WithAccess(auth.ModeOIDC, policy), configCluster(t))
-	for _, c := range []struct{ name, user, groups string }{
-		{"a viewer", "eve@example.test", "readers"},
-		{"a viewer AgentAccess", "agentaccess/bot", "viewer"},
-		{"a member", "dana@example.test", "backend"},
-		{"a member AgentAccess", "agentaccess/bot", "member"},
-		{"an admin", "lead@example.test", ""},
+	for _, c := range []struct{ name, user, groups, want string }{
+		{"a viewer", "eve@example.test", "readers", viewer},
+		{"a viewer AgentAccess", "agentaccess/bot", "viewer", viewer},
+		{"a member", "dana@example.test", "backend", member},
+		{"a member AgentAccess", "agentaccess/bot", "member", member},
+		{"an admin", "lead@example.test", "", member},
 	} {
-		if code, body := withRoles(c.user, c.groups, "/namespaces/team-a/schedules"); code != 200 || !strings.Contains(body, `"daily"`) {
-			t.Errorf("%s: %d %s", c.name, code, body)
+		if code, body := withRoles(c.user, c.groups, "/namespaces/team-a/schedules"); code != 200 || body != c.want {
+			t.Errorf("%s: %d %s, want %s", c.name, code, body, c.want)
 		}
 	}
 	if code, body := withRoles("mallory@example.test", "", "/namespaces/team-a/schedules"); code != 403 {
@@ -686,6 +691,36 @@ func TestListSchedules(t *testing.T) {
 	for _, p := range []string{"/namespaces/team-c/schedules", "/namespaces/team-c/schedules/daily"} {
 		if code, body := boot("root@example.test", "", p); code != 404 {
 			t.Errorf("a bootstrap admin, a namespace without a Team, %s: %d %s", p, code, body)
+		}
+	}
+}
+
+// The other kinds' lists are what they were before Schedules' told more:
+// the same for every role, a Ready item with no reason.
+func TestOtherListsUnchanged(t *testing.T) {
+	withRoles := startConfig(t, api.WithAccess(auth.ModeOIDC, &authz.Policy{FoldUsernames: true}), configCluster(t))
+	withoutLogins := startConfig(t, configCluster(t))
+	for plural, want := range map[string]string{
+		"modelproviders": `{"items":[{"name":"badurl","ready":true},{"name":"claude","ready":true},{"name":"fragment","ready":true},{"name":"gateway","ready":true},{"name":"gpt","ready":false,"reason":"Pending","message":"its current spec has not been checked yet"},{"name":"nohost","ready":true}]}` + "\n",
+		"toolservers":    `{"items":[{"name":"execer","ready":false,"reason":"Pending","message":"its current spec has not been checked yet"},{"name":"grpc","ready":true},{"name":"keyed","ready":true},{"name":"prober","ready":true},{"name":"remote","ready":true},{"name":"slashy","ready":true}]}` + "\n",
+		"notifiers":      `{"items":[{"name":"badhook","ready":true},{"name":"caller","ready":false,"reason":"Pending","message":"its current spec has not been checked yet"},{"name":"hook","ready":true}]}` + "\n",
+		"runners":        `{"items":[{"name":"ci","ready":false,"reason":"Pending","message":"its current spec has not been checked yet"},{"name":"pool","ready":true}]}` + "\n",
+	} {
+		for _, c := range []struct {
+			name         string
+			get          func(user, groups, path string) (int, string)
+			user, groups string
+		}{
+			{"a viewer", withRoles, "eve@example.test", "readers"},
+			{"a viewer AgentAccess", withRoles, "agentaccess/bot", "viewer"},
+			{"a member", withRoles, "dana@example.test", "backend"},
+			{"a member AgentAccess", withRoles, "agentaccess/bot", "member"},
+			{"an admin", withRoles, "lead@example.test", ""},
+			{"--auth=none", withoutLogins, "", ""},
+		} {
+			if code, body := c.get(c.user, c.groups, "/namespaces/team-a/"+plural); code != 200 || body != want {
+				t.Errorf("%s, %s: %d %s, want %s", c.name, plural, code, body, want)
+			}
 		}
 	}
 }
@@ -714,6 +749,15 @@ func TestGetSchedule(t *testing.T) {
 	want := api.ConfigSummary{Name: "nightly", Reason: "Pending", Message: "its current spec has not been checked yet"}
 	if got.ConfigSummary != want || got.Kind != "Schedule" || got.Generation != 2 || got.ObservedGeneration != 1 || len(got.Conditions) != 1 {
 		t.Errorf("a Schedule edited since it was checked: %s", body)
+	}
+	// Its conditions say it is suspended, and its spec whom its Tasks go to.
+	code, body = get("", "", "/namespaces/team-a/schedules/paused")
+	got = api.ConfigResource{}
+	if err := json.Unmarshal([]byte(body), &got); err != nil || code != 200 {
+		t.Fatalf("paused: %d %s", code, body)
+	}
+	if want := (api.ConfigSummary{Name: "paused", Ready: true}); got.ConfigSummary != want || got.Conditions[0].Reason != "Suspended" {
+		t.Errorf("a suspended Schedule: %s", body)
 	}
 }
 

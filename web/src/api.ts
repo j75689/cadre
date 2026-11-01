@@ -334,6 +334,12 @@ export const listToolServers = (ns: string, signal?: AbortSignal) =>
 export const getToolServer = (ns: string, name: string, signal?: AbortSignal) =>
   get<ConfigResource>(`/namespaces/${encodeURIComponent(ns)}/toolservers/${encodeURIComponent(name)}`, signal);
 
+export const listSchedules = (ns: string, signal?: AbortSignal) =>
+  get<{ items: AgentSummary[] }>(`/namespaces/${encodeURIComponent(ns)}/schedules`, signal);
+
+export const getSchedule = (ns: string, name: string, signal?: AbortSignal) =>
+  get<ConfigResource>(`/namespaces/${encodeURIComponent(ns)}/schedules/${encodeURIComponent(name)}`, signal);
+
 export const listNotifiers = (ns: string, signal?: AbortSignal) =>
   get<{ items: AgentSummary[] }>(`/namespaces/${encodeURIComponent(ns)}/notifiers`, signal);
 

@@ -97,6 +97,12 @@ const shapes = {
       <path d="M7 2v4.172a2 2 0 0 0 .586 1.414L12 12l4.414-4.414A2 2 0 0 0 17 6.172V2" />
     </>
   ),
+  clock: (
+    <>
+      <circle cx="12" cy="12" r="10" />
+      <polyline points="12 6 12 12 16 14" />
+    </>
+  ),
   play: <polygon points="6 3 20 12 6 21 6 3" />,
   eye: (
     <>

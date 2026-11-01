@@ -9,6 +9,7 @@ import { IdentityBox, IdentityProvider, roleOf, useIdentityDetails } from "./Ide
 import { NewTask } from "./NewTask";
 import { NotifierDetail, Notifiers } from "./Notifiers";
 import { RunnerDetail, Runners } from "./Runners";
+import { ScheduleDetail, Schedules } from "./Schedules";
 import { Settings } from "./Settings";
 import { HelpDialog, useShortcuts } from "./shortcuts";
 import { TaskPage } from "./TaskPage";
@@ -69,6 +70,18 @@ function TeamToolServers() {
 function OneToolServer() {
   const { ns = "", name = "" } = useParams();
   return <ToolServerDetail key={`${ns}/${name}`} />;
+}
+
+// the schedules,
+function TeamSchedules() {
+  const { ns = "" } = useParams();
+  return <Schedules key={ns} />;
+}
+
+// a Schedule's page to one Schedule,
+function OneSchedule() {
+  const { ns = "", name = "" } = useParams();
+  return <ScheduleDetail key={`${ns}/${name}`} />;
 }
 
 // the notifiers,
@@ -265,6 +278,8 @@ export function App() {
               <Route path="modelproviders/:name" element={<OneModelProvider />} />
               <Route path="toolservers" element={<TeamToolServers />} />
               <Route path="toolservers/:name" element={<OneToolServer />} />
+              <Route path="schedules" element={<TeamSchedules />} />
+              <Route path="schedules/:name" element={<OneSchedule />} />
               <Route path="notifiers" element={<TeamNotifiers />} />
               <Route path="notifiers/:name" element={<OneNotifier />} />
               <Route path="runners" element={<TeamRunners />} />
