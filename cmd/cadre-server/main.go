@@ -203,6 +203,7 @@ func run() error {
 	apiOpts := []api.Option{
 		api.WithAgentAccesses(controller.AgentAccessStore(ctrls.GetClient(), ctrls.GetAPIReader(), ctrls.GetEventRecorder("cadre-server"))),
 		api.WithConfig(ctrls.GetClient()),
+		api.WithActivity(ctrls.GetAPIReader()),
 		api.WithWatch(hub, api.WatchConfig{MaxStreams: *streams}),
 	}
 	mux := newMux(m, log, *publicURL, authn, policy, runnerOpts, apiOpts, mcp.WithForwarder(forwarder))
