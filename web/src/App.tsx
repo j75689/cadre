@@ -8,6 +8,7 @@ import { Board } from "./Board";
 import { IdentityBox, IdentityProvider, roleOf, useIdentityDetails } from "./Identity";
 import { NewTask } from "./NewTask";
 import { NotifierDetail, Notifiers } from "./Notifiers";
+import { RunnerDetail, Runners } from "./Runners";
 import { Settings } from "./Settings";
 import { HelpDialog, useShortcuts } from "./shortcuts";
 import { TaskPage } from "./TaskPage";
@@ -80,6 +81,18 @@ function TeamNotifiers() {
 function OneNotifier() {
   const { ns = "", name = "" } = useParams();
   return <NotifierDetail key={`${ns}/${name}`} />;
+}
+
+// the runners,
+function TeamRunners() {
+  const { ns = "" } = useParams();
+  return <Runners key={ns} />;
+}
+
+// a Runner's page to one Runner,
+function OneRunner() {
+  const { ns = "", name = "" } = useParams();
+  return <RunnerDetail key={`${ns}/${name}`} />;
 }
 
 // the settings,
@@ -254,6 +267,8 @@ export function App() {
               <Route path="toolservers/:name" element={<OneToolServer />} />
               <Route path="notifiers" element={<TeamNotifiers />} />
               <Route path="notifiers/:name" element={<OneNotifier />} />
+              <Route path="runners" element={<TeamRunners />} />
+              <Route path="runners/:name" element={<OneRunner />} />
               <Route path="new" element={<TeamNewTask />} />
               <Route path="tasks/:name" element={<OneTask />} />
               <Route path="settings" element={<TeamSettings />} />

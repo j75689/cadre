@@ -340,6 +340,12 @@ export const listNotifiers = (ns: string, signal?: AbortSignal) =>
 export const getNotifier = (ns: string, name: string, signal?: AbortSignal) =>
   get<ConfigResource>(`/namespaces/${encodeURIComponent(ns)}/notifiers/${encodeURIComponent(name)}`, signal);
 
+export const listRunners = (ns: string, signal?: AbortSignal) =>
+  get<{ items: AgentSummary[] }>(`/namespaces/${encodeURIComponent(ns)}/runners`, signal);
+
+export const getRunner = (ns: string, name: string, signal?: AbortSignal) =>
+  get<ConfigResource>(`/namespaces/${encodeURIComponent(ns)}/runners/${encodeURIComponent(name)}`, signal);
+
 export const getTeam = (ns: string, signal?: AbortSignal) => get<Team>(`/namespaces/${encodeURIComponent(ns)}/team`, signal);
 
 // putTeam replaces a Team's spec, made from the Team at resourceVersion;

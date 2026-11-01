@@ -36,6 +36,8 @@ const routes: [string, (url: string) => boolean, () => unknown][] = [
   ["toolserver", (u) => u.endsWith("/namespaces/a/toolservers/github"), () => resource("ToolServer", "github")],
   ["notifiers", (u) => u.endsWith("/namespaces/a/notifiers"), () => ({ items: [] })],
   ["notifier", (u) => u.endsWith("/namespaces/a/notifiers/slack"), () => resource("Notifier", "slack")],
+  ["runners", (u) => u.endsWith("/namespaces/a/runners"), () => ({ items: [] })],
+  ["runner", (u) => u.endsWith("/namespaces/a/runners/ci"), () => resource("Runner", "ci")],
 ];
 
 beforeEach(() => {
@@ -101,6 +103,8 @@ describe("Live pages", () => {
     ["/t/a/toolservers/github", "toolserver", ["config", { kind: "ToolServer", name: "github" }], ["config", { kind: "ToolServer", name: "jira" }]],
     ["/t/a/notifiers", "notifiers", ["config", { kind: "Notifier", name: "slack" }], ["config", { kind: "ToolServer", name: "slack" }]],
     ["/t/a/notifiers/slack", "notifier", ["config", { kind: "Notifier", name: "slack" }], ["config", { kind: "Notifier", name: "pager" }]],
+    ["/t/a/runners", "runners", ["config", { kind: "Runner", name: "ci" }], ["config", { kind: "Notifier", name: "ci" }]],
+    ["/t/a/runners/ci", "runner", ["config", { kind: "Runner", name: "ci" }], ["config", { kind: "Runner", name: "laptop" }]],
     ["/t/a/settings", "team", ["config", { kind: "Team", name: "team" }], ["config", { kind: "Agent", name: "team" }]],
   ] as const)("%s reads %s again on its hint, within a second, and not on another's", async (path, read, [event, data], [otherEvent, otherData]) => {
     const stream = await open(path, read);
@@ -142,6 +146,8 @@ describe("Live pages", () => {
   it.each([
     ["/t/a/notifiers", "notifiers"],
     ["/t/a/notifiers/slack", "notifier"],
+    ["/t/a/runners", "runners"],
+    ["/t/a/runners/ci", "runner"],
   ])("%s polls %s every 15 seconds when the stream is refused", async (path, read) => {
     render(
       <MemoryRouter initialEntries={[path]}>
