@@ -32,6 +32,7 @@ type Server struct {
 	policy   *authz.Policy        // nil: everyone may do anything
 	access   AgentAccessStore     // nil: AgentAccesses are not served
 	config   client.Reader        // nil: configuration resources are not served
+	activity client.Reader        // nil: activity is not served
 	watch    *watchServer         // nil: watch streams are not served
 	recorder events.EventRecorder // nil: no Events are emitted
 }
@@ -110,6 +111,9 @@ func (s *Server) Register(mux *http.ServeMux) {
 			}
 			mux.HandleFunc("GET "+kind+"/{name}", s.guard(authz.Read, s.getConfig(k)))
 		}
+	}
+	if s.activity != nil {
+		mux.HandleFunc("GET "+Base+"/namespaces/{ns}/activity", s.guard(authz.ManageTeam, s.listActivity))
 	}
 	if s.watch != nil {
 		mux.HandleFunc("GET "+Base+"/namespaces/{ns}/watch", s.guard(authz.Read, s.watchStream))

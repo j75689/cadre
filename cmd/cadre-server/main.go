@@ -205,6 +205,7 @@ func run() error {
 		api.WithAgentAccesses(controller.AgentAccessStore(ctrls.GetClient(), ctrls.GetAPIReader(), recorder)),
 		api.WithEvents(recorder),
 		api.WithConfig(ctrls.GetClient()),
+		api.WithActivity(ctrls.GetAPIReader()),
 		api.WithWatch(hub, api.WatchConfig{MaxStreams: *streams}),
 	}
 	mux := newMux(m, log, *publicURL, authn, policy, runnerOpts, apiOpts, mcp.WithForwarder(forwarder))
