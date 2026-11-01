@@ -17,7 +17,7 @@ The kubernetes driver uses object storage for its log. A separate `objectstore` 
 ### `kubernetes` (default, first)
 - `Task` and `Team` are CRDs; their status holds control state only: phase, `run_id`, `step`, lease, outbox, pointers.
 - Thread, conversation history, run history and files live in object storage (S3, GCS, or any S3-compatible store that enforces conditional writes; see below). One object per entry; the sequence number is claimed with `If-None-Match`, and the Task's `thread.revision` is advanced afterwards so watchers notice.
-- Board queries run in memory: the server caches every Task through an informer and builds indexes for ordering and filtering. Argo CD works the same way. A query selects a namespace's tasks by phase, by parent (`spec.parentRef.name`, a task's subtasks), and by number (`status.number`, one task), in board order, then pages them with an offset and a limit. The memory driver filters the namespace's tasks for all of them; the kubernetes driver reads a field index of its cache for a parent or a number. The kubernetes driver adds its informers to the controller manager's cache, so one cadre-server watches and holds each resource once.
+- Board queries run in memory: the server caches every Task through an informer and builds indexes for ordering and filtering. Argo CD works the same way. A query selects a namespace's tasks by phase, by parent (`spec.parentRef.name`, a task's subtasks), by number (`status.number`, one task), by assignee, by labels and by text (see [Board queries](#board-queries)), in board order, then pages them with an offset and a limit. The memory driver filters the namespace's tasks for all of them; the kubernetes driver reads a field index of its cache for a parent, a number or a single phase (one board column), and filters the rest in that scan, with no call to the API server. The kubernetes driver adds its informers to the controller manager's cache, so one cadre-server watches and holds each resource once.
 - A driver may also notify the Task Manager of each Task it sees change. The Task Manager then numbers a new task, or applies an outbox, at once instead of at its next scan; the scan stays, for notifications that are dropped. Like the index, a notification is a hint and decides nothing.
 - Fits thousands to tens of thousands of tasks per installation. Limits: about 1.5 MB per etcd object, about 8 GB total by default, a few thousand writes per second per cluster, shared with everything else in the cluster. Finished tasks are archived to object storage after `Team.spec.archiveAfter`, leaving a stub in the index.
 - It is the first driver built, on purpose: it is the most constrained of the three, so building it first keeps the core from growing queries only SQL can answer.
@@ -27,6 +27,45 @@ The kubernetes driver uses object storage for its log. A separate `objectstore` 
 - The database is created by the operator: a CloudNativePG `Cluster` with `ScheduledBackup`, a cloud-managed instance through Crossplane, GCP Config Connector or AWS ACK, or simply a connection string in a Secret.
 - Schema migrations are driven by the operator: a version change runs the migration Job first, then the rolling update. No advisory locks needed.
 - Only common Postgres features (`SKIP LOCKED` is fine). No `LISTEN/NOTIFY`, no advisory locks, so every Postgres-compatible service works.
+
+## Board queries
+
+`storage.Query` is the one board query every driver answers, and `Query.Matches` (`internal/storage/order.go`) is its definition: the conformance suite holds every driver to it. Empty fields select everything.
+
+| Field | Selects |
+| --- | --- |
+| `Phases` | tasks in any of these phases |
+| `Parent` | subtasks of this task |
+| `Number` | the task with this number |
+| `Assignee` | tasks assigned to exactly this name, whatever its kind (Agent or User) |
+| `Labels` | tasks that have every one of these labels, each matched exactly |
+| `Text` | tasks whose title, name, assignee name, a label or `#<number>` (when numbered) contains it, after trimming surrounding space, ignoring case per rune, by Go's `unicode.ToLower` and then simple case folding (all of Unicode, not only ASCII: `ÉTÉ` finds `été`, `ΟΔΌΣ` finds `οδός`); never the description or the thread |
+
+`ListTasks` returns the matches in board order (priority, urgent first, then number, then name), then applies `Offset` and `Limit`. `CountTasks` takes the same query and returns how many tasks it matches before paging, from the same index, so a page and its count agree.
+
+A SQL driver answers the same query with one `WHERE` on columns, and `CountTasks` with `count(*)` over the same `WHERE`:
+
+```sql
+WHERE namespace = $ns
+  AND phase = ANY($phases)                      -- if Phases
+  AND parent = $parent                          -- if Parent
+  AND number = $number                          -- if Number
+  AND assignee_name = $assignee                 -- if Assignee
+  AND labels @> $labels                         -- if Labels (text[])
+  AND (lower(title) LIKE $q OR lower(name) LIKE $q OR lower(assignee_name) LIKE $q
+       OR EXISTS (SELECT 1 FROM unnest(labels) l WHERE lower(l) LIKE $q)
+       OR (number > 0 AND '#' || number LIKE $q)) -- if Text
+ORDER BY <priority rank>, number, name
+OFFSET $offset LIMIT $limit                     -- ListTasks only
+```
+
+where `$q` is `'%' || lower(trimmed Text) || '%'` with `%`, `_` and the escape character escaped (`LIKE … ESCAPE '\'`). `lower()` here stands for the per-rune fold the other drivers use (`fold` in `internal/storage/order.go`), not plain SQL `lower()`: each rune becomes its `unicode.ToLower`, then the smallest rune of that rune's `unicode.SimpleFold` orbit. So it folds non-ASCII letters too, which the `C` collation does not, and it also joins the 23 groups whose members `lower()` leaves apart:
+
+- Latin: `s` `ſ` (U+017F); `ṡ` `ẛ` (U+1E9B); `ﬅ` `ﬆ` (U+FB05, U+FB06)
+- Greek: `μ` `µ` (U+00B5); `ι` `ι` (U+1FBE) `ͅ` (U+0345); `ΐ` (U+0390) `ΐ` (U+1FD3); `ΰ` (U+03B0) `ΰ` (U+1FE3); `β` `ϐ`; `ε` `ϵ`; `θ` `ϑ` `ϴ`; `κ` `ϰ`; `π` `ϖ`; `ρ` `ϱ`; `σ` `ς`; `φ` `ϕ`
+- Cyrillic: `в` `ᲀ`, `д` `ᲁ`, `о` `ᲂ`, `с` `ᲃ`, `т` `ᲄ` `ᲅ`, `ъ` `ᲆ`, `ѣ` `ᲇ`, `ꙋ` `ᲈ` (U+1C80–U+1C88)
+
+with each group's upper case, so `Text: "s"` finds a title with `ſ`. Any other two runes are equal under the fold exactly when `unicode.ToLower` makes them equal.
 
 ## Object store requirements
 

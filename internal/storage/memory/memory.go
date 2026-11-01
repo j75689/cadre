@@ -353,3 +353,19 @@ func (d *Driver) ListTasks(_ context.Context, q storage.Query) ([]v1alpha1.Task,
 	}
 	return out, nil
 }
+
+// CountTasks implements storage.Index.
+func (d *Driver) CountTasks(_ context.Context, q storage.Query) (int, error) {
+	if err := q.Validate(); err != nil {
+		return 0, err
+	}
+	d.mu.RLock()
+	defer d.mu.RUnlock()
+	n := 0
+	for _, t := range d.index {
+		if q.Matches(t) {
+			n++
+		}
+	}
+	return n, nil
+}
