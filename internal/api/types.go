@@ -96,6 +96,9 @@ type ConfigSummary struct {
 	Ready   bool   `json:"ready"`
 	Reason  string `json:"reason,omitempty"`
 	Message string `json:"message,omitempty"`
+	// Assignee is whom a Schedule's Tasks go to, in its list item, for a
+	// member and up.
+	Assignee *v1alpha1.Assignee `json:"assignee,omitempty"`
 }
 
 // ConfigList is a namespace's resources of one configuration kind, by name.

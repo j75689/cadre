@@ -35,6 +35,9 @@ export const modelProviderLink = (ns: string, name: string) => `${teamPath(ns)}/
 // toolServerLink is a ToolServer's page.
 export const toolServerLink = (ns: string, name: string) => `${teamPath(ns)}/toolservers/${encodeURIComponent(name)}`;
 
+// scheduleLink is a Schedule's page.
+export const scheduleLink = (ns: string, name: string) => `${teamPath(ns)}/schedules/${encodeURIComponent(name)}`;
+
 // notifierLink is a Notifier's page.
 export const notifierLink = (ns: string, name: string) => `${teamPath(ns)}/notifiers/${encodeURIComponent(name)}`;
 

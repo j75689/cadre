@@ -76,6 +76,16 @@ func TestListAgents(t *testing.T) {
 			t.Errorf("agent %d: %+v, want %+v", i, got.Items[i], want[i])
 		}
 	}
+	res, err := http.Get(srv.URL + api.Base + "/namespaces/" + ns + "/agents")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = res.Body.Close() }()
+	body, _ := io.ReadAll(res.Body)
+	const exact = `{"items":[{"name":"coder","ready":false,"reason":"ModelProviderNotFound","message":"ModelProvider claude does not exist"},{"name":"reviewer","ready":false,"reason":"Pending","message":"its current spec has not been checked yet"},{"name":"writer","ready":true}]}` + "\n"
+	if string(body) != exact {
+		t.Errorf("the body: %s, want %s", body, exact)
+	}
 }
 
 // With a login, the author of a comment, a reply or an approval is the
