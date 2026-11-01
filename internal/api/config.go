@@ -134,6 +134,19 @@ var configKinds = []configKind{{
 		}
 		return *spec, *status
 	},
+}, {
+	// A Runner's token hash is nobody's to see: its Secret's name and when
+	// it was minted are enough to tell a rotation.
+	plural: "runners", kind: "Runner",
+	newObj:  func() client.Object { return &v1alpha1.Runner{} },
+	newList: func() client.ObjectList { return &v1alpha1.RunnerList{} },
+	status:  func(o client.Object) v1alpha1.ConfigStatus { return o.(*v1alpha1.Runner).Status.ConfigStatus },
+	view: func(o client.Object, _ authz.Role) (any, any) {
+		rn := o.(*v1alpha1.Runner)
+		status := rn.Status
+		status.TokenHash = ""
+		return rn.Spec, status
+	},
 }}
 
 // set stands in for a value a member may know is there but not read.
