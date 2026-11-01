@@ -471,6 +471,7 @@ func testIndexFilters(t *testing.T, s *suite) {
 		{"beta", "Write guide", &v1alpha1.Assignee{Kind: v1alpha1.AssigneeUser, Name: "coder"}, []string{"docs"}, 12},
 		{"gamma", "Refactor", &v1alpha1.Assignee{Kind: v1alpha1.AssigneeAgent, Name: "reviewer"}, []string{"ui"}, 120},
 		{"delta", "Spike", nil, nil, 3},
+		{"epsilon", "Été", nil, nil, 0}, // new: no number, no phase
 	} {
 		tk := &v1alpha1.Task{
 			ObjectMeta: metav1.ObjectMeta{Name: tc.name, Namespace: s.ns},
@@ -482,8 +483,10 @@ func testIndexFilters(t *testing.T, s *suite) {
 		if err := d.CreateTask(s.ctx, tk); err != nil {
 			t.Fatalf("create %s: %v", tc.name, err)
 		}
-		if err := transition(s.ctx, d, s.key(tc.name), task.Create{Number: tc.number}); err != nil {
-			t.Fatalf("number %s: %v", tc.name, err)
+		if tc.number > 0 {
+			if err := transition(s.ctx, d, s.key(tc.name), task.Create{Number: tc.number}); err != nil {
+				t.Fatalf("number %s: %v", tc.name, err)
+			}
 		}
 		if err := d.Append(s.ctx, s.ns+"/"+tc.name+"/thread", storage.SeqKey(1), []byte(`{"body":"giraffe"}`)); err != nil {
 			t.Fatalf("thread %s: %v", tc.name, err)
@@ -506,7 +509,7 @@ func testIndexFilters(t *testing.T, s *suite) {
 		q    storage.Query
 		want []string
 	}{
-		{storage.Query{Namespace: s.ns}, []string{"delta", "alpha", "beta", "gamma"}},
+		{storage.Query{Namespace: s.ns}, []string{"epsilon", "delta", "alpha", "beta", "gamma"}},
 		// Assignee: the exact name, of either kind.
 		{storage.Query{Namespace: s.ns, Assignee: "coder"}, []string{"alpha", "beta"}},
 		{storage.Query{Namespace: s.ns, Assignee: "Coder"}, []string{}},
@@ -528,7 +531,9 @@ func testIndexFilters(t *testing.T, s *suite) {
 		{storage.Query{Namespace: s.ns, Text: "#12"}, []string{"beta", "gamma"}},
 		{storage.Query{Namespace: s.ns, Text: "#3"}, []string{"delta"}},
 		{storage.Query{Namespace: s.ns, Text: "20"}, []string{"gamma"}},
-		{storage.Query{Namespace: s.ns, Text: "   "}, []string{"delta", "alpha", "beta", "gamma"}},
+		{storage.Query{Namespace: s.ns, Text: "#0"}, []string{}},
+		{storage.Query{Namespace: s.ns, Text: "été"}, []string{"epsilon"}},
+		{storage.Query{Namespace: s.ns, Text: "   "}, []string{"epsilon", "delta", "alpha", "beta", "gamma"}},
 		// Never the description or the thread.
 		{storage.Query{Namespace: s.ns, Text: "zebra"}, []string{}},
 		{storage.Query{Namespace: s.ns, Text: "giraffe"}, []string{}},
@@ -536,6 +541,7 @@ func testIndexFilters(t *testing.T, s *suite) {
 		{storage.Query{Namespace: s.ns, Text: "ui"}, []string{"alpha", "beta", "gamma"}},
 		{storage.Query{Namespace: s.ns, Text: "ui", Phases: todo}, []string{"alpha", "beta"}},
 		{storage.Query{Namespace: s.ns, Text: "ui", Phases: cancelled}, []string{"gamma"}},
+		{storage.Query{Namespace: s.ns, Text: "ÉTÉ", Phases: []v1alpha1.Phase{""}}, []string{"epsilon"}},
 		{storage.Query{Namespace: s.ns, Text: "ui", Labels: []string{"ui"}, Assignee: "coder"}, []string{"alpha"}},
 		{storage.Query{Namespace: s.ns, Assignee: "coder", Number: 12}, []string{"beta"}},
 		{storage.Query{Namespace: s.ns, Text: "#1", Offset: 1, Limit: 1}, []string{"beta"}},
