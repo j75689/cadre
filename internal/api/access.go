@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net/http"
 
+	"k8s.io/apimachinery/pkg/api/equality"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
 	v1alpha1 "github.com/j75689/cadre/api/v1alpha1"
@@ -97,12 +98,17 @@ func (s *Server) putAgentAccess(w http.ResponseWriter, r *http.Request) {
 		httpjson.Fail(w, s.log, fmt.Errorf("agent access %s: %w", name, storage.ErrAlreadyExists))
 		return
 	}
+	// An edit that changes nothing emits none: its Event would regard the
+	// version the last one did, and be counted into it, under that one's user.
+	changed := !equality.Semantic.DeepEqual(cur.Spec, req.Spec)
 	cur.Spec, cur.ResourceVersion = req.Spec, req.ResourceVersion
 	if err := s.access.UpdateAgentAccess(r.Context(), cur); err != nil {
 		s.failAccess(w, name, err)
 		return
 	}
-	s.emit(cur, "AccessUpdated", "UpdateAgentAccess", "AgentAccess %s updated by %s", name, caller(r.Context()))
+	if changed {
+		s.emit(cur, "AccessUpdated", "UpdateAgentAccess", "AgentAccess %s updated by %s", name, caller(r.Context()))
+	}
 	httpjson.Write(w, http.StatusOK, viewAccess(cur))
 }
 
@@ -133,12 +139,19 @@ func (s *Server) rotateAgentAccessToken(w http.ResponseWriter, r *http.Request) 
 
 func (s *Server) deleteAgentAccess(w http.ResponseWriter, r *http.Request) {
 	ns, name := r.PathValue("ns"), r.PathValue("name")
+	// Its Event regards the AgentAccess as read just before, by uid: one on
+	// the name alone would be counted into the last delete of that name,
+	// under that one's user.
+	aa, err := s.access.GetAgentAccess(r.Context(), ns, name)
+	if err != nil {
+		s.failAccess(w, name, err)
+		return
+	}
 	if err := s.access.DeleteAgentAccess(r.Context(), ns, name); err != nil {
 		s.failAccess(w, name, err)
 		return
 	}
-	// On the AgentAccess as named: the object is gone.
-	s.emit(&v1alpha1.AgentAccess{ObjectMeta: metav1.ObjectMeta{Namespace: ns, Name: name}}, "AccessDeleted", "DeleteAgentAccess", "AgentAccess %s deleted by %s", name, caller(r.Context()))
+	s.emit(aa, "AccessDeleted", "DeleteAgentAccess", "AgentAccess %s deleted by %s", name, caller(r.Context()))
 	w.WriteHeader(http.StatusNoContent)
 }
 

@@ -3,6 +3,7 @@ package api_test
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"io"
 	"log/slog"
 	"net/http"
@@ -27,10 +28,10 @@ import (
 	"github.com/j75689/cadre/internal/testenv"
 )
 
-// Writes through the API reach the cluster as events.k8s.io Events about
-// the Team and the AgentAccess, reported by cadre-server, as the activity
-// route lists them.
-func TestEventsInTheCluster(t *testing.T) {
+// eventsCluster serves the API on an API server with Events on, its
+// Team's admins given by roles, and answers do as the user named.
+func eventsCluster(t *testing.T, ns string) (ctrlclient.Client, func(user, method, path, body string) string) {
+	t.Helper()
 	cfg := testenv.APIServer(t)
 	mgr, err := controller.NewManager(cfg)
 	if err != nil {
@@ -49,24 +50,23 @@ func TestEventsInTheCluster(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	const ns = "team-events"
 	if err := c.Create(ctx, &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: ns}}); err != nil {
 		t.Fatal(err)
 	}
-	root := &auth.Identity{Username: "root@example.test"}
 	recorder := mgr.GetEventRecorder("cadre-server")
 	mux := http.NewServeMux()
 	api.NewServer(manager.New(memory.NewBackend().Open(), manager.Config{}), slog.New(slog.NewTextHandler(io.Discard, nil)),
-		api.WithAccess(auth.ModeOIDC, &authz.Policy{AdminUsers: []string{root.Username}}),
+		api.WithAccess(auth.ModeOIDC, &authz.Policy{AdminUsers: []string{"root@example.test"}}),
 		api.WithAgentAccesses(controller.AgentAccessStore(mgr.GetClient(), mgr.GetAPIReader(), recorder)),
 		api.WithEvents(recorder)).Register(mux)
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		mux.ServeHTTP(w, r.WithContext(auth.WithIdentity(r.Context(), root)))
+		mux.ServeHTTP(w, r.WithContext(auth.WithIdentity(r.Context(), &auth.Identity{Username: r.Header.Get("X-Test-User")})))
 	}))
 	t.Cleanup(srv.Close)
-	do := func(method, path, body string) string {
+	return c, func(user, method, path, body string) string {
 		t.Helper()
 		req, _ := http.NewRequest(method, srv.URL+api.Base+"/namespaces/"+ns+path, strings.NewReader(body))
+		req.Header.Set("X-Test-User", user)
 		res, err := http.DefaultClient.Do(req)
 		if err != nil {
 			t.Fatal(err)
@@ -74,10 +74,33 @@ func TestEventsInTheCluster(t *testing.T) {
 		defer func() { _ = res.Body.Close() }()
 		out, _ := io.ReadAll(res.Body)
 		if res.StatusCode >= 300 {
-			t.Fatalf("%s %s: %d %s", method, path, res.StatusCode, out)
+			t.Fatalf("%s %s as %s: %d %s", method, path, user, res.StatusCode, out)
 		}
 		return string(out)
 	}
+}
+
+// listEvents lists ns's Events once n are there, or after 10 s.
+func listEvents(t *testing.T, c ctrlclient.Client, ns string, n int) []eventsv1.Event {
+	t.Helper()
+	var list eventsv1.EventList
+	for deadline := time.Now().Add(10 * time.Second); ; time.Sleep(50 * time.Millisecond) {
+		if err := c.List(ctx, &list, ctrlclient.InNamespace(ns)); err != nil {
+			t.Fatal(err)
+		}
+		if len(list.Items) >= n || time.Now().After(deadline) {
+			return list.Items
+		}
+	}
+}
+
+// Writes through the API reach the cluster as events.k8s.io Events about
+// the Team and the AgentAccess, reported by cadre-server, as the activity
+// route lists them.
+func TestEventsInTheCluster(t *testing.T) {
+	const ns = "team-events"
+	c, as := eventsCluster(t, ns)
+	do := func(method, path, body string) string { t.Helper(); return as("root@example.test", method, path, body) }
 
 	var team v1alpha1.Team
 	if err := json.Unmarshal([]byte(do("PUT", "/team", `{}`)), &team); err != nil {
@@ -98,17 +121,8 @@ func TestEventsInTheCluster(t *testing.T) {
 		"AccessUpdated": "AgentAccess bot: AgentAccess bot updated by root@example.test",
 		"AccessDeleted": "AgentAccess bot: AgentAccess bot deleted by root@example.test",
 	}
-	var list eventsv1.EventList
-	for deadline := time.Now().Add(10 * time.Second); ; time.Sleep(50 * time.Millisecond) {
-		if err := c.List(ctx, &list, ctrlclient.InNamespace(ns)); err != nil {
-			t.Fatal(err)
-		}
-		if len(list.Items) >= len(want) || time.Now().After(deadline) {
-			break
-		}
-	}
 	var reasons []string
-	for _, ev := range list.Items {
+	for _, ev := range listEvents(t, c, ns, len(want)) {
 		reasons = append(reasons, ev.Reason)
 		raw, _ := json.Marshal(ev)
 		if ev.Type != corev1.EventTypeNormal || ev.ReportingController != "cadre-server" || ev.Regarding.APIVersion != "cadre.dev/v1alpha1" ||
@@ -122,5 +136,51 @@ func TestEventsInTheCluster(t *testing.T) {
 	slices.Sort(reasons)
 	if strings.Join(reasons, " ") != "AccessCreated AccessDeleted AccessUpdated TeamCreated TeamUpdated" {
 		t.Errorf("Events %v, want one of each", reasons)
+	}
+}
+
+// Two users writing the same names, within the recorder's series window,
+// each get an Event naming themselves, as does each AgentAccess made again:
+// none is counted into another's.
+func TestEventsByTwoUsersInTheCluster(t *testing.T) {
+	const ns = "team-two-users"
+	c, as := eventsCluster(t, ns)
+	const lead, root = "lead@example.test", "root@example.test"
+	var team v1alpha1.Team
+	if err := json.Unmarshal([]byte(as(root, "PUT", "/team", `{"roles":[{"role":"admin","subjects":[{"kind":"user","name":"`+lead+`"}]}]}`)), &team); err != nil {
+		t.Fatal(err)
+	}
+	roles := `"roles":[{"role":"admin","subjects":[{"kind":"user","name":"` + lead + `"}]}]`
+	if err := json.Unmarshal([]byte(as(lead, "PUT", "/team", `{"resourceVersion":"`+team.ResourceVersion+`","displayName":"A",`+roles+`}`)), &team); err != nil {
+		t.Fatal(err)
+	}
+	as(root, "PUT", "/team", `{"resourceVersion":"`+team.ResourceVersion+`","displayName":"B",`+roles+`}`)
+	as(lead, "PUT", "/agentaccesses/bot", `{"spec":{"role":"member"}}`)
+	as(lead, "DELETE", "/agentaccesses/bot", "")
+	as(lead, "PUT", "/agentaccesses/bot", `{"spec":{"role":"member"}}`)
+	as(root, "DELETE", "/agentaccesses/bot", "")
+
+	want := []string{
+		"AccessCreated AgentAccess bot created by " + lead + " 1",
+		"AccessCreated AgentAccess bot created by " + lead + " 1",
+		"AccessDeleted AgentAccess bot deleted by " + lead + " 1",
+		"AccessDeleted AgentAccess bot deleted by " + root + " 1",
+		"TeamCreated Team created by " + root + " 1",
+		"TeamUpdated Team displayName changed by " + lead + " 1",
+		"TeamUpdated Team displayName changed by " + root + " 1",
+	}
+	// Give a merging recorder the time to count one into another.
+	time.Sleep(time.Second)
+	var got []string
+	for _, ev := range listEvents(t, c, ns, len(want)) {
+		count := int32(1)
+		if ev.Series != nil {
+			count = ev.Series.Count
+		}
+		got = append(got, fmt.Sprintf("%s %s %d", ev.Reason, ev.Note, count))
+	}
+	slices.Sort(got)
+	if strings.Join(got, "\n") != strings.Join(want, "\n") {
+		t.Errorf("Events:\n%s\nwant:\n%s", strings.Join(got, "\n"), strings.Join(want, "\n"))
 	}
 }
