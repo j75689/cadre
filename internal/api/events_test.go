@@ -231,3 +231,77 @@ func TestRefusedEventsKeepTheAnswer(t *testing.T) {
 		}
 	}
 }
+
+// blockingSink is an API server that takes every Event and answers none
+// until released.
+type blockingSink struct {
+	calls   atomic.Int32
+	release chan struct{}
+}
+
+func (b *blockingSink) wait(ev *eventsv1.Event) (*eventsv1.Event, error) {
+	b.calls.Add(1)
+	<-b.release
+	return ev, nil
+}
+
+func (b *blockingSink) Create(_ context.Context, ev *eventsv1.Event) (*eventsv1.Event, error) {
+	return b.wait(ev)
+}
+
+func (b *blockingSink) Update(_ context.Context, ev *eventsv1.Event) (*eventsv1.Event, error) {
+	return b.wait(ev)
+}
+
+func (b *blockingSink) Patch(_ context.Context, ev *eventsv1.Event, _ []byte) (*eventsv1.Event, error) {
+	return b.wait(ev)
+}
+
+// An API server that never answers an Event slows no write: the recorder
+// queues each, and every write answers as soon as it is made.
+func TestBlockedEventsKeepWritesFast(t *testing.T) {
+	sink := &blockingSink{release: make(chan struct{})}
+	broadcaster := events.NewBroadcaster(sink)
+	stop := make(chan struct{})
+	t.Cleanup(func() { close(stop); broadcaster.Shutdown() })
+	broadcaster.StartRecordingToSink(stop)
+	store := &fakeAccesses{objs: map[string]*v1alpha1.AgentAccess{}}
+	e := startRolesWith(t, memory.NewBackend().Open(), nil, &authz.Policy{AdminUsers: []string{"root@example.test"}, FoldUsernames: true},
+		api.WithAgentAccesses(store), api.WithEvents(broadcaster.NewRecorder(newRecorder(t).scheme, "cadre-server")))
+	// Before the server closes, which waits for any write the sink holds.
+	t.Cleanup(func() { close(sink.release) })
+	root := e.as("root@example.test")
+	var team v1alpha1.Team
+	for _, c := range []struct {
+		method, path string
+		body         func() string
+		code         int
+	}{
+		{"PUT", "/namespaces/team-c/team", func() string { return `{}` }, 201},
+		{"PUT", "/namespaces/team-c/team", func() string { return `{"resourceVersion":"` + team.ResourceVersion + `","displayName":"C"}` }, 200},
+		{"PUT", "/namespaces/team-a/agentaccesses/bot", func() string { return `{"spec":{"role":"member"}}` }, 201},
+		{"PUT", "/namespaces/team-a/agentaccesses/bot", func() string { return `{"resourceVersion":"1","spec":{"role":"viewer"}}` }, 200},
+		{"DELETE", "/namespaces/team-a/agentaccesses/bot", func() string { return "" }, 204},
+	} {
+		done := make(chan int, 1)
+		body := c.body()
+		go func() {
+			code, out := e.do(root, c.method, c.path, body)
+			_ = json.Unmarshal([]byte(out), &team)
+			done <- code
+		}()
+		select {
+		case code := <-done:
+			if code != c.code {
+				t.Errorf("%s %s with Events blocked: %d, want %d", c.method, c.path, code, c.code)
+			}
+		case <-time.After(5 * time.Second):
+			t.Fatalf("%s %s with Events blocked: no answer within 5 s", c.method, c.path)
+		}
+	}
+	for deadline := time.Now().Add(10 * time.Second); sink.calls.Load() == 0; time.Sleep(20 * time.Millisecond) {
+		if time.Now().After(deadline) {
+			t.Fatal("no Event reached the API server: nothing was blocked")
+		}
+	}
+}
