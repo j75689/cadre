@@ -4,6 +4,8 @@
 package api
 
 import (
+	"time"
+
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
 	v1alpha1 "github.com/j75689/cadre/api/v1alpha1"
@@ -32,6 +34,33 @@ type TaskList struct {
 	Items  []v1alpha1.Task `json:"items"`
 	Offset int             `json:"offset"`
 	Limit  int             `json:"limit"`
+}
+
+// ActivityList is a page of a namespace's recent activity, newest first.
+// Offset and Limit are the values that applied.
+type ActivityList struct {
+	Items  []Activity `json:"items"`
+	Offset int        `json:"offset"`
+	Limit  int        `json:"limit"`
+}
+
+// Activity is an Event about one of cadre's objects: when it last happened,
+// what happened, to what, which component said so, and how many times.
+type Activity struct {
+	Time       time.Time      `json:"time"`
+	Type       string         `json:"type"`
+	Reason     string         `json:"reason"`
+	Action     string         `json:"action"`
+	Note       string         `json:"note"`
+	Regarding  ActivityObject `json:"regarding"`
+	ReportedBy string         `json:"reportedBy"`
+	Count      int32          `json:"count"`
+}
+
+// ActivityObject is the object an Activity is about.
+type ActivityObject struct {
+	Kind string `json:"kind"`
+	Name string `json:"name"`
 }
 
 // CommentRequest writes to a task's thread, or answers a waiting task.
