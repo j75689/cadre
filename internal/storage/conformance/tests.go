@@ -542,6 +542,8 @@ func testIndexFilters(t *testing.T, s *suite) {
 		{storage.Query{Namespace: s.ns, Text: "ui", Phases: todo}, []string{"alpha", "beta"}},
 		{storage.Query{Namespace: s.ns, Text: "ui", Phases: cancelled}, []string{"gamma"}},
 		{storage.Query{Namespace: s.ns, Text: "ÉTÉ", Phases: []v1alpha1.Phase{""}}, []string{"epsilon"}},
+		{storage.Query{Namespace: s.ns, Phases: []v1alpha1.Phase{v1alpha1.PhaseTodo, v1alpha1.PhaseCancelled}}, []string{"delta", "alpha", "beta", "gamma"}},
+		{storage.Query{Namespace: s.ns, Phases: []v1alpha1.Phase{"", v1alpha1.PhaseCancelled}, Text: "e"}, []string{"epsilon", "gamma"}},
 		{storage.Query{Namespace: s.ns, Text: "ui", Labels: []string{"ui"}, Assignee: "coder"}, []string{"alpha"}},
 		{storage.Query{Namespace: s.ns, Assignee: "coder", Number: 12}, []string{"beta"}},
 		{storage.Query{Namespace: s.ns, Text: "#1", Offset: 1, Limit: 1}, []string{"beta"}},
