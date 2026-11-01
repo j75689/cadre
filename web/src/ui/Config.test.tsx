@@ -38,4 +38,33 @@ describe("YAMLCard", () => {
     expect(screen.getByRole("button", { name: "Copy manifest" })).toBeTruthy();
     expect(screen.queryByText(/hidden/)).toBeNull();
   });
+
+  const notifier = (url: string): ConfigResource => ({ ...tool({}), kind: "Notifier", name: "slack", spec: { on: ["Done"], webhook: { url } } });
+
+  it.each([
+    ["path", "https://hooks.slack.com/(set)"],
+    ["path, port and query", "https://hooks.example.test:8443/(set)?token=(set)"],
+    ["path and fragment", "http://hooks.example.test/(set)#(set)"],
+    ["scheme-less path", "/(set)"],
+  ])("notes a Notifier's webhook URL masked in its %s", (_, url) => {
+    render(<YAMLCard resource={notifier(url)} namespace="a" />);
+    expect(screen.getByRole("button", { name: "Copy" }).getAttribute("aria-describedby")).toBe("yaml-note");
+    expect(screen.getByText("Contains hidden values; not applyable as is.")).toBeTruthy();
+    expect(screen.getByText(/are set but hidden from members; admins see them/)).toBeTruthy();
+  });
+
+  it.each([
+    ["an admin's webhook URL", "https://hooks.slack.com/services/T0/B0/xyz"],
+    ["a (set) deeper in its path", "https://hooks.example.test/a/(set)"],
+    ["a (set) that is not the whole path segment", "https://hooks.example.test/(set)x"],
+  ])("adds no note for %s", (_, url) => {
+    render(<YAMLCard resource={notifier(url)} namespace="a" />);
+    expect(screen.getByRole("button", { name: "Copy manifest" })).toBeTruthy();
+    expect(screen.queryByText(/hidden/)).toBeNull();
+  });
+
+  it("adds no note for a ToolServer URL with the path a Notifier's is masked as", () => {
+    render(<YAMLCard resource={tool({ url: "https://mcp.example.test/(set)" })} namespace="a" />);
+    expect(screen.getByRole("button", { name: "Copy manifest" })).toBeTruthy();
+  });
 });
