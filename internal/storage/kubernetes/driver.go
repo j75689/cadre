@@ -310,14 +310,16 @@ func (d *Driver) ListTasks(ctx context.Context, q storage.Query) ([]v1alpha1.Tas
 	return out, nil
 }
 
-// CountTasks implements storage.Index from the informer cache.
+// CountTasks implements storage.Index from the informer cache. It only reads
+// what it lists, so it skips the cache's deep copy.
 func (d *Driver) CountTasks(ctx context.Context, q storage.Query) (int, error) {
-	matched, err := d.matching(ctx, q)
+	matched, err := d.matching(ctx, q, client.UnsafeDisableDeepCopy)
 	return len(matched), err
 }
 
-// matching returns the cached Tasks q selects, unordered.
-func (d *Driver) matching(ctx context.Context, q storage.Query) ([]*v1alpha1.Task, error) {
+// matching returns the cached Tasks q selects, unordered, listed with extra
+// options as well.
+func (d *Driver) matching(ctx context.Context, q storage.Query, extra ...client.ListOption) ([]*v1alpha1.Task, error) {
 	if err := q.Validate(); err != nil {
 		return nil, err
 	}
@@ -334,7 +336,7 @@ func (d *Driver) matching(ctx context.Context, q storage.Query) ([]*v1alpha1.Tas
 		opts = append(opts, client.MatchingFields{indexPhase: string(q.Phases[0])})
 	}
 	list := &v1alpha1.TaskList{}
-	if err := d.index.List(ctx, list, opts...); err != nil {
+	if err := d.index.List(ctx, list, append(opts, extra...)...); err != nil {
 		return nil, fmt.Errorf("list tasks: %w", err)
 	}
 	matched := make([]*v1alpha1.Task, 0, len(list.Items))
