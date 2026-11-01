@@ -25,13 +25,14 @@ import (
 
 // Server serves /api/v1 on a Task Manager.
 type Server struct {
-	m      *manager.Manager
-	log    *slog.Logger
-	mode   string           // auth.ModeOIDC or auth.ModeNone
-	policy *authz.Policy    // nil: everyone may do anything
-	access AgentAccessStore // nil: AgentAccesses are not served
-	config client.Reader    // nil: configuration resources are not served
-	watch  *watchServer     // nil: watch streams are not served
+	m        *manager.Manager
+	log      *slog.Logger
+	mode     string           // auth.ModeOIDC or auth.ModeNone
+	policy   *authz.Policy    // nil: everyone may do anything
+	access   AgentAccessStore // nil: AgentAccesses are not served
+	config   client.Reader    // nil: configuration resources are not served
+	activity client.Reader    // nil: activity is not served
+	watch    *watchServer     // nil: watch streams are not served
 }
 
 // Option adjusts NewServer.
@@ -108,6 +109,9 @@ func (s *Server) Register(mux *http.ServeMux) {
 			}
 			mux.HandleFunc("GET "+kind+"/{name}", s.guard(authz.Read, s.getConfig(k)))
 		}
+	}
+	if s.activity != nil {
+		mux.HandleFunc("GET "+Base+"/namespaces/{ns}/activity", s.guard(authz.ManageTeam, s.listActivity))
 	}
 	if s.watch != nil {
 		mux.HandleFunc("GET "+Base+"/namespaces/{ns}/watch", s.guard(authz.Read, s.watchStream))
