@@ -5,9 +5,13 @@ import type { AgentSummary, ConfigResource } from "./api";
 import { App } from "./App";
 import { json } from "./testing";
 
+// fetched is every path the page has requested, answered or not.
+const fetched: string[] = [];
+
 afterEach(() => {
   cleanup();
   vi.unstubAllGlobals();
+  fetched.length = 0;
 });
 
 // at opens path in team a; the calls to the paths in answers get their
@@ -16,6 +20,7 @@ afterEach(() => {
 function at(path: string, answers: Record<string, (() => Promise<Response>)[]>) {
   const reads: Record<string, number> = {};
   vi.stubGlobal("fetch", (url: string) => {
+    fetched.push(url);
     const key = Object.keys(answers).find((k) => url.endsWith(k));
     if (!key) return new Promise(() => {});
     const n = (reads[key] = (reads[key] ?? -1) + 1);
@@ -32,28 +37,36 @@ function at(path: string, answers: Record<string, (() => Promise<Response>)[]>) 
 const list = "/namespaces/a/schedules";
 const one = "/namespaces/a/schedules/nightly";
 
-// As GET /schedules answers them (readiness() in internal/api/server.go): why
-// only when not Ready, so a suspended one (paused) reads as a running one.
+// As GET /schedules answers a member (the Schedule row's summary in
+// internal/api/config.go): why when not Ready, Suspended for a suspended Ready
+// one (paused), and whom the tasks go to. fresh is suspended too, but its
+// current spec is unchecked, so it is Pending. A viewer's has no assignee.
 const schedules: AgentSummary[] = [
-  { name: "nightly", ready: true },
-  { name: "paused", ready: true },
+  { name: "nightly", ready: true, assignee: { kind: "Agent", name: "bot" } },
+  { name: "paused", ready: true, reason: "Suspended", assignee: { kind: "User", name: "ops@example.com" } },
   { name: "broken", ready: false, reason: "InvalidSchedule", message: "unknown time zone Mars/Base" },
-  { name: "fresh", ready: false, reason: "Pending", message: "its current spec has not been checked yet" },
+  { name: "fresh", ready: false, reason: "Pending", message: "its current spec has not been checked yet", assignee: { kind: "Agent", name: "bot" } },
 ];
 
+const viewerSchedules: AgentSummary[] = schedules.map(({ name, ready, reason, message }) => ({ name, ready, reason, message }));
+
 describe("Schedules", () => {
-  it("shows each schedule's readiness, and why not, linked to its page", async () => {
-    at("/t/a/schedules", { [list]: [() => json({ items: schedules })] });
+  it.each([
+    ["a member", schedules],
+    ["a viewer", viewerSchedules],
+  ])("shows %s each schedule's readiness and reason as served, linked to its page", async (_, items) => {
+    at("/t/a/schedules", { [list]: [() => json({ items })] });
     const rows = await screen.findAllByRole("row");
     expect(rows).toHaveLength(5);
     const [, nightly, paused, broken, fresh] = rows.map((r) => within(r));
     expect(nightly.getByText("Ready")).toBeTruthy();
     expect(nightly.getByRole("link", { name: "nightly" }).getAttribute("href")).toBe("/t/a/schedules/nightly");
     expect(paused.getByText("Ready")).toBeTruthy();
-    expect(paused.queryByText("Suspended")).toBeNull();
+    expect(paused.getByText("Suspended")).toBeTruthy();
     expect(broken.getByText("InvalidSchedule")).toBeTruthy();
     expect(broken.getByText("unknown time zone Mars/Base")).toBeTruthy();
     expect(fresh.getAllByText("Pending")).toHaveLength(1);
+    expect(fresh.queryByText("Suspended")).toBeNull();
     expect(screen.getByRole("region", { name: "Schedules" })).toBeTruthy();
     expect(document.title).toBe("Schedules · a · Cadre");
   });
@@ -188,28 +201,31 @@ describe("ScheduleDetail", () => {
   });
 });
 
-// schedule is a Schedule whose tasks go to assignee.
-const schedule = (name: string, assignee?: { kind: string; name: string }): ConfigResource => ({
-  ...member,
-  name,
-  spec: { cron: "@daily", task: { title: name, ...(assignee && { assignee }) } },
-});
-
 describe("An Agent's Used by", () => {
   const agent = "/namespaces/a/agents/bot";
   const bot: ConfigResource = { ...viewer, name: "bot", kind: "Agent", spec: { modelRef: "claude" } };
   const usedBy = async () => within((await screen.findByRole("heading", { name: "Used by" })).closest("section")!);
 
-  it("links the Schedules whose tasks go to the agent, and only those", async () => {
+  // schedules is the paths of Schedule reads, the list's and each one's.
+  const schedules = () => fetched.filter((u) => /\/namespaces\/a\/schedules(\/|$)/.test(u));
+
+  it("links the Schedules whose tasks go to the agent, and only those, from one list read", async () => {
+    const assigned = (name: string, assignee?: { kind: string; name: string }): AgentSummary => ({ name, ready: true, ...(assignee && { assignee }) });
     at("/t/a/agents/bot", {
       [agent]: [() => json(bot)],
-      [list]: [() => json({ items: ["nightly", "weekly", "other", "user", "gone", "none"].map((name) => ({ name, ready: true })) })],
-      [one]: [() => json(schedule("nightly", { kind: "Agent", name: "bot" }))],
-      "/schedules/weekly": [() => json(schedule("weekly", { kind: "Agent", name: "bot" }))],
-      "/schedules/other": [() => json(schedule("other", { kind: "Agent", name: "writer" }))],
-      "/schedules/user": [() => json(schedule("user", { kind: "User", name: "bot" }))],
-      "/schedules/gone": [() => json({ error: { code: "not_found", message: "not found" } }, 404)],
-      "/schedules/none": [() => json(schedule("none"))],
+      [list]: [
+        () =>
+          json({
+            items: [
+              assigned("nightly", { kind: "Agent", name: "bot" }),
+              assigned("none"),
+              assigned("other", { kind: "Agent", name: "writer" }),
+              assigned("user", { kind: "User", name: "bot" }),
+              { ...assigned("weekly", { kind: "Agent", name: "bot" }), reason: "Suspended" },
+            ],
+          }),
+      ],
+      [one]: [() => json(member)],
     });
     const card = await usedBy();
     await waitFor(() => expect(card.getAllByRole("link").map((l) => [l.textContent, l.getAttribute("href")])).toEqual([
@@ -217,6 +233,9 @@ describe("An Agent's Used by", () => {
       ["weekly", "/t/a/schedules/weekly"],
     ]));
     expect(screen.queryByText(/Could not load the schedules/)).toBeNull();
+    // No Schedule is read on its own, now or later in the same poll.
+    await act(() => new Promise((r) => setTimeout(r, 50)));
+    expect(schedules()).toEqual(["/api/v1/namespaces/a/schedules"]);
     fireEvent.click(card.getByRole("link", { name: "nightly" }));
     expect(await screen.findByRole("heading", { level: 1, name: "nightly" })).toBeTruthy();
   });
@@ -229,8 +248,7 @@ describe("An Agent's Used by", () => {
   it("shows a failed read with Retry, which reads again", async () => {
     at("/t/a/agents/bot", {
       [agent]: [() => json(bot)],
-      [list]: [() => json({ error: { code: "Unavailable", message: "not synced" } }, 503), () => json({ items: [{ name: "nightly", ready: true }] })],
-      [one]: [() => json(schedule("nightly", { kind: "Agent", name: "bot" }))],
+      [list]: [() => json({ error: { code: "Unavailable", message: "not synced" } }, 503), () => json({ items: [{ name: "nightly", ready: true, assignee: { kind: "Agent", name: "bot" } }] })],
     });
     expect(await screen.findByText("Could not load the schedules: not synced")).toBeTruthy();
     fireEvent.click(screen.getByRole("button", { name: "Retry" }));
@@ -239,9 +257,10 @@ describe("An Agent's Used by", () => {
   });
 
   it("is not shown to a viewer, who reads no Schedule", async () => {
-    const reads = at("/t/a/agents/bot", { [agent]: [() => json({ ...bot, spec: undefined })], [list]: [() => json({ items: [] })] });
+    at("/t/a/agents/bot", { [agent]: [() => json({ ...bot, spec: undefined })], [list]: [() => json({ items: [] })] });
     expect(await screen.findByText("The spec and status are shown to the team's members and admins.")).toBeTruthy();
     expect(screen.queryByRole("heading", { name: "Used by" })).toBeNull();
-    expect(reads[list]).toBeUndefined();
+    await act(() => new Promise((r) => setTimeout(r, 50)));
+    expect(schedules()).toEqual([]);
   });
 });
