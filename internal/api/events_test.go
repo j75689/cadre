@@ -115,6 +115,10 @@ func TestTeamEvents(t *testing.T) {
 			v, r := read()
 			return api.TeamRequest{TeamSpec: v1alpha1.TeamSpec{DisplayName: "Team A", MaxConcurrentRuns: 4, Roles: r}, ResourceVersion: v}
 		}, 200, []recorded{{team, "Normal", "TeamUpdated", "UpdateTeam", "Team maxConcurrentRuns changed by lead@example.test"}}},
+		{"an admin removes its name", lead, "team-a", func() api.TeamRequest {
+			v, r := read()
+			return api.TeamRequest{TeamSpec: v1alpha1.TeamSpec{MaxConcurrentRuns: 4, Roles: r}, ResourceVersion: v}
+		}, 200, []recorded{{team, "Normal", "TeamUpdated", "UpdateTeam", "Team displayName changed by lead@example.test"}}},
 	} {
 		code := put(c.token, c.ns, c.req())
 		got := rec.take()
@@ -153,6 +157,7 @@ func TestAgentAccessEvents(t *testing.T) {
 		{"an edit from a stale version", admin, "PUT", path + "/bot", `{"resourceVersion":"0","spec":{"role":"viewer"}}`, 409, nil},
 		{"an edit from its version", admin, "PUT", path + "/bot", `{"resourceVersion":"1","spec":{"role":"viewer"}}`, 200,
 			[]recorded{{bot, "Normal", "AccessUpdated", "UpdateAgentAccess", "AgentAccess bot updated by lead@example.test"}}},
+		{"an edit that changes nothing", admin, "PUT", path + "/bot", `{"resourceVersion":"2","spec":{"role":"viewer"}}`, 200, nil},
 		// Told by the store, which these fakes are not.
 		{"a rotation", admin, "POST", path + "/bot/token", "", 200, nil},
 		{"a member may not delete", member, "DELETE", path + "/bot", "", 403, nil},
