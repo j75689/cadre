@@ -99,7 +99,7 @@ A skip link to `#main` comes first in the tab order. Each page's `main` has `id=
 Every team page, `/t/<ns>/...`, has the team nav under the top bar: a `nav` named "Team", 40 px (`--teamnav`), on `--surface`, with a bottom `--line`.
 - It holds the team's tabs, each an icon and a label, in order: **Board**, current on `/t/<ns>` (with or without a trailing slash) only, not on a task's page; **Agents**, for every role; **Model providers**, for every role, also current on a provider's page; **Tool servers**, for every role, also current on a tool server's page; **Notifiers**, for every role, also current on a notifier's page; **Runners**, for every role, also current on a runner's page; **Settings**, for every role, also current on its sub-pages (`/t/<ns>/settings/access...`).
 - The current tab has `aria-current="page"`, a 2 px `--accent` underline and `--fg` text; the others are `--fg-muted`.
-- Every role sees all six tabs. What a role may not do is left out of the pages themselves (see [States](#states)).
+- Every role sees all seven tabs. What a role may not do is left out of the pages themselves (see [States](#states)).
 - When the tabs do not fit, they scroll inside the nav; the page never scrolls sideways, down to 320 px.
 - An unknown team page, `/t/<ns>/<anything else>`, shows Not found under the nav.
 
