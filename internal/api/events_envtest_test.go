@@ -58,7 +58,7 @@ func eventsCluster(t *testing.T, ns string) (ctrlclient.Client, func(user, metho
 	api.NewServer(manager.New(memory.NewBackend().Open(), manager.Config{}), slog.New(slog.NewTextHandler(io.Discard, nil)),
 		api.WithAccess(auth.ModeOIDC, &authz.Policy{AdminUsers: []string{"root@example.test"}}),
 		api.WithAgentAccesses(controller.AgentAccessStore(mgr.GetClient(), mgr.GetAPIReader(), recorder)),
-		api.WithEvents(recorder)).Register(mux)
+		api.WithEvents(recorder), api.WithActivity(mgr.GetAPIReader())).Register(mux)
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		mux.ServeHTTP(w, r.WithContext(auth.WithIdentity(r.Context(), &auth.Identity{Username: r.Header.Get("X-Test-User")})))
 	}))
@@ -169,15 +169,18 @@ func TestEventsByTwoUsersInTheCluster(t *testing.T) {
 		"TeamUpdated Team displayName changed by " + lead + " 1",
 		"TeamUpdated Team displayName changed by " + root + " 1",
 	}
-	// Give a merging recorder the time to count one into another.
-	time.Sleep(time.Second)
+	// As the activity route answers, once they are all there.
+	listEvents(t, c, ns, len(want))
+	var page api.ActivityList
+	if err := json.Unmarshal([]byte(as(root, "GET", "/activity", "")), &page); err != nil {
+		t.Fatal(err)
+	}
 	var got []string
-	for _, ev := range listEvents(t, c, ns, len(want)) {
-		count := int32(1)
-		if ev.Series != nil {
-			count = ev.Series.Count
-		}
-		got = append(got, fmt.Sprintf("%s %s %d", ev.Reason, ev.Note, count))
+	for _, a := range page.Items {
+		got = append(got, fmt.Sprintf("%s %s %d", a.Reason, a.Note, a.Count))
+	}
+	if len(got) == 0 || got[0] != "AccessDeleted AgentAccess bot deleted by "+root+" 1" {
+		t.Errorf("newest activity %q, want root's delete", got)
 	}
 	slices.Sort(got)
 	if strings.Join(got, "\n") != strings.Join(want, "\n") {
