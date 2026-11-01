@@ -183,6 +183,95 @@ func TestAgentAccessEvents(t *testing.T) {
 	}
 }
 
+// readHook is an AgentAccessStore calling after(n) once its nth read has
+// been made, before answering it.
+type readHook struct {
+	api.AgentAccessStore
+	reads atomic.Int32
+	after func(n int32)
+}
+
+func (h *readHook) GetAgentAccess(ctx context.Context, ns, name string) (*v1alpha1.AgentAccess, error) {
+	aa, err := h.AgentAccessStore.GetAgentAccess(ctx, ns, name)
+	h.after(h.reads.Add(1))
+	return aa, err
+}
+
+// barrier makes the first two reads of h each wait for the other: two
+// requests then both read before either writes.
+func barrier(store api.AgentAccessStore) *readHook {
+	var both sync.WaitGroup
+	both.Add(2)
+	return &readHook{AgentAccessStore: store, after: func(n int32) {
+		if n <= 2 {
+			both.Done()
+			both.Wait()
+		}
+	}}
+}
+
+// Two users deleting an AgentAccess held by a finalizer at once, both
+// having read it before either deleted it, are both answered 204, and only
+// the one that deleted it is told: the other's Event would regard the same
+// version, and be counted into the first, under its user.
+func TestConcurrentDeletesOfAHeldAccess(t *testing.T) {
+	rec := newRecorder(t)
+	store := &fakeAccesses{objs: map[string]*v1alpha1.AgentAccess{}, rv: 1}
+	store.objs["team-a/held"] = &v1alpha1.AgentAccess{ObjectMeta: metav1.ObjectMeta{Namespace: "team-a", Name: "held", UID: "u1", ResourceVersion: "1",
+		Finalizers: []string{"example.test/hold"}}, Spec: v1alpha1.AgentAccessSpec{Role: "member"}}
+	e := startRolesWith(t, memory.NewBackend().Open(), nil, &authz.Policy{AdminUsers: []string{"ada@example.test", "lead@example.test"}, FoldUsernames: true},
+		api.WithAgentAccesses(barrier(store)), api.WithEvents(rec))
+	codes := make(chan int, 2)
+	for _, user := range []string{"ada@example.test", "lead@example.test"} {
+		token := e.as(user)
+		go func() {
+			code, _ := e.do(token, "DELETE", "/namespaces/team-a/agentaccesses/held", "")
+			codes <- code
+		}()
+	}
+	for range 2 {
+		select {
+		case code := <-codes:
+			if code != 204 {
+				t.Errorf("a concurrent delete: %d, want 204", code)
+			}
+		case <-time.After(10 * time.Second):
+			t.Fatal("a concurrent delete: no answer within 10 s")
+		}
+	}
+	got := rec.take()
+	if len(got) != 1 || got[0].Reason != "AccessDeleted" ||
+		got[0].Note != "AgentAccess held deleted by ada@example.test" && got[0].Note != "AgentAccess held deleted by lead@example.test" {
+		t.Errorf("Events %v, want one AccessDeleted naming one user", got)
+	}
+	if aa := store.objs["team-a/held"]; aa == nil || aa.DeletionTimestamp == nil {
+		t.Errorf("the AgentAccess after the deletes: %+v, want it being deleted", aa)
+	}
+}
+
+// An AgentAccess written between a delete's read and its delete, as its
+// reconciler writes its status, is still deleted, and told.
+func TestDeleteOfAnAccessWrittenMeanwhile(t *testing.T) {
+	rec := newRecorder(t)
+	store := &fakeAccesses{objs: map[string]*v1alpha1.AgentAccess{}, rv: 1}
+	store.objs["team-a/bot"] = &v1alpha1.AgentAccess{ObjectMeta: metav1.ObjectMeta{Namespace: "team-a", Name: "bot", UID: "u1", ResourceVersion: "1"},
+		Spec: v1alpha1.AgentAccessSpec{Role: "member"}}
+	written := &readHook{AgentAccessStore: store, after: func(n int32) {
+		if n == 1 {
+			store.mu.Lock()
+			store.objs["team-a/bot"].ResourceVersion = "2"
+			store.mu.Unlock()
+		}
+	}}
+	e := startRolesWith(t, memory.NewBackend().Open(), nil, &authz.Policy{AdminUsers: []string{"lead@example.test"}, FoldUsernames: true},
+		api.WithAgentAccesses(written), api.WithEvents(rec))
+	code, out := e.do(e.as("lead@example.test"), "DELETE", "/namespaces/team-a/agentaccesses/bot", "")
+	want := []recorded{{"cadre.dev/v1alpha1 AgentAccess team-a/bot", "Normal", "AccessDeleted", "DeleteAgentAccess", "AgentAccess bot deleted by lead@example.test"}}
+	if got := rec.take(); code != 204 || fmt.Sprint(got) != fmt.Sprint(want) || store.objs["team-a/bot"] != nil {
+		t.Errorf("a delete of one written meanwhile: %d %s %v, want 204 %v and it gone", code, out, got, want)
+	}
+}
+
 // failingSink is an API server refusing every Event, and counting them.
 type failingSink struct{ calls atomic.Int32 }
 

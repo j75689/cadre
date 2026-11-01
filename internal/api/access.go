@@ -28,7 +28,9 @@ type AgentAccessStore interface {
 	CreateAgentAccess(ctx context.Context, aa *v1alpha1.AgentAccess) error
 	// UpdateAgentAccess writes the spec, conditionally on the version.
 	UpdateAgentAccess(ctx context.Context, aa *v1alpha1.AgentAccess) error
-	DeleteAgentAccess(ctx context.Context, namespace, name string) error
+	// DeleteAgentAccess deletes aa, conditionally on its uid and version:
+	// ErrConflict when it changed since it was read.
+	DeleteAgentAccess(ctx context.Context, aa *v1alpha1.AgentAccess) error
 	// RotateAgentAccessToken mints a new token for an AgentAccess without
 	// a ServiceAccount, replacing the one in its Secret, and returns it:
 	// the only time it is ever read. by is who asked, for its Event. One
@@ -137,27 +139,38 @@ func (s *Server) rotateAgentAccessToken(w http.ResponseWriter, r *http.Request) 
 	httpjson.Write(w, http.StatusOK, AgentAccessToken{Token: tok, TokenSecret: v1alpha1.AccessTokenSecretName(name)})
 }
 
+// deleteTries bounds how often a delete is tried again when the
+// AgentAccess changed since it was read, a status write, say.
+const deleteTries = 3
+
 func (s *Server) deleteAgentAccess(w http.ResponseWriter, r *http.Request) {
 	ns, name := r.PathValue("ns"), r.PathValue("name")
 	// Its Event regards the AgentAccess as read just before, by uid: one on
 	// the name alone would be counted into the last delete of that name,
-	// under that one's user.
+	// under that one's user. The delete is conditional on that read, so
+	// of two deleting at once only the one that deleted it is told.
 	aa, err := s.access.GetAgentAccess(r.Context(), ns, name)
-	if err != nil {
-		s.failAccess(w, name, err)
-		return
+	for try := 1; err == nil; try++ {
+		// One already being deleted, held by a finalizer, is not deleted by
+		// this request: its Event would regard the version the first
+		// delete's did, and be counted into it, under that one's user.
+		if aa.DeletionTimestamp != nil {
+			w.WriteHeader(http.StatusNoContent)
+			return
+		}
+		err = s.access.DeleteAgentAccess(r.Context(), aa)
+		if err == nil {
+			s.emit(aa, "AccessDeleted", "DeleteAgentAccess", "AgentAccess %s deleted by %s", name, caller(r.Context()))
+			w.WriteHeader(http.StatusNoContent)
+			return
+		}
+		if !errors.Is(err, storage.ErrConflict) || try == deleteTries {
+			break
+		}
+		// Deleted meanwhile, or written: read it again to tell which.
+		aa, err = s.access.GetAgentAccess(r.Context(), ns, name)
 	}
-	if err := s.access.DeleteAgentAccess(r.Context(), ns, name); err != nil {
-		s.failAccess(w, name, err)
-		return
-	}
-	// One already being deleted, held by a finalizer, is not deleted by
-	// this request: its Event would regard the version the first delete's
-	// did, and be counted into it, under that one's user.
-	if aa.DeletionTimestamp == nil {
-		s.emit(aa, "AccessDeleted", "DeleteAgentAccess", "AgentAccess %s deleted by %s", name, caller(r.Context()))
-	}
-	w.WriteHeader(http.StatusNoContent)
+	s.failAccess(w, name, err)
 }
 
 // failAccess answers what the store refused. cadre-server's own RBAC

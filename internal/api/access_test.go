@@ -12,6 +12,9 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
+
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
 	v1alpha1 "github.com/j75689/cadre/api/v1alpha1"
 	"github.com/j75689/cadre/internal/api"
@@ -111,13 +114,25 @@ func (f *fakeAccesses) RotateAgentAccessToken(_ context.Context, ns, name, by st
 	return mintedToken, nil
 }
 
-func (f *fakeAccesses) DeleteAgentAccess(_ context.Context, ns, name string) error {
+// DeleteAgentAccess deletes aa as the cluster does: conditionally on its
+// uid and version, and one held by a finalizer is kept, being deleted.
+func (f *fakeAccesses) DeleteAgentAccess(_ context.Context, aa *v1alpha1.AgentAccess) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	if _, ok := f.objs[ns+"/"+name]; !ok {
+	cur, ok := f.objs[aa.Namespace+"/"+aa.Name]
+	switch {
+	case !ok:
 		return storage.ErrNotFound
+	case cur.UID != aa.UID || cur.ResourceVersion != aa.ResourceVersion:
+		return storage.ErrConflict
+	case len(cur.Finalizers) > 0:
+		if cur.DeletionTimestamp == nil {
+			f.rv++
+			cur.ResourceVersion, cur.DeletionTimestamp = fmt.Sprint(f.rv), &metav1.Time{Time: time.Now()}
+		}
+		return nil
 	}
-	delete(f.objs, ns+"/"+name)
+	delete(f.objs, aa.Namespace+"/"+aa.Name)
 	return nil
 }
 

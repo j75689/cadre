@@ -10,6 +10,7 @@ import (
 	"net/http/httptest"
 	"slices"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -29,8 +30,9 @@ import (
 )
 
 // eventsCluster serves the API on an API server with Events on, its
-// Team's admins given by roles, and answers do as the user named.
-func eventsCluster(t *testing.T, ns string) (ctrlclient.Client, func(user, method, path, body string) string) {
+// AgentAccesses kept by the cluster's store as wrap wraps it, and answers
+// do as the user named.
+func eventsCluster(t *testing.T, ns string, wrap ...func(api.AgentAccessStore) api.AgentAccessStore) (ctrlclient.Client, func(user, method, path, body string) string) {
 	t.Helper()
 	cfg := testenv.APIServer(t)
 	mgr, err := controller.NewManager(cfg)
@@ -54,10 +56,14 @@ func eventsCluster(t *testing.T, ns string) (ctrlclient.Client, func(user, metho
 		t.Fatal(err)
 	}
 	recorder := mgr.GetEventRecorder("cadre-server")
+	store := controller.AgentAccessStore(mgr.GetClient(), mgr.GetAPIReader(), recorder)
+	for _, w := range wrap {
+		store = w(store)
+	}
 	mux := http.NewServeMux()
 	api.NewServer(manager.New(memory.NewBackend().Open(), manager.Config{}), slog.New(slog.NewTextHandler(io.Discard, nil)),
 		api.WithAccess(auth.ModeOIDC, &authz.Policy{AdminUsers: []string{"root@example.test"}}),
-		api.WithAgentAccesses(controller.AgentAccessStore(mgr.GetClient(), mgr.GetAPIReader(), recorder)),
+		api.WithAgentAccesses(store),
 		api.WithEvents(recorder), api.WithActivity(mgr.GetAPIReader())).Register(mux)
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		mux.ServeHTTP(w, r.WithContext(auth.WithIdentity(r.Context(), &auth.Identity{Username: r.Header.Get("X-Test-User")})))
@@ -241,5 +247,69 @@ func TestDeletingATerminatingAccessInTheCluster(t *testing.T) {
 	slices.Sort(got)
 	if strings.Join(got, "\n") != strings.Join(want, "\n") {
 		t.Errorf("Events:\n%s\nwant:\n%s", strings.Join(got, "\n"), strings.Join(want, "\n"))
+	}
+}
+
+// Two users deleting an AgentAccess held by a finalizer at once, both
+// having read it before either deleted it, are told with one Event, naming
+// the one that deleted it, and counted once: never as a series.
+func TestConcurrentDeletesOfAHeldAccessInTheCluster(t *testing.T) {
+	const ns, rounds = "team-concurrent", 10
+	hook := &readHook{after: func(int32) {}}
+	c, as := eventsCluster(t, ns, func(s api.AgentAccessStore) api.AgentAccessStore { hook.AgentAccessStore = s; return hook })
+	const ada, lead, root = "ada@example.test", "lead@example.test", "root@example.test"
+	roles := `"roles":[{"role":"admin","subjects":[{"kind":"user","name":"` + ada + `"},{"kind":"user","name":"` + lead + `"}]}]`
+	var team v1alpha1.Team
+	if err := json.Unmarshal([]byte(as(root, "PUT", "/team", `{`+roles+`}`)), &team); err != nil {
+		t.Fatal(err)
+	}
+	var held []*v1alpha1.AgentAccess
+	t.Cleanup(func() {
+		for _, aa := range held {
+			if err := c.Get(ctx, ctrlclient.ObjectKeyFromObject(aa), aa); err == nil {
+				aa.Finalizers = nil
+				_ = c.Update(ctx, aa)
+			}
+		}
+	})
+	for i := range rounds {
+		name := fmt.Sprintf("bot-%d", i)
+		as(ada, "PUT", "/agentaccesses/"+name, `{"spec":{"role":"member"}}`)
+		aa := &v1alpha1.AgentAccess{}
+		if err := c.Get(ctx, ctrlclient.ObjectKey{Namespace: ns, Name: name}, aa); err != nil {
+			t.Fatal(err)
+		}
+		aa.Finalizers = append(aa.Finalizers, "example.test/hold")
+		if err := c.Update(ctx, aa); err != nil {
+			t.Fatal(err)
+		}
+		held = append(held, aa)
+		hook.reads.Store(0)
+		hook.after = barrier(nil).after
+		var both sync.WaitGroup
+		for _, user := range []string{ada, lead} {
+			both.Add(1)
+			go func() { defer both.Done(); as(user, "DELETE", "/agentaccesses/"+name, "") }()
+		}
+		both.Wait()
+	}
+	// Last, so that once its Event is there the deletes' are too.
+	as(lead, "PUT", "/team", `{"resourceVersion":"`+team.ResourceVersion+`","displayName":"A",`+roles+`}`)
+
+	deleted := 0
+	for _, ev := range listEvents(t, c, ns, 2+2*rounds) {
+		raw, _ := json.Marshal(ev)
+		if ev.Series != nil {
+			t.Errorf("an Event counted as a series: %s", raw)
+		}
+		if ev.Reason == "AccessDeleted" {
+			deleted++
+			if by := strings.TrimPrefix(ev.Note, "AgentAccess "+ev.Regarding.Name+" deleted by "); by != ada && by != lead {
+				t.Errorf("AccessDeleted %s, want it naming ada or lead", raw)
+			}
+		}
+	}
+	if deleted != rounds {
+		t.Errorf("%d AccessDeleted for %d AgentAccesses, each deleted by two users at once: want one each", deleted, rounds)
 	}
 }
