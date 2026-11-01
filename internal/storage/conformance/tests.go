@@ -469,8 +469,8 @@ func testIndexFilters(t *testing.T, s *suite) {
 	}{
 		{"alpha", "Fix Login Bug", &v1alpha1.Assignee{Kind: v1alpha1.AssigneeAgent, Name: "coder"}, []string{"ui", "defect"}, 11},
 		{"beta", "Write guide", &v1alpha1.Assignee{Kind: v1alpha1.AssigneeUser, Name: "coder"}, []string{"docs"}, 12},
-		{"gamma", "Refactor", &v1alpha1.Assignee{Kind: v1alpha1.AssigneeAgent, Name: "reviewer"}, []string{"ui"}, 120},
-		{"delta", "Spike", nil, nil, 3},
+		{"gamma", "Refactor ΟΔΌΣ", &v1alpha1.Assignee{Kind: v1alpha1.AssigneeAgent, Name: "reviewer"}, []string{"ui"}, 120},
+		{"delta", "Spike", nil, []string{"οδός"}, 3},
 		{"epsilon", "Été", nil, nil, 0}, // new: no number, no phase
 	} {
 		tk := &v1alpha1.Task{
@@ -533,6 +533,9 @@ func testIndexFilters(t *testing.T, s *suite) {
 		{storage.Query{Namespace: s.ns, Text: "20"}, []string{"gamma"}},
 		{storage.Query{Namespace: s.ns, Text: "#0"}, []string{}},
 		{storage.Query{Namespace: s.ns, Text: "été"}, []string{"epsilon"}},
+		// Final ς folds as σ, both ways.
+		{storage.Query{Namespace: s.ns, Text: "ΟΔΌΣ"}, []string{"delta", "gamma"}},
+		{storage.Query{Namespace: s.ns, Text: "οδός"}, []string{"delta", "gamma"}},
 		{storage.Query{Namespace: s.ns, Text: "   "}, []string{"epsilon", "delta", "alpha", "beta", "gamma"}},
 		// Never the description or the thread.
 		{storage.Query{Namespace: s.ns, Text: "zebra"}, []string{}},
