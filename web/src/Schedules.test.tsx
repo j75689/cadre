@@ -247,7 +247,9 @@ describe("An Agent's Used by", () => {
       at("/t/a/agents/bot", { [agent]: [() => json(bot)], [list]: [() => json({ items })], [one]: [() => json(member)] });
       expect(await (await usedBy()).findByRole("link", { name: "nightly" })).toBeTruthy();
       expect(schedules()).toEqual(["/api/v1/namespaces/a/schedules"]);
-      await act(() => vi.advanceTimersByTimeAsync(15000));
+      await act(() => vi.advanceTimersByTimeAsync(14000));
+      expect(schedules()).toEqual(["/api/v1/namespaces/a/schedules"]);
+      await act(() => vi.advanceTimersByTimeAsync(1000));
       expect(schedules()).toEqual(["/api/v1/namespaces/a/schedules", "/api/v1/namespaces/a/schedules"]);
     } finally {
       vi.useRealTimers();
