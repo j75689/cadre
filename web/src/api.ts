@@ -172,6 +172,9 @@ export interface AgentSummary {
   ready: boolean;
   reason?: string;
   message?: string;
+  // assignee is whom a Schedule's tasks go to, in GET /schedules, for a
+  // member and up.
+  assignee?: { kind: string; name: string };
 }
 
 // ConfigResource is a configuration resource, such as an Agent, as the

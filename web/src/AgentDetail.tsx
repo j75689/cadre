@@ -1,6 +1,6 @@
 import { useState } from "react";
 import { Link, useParams } from "react-router";
-import { APIError, getAgent, getSchedule, listSchedules, type ConfigResource } from "./api";
+import { getAgent, listSchedules } from "./api";
 import { ConfigDetail } from "./ConfigDetail";
 import { modelProviderLink, scheduleLink, toolServerLink } from "./links";
 import { Banner } from "./ui/Banner";
@@ -40,17 +40,9 @@ function UsesCard({ spec }: { spec: Record<string, unknown> }) {
   );
 }
 
-// assigns says whether a Schedule's task template assigns its tasks to the
-// Agent agent.
-function assigns(schedule: ConfigResource, agent: string): boolean {
-  const task = schedule.spec?.task as { assignee?: { kind?: string; name?: string } } | undefined;
-  return task?.assignee?.kind === "Agent" && task.assignee.name === agent;
-}
-
-// UsedByCard is the Schedules that create tasks for the Agent. The list is
-// summary-only, so each Schedule is read for its task template; one deleted
-// since the list is left out. It is shown with the spec, to members and
-// admins: a viewer is shown no Schedule's spec either.
+// UsedByCard is the Schedules that create tasks for the Agent: those whose
+// list item names it as assignee, read in one list. It is shown with the
+// spec, to members and admins: a viewer gets no assignee either.
 function UsedByCard() {
   const { ns = "", name = "" } = useParams();
   const [schedules, setSchedules] = useState<string[] | null>(null);
@@ -61,15 +53,7 @@ function UsedByCard() {
     async (signal) => {
       try {
         const { items } = await listSchedules(ns, signal);
-        const read = await Promise.all(
-          items.map((s) =>
-            getSchedule(ns, s.name, signal).catch((e: unknown) => {
-              if (e instanceof APIError && e.status === 404 && e.code === "not_found") return null;
-              throw e;
-            }),
-          ),
-        );
-        setSchedules(read.filter((s): s is ConfigResource => s !== null && assigns(s, name)).map((s) => s.name));
+        setSchedules(items.filter((s) => s.assignee?.kind === "Agent" && s.assignee.name === name).map((s) => s.name));
         setError("");
       } catch (e) {
         if (!signal.aborted) setError(String((e as Error).message));
