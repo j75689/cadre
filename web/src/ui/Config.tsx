@@ -25,7 +25,17 @@ const maskedURL = /(?:^|:)\/\/\(set\)@|[?&]([^&#=]*=)?\(set\)(?=[&#]|$)|#\(set\)
 const maskedURLs: Record<string, string[][]> = {
   ModelProvider: [["baseURL"]],
   ToolServer: [["url"], ["managed", "path"], ["managed", "readinessProbe", "httpGet", "path"]],
+  Notifier: [["webhook", "url"]],
 };
+
+// maskedWebhookURL matches a URL masked as maskedURL does, or with its path
+// shown as masked: "/(set)", after its scheme and host if it has them
+// (maskWebhookURL in internal/api/config.go).
+const maskedWebhookURL = new RegExp(String.raw`^(?:[^:/?#]+:)?(?:\/\/[^/?#]*)?\/\(set\)(?=[?#]|$)|` + maskedURL.source);
+
+// maskedURLPatterns are, by kind, how its maskedURLs are masked when not
+// as maskedURL matches.
+const maskedURLPatterns: Record<string, RegExp> = { Notifier: maskedWebhookURL };
 
 // hasMaskedURL says whether the resource holds a URL shown with masked
 // parts, at one of its kind's maskedURLs. Elsewhere such a text is an
@@ -33,7 +43,7 @@ const maskedURLs: Record<string, string[][]> = {
 const hasMaskedURL = ({ kind, spec }: ConfigResource): boolean =>
   (maskedURLs[kind] ?? []).some((path) => {
     const v = path.reduce<unknown>((o, k) => (o as Record<string, unknown> | undefined)?.[k], spec);
-    return typeof v === "string" && maskedURL.test(v);
+    return typeof v === "string" && (maskedURLPatterns[kind] ?? maskedURL).test(v);
   });
 
 // ConditionsCard is the resource's conditions, each with the generation

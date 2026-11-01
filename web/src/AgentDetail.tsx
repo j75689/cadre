@@ -11,7 +11,7 @@ import { usePolling } from "./usePolling";
 const pollMs = 15000;
 
 // Ref is a used resource's name, a link to its page.
-function Ref({ kind, name }: { kind: "ModelProvider" | "ToolServer"; name: string }) {
+export function Ref({ kind, name }: { kind: "ModelProvider" | "ToolServer"; name: string }) {
   const { ns = "" } = useParams();
   return (
     <Link to={(kind === "ToolServer" ? toolServerLink : modelProviderLink)(ns, name)}>

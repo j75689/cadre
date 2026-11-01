@@ -29,7 +29,7 @@ import (
 )
 
 // configCluster is a cluster's Agents, ModelProviders, ToolServers,
-// Schedules and Notifiers as the controllers' cache holds them: writer and claude as kubectl apply
+// Schedules, Notifiers and Runners as the controllers' cache holds them: writer and claude as kubectl apply
 // leaves them, reviewer, gpt and execer edited since they were checked,
 // gateway and remote with a credential in their URL, prober with some in
 // its path and readiness probe, and elsewhere in team-b.
@@ -80,7 +80,7 @@ func configCluster(t *testing.T) api.Option {
 	nohost := provider("team-a", "nohost", v1alpha1.ModelProviderSpec{Type: v1alpha1.ProviderOpenAI, Model: "gpt", Auth: key, BaseURL: "https://u:sk_literal_nohost@"})
 	vertex := provider("team-b", "vertex", v1alpha1.ModelProviderSpec{Type: v1alpha1.ProviderVertex, Model: "gemini", WorkloadIdentity: true, Project: "p", Location: "us-east5"})
 	return api.WithConfig(fake.NewClientBuilder().WithScheme(scheme).WithObjects(writer, reviewer, elsewhere, jobber, claude, gpt, gateway, fragment, badurl, nohost, vertex).
-		WithObjects(toolServers()...).WithObjects(schedules()...).WithObjects(notifiers()...).Build())
+		WithObjects(toolServers()...).WithObjects(schedules()...).WithObjects(notifiers()...).WithObjects(runners()...).Build())
 }
 
 // schedules are daily, as kubectl apply leaves it, nightly, edited since it
@@ -131,6 +131,30 @@ func notifiers() []client.Object {
 	badhook := notifier("team-a", "badhook", v1alpha1.NotifierSpec{On: on, Webhook: &v1alpha1.Webhook{URL: "https://hooks.example.test/%zz?k=nf_literal_bad"}})
 	distant := notifier("team-b", "distant", v1alpha1.NotifierSpec{On: on, Webhook: &v1alpha1.Webhook{URL: "https://hooks.example.test/notify"}})
 	return []client.Object{hook, caller, badhook, distant}
+}
+
+// runnerHash is pool's token hash, which no role is shown.
+const runnerHash = "5e1f00d0c0ffee5e1f00d0c0ffee5e1f00d0c0ffee5e1f00d0c0ffee5e1f00d0"
+
+// runners are pool, with a minted token, as kubectl apply leaves it; ci, on
+// a ServiceAccount, edited since it was checked; and offsite in team-b.
+func runners() []client.Object {
+	runner := func(ns, name string, spec v1alpha1.RunnerSpec) *v1alpha1.Runner {
+		rn := &v1alpha1.Runner{ObjectMeta: metav1.ObjectMeta{Namespace: ns, Name: name, Generation: 1}, Spec: spec}
+		rn.Status.ObservedGeneration = 1
+		rn.Status.Conditions = []metav1.Condition{{Type: v1alpha1.ConditionReady, Status: metav1.ConditionTrue, ObservedGeneration: 1, Reason: "TokenMinted"}}
+		return rn
+	}
+	pool := runner("team-a", "pool", v1alpha1.RunnerSpec{Labels: map[string]string{"pool": "gpu"}})
+	pool.Status.TokenSecret, pool.Status.TokenHash = "pool-token", runnerHash
+	pool.Status.MintedAt = &metav1.Time{Time: time.Date(2026, 10, 31, 9, 0, 0, 0, time.UTC)}
+	pool.Labels = map[string]string{"tier": "one"}
+	pool.Annotations = map[string]string{"cadre.dev/owner": "ops-team", "kubectl.kubernetes.io/last-applied-configuration": `{"spec":{"labels":{"pool":"gpu"}}}`}
+	pool.ManagedFields = []metav1.ManagedFieldsEntry{{Manager: "kubectl-client-side-apply", Operation: metav1.ManagedFieldsOperationUpdate, APIVersion: "cadre.dev/v1alpha1", FieldsType: "FieldsV1", FieldsV1: metav1.NewFieldsV1(`{"f:spec":{"f:labels":{}}}`)}}
+	ci := runner("team-a", "ci", v1alpha1.RunnerSpec{ServiceAccount: &v1alpha1.ServiceAccountRef{Name: "ci-runner"}, Labels: map[string]string{"pool": "ci"}})
+	ci.Generation = 2
+	offsite := runner("team-b", "offsite", v1alpha1.RunnerSpec{Labels: map[string]string{"pool": "cpu"}})
+	return []client.Object{pool, ci, offsite}
 }
 
 // slackURL holds its token in its path, as Slack's and Discord's do.
@@ -1012,6 +1036,155 @@ func TestNotifierMaskLeavesTheCache(t *testing.T) {
 	}
 	if code, body := get("lead@example.test", "", "/namespaces/team-a/notifiers/slack"); code != 200 || strings.Count(body, "XXSECRETXX") != 2 {
 		t.Errorf("an admin after a member, slack: its URL gone from the spec or lastError: %d %s", code, body)
+	}
+}
+
+func TestListRunners(t *testing.T) {
+	get := startConfig(t, configCluster(t))
+	code, body := get("", "", "/namespaces/team-a/runners")
+	var got api.ConfigList
+	if err := json.Unmarshal([]byte(body), &got); err != nil || code != 200 {
+		t.Fatalf("%d %s", code, body)
+	}
+	want := []api.ConfigSummary{
+		{Name: "ci", Reason: "Pending", Message: "its current spec has not been checked yet"},
+		{Name: "pool", Ready: true},
+	}
+	if !slices.Equal(got.Items, want) {
+		t.Errorf("got %+v, want %+v", got.Items, want)
+	}
+	if code, body := get("", "", "/namespaces/team-c/runners"); code != 404 {
+		t.Errorf("a namespace without a Team: %d %s", code, body)
+	}
+	policy := &authz.Policy{FoldUsernames: true}
+	withRoles := startConfig(t, api.WithAccess(auth.ModeOIDC, policy), configCluster(t))
+	for _, c := range []struct{ name, user, groups string }{
+		{"a viewer", "eve@example.test", "readers"},
+		{"a viewer AgentAccess", "agentaccess/bot", "viewer"},
+		{"a member", "dana@example.test", "backend"},
+		{"a member AgentAccess", "agentaccess/bot", "member"},
+		{"an admin", "lead@example.test", ""},
+	} {
+		if code, body := withRoles(c.user, c.groups, "/namespaces/team-a/runners"); code != 200 || !strings.Contains(body, `"pool"`) {
+			t.Errorf("%s: %d %s", c.name, code, body)
+		}
+	}
+	if code, body := withRoles("mallory@example.test", "", "/namespaces/team-a/runners"); code != 403 {
+		t.Errorf("a stranger: %d %s", code, body)
+	}
+	if code, body := withRoles("dana@example.test", "backend", "/namespaces/team-c/runners"); code != 403 || !strings.Contains(body, `"no_role"`) {
+		t.Errorf("with logins, a namespace without a Team: %d %s", code, body)
+	}
+	boot := startConfig(t, api.WithAccess(auth.ModeOIDC, &authz.Policy{FoldUsernames: true, AdminUsers: []string{"root@example.test"}}), configCluster(t))
+	for _, p := range []string{"/namespaces/team-c/runners", "/namespaces/team-c/runners/pool"} {
+		if code, body := boot("root@example.test", "", p); code != 404 {
+			t.Errorf("a bootstrap admin, a namespace without a Team, %s: %d %s", p, code, body)
+		}
+	}
+}
+
+func TestGetRunner(t *testing.T) {
+	get := startConfig(t, configCluster(t))
+	for _, c := range []struct {
+		name, path string
+		code       int
+	}{
+		{"a namespace without a Team", "/namespaces/team-c/runners/pool", 404},
+		{"a Runner that is not there", "/namespaces/team-a/runners/nope", 404},
+		{"another namespace's Runner", "/namespaces/team-a/runners/offsite", 404},
+		{"in its own namespace", "/namespaces/team-b/runners/offsite", 200},
+	} {
+		if code, body := get("", "", c.path); code != c.code {
+			t.Errorf("%s: %d %s, want %d", c.name, code, body, c.code)
+		}
+	}
+
+	code, body := get("", "", "/namespaces/team-a/runners/ci")
+	var got api.ConfigResource
+	if err := json.Unmarshal([]byte(body), &got); err != nil || code != 200 {
+		t.Fatalf("ci: %d %s", code, body)
+	}
+	want := api.ConfigSummary{Name: "ci", Reason: "Pending", Message: "its current spec has not been checked yet"}
+	if got.ConfigSummary != want || got.Kind != "Runner" || got.Generation != 2 || got.ObservedGeneration != 1 || len(got.Conditions) != 1 {
+		t.Errorf("a Runner edited since it was checked: %s", body)
+	}
+	withRoles := startConfig(t, api.WithAccess(auth.ModeOIDC, &authz.Policy{FoldUsernames: true}), configCluster(t))
+	if code, body := withRoles("mallory@example.test", "", "/namespaces/team-a/runners/pool"); code != 403 {
+		t.Errorf("a stranger: %d %s", code, body)
+	}
+}
+
+// What each role sees of a Runner: its labels, ServiceAccount and token
+// Secret unmasked, as they hold no credential; nobody sees its fields'
+// owners, nor the spec kubectl last applied.
+func TestRunnerByRole(t *testing.T) {
+	policy := &authz.Policy{FoldUsernames: true}
+	withRoles := startConfig(t, api.WithAccess(auth.ModeOIDC, policy), configCluster(t))
+	withoutLogins := startConfig(t, configCluster(t))
+	for _, c := range []struct {
+		name                      string
+		get                       func(user, groups, path string) (int, string)
+		user, groups              string
+		spec, status, annotations bool
+	}{
+		{"a viewer", withRoles, "eve@example.test", "readers", false, false, false},
+		{"a viewer AgentAccess", withRoles, "agentaccess/bot", "viewer", false, false, false},
+		{"a member", withRoles, "dana@example.test", "backend", true, true, true},
+		{"a member AgentAccess", withRoles, "agentaccess/bot", "member", true, true, true},
+		{"an admin", withRoles, "lead@example.test", "", true, true, true},
+		{"--auth=none", withoutLogins, "", "", true, true, true},
+	} {
+		code, body := c.get(c.user, c.groups, "/namespaces/team-a/runners/pool")
+		var got api.ConfigResource
+		if err := json.Unmarshal([]byte(body), &got); err != nil || code != 200 {
+			t.Fatalf("%s: %d %s", c.name, code, body)
+		}
+		if !got.Ready || len(got.Conditions) != 1 || got.Metadata.ResourceVersion == "" || got.Metadata.Labels["tier"] != "one" {
+			t.Errorf("%s: no health: %s", c.name, body)
+		}
+		if (got.Spec != nil) != c.spec || (got.Status != nil) != c.status || (got.Metadata.Annotations != nil) != c.annotations {
+			t.Errorf("%s: spec %v, status %v, annotations %v: %s", c.name, got.Spec != nil, got.Status != nil, got.Metadata.Annotations != nil, body)
+		}
+		for _, s := range []string{`"labels":{"pool":"gpu"}`, `"tokenSecret":"pool-token"`, `"mintedAt":"2026-10-31T09:00:00Z"`, `"cadre.dev/owner":"ops-team"`} {
+			if strings.Contains(body, s) != c.spec {
+				t.Errorf("%s: %s shown %v: %s", c.name, s, !c.spec, body)
+			}
+		}
+		for _, never := range []string{"last-applied", "managedFields", "f:labels"} {
+			if strings.Contains(body, never) {
+				t.Errorf("%s sees %q: %s", c.name, never, body)
+			}
+		}
+	}
+	code, body := withRoles("dana@example.test", "backend", "/namespaces/team-a/runners/ci")
+	if code != 200 || !strings.Contains(body, `"serviceAccount":{"name":"ci-runner"}`) {
+		t.Errorf("a member, a Runner on a ServiceAccount: %d %s", code, body)
+	}
+}
+
+// No role is shown a Runner's token hash, listed or read.
+func TestRunnerTokenHashNeverServed(t *testing.T) {
+	policy := &authz.Policy{FoldUsernames: true}
+	withRoles := startConfig(t, api.WithAccess(auth.ModeOIDC, policy), configCluster(t))
+	withoutLogins := startConfig(t, configCluster(t))
+	for _, c := range []struct {
+		name         string
+		get          func(user, groups, path string) (int, string)
+		user, groups string
+	}{
+		{"a viewer", withRoles, "eve@example.test", "readers"},
+		{"a viewer AgentAccess", withRoles, "agentaccess/bot", "viewer"},
+		{"a member", withRoles, "dana@example.test", "backend"},
+		{"a member AgentAccess", withRoles, "agentaccess/bot", "member"},
+		{"an admin", withRoles, "lead@example.test", ""},
+		{"--auth=none", withoutLogins, "", ""},
+	} {
+		for _, p := range []string{"/namespaces/team-a/runners", "/namespaces/team-a/runners/pool"} {
+			code, body := c.get(c.user, c.groups, p)
+			if code != 200 || strings.Contains(body, runnerHash) || strings.Contains(body, "tokenHash") {
+				t.Errorf("%s, %s: %d %s", c.name, p, code, body)
+			}
+		}
 	}
 }
 

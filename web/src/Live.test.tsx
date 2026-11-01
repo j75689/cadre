@@ -37,6 +37,8 @@ const routes: [string, (url: string) => boolean, () => unknown][] = [
   ["toolserver", (u) => u.endsWith("/namespaces/a/toolservers/github"), () => resource("ToolServer", "github")],
   ["schedules", (u) => u.endsWith("/namespaces/a/schedules"), () => ({ items: [] })],
   ["schedule", (u) => u.endsWith("/namespaces/a/schedules/nightly"), () => resource("Schedule", "nightly")],
+  ["notifiers", (u) => u.endsWith("/namespaces/a/notifiers"), () => ({ items: [] })],
+  ["notifier", (u) => u.endsWith("/namespaces/a/notifiers/slack"), () => resource("Notifier", "slack")],
 ];
 
 beforeEach(() => {
@@ -103,6 +105,8 @@ describe("Live pages", () => {
     ["/t/a/schedules", "schedules", ["config", { kind: "Schedule", name: "nightly" }], ["config", { kind: "ToolServer", name: "nightly" }]],
     ["/t/a/schedules/nightly", "schedule", ["config", { kind: "Schedule", name: "nightly" }], ["config", { kind: "Schedule", name: "weekly" }]],
     ["/t/a/agents/planner", "schedules", ["config", { kind: "Schedule", name: "weekly" }], ["config", { kind: "Agent", name: "writer" }]],
+    ["/t/a/notifiers", "notifiers", ["config", { kind: "Notifier", name: "slack" }], ["config", { kind: "ToolServer", name: "slack" }]],
+    ["/t/a/notifiers/slack", "notifier", ["config", { kind: "Notifier", name: "slack" }], ["config", { kind: "Notifier", name: "pager" }]],
     ["/t/a/settings", "team", ["config", { kind: "Team", name: "team" }], ["config", { kind: "Agent", name: "team" }]],
   ] as const)("%s reads %s again on its hint, within a second, and not on another's", async (path, read, [event, data], [otherEvent, otherData]) => {
     const stream = await open(path, read);
@@ -139,5 +143,22 @@ describe("Live pages", () => {
     await act(() => vi.advanceTimersByTimeAsync(5000));
     expect(reads.board - before).toBe(7);
     expect(screen.getByRole("region", { name: "Todo" })).toBeTruthy();
+  });
+
+  it.each([
+    ["/t/a/notifiers", "notifiers"],
+    ["/t/a/notifiers/slack", "notifier"],
+  ])("%s polls %s every 15 seconds when the stream is refused", async (path, read) => {
+    render(
+      <MemoryRouter initialEntries={[path]}>
+        <App />
+      </MemoryRouter>,
+    );
+    await vi.waitFor(() => expect(reads[read]).toBeGreaterThan(0));
+    await act(() => vi.advanceTimersByTimeAsync(0));
+    act(() => FakeEventSource.open()[0].fail(true));
+    const before = reads[read];
+    await act(() => vi.advanceTimersByTimeAsync(15000));
+    expect(reads[read] - before).toBe(1);
   });
 });

@@ -38,6 +38,9 @@ export const toolServerLink = (ns: string, name: string) => `${teamPath(ns)}/too
 // scheduleLink is a Schedule's page.
 export const scheduleLink = (ns: string, name: string) => `${teamPath(ns)}/schedules/${encodeURIComponent(name)}`;
 
+// notifierLink is a Notifier's page.
+export const notifierLink = (ns: string, name: string) => `${teamPath(ns)}/notifiers/${encodeURIComponent(name)}`;
+
 // taskLink is a task's page, opened at one of its runs when run is set.
 export function taskLink(ns: string, name: string, run?: string): string {
   return withQuery(`${teamPath(ns)}/tasks/${encodeURIComponent(name)}`, [[params.run, run]]);
