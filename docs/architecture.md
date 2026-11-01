@@ -233,6 +233,31 @@ Cadre is not a SaaS, not a workflow engine, not an LLM gateway and not a sandbox
   ```
 
   `status.tokenHash`, the SHA-256 of the token Cadre minted for a Runner without a `serviceAccount`, is in the Runner object but in no answer, an admin's or `--auth=none`'s included; `tokenSecret` names the Secret the token is in, and `mintedAt` changes when the token does, which is enough to tell a rotation. Nothing else of a Runner is masked: its `spec.labels` and `spec.serviceAccount`, the name of its Secret and its conditions hold no credential. The failures are the Agent's: 401 `unauthenticated`, 403 `no_role` (a namespace without a Team included, for all but a bootstrap admin, who gets 404 `not_found` there, and under `--auth=none` too, for the list as for one) and 404 `not_found` for a Runner that is not there, or is in another namespace.
+- Reading the activity (`GET /api/v1/namespaces/<namespace>/activity`, described in full below), for the Team's admins, with an ID token from `cadre auth token` (with logins; without them, `--auth=none`, send no header). `offset` (default 0) and `limit` (default 100; a larger one is cut to 500) page it as `GET /tasks` does. The second request skips the newest item. The answer below is the first's, after two token rotations, `aav`'s after `aam`'s:
+
+  ```sh
+  curl -s -H "Authorization: Bearer $(cadre auth token)" \
+    "$CADRE_SERVER/api/v1/namespaces/demo/activity"
+  curl -s -H "Authorization: Bearer $(cadre auth token)" \
+    "$CADRE_SERVER/api/v1/namespaces/demo/activity?limit=1&offset=1"
+  ```
+
+  ```json
+  {"items":[{"time":"2026-11-01T07:27:04.101801Z","type":"Normal","reason":"TokenRotated","action":"RotateToken","note":"token rotated by ada@example.test","regarding":{"kind":"AgentAccess","name":"aav"},"reportedBy":"cadre-server","count":1},{"time":"2026-11-01T07:27:02.059502Z","type":"Normal","reason":"TokenRotated","action":"RotateToken","note":"token rotated by ada@example.test","regarding":{"kind":"AgentAccess","name":"aam"},"reportedBy":"cadre-server","count":1}],"offset":0,"limit":100}
+  ```
+
+  A namespace with nothing recent answers `{"items":[],"offset":0,"limit":100}`. The failures:
+
+  | Answer | When |
+  |---|---|
+  | 401 `unauthenticated` | no token |
+  | 403 `no_role` | a viewer, a member, an AgentAccess of any role, an admin of another team, or a caller with no role (`to manage the team on demo needs the admin role; you are a member`); a namespace without a Team, for all but a bootstrap admin |
+  | 400 `invalid` | `offset` or `limit` that is not a non-negative integer (`limit must be a non-negative integer`), or given twice (`limit given 2 times: at most once`) |
+  | 500 `server_forbidden` | cadre-server's ClusterRole predates the route, see the upgrade note below |
+
+  Nothing else of cadre-server changes with the old role: `GET /tasks` and the rest answer as before.
+
+  To fix it, upgrade the chart (`helm upgrade cadre oci://ghcr.io/j75689/charts/cadre -n cadre-system`, the release name of the install above; the chart's ClusterRole `<release>-server` is `config/rbac/role.yaml`), or without the chart apply that file (`kubectl apply -f config/rbac/role.yaml`); the request above then answers 200.
 - Reading one Agent (`GET /api/v1/namespaces/<namespace>/agents/<name>`), with an ID token from `cadre auth token` (with logins; without them, `--auth=none`, send no header). The answer is an object, `name`, `ready`, `reason` and `message` as in the list, then `kind`, `generation`, `observedGeneration`, `conditions` and `metadata` (`uid`, `resourceVersion`, `creationTimestamp`, and `labels` and, for a member and up, `annotations`, when there are any), and for a member and up `spec` and `status`. Which of them an answer carries is decided by the caller's role on the Team:
 
   ```sh
