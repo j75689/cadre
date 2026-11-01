@@ -151,7 +151,12 @@ func (s *Server) deleteAgentAccess(w http.ResponseWriter, r *http.Request) {
 		s.failAccess(w, name, err)
 		return
 	}
-	s.emit(aa, "AccessDeleted", "DeleteAgentAccess", "AgentAccess %s deleted by %s", name, caller(r.Context()))
+	// One already being deleted, held by a finalizer, is not deleted by
+	// this request: its Event would regard the version the first delete's
+	// did, and be counted into it, under that one's user.
+	if aa.DeletionTimestamp == nil {
+		s.emit(aa, "AccessDeleted", "DeleteAgentAccess", "AgentAccess %s deleted by %s", name, caller(r.Context()))
+	}
 	w.WriteHeader(http.StatusNoContent)
 }
 

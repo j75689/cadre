@@ -187,3 +187,59 @@ func TestEventsByTwoUsersInTheCluster(t *testing.T) {
 		t.Errorf("Events:\n%s\nwant:\n%s", strings.Join(got, "\n"), strings.Join(want, "\n"))
 	}
 }
+
+// A delete of an AgentAccess already being deleted, held by a finalizer
+// that is not cadre's, answers as the first did and emits no Event: the
+// first delete's Event, under its user, is not counted twice.
+func TestDeletingATerminatingAccessInTheCluster(t *testing.T) {
+	const ns = "team-terminating"
+	c, as := eventsCluster(t, ns)
+	const ada, lead, root = "ada@example.test", "lead@example.test", "root@example.test"
+	roles := `"roles":[{"role":"admin","subjects":[{"kind":"user","name":"` + ada + `"},{"kind":"user","name":"` + lead + `"}]}]`
+	var team v1alpha1.Team
+	if err := json.Unmarshal([]byte(as(root, "PUT", "/team", `{`+roles+`}`)), &team); err != nil {
+		t.Fatal(err)
+	}
+	as(ada, "PUT", "/agentaccesses/bot", `{"spec":{"role":"member"}}`)
+	held := &v1alpha1.AgentAccess{}
+	if err := c.Get(ctx, ctrlclient.ObjectKey{Namespace: ns, Name: "bot"}, held); err != nil {
+		t.Fatal(err)
+	}
+	held.Finalizers = append(held.Finalizers, "example.test/hold")
+	if err := c.Update(ctx, held); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		if err := c.Get(ctx, ctrlclient.ObjectKeyFromObject(held), held); err == nil {
+			held.Finalizers = nil
+			_ = c.Update(ctx, held)
+		}
+	})
+	// The first deletes it; the other two find it Terminating, at the same
+	// version, so their Events, were there any, would be counted as one.
+	as(ada, "DELETE", "/agentaccesses/bot", "")
+	as(lead, "DELETE", "/agentaccesses/bot", "")
+	as(root, "DELETE", "/agentaccesses/bot", "")
+	// Last, so that once its Event is there the deletes' are too.
+	as(lead, "PUT", "/team", `{"resourceVersion":"`+team.ResourceVersion+`","displayName":"A",`+roles+`}`)
+
+	want := []string{
+		"AccessCreated AgentAccess bot created by " + ada + " 1",
+		"AccessDeleted AgentAccess bot deleted by " + ada + " 1",
+		"TeamCreated Team created by " + root + " 1",
+		"TeamUpdated Team displayName changed by " + lead + " 1",
+	}
+	listEvents(t, c, ns, len(want))
+	var page api.ActivityList
+	if err := json.Unmarshal([]byte(as(root, "GET", "/activity", "")), &page); err != nil {
+		t.Fatal(err)
+	}
+	var got []string
+	for _, a := range page.Items {
+		got = append(got, fmt.Sprintf("%s %s %d", a.Reason, a.Note, a.Count))
+	}
+	slices.Sort(got)
+	if strings.Join(got, "\n") != strings.Join(want, "\n") {
+		t.Errorf("Events:\n%s\nwant:\n%s", strings.Join(got, "\n"), strings.Join(want, "\n"))
+	}
+}

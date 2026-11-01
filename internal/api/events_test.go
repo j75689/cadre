@@ -11,6 +11,7 @@ import (
 	"time"
 
 	eventsv1 "k8s.io/api/events/v1"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/client-go/tools/events"
 	"k8s.io/client-go/tools/reference"
@@ -143,6 +144,9 @@ func TestAgentAccessEvents(t *testing.T) {
 	e := startRolesWith(t, memory.NewBackend().Open(), nil, &authz.Policy{FoldUsernames: true}, api.WithAgentAccesses(store), api.WithEvents(rec))
 	admin, member := e.as("lead@example.test"), e.as("dana@example.test", "backend")
 	const path = "/namespaces/team-a/agentaccesses"
+	// Deleted before, and held by a finalizer: a delete still answers 204.
+	store.objs["team-a/held"] = &v1alpha1.AgentAccess{ObjectMeta: metav1.ObjectMeta{Namespace: "team-a", Name: "held", ResourceVersion: "1",
+		DeletionTimestamp: &metav1.Time{Time: time.Now()}, Finalizers: []string{"example.test/hold"}}, Spec: v1alpha1.AgentAccessSpec{Role: "member"}}
 	bot := "cadre.dev/v1alpha1 AgentAccess team-a/bot"
 	for _, c := range []struct {
 		name, token, method, path, body string
@@ -164,6 +168,7 @@ func TestAgentAccessEvents(t *testing.T) {
 		{"an admin deletes one", admin, "DELETE", path + "/bot", "", 204,
 			[]recorded{{bot, "Normal", "AccessDeleted", "DeleteAgentAccess", "AgentAccess bot deleted by lead@example.test"}}},
 		{"deleting it again", admin, "DELETE", path + "/bot", "", 404, nil},
+		{"deleting one already being deleted", admin, "DELETE", path + "/held", "", 204, nil},
 	} {
 		code, out := e.do(c.token, c.method, c.path, c.body)
 		got := rec.take()
