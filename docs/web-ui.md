@@ -97,7 +97,7 @@ A skip link to `#main` comes first in the tab order. Each page's `main` has `id=
 #### Team nav
 
 Every team page, `/t/<ns>/...`, has the team nav under the top bar: a `nav` named "Team", 40 px (`--teamnav`), on `--surface`, with a bottom `--line`.
-- It holds the team's tabs, each an icon and a label, in order: **Board**, current on `/t/<ns>` (with or without a trailing slash) only, not on a task's page; **Agents**, for every role; **Model providers**, for every role, also current on a provider's page; **Tool servers**, for every role, also current on a tool server's page; **Notifiers**, for every role, also current on a notifier's page; **Settings**, for every role, also current on its sub-pages (`/t/<ns>/settings/access...`).
+- It holds the team's tabs, each an icon and a label, in order: **Board**, current on `/t/<ns>` (with or without a trailing slash) only, not on a task's page; **Agents**, for every role; **Model providers**, for every role, also current on a provider's page; **Tool servers**, for every role, also current on a tool server's page; **Notifiers**, for every role, also current on a notifier's page; **Runners**, for every role, also current on a runner's page; **Settings**, for every role, also current on its sub-pages (`/t/<ns>/settings/access...`).
 - The current tab has `aria-current="page"`, a 2 px `--accent` underline and `--fg` text; the others are `--fg-muted`.
 - Every role sees all six tabs. What a role may not do is left out of the pages themselves (see [States](#states)).
 - When the tabs do not fit, they scroll inside the nav; the page never scrolls sideways, down to 320 px.
@@ -199,6 +199,9 @@ The board's controls replace the history entry, so they do not flood Back, and a
   - The Agents that use it (`spec.toolRefs`) are not shown, as for a ModelProvider (`TODO(used-by)` in `ToolServers.tsx`).
 - **Notifiers** (`/t/<ns>/notifiers`): the team's Notifier resources and whether each is ready (`SecretMissing`, `ToolServerNotReady`, `InvalidURL`…), read every 15 s, for every role: the Tool servers list, in a region named "Notifiers", each name a link to its page (`notifierLink(ns, name)`). With none: "This team has no notifiers. Notifiers are Notifier resources in the namespace, applied with kubectl or GitOps." A failed read shows the banner with Retry.
 - **One Notifier** (`/t/<ns>/notifiers/<name>`): the Notifier as `GET /notifiers/<name>` answers it, laid out as One ToolServer ("No notifier named *name* in this team." with All notifiers): its spec (events, webhook or tool) is read in the YAML, and its last delivery (`status.lastSent`, `status.lastError`) under Status, not copied. One that calls a tool has a **Uses** card: the ToolServer (`spec.toolServer.name`), a link to its page made by `Ref` in `AgentDetail.tsx`, and the tool. A viewer gets health and metadata only; a member's `spec.webhook.url` is its scheme, host and port with the rest `(set)` as served (`https://hooks.slack.com/(set)`), its webhook header values and tool arguments are `(set)` whole, each with the note and Copy, and its `status.lastError.message` reads `(set)`; an admin's are whole, with Copy manifest.
+- **Runners** (`/t/<ns>/runners`): the team's Runner resources and whether each is ready (`SecretNotOwned`, `ServiceAccountInUse`…), read every 15 s, for every role: the Tool servers list, in a region named "Runners", each name a link to its page (`runnerLink(ns, name)`). With none: "This team has no runners. Runners are Runner resources in the namespace, applied with kubectl or GitOps." A failed read shows the banner with Retry.
+- **One Runner** (`/t/<ns>/runners/<name>`): the Runner as `GET /runners/<name>` answers it, laid out as One ToolServer ("No runner named *name* in this team." with All runners): its spec (`serviceAccount`, `labels`) is read in the YAML, and its minted token's Secret and time (`status.tokenSecret`, `status.mintedAt`) under Status, not copied. A viewer gets health and metadata only, with "No spec; not a manifest to apply."; a member and an admin get the same answer, as nothing of a Runner is masked, with Copy manifest. No role is served the token's hash (`status.tokenHash`), so no page shows it.
+  - Upgrading: nothing to apply. The pages use routes cadre-server already serves (`GET /runners`, `GET /runners/<name>`) and the `config` hints of its watch stream: no flag, RBAC, CRD or chart change.
 - **Task** (`/t/<ns>/tasks/<name>`):
   - **Header:**
     - a breadcrumb: the team, then `#number`;
@@ -251,7 +254,7 @@ A stream is opened with `?task=<name>` for the run in progress of the task page 
 | Hint | What is read again |
 | --- | --- |
 | `task` | The board and its list, every task; the task page, its own task; its Subtasks, a task whose parent it is |
-| `config` | The Agents, Model providers, Tool servers and Notifiers lists, a resource of their kind; one Agent, ModelProvider, ToolServer or Notifier, itself; Settings, the Team |
+| `config` | The Agents, Model providers, Tool servers, Notifiers and Runners lists, a resource of their kind; one Agent, ModelProvider, ToolServer, Notifier or Runner, itself; Settings, the Team |
 | `run` | The run in progress's events, its own run |
 | `resync`, or a `hello` (a stream opened, reconnected or taken over) | Everything the tab shows from the stream, as hints in between were not seen |
 
