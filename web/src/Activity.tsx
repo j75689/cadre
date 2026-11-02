@@ -114,7 +114,7 @@ export function Activity() {
       )}
       {items && items.length > 0 && (
         <div className="card table-wrap" tabIndex={0} role="region" aria-label="Activity">
-          <table className="table">
+          <table className="table activity-table">
             <thead>
               <tr>
                 <th scope="col">Time</th>
@@ -137,10 +137,10 @@ export function Activity() {
                   </td>
                   <td>{a.reason}</td>
                   <td className="table-text">{a.note}</td>
-                  <td>
+                  <td className="activity-name">
                     <Regarding ns={ns} {...a.regarding} />
                   </td>
-                  <td className="mono muted">{a.reportedBy}</td>
+                  <td className="activity-name mono muted">{a.reportedBy}</td>
                   <td className="num">{a.count > 1 ? `×${a.count}` : ""}</td>
                 </tr>
               ))}
@@ -188,12 +188,13 @@ function TypeBadge({ type }: { type: string }) {
 }
 
 // Regarding is the object an Event is about, a link to its page where its
-// kind has one.
+// kind has one. A narrow column breaks it after the kind.
 function Regarding({ ns, kind, name }: { ns: string; kind: string; name: string }) {
   const page = pages[kind];
   return (
     <span className="mono">
       <span className="muted">{kind}/</span>
+      <wbr />
       {page ? <Link to={page(ns, name)}>{name}</Link> : name}
     </span>
   );

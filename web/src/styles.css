@@ -1917,6 +1917,22 @@ main.board {
   white-space: normal;
 }
 
+/* Activity: its seven columns fit the Settings column at 1280 px. Cells
+   are closer, the note is narrower, and the names wrap. */
+
+.activity-table th,
+.activity-table td {
+  padding-inline: var(--space-2);
+}
+
+.activity-table .table-text {
+  min-width: 10rem;
+}
+
+.activity-table .activity-name {
+  white-space: normal;
+}
+
 .table-loading {
   display: grid;
   gap: var(--space-3);
