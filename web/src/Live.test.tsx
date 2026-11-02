@@ -41,6 +41,7 @@ const routes: [string, (url: string) => boolean, () => unknown][] = [
   ["notifier", (u) => u.endsWith("/namespaces/a/notifiers/slack"), () => resource("Notifier", "slack")],
   ["runners", (u) => u.endsWith("/namespaces/a/runners"), () => ({ items: [] })],
   ["runner", (u) => u.endsWith("/namespaces/a/runners/ci"), () => resource("Runner", "ci")],
+  ["activity", (u) => u.includes("/namespaces/a/activity?"), () => ({ items: [], offset: 0, limit: 50 })],
 ];
 
 beforeEach(() => {
@@ -112,6 +113,8 @@ describe("Live pages", () => {
     ["/t/a/runners", "runners", ["config", { kind: "Runner", name: "ci" }], ["config", { kind: "Notifier", name: "ci" }]],
     ["/t/a/runners/ci", "runner", ["config", { kind: "Runner", name: "ci" }], ["config", { kind: "Runner", name: "laptop" }]],
     ["/t/a/settings", "team", ["config", { kind: "Team", name: "team" }], ["config", { kind: "Agent", name: "team" }]],
+    ["/t/a/settings/activity", "activity", ["config", { kind: "Team", name: "team" }], ["task", { name: "y", number: 2, phase: "Todo" }]],
+    ["/t/a/settings/activity", "activity", ["config", { kind: "Agent", name: "writer" }], ["task", { name: "y", number: 2, phase: "Todo" }]],
   ] as const)("%s reads %s again on its hint, within a second, and not on another's", async (path, read, [event, data], [otherEvent, otherData]) => {
     const stream = await open(path, read);
     expect(await after(stream, read, otherEvent, otherData)).toBe(0);
@@ -154,6 +157,7 @@ describe("Live pages", () => {
     ["/t/a/notifiers/slack", "notifier"],
     ["/t/a/runners", "runners"],
     ["/t/a/runners/ci", "runner"],
+    ["/t/a/settings/activity", "activity"],
   ])("%s polls %s every 15 seconds when the stream is refused", async (path, read) => {
     render(
       <MemoryRouter initialEntries={[path]}>
