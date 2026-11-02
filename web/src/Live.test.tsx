@@ -22,6 +22,7 @@ const resource = (kind: string, name: string): ConfigResource => ({
 let reads: Record<string, number> = {};
 const routes: [string, (url: string) => boolean, () => unknown][] = [
   ["subtasks", (u) => u.includes("parent="), () => ({ items: [], limit: 50 })],
+  ["filtered", (u) => u.includes("/namespaces/a/tasks?") && u.includes("&q=fix&assignee=bot-1"), () => ({ items: [], limit: 50, total: 0 })],
   ["board", (u) => u.includes("/namespaces/a/tasks?"), () => ({ items: [], limit: 50 })],
   ["events", (u) => u.endsWith("/events"), () => ({ items: [] })],
   ["thread", (u) => u.includes("/thread"), () => ({ items: [] })],
@@ -94,6 +95,7 @@ describe("Live pages", () => {
   it.each([
     // page, the route it reads, a hint for it, a hint not for it
     ["/t/a", "board", ["task", { name: "y", number: 2, phase: "Todo" }], ["config", { kind: "Agent", name: "writer" }]],
+    ["/t/a?q=fix&assignee=bot-1", "filtered", ["task", { name: "y", number: 2, phase: "Todo" }], ["config", { kind: "Agent", name: "writer" }]],
     ["/t/a?view=list", "board", ["task", { name: "y", number: 2, phase: "Todo" }], ["config", { kind: "Team", name: "team" }]],
     ["/t/a/tasks/x", "task", ["task", { name: "x", number: 1, phase: "Review" }], ["task", { name: "y", number: 2, phase: "Todo" }]],
     ["/t/a/tasks/x", "subtasks", ["task", { name: "y", number: 2, phase: "Done", parent: "x" }], ["task", { name: "z", number: 3, phase: "Done", parent: "w" }]],
