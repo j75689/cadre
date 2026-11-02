@@ -53,19 +53,10 @@ export function Activity() {
     async (signal) => {
       try {
         const all: Item[] = [];
-        // seen drops an item a later page repeats: an Event written
-        // between two page reads moves the rest down by one.
-        const seen = new Set<string>();
         let full = false;
         for (let p = 0; p < shown; p++) {
           const res = await listActivity(ns, { offset: p * activityPage, limit: activityPage }, signal);
-          for (const a of res.items) {
-            const key = JSON.stringify(a);
-            if (!seen.has(key)) {
-              seen.add(key);
-              all.push(a);
-            }
-          }
+          all.push(...res.items.slice(overlap(all, res.items)));
           full = res.items.length >= res.limit;
           if (!full) break;
         }
@@ -157,6 +148,17 @@ export function Activity() {
       )}
     </main>
   );
+}
+
+// overlap is how many of a later page's first items repeat the last ones
+// shown: Events written between two page reads move the rest down by as
+// many. Items have no uid, so two equal ones on one page are both kept.
+function overlap(shown: Item[], page: Item[]): number {
+  const key = (a: Item) => JSON.stringify(a);
+  for (let k = Math.min(shown.length, page.length); k > 0; k--) {
+    if (page.slice(0, k).every((a, i) => key(a) === key(shown[shown.length - k + i]))) return k;
+  }
+  return 0;
 }
 
 // Problem is why the activity could not be read. A 403 is the caller's

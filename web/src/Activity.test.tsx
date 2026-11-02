@@ -140,6 +140,28 @@ describe("Activity", () => {
     expect(screen.getAllByRole("row")).toHaveLength(activityPage + 2);
   });
 
+  it("drops as many items as Events written between the page reads moved down", async () => {
+    const full = Array.from({ length: activityPage }, (_, i) => item(`R${i}`, "Agent", `a${i}`));
+    const moved = [full[activityPage - 2], full[activityPage - 1], item("Last", "Agent", "z")];
+    open("/t/a/settings/activity", admin, page(full), page(full), page(moved, activityPage));
+    fireEvent.click(await screen.findByRole("button", { name: "Load more" }));
+    expect(await screen.findByText("Last")).toBeTruthy();
+    expect(screen.getAllByText(`R${activityPage - 2}`)).toHaveLength(1);
+    expect(screen.getAllByRole("row")).toHaveLength(activityPage + 2);
+  });
+
+  it("shows two Events with equal fields twice, as the server sends both", async () => {
+    const twin = item("Restarted", "Agent", "bot", { reportedBy: "ops-tool" });
+    const full = Array.from({ length: activityPage }, (_, i) => (i === 3 || i === 4 ? twin : item(`R${i}`, "Agent", `a${i}`)));
+    open("/t/a/settings/activity", admin, page(full), page(full), page([twin, twin, item("Last", "Agent", "z")], activityPage));
+    expect(await screen.findAllByText("Restarted")).toHaveLength(2);
+    fireEvent.click(screen.getByRole("button", { name: "Load more" }));
+    expect(await screen.findByText("Last")).toBeTruthy();
+    // The next page starts with no item the first one ended with.
+    expect(screen.getAllByText("Restarted")).toHaveLength(4);
+    expect(screen.getAllByRole("row")).toHaveLength(activityPage + 4);
+  });
+
   it("shows placeholders until the first read comes back", async () => {
     let answer: (r: Response) => void = () => {};
     open("/t/a/settings/activity", admin, () => new Promise((r) => (answer = r)));
