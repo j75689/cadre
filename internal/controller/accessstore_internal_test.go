@@ -54,7 +54,7 @@ func TestAccessStoreReadsFresh(t *testing.T) {
 	if err != nil || cur.ResourceVersion != aa.ResourceVersion {
 		t.Fatalf("read right after the create: %+v, %v", cur, err)
 	}
-	if err := s.DeleteAgentAccess(ctx, "team-a", "bot"); err != nil {
+	if err := s.DeleteAgentAccess(ctx, cur); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := s.GetAgentAccess(ctx, "team-a", "bot"); !errors.Is(err, storage.ErrNotFound) {
