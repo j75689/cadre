@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { Link, useParams } from "react-router";
 import { APIError, listTasks, phases, terminalPhases, type Phase, type Task, type TaskFilter } from "./api";
 import { RoleLine, useIdentityDetails, useRole } from "./Identity";
@@ -96,6 +96,21 @@ export function Board() {
   const [labelParam, setLabels] = useParamList(params.label);
   // The reads send each label once, none empty, and at most maxLabels.
   const labels = [...new Set(labelParam.filter(Boolean))].slice(0, maxLabels);
+  // moved is the index of the chip a label change focuses, as the control
+  // that had the focus goes away or is disabled: the chip now there, else
+  // the one before, else the search box.
+  const moved = useRef<number | undefined>(undefined);
+  const chipsRef = useRef<HTMLDivElement>(null);
+  const changeLabels = (next: string[], at: number) => {
+    moved.current = at;
+    setLabels(next);
+  };
+  useEffect(() => {
+    if (moved.current === undefined) return;
+    const chips = chipsRef.current?.querySelectorAll<HTMLButtonElement>(".label-chip") ?? [];
+    (chips[Math.min(moved.current, chips.length - 1)] ?? document.getElementById("board-search"))?.focus();
+    moved.current = undefined;
+  });
   // The reads send the search trimmed, once the typing pauses.
   const q = useDebounced(search.trim(), searchDelayMs);
   // A filter change reads the first pages again.
@@ -203,15 +218,15 @@ export function Board() {
             </select>
           </div>
           {labels.length > 0 && (
-            <div className="label-filter" role="group" aria-label="Labels">
-              {labels.map((l) => (
-                <button type="button" className="pill label-chip" key={l} aria-label={`Remove label ${l}`} onClick={() => setLabels(labels.filter((x) => x !== l))}>
+            <div className="label-filter" role="group" aria-label="Labels" ref={chipsRef}>
+              {labels.map((l, i) => (
+                <button type="button" className="pill label-chip" key={l} aria-label={`Remove label ${l}`} onClick={() => changeLabels(labels.filter((x) => x !== l), i)}>
                   {l}
                   <Icon name="x" size={12} />
                 </button>
               ))}
               {labels.length >= maxLabels && <span className="label-note">At most {maxLabels} labels</span>}
-              <Button variant="ghost" small onClick={() => setLabels([])}>
+              <Button variant="ghost" small onClick={() => changeLabels([], 0)}>
                 Clear labels
               </Button>
             </div>
@@ -265,7 +280,7 @@ export function Board() {
           search={search}
           assignee={assignee}
           labels={labels}
-          onLabel={(l) => setLabels([...labels, l])}
+          onLabel={(l) => changeLabels([...labels, l], labels.length)}
           onMore={(phase) => setPages((p) => ({ ...p, [phase]: (p[phase] ?? 1) + 1 }))}
         />
       )}

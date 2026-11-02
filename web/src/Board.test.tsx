@@ -805,6 +805,34 @@ describe("Board", () => {
       expect(screen.queryByRole("group", { name: "Labels" })).toBeNull();
     });
 
+    it("keeps the focus on the labels' chips, or the search box once there are none, as a label's control goes away", async () => {
+      serveFiltered([labelled("a", "Todo", "ops", "db", "qa", "sp")]);
+      renderPage("/t/team-a?label=ops&label=db&label=qa");
+      await screen.findByText("Title of a");
+      const focused = () => document.activeElement?.getAttribute("aria-label") ?? document.activeElement?.id;
+      const press = (button: HTMLElement) => {
+        button.focus();
+        fireEvent.click(button);
+      };
+      // A pill's label gets its chip, the last one.
+      press(within(card("a")).getByRole("button", { name: "Filter by label sp" }));
+      await vi.waitFor(() => expect(focused()).toBe("Remove label sp"));
+      // A chip's removal gives the chip now in its place, else the one before.
+      press(screen.getByRole("button", { name: "Remove label db" }));
+      await vi.waitFor(() => expect(focused()).toBe("Remove label qa"));
+      press(screen.getByRole("button", { name: "Remove label sp" }));
+      await vi.waitFor(() => expect(focused()).toBe("Remove label qa"));
+      press(screen.getByRole("button", { name: "Clear labels" }));
+      await vi.waitFor(() => expect(focused()).toBe("board-search"));
+      expect(query()).toBe("");
+      // So does the last chip's removal.
+      await screen.findByText("Title of a");
+      press(within(card("a")).getByRole("button", { name: "Filter by label db" }));
+      await vi.waitFor(() => expect(focused()).toBe("Remove label db"));
+      press(screen.getByRole("button", { name: "Remove label db" }));
+      await vi.waitFor(() => expect(focused()).toBe("board-search"));
+    });
+
     it("sends at most ten labels, and says so instead of adding an eleventh", async () => {
       const ten = Array.from({ length: 10 }, (_, i) => `l${i}`);
       serveFiltered([labelled("a", "Todo", ...ten, "more")]);
