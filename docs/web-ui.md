@@ -129,6 +129,10 @@ The team's URLs and their query parameters are built in `web/src/links.ts` (`par
 
 The board's controls replace the history entry, so they do not flood Back, and an empty value removes its parameter. A change of the query alone keeps the focus where it was.
 
+For example, `/t/platform?label=bug&label=auth&assignee=triage-bot` opens the Platform team's board with the tasks that have both labels, `bug` and `auth`, and are assigned to `triage-bot`. Each column reads `GET /api/v1/namespaces/platform/tasks?phase=<phase>&offset=0&limit=50&assignee=triage-bot&label=bug&label=auth`. To build it by clicking, press a card's `bug` pill, then another card's `auth` pill; **Remove label auth** on the second chip, or **Clear labels**, takes it back off. The chips replace the history entry like the other controls, so the filter survives a reload or a shared link. `boardLink` has no label option, so a link to a label-filtered board is written as the query above.
+
+Upgrading: nothing to apply for the web UI. The label filter is the web app only: there is no flag, RBAC, CRD or chart change, and it uses the `label` parameter that cadre-server already serves (see [architecture.md](architecture.md)). Against an older cadre-server that ignores `label` (no `total` in the answer), the board filters the pages it has loaded in the browser instead.
+
 ### Pages
 
 - **Teams** (`/`): a card grid of `repeat(auto-fill, minmax(16rem, 1fr))`. Each card shows the display name, the namespace in mono and, with logins, a role badge. The whole card links to the board.
