@@ -20,6 +20,7 @@ import (
 	v1alpha1 "github.com/j75689/cadre/api/v1alpha1"
 	"github.com/j75689/cadre/internal/api"
 	"github.com/j75689/cadre/internal/authz"
+	"github.com/j75689/cadre/internal/httpjson"
 	"github.com/j75689/cadre/internal/manager"
 	"github.com/j75689/cadre/internal/storage"
 	"github.com/j75689/cadre/internal/storage/memory"
@@ -240,13 +241,13 @@ func (c *conflicting) DeleteAgentAccess(ctx context.Context, aa *v1alpha1.AgentA
 
 // A delete that conflicts reads the AgentAccess again: one deleted
 // meanwhile is answered 404, and one written each time is tried three
-// times, then answered 409.
+// times, then answered 409 conflict. Neither deleted it, so neither is told.
 func TestDeleteOfAnAccessConflicting(t *testing.T) {
 	for _, c := range []struct {
 		name     string
 		conflict func(store *fakeAccesses, n int32) error
 		code     int
-		says     string
+		says     httpjson.ErrorBody
 		deletes  int32
 		kept     bool
 	}{
@@ -258,24 +259,30 @@ func TestDeleteOfAnAccessConflicting(t *testing.T) {
 			delete(store.objs, "team-a/bot")
 			store.mu.Unlock()
 			return storage.ErrConflict
-		}, 404, "not_found", 1, false},
+		}, 404, httpjson.ErrorBody{Code: "not_found", Message: "not found"}, 1, false},
 		{"written three times in a row", func(_ *fakeAccesses, n int32) error {
 			if n > 3 {
 				return nil
 			}
 			return storage.ErrConflict
-		}, 409, "changed since it was read", 3, true},
+		}, 409, httpjson.ErrorBody{Code: "conflict", Message: "AgentAccess bot changed since it was read: read it again, and edit that"}, 3, true},
 	} {
 		store := &fakeAccesses{objs: map[string]*v1alpha1.AgentAccess{}, rv: 1}
 		store.objs["team-a/bot"] = &v1alpha1.AgentAccess{ObjectMeta: metav1.ObjectMeta{Namespace: "team-a", Name: "bot", UID: "u1", ResourceVersion: "1"},
 			Spec: v1alpha1.AgentAccessSpec{Role: "member"}}
 		hook := &conflicting{AgentAccessStore: store, conflict: func(n int32) error { return c.conflict(store, n) }}
+		rec := newRecorder(t)
 		e := startRolesWith(t, memory.NewBackend().Open(), nil, &authz.Policy{AdminUsers: []string{"lead@example.test"}, FoldUsernames: true},
-			api.WithAgentAccesses(hook))
+			api.WithAgentAccesses(hook), api.WithEvents(rec))
 		code, out := e.do(e.as("lead@example.test"), "DELETE", "/namespaces/team-a/agentaccesses/bot", "")
-		if code != c.code || !strings.Contains(out, c.says) || hook.deletes.Load() != c.deletes || (store.objs["team-a/bot"] != nil) != c.kept {
-			t.Errorf("%s: %d %s after %d deletes, kept %v; want %d %q after %d, kept %v",
+		var says httpjson.ErrorResponse
+		if err := json.Unmarshal([]byte(out), &says); err != nil || code != c.code || says.Error != c.says ||
+			hook.deletes.Load() != c.deletes || (store.objs["team-a/bot"] != nil) != c.kept {
+			t.Errorf("%s: %d %s after %d deletes, kept %v; want %d %+v after %d, kept %v",
 				c.name, code, out, hook.deletes.Load(), store.objs["team-a/bot"] != nil, c.code, c.says, c.deletes, c.kept)
+		}
+		if got := rec.take(); len(got) != 0 {
+			t.Errorf("%s: Events %v, want none", c.name, got)
 		}
 	}
 }
