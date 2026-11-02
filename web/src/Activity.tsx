@@ -120,7 +120,7 @@ export function Activity() {
             <tbody>
               {items.map((a, i) => (
                 <tr key={i}>
-                  <td className="muted">
+                  <td className="activity-time muted">
                     <Time at={a.time} />
                   </td>
                   <td>
