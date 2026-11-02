@@ -684,4 +684,39 @@ describe("Board", () => {
     await vi.waitFor(() => expect(screen.getByRole("status").textContent).toBe("Could not refresh: not synced"));
     expect(screen.getByText("Title of a")).toBeTruthy();
   });
+
+  it("shows the skeleton, not the last filter's failed refresh, until a new filter's read is back", async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    serveFiltered([bot("a", "Todo"), task("c", "Todo", { assignee: { kind: "User", name: "carol" } })]);
+    const served = globalThis.fetch;
+    let down = false;
+    let go: () => void = () => {};
+    const held = new Promise<void>((r) => (go = r));
+    let asked = false;
+    vi.stubGlobal("fetch", async (url: string) => {
+      if (down && url.includes("/tasks")) throw new TypeError("Failed to fetch");
+      const who = new URL(url, "http://cadre.test").searchParams.get("assignee");
+      if (who === "bot-1") {
+        asked = true;
+        await held;
+      }
+      return served(url);
+    });
+    renderPage();
+    await screen.findByText("Title of a");
+    fireEvent.change(select("Assignee"), { target: { value: "carol" } });
+    await screen.findByText("1 task matches");
+    down = true;
+    await act(() => vi.advanceTimersByTimeAsync(5000));
+    await vi.waitFor(() => expect(screen.getByRole("status").textContent).toBe("Could not refresh: Failed to fetch"));
+    down = false;
+    fireEvent.change(select("Assignee"), { target: { value: "bot-1" } });
+    await vi.waitFor(() => expect(asked).toBe(true));
+    expect(screen.getByText("Loading the board")).toBeTruthy();
+    expect(screen.queryByText(/Could not/)).toBeNull();
+    expect(screen.queryByRole("button", { name: "Retry" })).toBeNull();
+    await act(async () => go());
+    expect(await screen.findByText("Title of a")).toBeTruthy();
+    expect(screen.queryByText(/Could not/)).toBeNull();
+  });
 });
