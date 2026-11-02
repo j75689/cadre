@@ -90,6 +90,14 @@ describe("matches", () => {
     expect(matches(t, "", "bot")).toBe(false);
     expect(matches(task("b", "Todo"), "", "bot-1")).toBe(false);
   });
+
+  it("matches a task that has every label, exactly", () => {
+    const t = task("a", "Todo", { labels: ["ops", "db"] });
+    expect(matches(t, "", "", ["ops", "db"])).toBe(true);
+    expect(matches(t, "", "", ["ops", "web"])).toBe(false);
+    expect(matches(t, "", "", ["op"])).toBe(false);
+    expect(matches(task("b", "Todo"), "", "", ["ops"])).toBe(false);
+  });
 });
 
 describe("latest", () => {
@@ -152,8 +160,9 @@ describe("Board", () => {
   // urls are the board's reads of serveFiltered.
   let urls: URLSearchParams[] = [];
 
-  // serveFiltered answers as a server with the filters: it filters by q and
-  // assignee, and counts the matches, or answers total[phase] if set.
+  // serveFiltered answers as a server with the filters: it filters by q,
+  // assignee and labels, and counts the matches, or answers total[phase] if
+  // set. It refuses the label "bad".
   function serveFiltered(tasks: Task[], total: Partial<Record<Phase, number>> = {}) {
     urls = [];
     vi.stubGlobal("fetch", (url: string) => {
@@ -163,8 +172,9 @@ describe("Board", () => {
       urls.push(p);
       const q = p.get("q") ?? "";
       if (q.length > 200) return json({ error: { code: "invalid", message: `q is ${q.length} characters: at most 200` } }, 400);
+      if (p.getAll("label").includes("bad")) return json({ error: { code: "invalid", message: "label bad is refused" } }, 400);
       const phase = p.get("phase") as Phase;
-      const items = tasks.filter((t) => t.status?.phase === phase && matches(t, q, p.get("assignee") ?? ""));
+      const items = tasks.filter((t) => t.status?.phase === phase && matches(t, q, p.get("assignee") ?? "", p.getAll("label")));
       return json({ items, offset: 0, limit: 50, total: total[phase] ?? items.length });
     });
   }
@@ -718,5 +728,132 @@ describe("Board", () => {
     await act(async () => go());
     expect(await screen.findByText("Title of a")).toBeTruthy();
     expect(screen.queryByText(/Could not/)).toBeNull();
+  });
+
+  describe("labels", () => {
+    const labelled = (name: string, phase: Phase, ...labels: string[]) => task(name, phase, { labels });
+    const card = (name: string) => screen.getByRole("link", { name: `Title of ${name}` }).closest("article")!;
+
+    it("sends the URL's labels, each once and none empty, on every phase's read with the search and assignee", async () => {
+      serveFiltered([
+        task("fix-a", "Todo", { labels: ["ops", "db"], assignee: { kind: "Agent", name: "bot-1" } }),
+        task("fix-b", "Todo", { labels: ["ops"], assignee: { kind: "Agent", name: "bot-1" } }),
+      ]);
+      renderPage("/t/team-a?label=ops&label=&label=ops&label=db&q=fix&assignee=bot-1&view=list");
+      const list = await screen.findByRole("region", { name: "Tasks" });
+      expect(within(list).getAllByRole("link").map((l) => l.textContent)).toEqual(["Title of fix-a"]);
+      expect(new Set(urls.map((u) => u.get("phase")))).toEqual(new Set(phases));
+      expect(new Set(urls.map((u) => `${u.getAll("label").join(",")}/${u.get("q")}/${u.get("assignee")}`))).toEqual(new Set(["ops,db/fix/bot-1"]));
+      const chips = within(screen.getByRole("group", { name: "Labels" })).getAllByRole("button", { name: /^Remove label / });
+      expect(chips.map((c) => c.textContent)).toEqual(["ops", "db"]);
+      expect(screen.getByText("1 task matches")).toBeTruthy();
+    });
+
+    it("adds a card's label to the URL once, and reads every column from its first page, showing the skeleton until then", async () => {
+      serveFiltered([labelled("a", "Todo", "ops", "db"), labelled("b", "Done", "ops"), task("c", "Todo")], { Done: 40 });
+      const served = globalThis.fetch;
+      let go: () => void = () => {};
+      const held = new Promise<void>((r) => (go = r));
+      const asked: URLSearchParams[] = [];
+      vi.stubGlobal("fetch", async (url: string) => {
+        const p = new URL(url, "http://cadre.test").searchParams;
+        if (p.has("label")) {
+          asked.push(p);
+          await held;
+        }
+        return served(url);
+      });
+      renderPage();
+      await screen.findByText("Title of c");
+      fireEvent.click(within(card("a")).getByRole("button", { name: "Filter by label ops" }));
+      expect(query()).toBe("?label=ops");
+      await vi.waitFor(() => expect(asked).toHaveLength(7));
+      expect(asked.map((u) => `${u.get("phase")}@${u.get("offset")}`).sort()).toEqual(phases.map((ph) => `${ph}@0`).sort());
+      expect(screen.getByText("Loading the board")).toBeTruthy();
+      expect(screen.queryByText("Title of c")).toBeNull();
+      await act(async () => go());
+      expect(await screen.findByText("Title of b")).toBeTruthy();
+      expect(screen.queryByText("Title of c")).toBeNull();
+      expect(screen.getByRole("region", { name: "Done" }).querySelector(".count-pill")!.textContent).toBe("40");
+      expect(screen.getByText("41 tasks match")).toBeTruthy();
+      // A label already in the filter is not added again.
+      const ops = within(card("b")).getByRole("button", { name: "Filter by label ops" }) as HTMLButtonElement;
+      expect(ops.disabled).toBe(true);
+      expect(ops.getAttribute("aria-pressed")).toBe("true");
+      fireEvent.click(ops);
+      expect(query()).toBe("?label=ops");
+      fireEvent.click(within(card("a")).getByRole("button", { name: "Filter by label db" }));
+      expect(query()).toBe("?label=ops&label=db");
+      expect(await screen.findByText("Title of a")).toBeTruthy();
+      expect(screen.queryByText("Title of b")).toBeNull();
+    });
+
+    it("removes a label with its chip and all of them with Clear labels, reading again", async () => {
+      serveFiltered([labelled("a", "Todo", "ops", "db"), labelled("b", "Todo", "db"), task("c", "Todo")]);
+      renderPage("/t/team-a?label=ops&label=db&phase=Todo");
+      await screen.findByText("Title of a");
+      expect(screen.queryByText("Title of b")).toBeNull();
+      fireEvent.click(screen.getByRole("button", { name: "Remove label ops" }));
+      expect(query()).toBe("?phase=Todo&label=db");
+      expect(await screen.findByText("Title of b")).toBeTruthy();
+      expect(urls.at(-1)!.getAll("label")).toEqual(["db"]);
+      expect(screen.queryByText("Title of c")).toBeNull();
+      fireEvent.click(screen.getByRole("button", { name: "Clear labels" }));
+      expect(query()).toBe("?phase=Todo");
+      expect(await screen.findByText("Title of c")).toBeTruthy();
+      expect(urls.at(-1)!.has("label")).toBe(false);
+      expect(screen.queryByRole("group", { name: "Labels" })).toBeNull();
+    });
+
+    it("sends at most ten labels, and says so instead of adding an eleventh", async () => {
+      const ten = Array.from({ length: 10 }, (_, i) => `l${i}`);
+      serveFiltered([labelled("a", "Todo", ...ten, "more")]);
+      renderPage(`/t/team-a?${[...ten, "l10"].map((l) => `label=${l}`).join("&")}`);
+      await screen.findByText("Title of a");
+      expect(new Set(urls.map((u) => u.getAll("label").join(",")))).toEqual(new Set([ten.join(",")]));
+      expect(screen.getByText("At most 10 labels")).toBeTruthy();
+      expect(screen.getAllByRole("button", { name: /^Remove label / })).toHaveLength(10);
+      const more = within(card("a")).getByRole("button", { name: "Filter by label more" }) as HTMLButtonElement;
+      expect(more.disabled).toBe(true);
+      fireEvent.click(more);
+      expect(new URLSearchParams(query() ?? "").getAll("label")).toEqual([...ten, "l10"]);
+      fireEvent.click(screen.getByRole("button", { name: "Remove label l0" }));
+      await vi.waitFor(() => expect(screen.queryByText("At most 10 labels")).toBeNull());
+      fireEvent.click(screen.getByRole("button", { name: "Clear labels" }));
+      expect(query()).toBe("");
+    });
+
+    it("says why the server refused a label, until the label is removed", async () => {
+      serveFiltered([labelled("a", "Todo", "ops")]);
+      renderPage("/t/team-a?label=ops&label=bad");
+      expect(await screen.findByText("Could not filter the board: label bad is refused")).toBeTruthy();
+      expect(screen.queryByRole("region", { name: "Todo" })).toBeNull();
+      fireEvent.click(screen.getByRole("button", { name: "Remove label bad" }));
+      expect(await screen.findByText("Title of a")).toBeTruthy();
+      expect(screen.queryByText(/Could not filter/)).toBeNull();
+    });
+
+    it("filters the loaded pages by the labels on a server without the filters", async () => {
+      serve([labelled("a", "Todo", "ops", "db"), labelled("b", "Todo", "ops"), labelled("c", "Done", "db", "ops")])();
+      renderPage("/t/team-a?label=ops&label=db");
+      await screen.findByText("Title of a");
+      expect(screen.getByText("Title of c")).toBeTruthy();
+      expect(screen.queryByText("Title of b")).toBeNull();
+      expect(screen.getByText("2 of 3 loaded tasks shown")).toBeTruthy();
+    });
+
+    it("shows each entry's labels on Back and Forward", async () => {
+      serveFiltered([labelled("a", "Todo", "ops"), task("b", "Todo")]);
+      renderPage("/t/team-a?label=ops", "/t/team-a");
+      await screen.findByText("Title of b");
+      expect(screen.queryByRole("group", { name: "Labels" })).toBeNull();
+      act(() => navigate(-1));
+      expect(screen.getByRole("button", { name: "Remove label ops" })).toBeTruthy();
+      expect(await screen.findByText("Title of a")).toBeTruthy();
+      expect(screen.queryByText("Title of b")).toBeNull();
+      act(() => navigate(1));
+      expect(screen.queryByRole("group", { name: "Labels" })).toBeNull();
+      expect(await screen.findByText("Title of b")).toBeTruthy();
+    });
   });
 });

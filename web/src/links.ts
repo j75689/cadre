@@ -4,7 +4,7 @@ import { NavigationType, useNavigationType, useSearchParams } from "react-router
 // The UI's URLs: the team's pages and the query parameters they read, so a
 // link built on one page is the one another page understands.
 
-export const params = { q: "q", phase: "phase", assignee: "assignee", view: "view", sort: "sort", run: "run" } as const;
+export const params = { q: "q", phase: "phase", assignee: "assignee", label: "label", view: "view", sort: "sort", run: "run" } as const;
 
 export const teamPath = (ns: string) => `/t/${encodeURIComponent(ns)}`;
 
@@ -82,6 +82,28 @@ export function useParam(key: string): [string, (value: string) => void] {
     [key, setSearch],
   );
   return [search.get(key) ?? "", set];
+}
+
+// useParamList is a parameter given any number of times, as useParam is
+// one: setting the values replaces them all, and none deletes it.
+export function useParamList(key: string): [string[], (values: string[]) => void] {
+  const [search, setSearch] = useSearchParams();
+  const set = useCallback(
+    (values: string[]) =>
+      setSearch(
+        (prev) => {
+          const next = new URLSearchParams(pending ?? prev);
+          next.delete(key);
+          for (const v of values) next.append(key, v);
+          if (!pending) queueMicrotask(() => (pending = undefined));
+          pending = next;
+          return next;
+        },
+        { replace: true },
+      ),
+    [key, setSearch],
+  );
+  return [search.getAll(key), set];
 }
 
 // useTextParam is useParam for a text box: the parameter, its setter, and
