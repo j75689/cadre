@@ -4,7 +4,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { activityPage } from "./Activity";
 import { App } from "./App";
 import type { Activity, Me } from "./api";
-import { json, team } from "./testing";
+import { FakeEventSource, fakeTabs, json, team } from "./testing";
 
 afterEach(() => {
   cleanup();
@@ -126,6 +126,28 @@ describe("Activity", () => {
       expect(reads.map((u) => new URL(u, "http://x").searchParams.get("offset"))).toEqual(["0", "0", String(activityPage), "0"]);
     } finally {
       cleanup();
+      vi.useRealTimers();
+    }
+  });
+
+  it("reads again every 15 seconds while the stream is live, as an AgentAccess change sends no hint", async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    fakeTabs();
+    try {
+      const reads = open("/t/a/settings/activity", admin, page([]), page([]), page([item("TokenRotated", "AgentAccess", "ci-bot")]));
+      await vi.waitFor(() => expect(reads).toHaveLength(1));
+      await act(() => vi.advanceTimersByTimeAsync(0));
+      act(() => FakeEventSource.open()[0].emit("hello", { tasks: true, config: true, runs: false, lifetimeSeconds: 300 }));
+      // The hello reads again at once; no hint follows.
+      await vi.waitFor(() => expect(reads).toHaveLength(2));
+      await act(() => vi.advanceTimersByTimeAsync(14000));
+      expect(reads).toHaveLength(2);
+      await act(() => vi.advanceTimersByTimeAsync(1000));
+      expect(await screen.findByText("TokenRotated")).toBeTruthy();
+      expect(FakeEventSource.open()).toHaveLength(1);
+    } finally {
+      cleanup();
+      await vi.advanceTimersByTimeAsync(0);
       vi.useRealTimers();
     }
   });

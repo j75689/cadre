@@ -37,7 +37,8 @@ const pages: Record<string, (ns: string, name: string) => string> = {
 // Activity is the team's recent activity, newest first, a page at a time:
 // the Events about cadre's objects, which the server serves its admins
 // only. They are read again on any configuration change, as no hint names
-// an Event.
+// an Event, and every pollMs even while live, as an AgentAccess change
+// sends no hint.
 export function Activity() {
   const { ns = "" } = useParams();
   const name = useTeamName(ns);
@@ -68,7 +69,7 @@ export function Activity() {
     },
     pollMs,
     [ns, shown, retry],
-    { ns, topic: "config", match: (h) => h.event === "config" },
+    { ns, topic: "config", match: (h) => h.event === "config", steady: true },
   );
   return (
     <main id="main" className="page settings-page">
