@@ -129,6 +129,8 @@ func listFilters(t *testing.T, store storage.Driver, settle func(*manager.Manage
 		// #number, never the description.
 		{"q=login", "login-bug shout", 2},
 		{"q=%20%20Coder%20", "login-bug docs coder-guide", 3},
+
+		{"q=%09hires%0A", "coder-guide", 1},
 		{"q=%233", "docs", 1},
 		{"q=AUTH", "login-bug signup", 2},
 		{"q=hires", "coder-guide", 1},
@@ -155,12 +157,23 @@ func listFilters(t *testing.T, store storage.Driver, settle func(*manager.Manage
 		if err != nil {
 			t.Fatal(err)
 		}
-		var list api.TaskList
-		err = json.NewDecoder(res.Body).Decode(&list)
+		body, err := io.ReadAll(res.Body)
 		_ = res.Body.Close()
+		var list api.TaskList
+		var keys map[string]json.RawMessage
+		if err == nil {
+			err = json.Unmarshal(body, &list)
+		}
+		if err == nil {
+			err = json.Unmarshal(body, &keys)
+		}
 		if err != nil || res.StatusCode != http.StatusOK {
 			t.Errorf("%s: %d, %v", tc.query, res.StatusCode, err)
 			continue
+		}
+		// A total of 0 is said, not left out.
+		if _, ok := keys["total"]; !ok {
+			t.Errorf("%s: no total in %s", tc.query, body)
 		}
 		var got []string
 		for _, tk := range list.Items {

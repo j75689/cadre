@@ -220,7 +220,7 @@ func TestListSubtasks(t *testing.T) {
 	if _, err := c.CancelTask(ctx, ns, "step-2"); err != nil {
 		t.Fatal(err)
 	}
-	names := func(q client.TaskQuery) []string {
+	names := func(q client.TaskQuery) ([]string, int) {
 		t.Helper()
 		list, err := c.ListTasks(ctx, ns, q)
 		if err != nil {
@@ -230,19 +230,20 @@ func TestListSubtasks(t *testing.T) {
 		for _, tk := range list.Items {
 			out = append(out, tk.Name)
 		}
-		return out
+		return out, list.Total
 	}
 	for _, tc := range []struct {
-		q    client.TaskQuery
-		want string
+		q     client.TaskQuery
+		want  string
+		total int
 	}{
-		{client.TaskQuery{Parent: "epic"}, "step-1 step-2 step-3"},
-		{client.TaskQuery{Parent: "epic", Phases: []v1alpha1.Phase{v1alpha1.PhaseCancelled}}, "step-2"},
-		{client.TaskQuery{Parent: "epic", Offset: 1, Limit: 1}, "step-2"},
-		{client.TaskQuery{Parent: "step-1"}, ""},
+		{client.TaskQuery{Parent: "epic"}, "step-1 step-2 step-3", 3},
+		{client.TaskQuery{Parent: "epic", Phases: []v1alpha1.Phase{v1alpha1.PhaseCancelled}}, "step-2", 1},
+		{client.TaskQuery{Parent: "epic", Offset: 1, Limit: 1}, "step-2", 3},
+		{client.TaskQuery{Parent: "step-1"}, "", 0},
 	} {
-		if got := strings.Join(names(tc.q), " "); got != tc.want {
-			t.Errorf("%+v: got %q, want %q", tc.q, got, tc.want)
+		if got, total := names(tc.q); strings.Join(got, " ") != tc.want || total != tc.total {
+			t.Errorf("%+v: got %q, total %d; want %q, total %d", tc.q, got, total, tc.want, tc.total)
 		}
 	}
 }
@@ -261,22 +262,23 @@ func TestListByNumber(t *testing.T) {
 		}
 	}
 	for _, tc := range []struct {
-		q    client.TaskQuery
-		want string
+		q     client.TaskQuery
+		want  string
+		total int
 	}{
-		{client.TaskQuery{Number: 2}, "second"},
-		{client.TaskQuery{Number: 2, Phases: []v1alpha1.Phase{v1alpha1.PhaseTodo}}, "second"},
-		{client.TaskQuery{Number: 2, Phases: []v1alpha1.Phase{v1alpha1.PhaseDone}}, ""},
-		{client.TaskQuery{Number: 2, Offset: 1}, ""},
-		{client.TaskQuery{Number: 3}, ""},
+		{client.TaskQuery{Number: 2}, "second", 1},
+		{client.TaskQuery{Number: 2, Phases: []v1alpha1.Phase{v1alpha1.PhaseTodo}}, "second", 1},
+		{client.TaskQuery{Number: 2, Phases: []v1alpha1.Phase{v1alpha1.PhaseDone}}, "", 0},
+		{client.TaskQuery{Number: 2, Offset: 1}, "", 1},
+		{client.TaskQuery{Number: 3}, "", 0},
 	} {
 		list, err := c.ListTasks(ctx, ns, tc.q)
 		var got []string
 		for _, tk := range list.Items {
 			got = append(got, tk.Name)
 		}
-		if err != nil || strings.Join(got, " ") != tc.want || list.Items == nil {
-			t.Errorf("%+v: %q, %v; want %q", tc.q, got, err, tc.want)
+		if err != nil || strings.Join(got, " ") != tc.want || list.Items == nil || list.Total != tc.total {
+			t.Errorf("%+v: %q, total %d, %v; want %q, total %d", tc.q, got, list.Total, err, tc.want, tc.total)
 		}
 	}
 	for _, q := range []string{"number=0", "number=-1", "number=two", "number=1&number=2"} {
