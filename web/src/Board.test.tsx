@@ -833,6 +833,16 @@ describe("Board", () => {
       await vi.waitFor(() => expect(focused()).toBe("board-search"));
     });
 
+    it("offers no pill for an empty label", async () => {
+      serveFiltered([labelled("a", "Todo", "", "sp")]);
+      renderPage();
+      await screen.findByText("Title of a");
+      const pills = within(card("a")).getAllByRole("button", { name: /^Filter by label/ });
+      expect(pills.map((p) => p.getAttribute("aria-label"))).toEqual(["Filter by label sp"]);
+      fireEvent.click(pills[0]);
+      expect(query()).toBe("?label=sp");
+    });
+
     it("sends at most ten labels, and says so instead of adding an eleventh", async () => {
       const ten = Array.from({ length: 10 }, (_, i) => `l${i}`);
       serveFiltered([labelled("a", "Todo", ...ten, "more")]);

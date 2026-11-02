@@ -421,12 +421,13 @@ function Card({ ns, task, labels, onLabel }: { ns: string; task: Task; labels: s
 }
 
 // LabelButtons are a card's labels, each a button that adds it to the
-// filter: not one already in it, nor one past maxLabels.
+// filter: not one already in it, nor one past maxLabels. An empty label,
+// which the board never filters by, gets none.
 function LabelButtons({ labels, active, onLabel }: { labels: string[]; active: string[]; onLabel: (label: string) => void }) {
   const full = active.length >= maxLabels;
   return (
     <span className="pills">
-      {labels.map((l) => (
+      {labels.filter(Boolean).map((l) => (
         <button
           type="button"
           className="pill label-button"
