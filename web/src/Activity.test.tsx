@@ -140,6 +140,17 @@ describe("Activity", () => {
     expect(screen.getAllByRole("row")).toHaveLength(activityPage + 2);
   });
 
+  it("shows placeholders until the first read comes back", async () => {
+    let answer: (r: Response) => void = () => {};
+    open("/t/a/settings/activity", admin, () => new Promise((r) => (answer = r)));
+    expect(await screen.findByText("Loading the activity")).toBeTruthy();
+    expect(document.querySelectorAll('[aria-busy="true"] .skeleton')).toHaveLength(3);
+    answer(new Response(JSON.stringify({ items: [item("TeamUpdated", "Team", "team")], offset: 0, limit: activityPage })));
+    expect(await screen.findByText("TeamUpdated")).toBeTruthy();
+    expect(screen.queryByText("Loading the activity")).toBeNull();
+    expect(document.querySelector('[aria-busy="true"]')).toBeNull();
+  });
+
   it("reads again every 15 seconds while the stream is live, as an AgentAccess change sends no hint", async () => {
     vi.useFakeTimers({ shouldAdvanceTime: true });
     fakeTabs();
