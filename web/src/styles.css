@@ -1939,6 +1939,18 @@ main.board {
   min-width: 7rem;
 }
 
+/* A long name with no hyphen (or with dots) breaks anywhere, in the note
+   too; the min-width keeps auto layout from shrinking the cell to a char. */
+
+.activity-table .table-text,
+.activity-table .activity-name {
+  overflow-wrap: anywhere;
+}
+
+.activity-table .activity-name {
+  min-width: 8rem;
+}
+
 .table-loading {
   display: grid;
   gap: var(--space-3);
