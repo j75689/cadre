@@ -113,6 +113,23 @@ describe("Activity", () => {
     expect(reads.map((u) => new URL(u, "http://x").searchParams.get("offset"))).toEqual(["0", "0", String(activityPage)]);
   });
 
+  it("reads no further than a short page when it reads the shown pages again", async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    try {
+      const full = Array.from({ length: activityPage }, (_, i) => item(`R${i}`, "Agent", `a${i}`));
+      const reads = open("/t/a/settings/activity", admin, page(full), page(full), page([item("Last", "Agent", "z")], activityPage), page([item("Only", "Agent", "o")]));
+      fireEvent.click(await screen.findByRole("button", { name: "Load more" }));
+      expect(await screen.findByText("Last")).toBeTruthy();
+      // The events older than an hour are gone: the first page is short now.
+      await act(() => vi.advanceTimersByTimeAsync(15000));
+      expect(await screen.findByText("Only")).toBeTruthy();
+      expect(reads.map((u) => new URL(u, "http://x").searchParams.get("offset"))).toEqual(["0", "0", String(activityPage), "0"]);
+    } finally {
+      cleanup();
+      vi.useRealTimers();
+    }
+  });
+
   it("reads again every 15 seconds", async () => {
     vi.useFakeTimers({ shouldAdvanceTime: true });
     try {
