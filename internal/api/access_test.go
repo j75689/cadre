@@ -11,11 +11,16 @@ import (
 	"slices"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
+	"time"
+
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
 	v1alpha1 "github.com/j75689/cadre/api/v1alpha1"
 	"github.com/j75689/cadre/internal/api"
 	"github.com/j75689/cadre/internal/authz"
+	"github.com/j75689/cadre/internal/httpjson"
 	"github.com/j75689/cadre/internal/manager"
 	"github.com/j75689/cadre/internal/storage"
 	"github.com/j75689/cadre/internal/storage/memory"
@@ -111,13 +116,25 @@ func (f *fakeAccesses) RotateAgentAccessToken(_ context.Context, ns, name, by st
 	return mintedToken, nil
 }
 
-func (f *fakeAccesses) DeleteAgentAccess(_ context.Context, ns, name string) error {
+// DeleteAgentAccess deletes aa as the cluster does: conditionally on its
+// uid and version, and one held by a finalizer is kept, being deleted.
+func (f *fakeAccesses) DeleteAgentAccess(_ context.Context, aa *v1alpha1.AgentAccess) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	if _, ok := f.objs[ns+"/"+name]; !ok {
+	cur, ok := f.objs[aa.Namespace+"/"+aa.Name]
+	switch {
+	case !ok:
 		return storage.ErrNotFound
+	case cur.UID != aa.UID || cur.ResourceVersion != aa.ResourceVersion:
+		return storage.ErrConflict
+	case len(cur.Finalizers) > 0:
+		if cur.DeletionTimestamp == nil {
+			f.rv++
+			cur.ResourceVersion, cur.DeletionTimestamp = fmt.Sprint(f.rv), &metav1.Time{Time: time.Now()}
+		}
+		return nil
 	}
-	delete(f.objs, ns+"/"+name)
+	delete(f.objs, aa.Namespace+"/"+aa.Name)
 	return nil
 }
 
@@ -204,6 +221,69 @@ func TestAgentAccessRoutes(t *testing.T) {
 	_ = res.Body.Close()
 	if got := res.Header.Get("Cache-Control"); res.StatusCode != 200 || got != "no-store" {
 		t.Errorf("a rotate's answer: %d, Cache-Control %q; want 200, no-store", res.StatusCode, got)
+	}
+}
+
+// conflicting is an AgentAccessStore answering its first deletes with
+// conflict(n) instead of making them.
+type conflicting struct {
+	api.AgentAccessStore
+	deletes  atomic.Int32
+	conflict func(n int32) error
+}
+
+func (c *conflicting) DeleteAgentAccess(ctx context.Context, aa *v1alpha1.AgentAccess) error {
+	if err := c.conflict(c.deletes.Add(1)); err != nil {
+		return err
+	}
+	return c.AgentAccessStore.DeleteAgentAccess(ctx, aa)
+}
+
+// A delete that conflicts reads the AgentAccess again: one deleted
+// meanwhile is answered 404, and one written each time is tried three
+// times, then answered 409 conflict. Neither deleted it, so neither is told.
+func TestDeleteOfAnAccessConflicting(t *testing.T) {
+	for _, c := range []struct {
+		name     string
+		conflict func(store *fakeAccesses, n int32) error
+		code     int
+		says     httpjson.ErrorBody
+		deletes  int32
+		kept     bool
+	}{
+		{"deleted meanwhile", func(store *fakeAccesses, n int32) error {
+			if n > 1 {
+				return nil
+			}
+			store.mu.Lock()
+			delete(store.objs, "team-a/bot")
+			store.mu.Unlock()
+			return storage.ErrConflict
+		}, 404, httpjson.ErrorBody{Code: "not_found", Message: "not found"}, 1, false},
+		{"written three times in a row", func(_ *fakeAccesses, n int32) error {
+			if n > 3 {
+				return nil
+			}
+			return storage.ErrConflict
+		}, 409, httpjson.ErrorBody{Code: "conflict", Message: "AgentAccess bot changed since it was read: read it again, and edit that"}, 3, true},
+	} {
+		store := &fakeAccesses{objs: map[string]*v1alpha1.AgentAccess{}, rv: 1}
+		store.objs["team-a/bot"] = &v1alpha1.AgentAccess{ObjectMeta: metav1.ObjectMeta{Namespace: "team-a", Name: "bot", UID: "u1", ResourceVersion: "1"},
+			Spec: v1alpha1.AgentAccessSpec{Role: "member"}}
+		hook := &conflicting{AgentAccessStore: store, conflict: func(n int32) error { return c.conflict(store, n) }}
+		rec := newRecorder(t)
+		e := startRolesWith(t, memory.NewBackend().Open(), nil, &authz.Policy{AdminUsers: []string{"lead@example.test"}, FoldUsernames: true},
+			api.WithAgentAccesses(hook), api.WithEvents(rec))
+		code, out := e.do(e.as("lead@example.test"), "DELETE", "/namespaces/team-a/agentaccesses/bot", "")
+		var says httpjson.ErrorResponse
+		if err := json.Unmarshal([]byte(out), &says); err != nil || code != c.code || says.Error != c.says ||
+			hook.deletes.Load() != c.deletes || (store.objs["team-a/bot"] != nil) != c.kept {
+			t.Errorf("%s: %d %s after %d deletes, kept %v; want %d %+v after %d, kept %v",
+				c.name, code, out, hook.deletes.Load(), store.objs["team-a/bot"] != nil, c.code, c.says, c.deletes, c.kept)
+		}
+		if got := rec.take(); len(got) != 0 {
+			t.Errorf("%s: Events %v, want none", c.name, got)
+		}
 	}
 }
 

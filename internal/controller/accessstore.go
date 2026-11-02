@@ -10,7 +10,6 @@ import (
 
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
-	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/util/wait"
 	"k8s.io/client-go/tools/events"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -80,8 +79,8 @@ func (s accessStore) UpdateAgentAccess(ctx context.Context, aa *v1alpha1.AgentAc
 	return storeError("update", aa.Name, s.c.Update(ctx, aa))
 }
 
-func (s accessStore) DeleteAgentAccess(ctx context.Context, ns, name string) error {
-	return storeError("delete", name, s.c.Delete(ctx, &v1alpha1.AgentAccess{ObjectMeta: metav1.ObjectMeta{Namespace: ns, Name: name}}))
+func (s accessStore) DeleteAgentAccess(ctx context.Context, aa *v1alpha1.AgentAccess) error {
+	return storeError("delete", aa.Name, s.c.Delete(ctx, aa, client.Preconditions{UID: &aa.UID, ResourceVersion: &aa.ResourceVersion}))
 }
 
 // RotateAgentAccessToken rotates the token, then waits, cacheWait at most,
