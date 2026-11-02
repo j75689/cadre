@@ -392,6 +392,36 @@ describe("Board", () => {
     expect(screen.queryByText(/Could not filter/)).toBeNull();
   });
 
+  it("shows the skeleton, not the last filter's cards, until a new filter's read is back", async () => {
+    serveFiltered([task("b", "Todo", { assignee: { kind: "User", name: "dana" } }), task("c", "Todo", { assignee: { kind: "User", name: "carol" } })]);
+    const served = globalThis.fetch;
+    let go: () => void = () => {};
+    const held = new Promise<void>((r) => (go = r));
+    let asked = false;
+    vi.stubGlobal("fetch", async (url: string) => {
+      if (url.includes("assignee=carol")) {
+        asked = true;
+        await held;
+      }
+      return served(url);
+    });
+    renderPage();
+    await screen.findByText("Title of c");
+    fireEvent.change(select("Assignee"), { target: { value: "dana" } });
+    expect(await screen.findByText("1 task matches")).toBeTruthy();
+    expect(screen.queryByText("Title of c")).toBeNull();
+    fireEvent.change(select("Assignee"), { target: { value: "carol" } });
+    await vi.waitFor(() => expect(asked).toBe(true));
+    expect(query()).toBe("?assignee=carol");
+    expect(screen.getByText("Loading the board")).toBeTruthy();
+    expect(screen.queryByText("Title of b")).toBeNull();
+    expect(screen.queryByRole("region", { name: "Todo" })).toBeNull();
+    expect(screen.queryByText(/match/)).toBeNull();
+    await act(async () => go());
+    expect(await screen.findByText("Title of c")).toBeTruthy();
+    expect(screen.getByText("1 task matches")).toBeTruthy();
+  });
+
   it("keeps the search in the URL in place of the history entry", async () => {
     serve([task("a", "Todo", { labels: ["ops"] }), task("b", "Todo")])();
     renderPage("/t/team-a?phase=Done", "/t/team-a");

@@ -79,7 +79,8 @@ export function Board() {
   const role = useRole(ns);
   const { mode } = useIdentityDetails();
   const name = useTeamName(ns);
-  const [columns, setColumns] = useState<Column[] | null>(null);
+  // last is the last read's columns, and the filters it was read with.
+  const [last, setLast] = useState<{ filter: string; columns: Column[] } | null>(null);
   const [pages, setPages] = useState<Record<string, number>>({});
   const [error, setError] = useState("");
   // refused is why the server refused the filters, such as a search too long.
@@ -96,6 +97,9 @@ export function Board() {
     setPaged(filter);
     setPages({});
   }
+  // Until a new filter's read is back, the board shows none of the columns
+  // of the filter before it.
+  const columns = last?.filter === filter ? last.columns : null;
   // seen are the assignees read on this team's board, as the select's
   // options: a read filtered to one assignee holds no other.
   const [seen, setSeen] = useState({ ns, names: [] as string[] });
@@ -118,7 +122,7 @@ export function Board() {
         const next = await Promise.all(
           read.map((ph) => loadColumn(ns, ph, pages[ph] ?? 1, { q, assignee }, signal).then((c) => (arrived.push(ph), c))),
         );
-        setColumns(latest(next, arrived));
+        setLast({ filter, columns: latest(next, arrived) });
         const names = next.flatMap((c) => c.tasks.map((t) => t.spec.assignee?.name ?? ""));
         setSeen((s) => ({ ns, names: [...new Set([...(s.ns === ns ? s.names : []), ...names])] }));
         setUpdated(new Date());
