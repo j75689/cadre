@@ -106,11 +106,14 @@ func (c *Client) CreateTask(ctx context.Context, ns, name string, spec v1alpha1.
 
 // TaskQuery selects a page of the board; the zero value is its first page.
 type TaskQuery struct {
-	Phases []v1alpha1.Phase // any of these; empty means all
-	Parent string           // subtasks of this task only
-	Number int64            // the task with this number only; zero means any
-	Offset int
-	Limit  int // zero means the server's default
+	Phases   []v1alpha1.Phase // any of these; empty means all
+	Parent   string           // subtasks of this task only
+	Number   int64            // the task with this number only; zero means any
+	Assignee string           // tasks assigned to this name only, of either kind
+	Labels   []string         // tasks with every one of these labels only
+	Text     string           // tasks whose title, name, assignee, a label or #number contain it, in any case
+	Offset   int
+	Limit    int // zero means the server's default
 }
 
 // ListTasks lists a page of the board.
@@ -126,6 +129,15 @@ func (c *Client) ListTasks(ctx context.Context, ns string, tq TaskQuery) (*api.T
 		// A negative one too, which the server refuses, rather than
 		// listing the whole board.
 		q.Set("number", strconv.FormatInt(tq.Number, 10))
+	}
+	if tq.Assignee != "" {
+		q.Set("assignee", tq.Assignee)
+	}
+	for _, l := range tq.Labels {
+		q.Add("label", l)
+	}
+	if tq.Text != "" {
+		q.Set("q", tq.Text)
 	}
 	if tq.Offset > 0 {
 		q.Set("offset", strconv.Itoa(tq.Offset))

@@ -10,6 +10,7 @@ import (
 	"slices"
 	"strconv"
 	"strings"
+	"unicode/utf8"
 
 	"k8s.io/apimachinery/pkg/api/meta"
 	"k8s.io/apimachinery/pkg/util/validation"
@@ -237,7 +238,7 @@ func (s *Server) listTasks(w http.ResponseWriter, r *http.Request) {
 		httpjson.WriteError(w, http.StatusBadRequest, httpjson.CodeInvalid, err.Error())
 		return
 	}
-	for _, name := range []string{"parent", "number", "offset", "limit"} {
+	for _, name := range []string{"parent", "number", "assignee", "q", "offset", "limit"} {
 		if n := len(query[name]); n > 1 {
 			httpjson.WriteError(w, http.StatusBadRequest, httpjson.CodeInvalid, fmt.Sprintf("%s given %d times: at most once", name, n))
 			return
@@ -246,6 +247,21 @@ func (s *Server) listTasks(w http.ResponseWriter, r *http.Request) {
 	q.Parent = query.Get("parent")
 	if err := ValidateParent(q.Parent); err != nil {
 		httpjson.WriteError(w, http.StatusBadRequest, httpjson.CodeInvalid, err.Error())
+		return
+	}
+	q.Assignee = query.Get("assignee")
+	q.Labels = query["label"]
+	if n := len(q.Labels); n > MaxLabels {
+		httpjson.WriteError(w, http.StatusBadRequest, httpjson.CodeInvalid, fmt.Sprintf("label given %d times: at most %d", n, MaxLabels))
+		return
+	}
+	if slices.Contains(q.Labels, "") {
+		httpjson.WriteError(w, http.StatusBadRequest, httpjson.CodeInvalid, "label must not be empty")
+		return
+	}
+	q.Text = strings.TrimSpace(query.Get("q"))
+	if n := utf8.RuneCountInString(q.Text); n > MaxTextRunes {
+		httpjson.WriteError(w, http.StatusBadRequest, httpjson.CodeInvalid, fmt.Sprintf("q is %d characters: at most %d", n, MaxTextRunes))
 		return
 	}
 	var ok bool
@@ -265,7 +281,7 @@ func (s *Server) listTasks(w http.ResponseWriter, r *http.Request) {
 	}
 	// The response says which limit applied.
 	q.Limit = ClampLimit(q.Limit)
-	items, err := s.tasks(r.Context(), q)
+	items, total, err := s.tasks(r.Context(), q)
 	switch {
 	case err != nil && r.Context().Err() != nil:
 		return // the caller went away during a lookup's wait: nobody to answer
@@ -276,26 +292,32 @@ func (s *Server) listTasks(w http.ResponseWriter, r *http.Request) {
 	if items == nil {
 		items = []v1alpha1.Task{}
 	}
-	httpjson.Write(w, http.StatusOK, TaskList{Items: items, Offset: q.Offset, Limit: q.Limit})
+	httpjson.Write(w, http.StatusOK, TaskList{Items: items, Offset: q.Offset, Limit: q.Limit, Total: total})
 }
 
-// tasks answers a list query. One by number is the task the Task Manager
-// finds by it, which allows for the index's lag, with the query's other
-// filters and its page applied: zero tasks or one.
-func (s *Server) tasks(ctx context.Context, q storage.Query) ([]v1alpha1.Task, error) {
+// tasks answers a list query: a page, and how many tasks it selects before
+// paging, counted by the same index. One by number is the task the Task
+// Manager finds by it, which allows for the index's lag, with the query's
+// other filters and its page applied: zero tasks or one.
+func (s *Server) tasks(ctx context.Context, q storage.Query) ([]v1alpha1.Task, int, error) {
 	if q.Number == 0 {
-		return s.m.ListTasks(ctx, q)
+		items, err := s.m.ListTasks(ctx, q)
+		if err != nil {
+			return nil, 0, err
+		}
+		total, err := s.m.CountTasks(ctx, q)
+		return items, total, err
 	}
 	t, err := s.m.TaskByNumber(ctx, q.Namespace, q.Number)
 	switch {
 	case errors.Is(err, storage.ErrNotFound):
-		return nil, nil
+		return nil, 0, nil
 	case err != nil:
-		return nil, err
+		return nil, 0, err
 	case !q.Matches(t):
-		return nil, nil
+		return nil, 0, nil
 	}
-	return storage.Page(q, []v1alpha1.Task{*t}), nil
+	return storage.Page(q, []v1alpha1.Task{*t}), 1, nil
 }
 
 // ValidatePhases refuses a phase that is not a Task's, naming the ones

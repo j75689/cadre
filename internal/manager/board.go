@@ -76,6 +76,11 @@ func (m *Manager) ListTasks(ctx context.Context, q storage.Query) ([]v1alpha1.Ta
 	return m.store.ListTasks(ctx, q)
 }
 
+// CountTasks counts the tasks ListTasks selects before its page.
+func (m *Manager) CountTasks(ctx context.Context, q storage.Query) (int, error) {
+	return m.store.CountTasks(ctx, q)
+}
+
 // AuthorKind says who wrote a thread entry.
 type AuthorKind string
 
