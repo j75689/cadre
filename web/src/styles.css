@@ -1940,7 +1940,8 @@ main.board {
 }
 
 /* A long name with no hyphen (or with dots) breaks anywhere, in the note
-   too; the min-width keeps auto layout from shrinking the cell to a char. */
+   too; the min-width keeps auto layout from shrinking the cell to a char,
+   small enough that a 22-char reason (FailedCreatePodSandBox) still fits. */
 
 .activity-table .table-text,
 .activity-table .activity-name {
@@ -1948,7 +1949,7 @@ main.board {
 }
 
 .activity-table .activity-name {
-  min-width: 8rem;
+  min-width: 7rem;
 }
 
 .table-loading {
