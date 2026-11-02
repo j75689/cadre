@@ -272,7 +272,7 @@ A stream is opened with `?task=<name>` for the run in progress of the task page 
 | `run` | The run in progress's events, its own run |
 | `resync`, or a `hello` (a stream opened, reconnected or taken over) | Everything the tab shows from the stream, as hints in between were not seen |
 
-A hint reads 100 ms after it comes, so hints that come together are one read, and a read already under way finishes first and is followed by one more: a change shows within a second. While a page is live it still reads every 60 seconds (or its own interval if longer), as hints may be lost. The Agent access pages and the team list get no hints and poll as before.
+A hint reads 100 ms after it comes, so hints that come together are one read, and a read already under way finishes first and is followed by one more: a change shows within a second. While a page is live it still reads every 60 seconds (or its own interval if longer), as hints may be lost; Activity keeps its 15 s, as an AgentAccess change sends no hint. The Agent access pages and the team list get no hints and poll as before.
 
 A page falls back to its interval (the board, the task page and its subtasks every 5 s, the run in progress every 4 s, the other pages every 15 s) whenever its hints do not come:
 - the stream is refused when opened: `401`, `403`, `404` (a namespace without a Team, or a cadre-server without the route) or `503` (the replica's cap, or a proxy while cadre-server is being replaced). The browser does not retry these; the stream is opened again a minute later, when one of the 2 streams is free;
