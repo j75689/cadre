@@ -28,12 +28,19 @@ const (
 	MaxLimit     = 500 // the most one page returns
 )
 
+// Bounds on a task list's filters.
+const (
+	MaxLabels    = 10  // the most label parameters one list takes
+	MaxTextRunes = 200 // the longest q, trimmed
+)
+
 // TaskList is a page of the board. Offset and Limit are the values that
-// applied.
+// applied; Total is how many tasks the filters select before the page.
 type TaskList struct {
 	Items  []v1alpha1.Task `json:"items"`
 	Offset int             `json:"offset"`
 	Limit  int             `json:"limit"`
+	Total  int             `json:"total"`
 }
 
 // ActivityList is a page of a namespace's recent activity, newest first.
