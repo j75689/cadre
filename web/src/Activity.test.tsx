@@ -130,6 +130,16 @@ describe("Activity", () => {
     }
   });
 
+  it("drops an item a later page repeats, as an Event written between the page reads moves it down", async () => {
+    const full = Array.from({ length: activityPage }, (_, i) => item(`R${i}`, "Agent", `a${i}`));
+    const moved = [full[activityPage - 1], item("Last", "Agent", "z")];
+    open("/t/a/settings/activity", admin, page(full), page(full), page(moved, activityPage));
+    fireEvent.click(await screen.findByRole("button", { name: "Load more" }));
+    expect(await screen.findByText("Last")).toBeTruthy();
+    expect(screen.getAllByText(`R${activityPage - 1}`)).toHaveLength(1);
+    expect(screen.getAllByRole("row")).toHaveLength(activityPage + 2);
+  });
+
   it("reads again every 15 seconds while the stream is live, as an AgentAccess change sends no hint", async () => {
     vi.useFakeTimers({ shouldAdvanceTime: true });
     fakeTabs();

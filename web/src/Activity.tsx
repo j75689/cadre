@@ -53,10 +53,19 @@ export function Activity() {
     async (signal) => {
       try {
         const all: Item[] = [];
+        // seen drops an item a later page repeats: an Event written
+        // between two page reads moves the rest down by one.
+        const seen = new Set<string>();
         let full = false;
         for (let p = 0; p < shown; p++) {
           const res = await listActivity(ns, { offset: p * activityPage, limit: activityPage }, signal);
-          all.push(...res.items);
+          for (const a of res.items) {
+            const key = JSON.stringify(a);
+            if (!seen.has(key)) {
+              seen.add(key);
+              all.push(a);
+            }
+          }
           full = res.items.length >= res.limit;
           if (!full) break;
         }
