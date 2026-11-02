@@ -83,8 +83,9 @@ export function Board() {
   const [last, setLast] = useState<{ filter: string; columns: Column[] } | null>(null);
   const [pages, setPages] = useState<Record<string, number>>({});
   const [error, setError] = useState("");
-  // refused is why the server refused the filters, such as a search too long.
-  const [refused, setRefused] = useState("");
+  // refusal is why the server refused the filters, such as a search too
+  // long, and the filters it refused.
+  const [refusal, setRefusal] = useState({ filter: "", message: "" });
   const [search, setSearch, searchBox] = useTextParam(params.q);
   const [phaseParam, setPhase] = useParam(params.phase);
   const [assignee, setAssignee] = useParam(params.assignee);
@@ -97,9 +98,10 @@ export function Board() {
     setPaged(filter);
     setPages({});
   }
-  // Until a new filter's read is back, the board shows none of the columns
-  // of the filter before it.
+  // Until a new filter's read is back, the board shows neither the columns
+  // nor the refusal of the filter before it.
   const columns = last?.filter === filter ? last.columns : null;
+  const refused = refusal.filter === filter ? refusal.message : "";
   // seen are the assignees read on this team's board, as the select's
   // options: a read filtered to one assignee holds no other.
   const [seen, setSeen] = useState({ ns, names: [] as string[] });
@@ -127,10 +129,10 @@ export function Board() {
         setSeen((s) => ({ ns, names: [...new Set([...(s.ns === ns ? s.names : []), ...names])] }));
         setUpdated(new Date());
         setError("");
-        setRefused("");
+        setRefusal({ filter, message: "" });
       } catch (e) {
         if (signal.aborted) return;
-        if (e instanceof APIError && e.status === 400 && e.code === "invalid") setRefused(e.message);
+        if (e instanceof APIError && e.status === 400 && e.code === "invalid") setRefusal({ filter, message: e.message });
         else setError(String((e as Error).message));
       }
     },

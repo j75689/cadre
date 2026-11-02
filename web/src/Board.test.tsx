@@ -422,6 +422,23 @@ describe("Board", () => {
     expect(screen.getByText("1 task matches")).toBeTruthy();
   });
 
+  it("clears the refusal when the search changes, so a failed read shows the error and retry", async () => {
+    serveFiltered([task("fix-a", "Todo")]);
+    renderPage(`/t/team-a?q=${"x".repeat(201)}`);
+    await screen.findByText("Could not filter the board: q is 201 characters: at most 200");
+    const served = globalThis.fetch;
+    vi.stubGlobal("fetch", async (url: string) => {
+      if (url.includes("/tasks")) throw new TypeError("Failed to fetch");
+      return served(url);
+    });
+    fireEvent.change(screen.getByLabelText("Search the board"), { target: { value: "fix" } });
+    expect(await screen.findByText("Could not load the board: Failed to fetch")).toBeTruthy();
+    expect(screen.queryByText(/Could not filter/)).toBeNull();
+    vi.stubGlobal("fetch", served);
+    fireEvent.click(screen.getByRole("button", { name: "Retry" }));
+    expect(await screen.findByText("Title of fix-a")).toBeTruthy();
+  });
+
   it("keeps the search in the URL in place of the history entry", async () => {
     serve([task("a", "Todo", { labels: ["ops"] }), task("b", "Todo")])();
     renderPage("/t/team-a?phase=Done", "/t/team-a");
