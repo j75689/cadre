@@ -227,6 +227,8 @@ func TestListFiltersRefused(t *testing.T) {
 		{"q=" + long + "e", "q is 201 characters: at most 200"},
 		{"q=" + long, ""},
 		{"q=%20" + long + "%20", ""},
+
+		{"q=%09" + long + "%0A", ""},
 		{labels(api.MaxLabels + 1), "label given 11 times: at most 10"},
 		{labels(api.MaxLabels), ""},
 		{"label=", "label must not be empty"},
