@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 import { Link, useParams } from "react-router";
-import { listTasks, phases, terminalPhases, type Phase, type Task } from "./api";
+import { APIError, listTasks, phases, terminalPhases, type Phase, type Task, type TaskFilter } from "./api";
 import { RoleLine, useIdentityDetails, useRole } from "./Identity";
 import { params, useParam, useTextParam } from "./links";
 import { can } from "./roles";
@@ -21,25 +21,44 @@ export const pageSize = 50;
 // pollMs is how often the board is read again.
 const pollMs = 5000;
 
+// searchDelayMs is how long the typing pauses before the search is read.
+export const searchDelayMs = 300;
+
 export interface Column {
   phase: Phase;
   tasks: Task[];
   // more says the last page came back full: there may be more.
   more: boolean;
+  // total is how many tasks of the phase the filters select, as the last
+  // page read counted them. A server without the filters sends none.
+  total?: number;
 }
 
 // loadColumn reads the first pages of one phase, in the order the API
 // returns: priority, then number.
-async function loadColumn(ns: string, phase: Phase, pages: number, signal: AbortSignal): Promise<Column> {
+async function loadColumn(ns: string, phase: Phase, pages: number, filter: TaskFilter, signal: AbortSignal): Promise<Column> {
   const tasks: Task[] = [];
   let more = false;
+  let total: number | undefined;
   for (let p = 0; p < pages; p++) {
-    const res = await listTasks(ns, phase, p * pageSize, pageSize, signal);
+    const res = await listTasks(ns, phase, p * pageSize, pageSize, signal, filter);
     tasks.push(...res.items);
+    total = res.total;
     more = res.items.length >= res.limit;
     if (!more) break;
   }
-  return { phase, tasks, more };
+  return { phase, tasks, more, total };
+}
+
+// useDebounced is value once it has stayed the same for ms, and "" at once.
+function useDebounced(value: string, ms: number): string {
+  const [settled, setSettled] = useState(value);
+  if (value === "" && settled !== "") setSettled("");
+  useEffect(() => {
+    const t = setTimeout(() => setSettled(value), ms);
+    return () => clearTimeout(t);
+  }, [value, ms]);
+  return value === "" ? "" : settled;
 }
 
 // latest keeps each task in one column only. The phases are read in
@@ -60,12 +79,34 @@ export function Board() {
   const role = useRole(ns);
   const { mode } = useIdentityDetails();
   const name = useTeamName(ns);
-  const [columns, setColumns] = useState<Column[] | null>(null);
+  // last is the last read's columns, and the filters it was read with.
+  const [last, setLast] = useState<{ filter: string; columns: Column[] } | null>(null);
   const [pages, setPages] = useState<Record<string, number>>({});
-  const [error, setError] = useState("");
+  // failure is why the last read failed, and the filters it was read with.
+  const [failure, setFailure] = useState({ filter: "", message: "" });
+  // refusal is why the server refused the filters, such as a search too
+  // long, and the filters it refused.
+  const [refusal, setRefusal] = useState({ filter: "", message: "" });
   const [search, setSearch, searchBox] = useTextParam(params.q);
   const [phaseParam, setPhase] = useParam(params.phase);
   const [assignee, setAssignee] = useParam(params.assignee);
+  // The reads send the search trimmed, once the typing pauses.
+  const q = useDebounced(search.trim(), searchDelayMs);
+  // A filter change reads the first pages again.
+  const filter = `${q}\n${assignee}`;
+  const [paged, setPaged] = useState(filter);
+  if (paged !== filter) {
+    setPaged(filter);
+    setPages({});
+  }
+  // Until a new filter's read is back, the board shows neither the columns
+  // nor the refusal nor the error of the filter before it.
+  const columns = last?.filter === filter ? last.columns : null;
+  const refused = refusal.filter === filter ? refusal.message : "";
+  const error = failure.filter === filter ? failure.message : "";
+  // seen are the assignees read on this team's board, as the select's
+  // options: a read filtered to one assignee holds no other.
+  const [seen, setSeen] = useState({ ns, names: [] as string[] });
   const [view, setView] = useParam(params.view);
   // Any view but the list is the board.
   const list = view === "list";
@@ -83,30 +124,36 @@ export function Board() {
       try {
         const arrived: Phase[] = [];
         const next = await Promise.all(
-          read.map((ph) => loadColumn(ns, ph, pages[ph] ?? 1, signal).then((c) => (arrived.push(ph), c))),
+          read.map((ph) => loadColumn(ns, ph, pages[ph] ?? 1, { q, assignee }, signal).then((c) => (arrived.push(ph), c))),
         );
-        setColumns(latest(next, arrived));
+        setLast({ filter, columns: latest(next, arrived) });
+        const names = next.flatMap((c) => c.tasks.map((t) => t.spec.assignee?.name ?? ""));
+        setSeen((s) => ({ ns, names: [...new Set([...(s.ns === ns ? s.names : []), ...names])] }));
         setUpdated(new Date());
-        setError("");
+        setFailure({ filter, message: "" });
+        setRefusal({ filter, message: "" });
       } catch (e) {
-        if (!signal.aborted) setError(String((e as Error).message));
+        if (signal.aborted) return;
+        if (e instanceof APIError && e.status === 400 && e.code === "invalid") setRefusal({ filter, message: e.message });
+        else setFailure({ filter, message: String((e as Error).message) });
       }
     },
     pollMs,
-    [ns, pages, retry, phase],
+    [ns, pages, retry, phase, q, assignee],
     { ns, topic: "tasks" },
   );
   const board = `/t/${encodeURIComponent(ns)}`;
   // Until the read for a new phase filter is back, the columns read before
-  // it show only as far as the filter keeps them.
-  const shownColumns = columns?.filter((c) => read.includes(c.phase)) ?? null;
-  const total = shownColumns?.reduce((n, c) => n + c.tasks.length, 0) ?? 0;
-  const shown = shownColumns?.reduce((n, c) => n + c.tasks.filter((t) => matches(t, search, assignee)).length, 0) ?? 0;
-  // The assignees on the loaded tasks, and the one asked for even if none
-  // of them has it.
-  const assignees = [
-    ...new Set([...(columns ?? []).flatMap((c) => c.tasks.map((t) => t.spec.assignee?.name ?? "")), assignee].filter(Boolean)),
-  ].sort();
+  // it show only as far as the filter keeps them. Refused filters show none.
+  const shownColumns = refused ? null : (columns?.filter((c) => read.includes(c.phase)) ?? null);
+  const loaded = shownColumns?.reduce((n, c) => n + c.tasks.length, 0) ?? 0;
+  const shown = shownColumns?.reduce((n, c) => n + filtered(c, search, assignee).length, 0) ?? 0;
+  // The server counts the matches on the whole board; one without the
+  // filters leaves them to the loaded pages.
+  const counted = shownColumns?.every((c) => c.total !== undefined) ?? false;
+  const matching = shownColumns?.reduce((n, c) => n + (c.total ?? 0), 0) ?? 0;
+  // The assignees seen, and the one asked for even if none of them has it.
+  const assignees = [...new Set([...(seen.ns === ns ? seen.names : []), assignee].filter(Boolean))].sort();
   return (
     <main id="main" className="board">
       <div className="toolbar">
@@ -119,7 +166,7 @@ export function Board() {
           <div className="search" role="search">
             <Icon name="search" />
             <label htmlFor="board-search" className="sr-only">
-              Search the loaded page
+              Search the board
             </label>
             <input
               id="board-search"
@@ -159,7 +206,7 @@ export function Board() {
           </div>
           {(search.trim() !== "" || assignee !== "") && shownColumns && (
             <span className="search-count">
-              {shown} of {total} loaded tasks shown
+              {counted ? `${matching} ${matching === 1 ? "task matches" : "tasks match"}` : `${shown} of ${loaded} loaded tasks shown`}
             </span>
           )}
           {can(role, "work") && (
@@ -175,11 +222,12 @@ export function Board() {
       {error && columns === null && (
         <Banner onRetry={() => setRetry((n) => n + 1)}>Could not load the board: {error}</Banner>
       )}
-      {columns === null && !error && <BoardSkeleton />}
+      {refused && <Banner>Could not filter the board: {refused}</Banner>}
+      {columns === null && !error && !refused && <BoardSkeleton />}
       {shownColumns && list && (
         <TaskTable
           ns={ns}
-          tasks={shownColumns.flatMap((c) => c.tasks.filter((t) => matches(t, search, assignee)))}
+          tasks={shownColumns.flatMap((c) => filtered(c, search, assignee))}
           more={shownColumns.some((c) => c.more)}
           onMore={() =>
             setPages((p) => {
@@ -241,10 +289,10 @@ function BoardSkeleton() {
   );
 }
 
-// matches is the client-side search and assignee filter over what is
-// loaded. The assignee, when set, is matched exactly, by name only: a User
-// and an Agent of the same name are one assignee, as in the Agents page's
-// link, which carries only the name.
+// matches is the search and assignee filter over what is loaded, for a
+// server that does not filter. The assignee, when set, is matched exactly,
+// by name only: a User and an Agent of the same name are one assignee, as
+// in the Agents page's link, which carries only the name.
 export function matches(t: Task, query: string, assignee = ""): boolean {
   if (assignee !== "" && t.spec.assignee?.name !== assignee) return false;
   const q = query.trim().toLowerCase();
@@ -254,21 +302,24 @@ export function matches(t: Task, query: string, assignee = ""): boolean {
   return fields.some((f) => f.toLowerCase().includes(q));
 }
 
+// filtered is what a column shows: what the server read, which it filtered
+// when it counted it, else the loaded tasks that match.
+function filtered(c: Column, search: string, assignee: string): Task[] {
+  return c.total === undefined ? c.tasks.filter((t) => matches(t, search, assignee)) : c.tasks;
+}
+
 export function Columns(props: { ns: string; columns: Column[]; search: string; assignee?: string; onMore: (phase: Phase) => void }) {
   return (
     <div className={props.columns.length === 1 ? "columns one-phase" : "columns"}>
       {props.columns.map((col) => {
-        const shown = col.tasks.filter((t) => matches(t, props.search, props.assignee));
+        const shown = filtered(col, props.search, props.assignee ?? "");
         const terminal = terminalPhases.includes(col.phase);
         return (
           <section className={`column ${phaseTone(col.phase)}${terminal ? " terminal" : ""}`} key={col.phase} aria-label={col.phase}>
             <div className="column-head">
               <span className="dot" aria-hidden="true" />
               <h2>{col.phase}</h2>
-              <span className="count-pill">
-                {col.tasks.length}
-                {col.more ? "+" : ""}
-              </span>
+              <span className="count-pill">{col.total ?? `${col.tasks.length}${col.more ? "+" : ""}`}</span>
             </div>
             <div className="column-body">
               {shown.length === 0 && <p className="column-empty">Nothing here</p>}

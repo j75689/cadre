@@ -100,7 +100,7 @@ describe("shortcuts", () => {
   it("focus the search on /", async () => {
     await at("/t/a");
     expect(press("/")).toBe(false);
-    expect(document.activeElement).toBe(screen.getByRole("searchbox", { name: "Search the loaded page" }));
+    expect(document.activeElement).toBe(screen.getByRole("searchbox", { name: "Search the board" }));
   });
 
   it("open New task on c for a member, with the focus on its heading", async () => {
@@ -155,7 +155,7 @@ describe("shortcuts", () => {
 
   it("do not fire while typing in a field", async () => {
     await at("/t/a");
-    const search = screen.getByRole("searchbox", { name: "Search the loaded page" });
+    const search = screen.getByRole("searchbox", { name: "Search the board" });
     search.focus();
     // Not prevented: the browser types the c.
     expect(press("c", {}, search)).toBe(true);
@@ -176,7 +176,7 @@ describe("shortcuts", () => {
     await at("/t/a");
     const altGr = { ctrlKey: true, altKey: true, modifierAltGraph: true };
     press("/", altGr);
-    expect(document.activeElement).toBe(screen.getByRole("searchbox", { name: "Search the loaded page" }));
+    expect(document.activeElement).toBe(screen.getByRole("searchbox", { name: "Search the board" }));
     press("c", altGr, document.body);
     expect(path()).toBe("/t/a");
     press("?", altGr, document.body);

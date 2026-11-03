@@ -119,9 +119,9 @@ The team's URLs and their query parameters are built in `web/src/links.ts` (`par
 
 | Parameter | Page | Value | Set by |
 | --- | --- | --- | --- |
-| `q` | Board | The search text, matched in any case against the title, the task's name, the assignee, the labels and `#number`, over the loaded tasks. | the search box |
+| `q` | Board | The search text, matched in any case against the title, the task's name, the assignee, the labels and `#number`, by the server over the whole board (`GET /tasks?q=`, trimmed). | the search box |
 | `phase` | Board | One phase, in any case (`todo` is Todo): only that column is read and shown. An unknown phase reads as all of them and is left in the URL. | the Phase select |
-| `assignee` | Board | An assignee's exact name; a User and an Agent of the same name are one assignee. Filters the loaded tasks. | the Assignee select; Agents' Tasks link (`boardLink(ns, { assignee })`) |
+| `assignee` | Board | An assignee's exact name; a User and an Agent of the same name are one assignee. Sent to the server (`GET /tasks?assignee=`), with the search. | the Assignee select; Agents' Tasks link (`boardLink(ns, { assignee })`) |
 | `view` | Board | `list` for the list; any other value is the board. | the Board and List toggles |
 | `sort` | Board, as a list | `number`, `title`, `phase`, `assignee`, `priority` or `created`, with `-` first for descending. None, or an unknown one, is the API's order, priority then number. | the list's header buttons |
 | `run` | Task | A run's id, in any case: the page opens at that run, expanded if it has ended. | a run's id link in Runs and Run in progress; Settings' Run slots (`taskLink(ns, name, run)`) |
@@ -138,15 +138,16 @@ The board's controls replace the history entry, so they do not flood Back, and a
     - `h1` (the team's name) with the role badge;
     - the live status;
     - the search field (icon, clear button), `id="board-search"`;
-    - the filters, two selects with visually hidden labels: **Phase** ("All phases" and the seven phases) and **Assignee** ("Anyone", the assignees of the loaded tasks, and the one in the URL even if no loaded task has it);
+    - the filters, two selects with visually hidden labels: **Phase** ("All phases" and the seven phases) and **Assignee** ("Anyone", the assignees read on the team's board since it opened, as a read for one assignee holds no other, and the one in the URL even if no task read has it);
     - the view, a group of two toggle buttons (`aria-pressed`): **Board** and **List**;
-    - "n of m loaded tasks shown" while a search or an assignee is set: both filter the pages already loaded, not the server;
+    - "n tasks match" ("1 task matches") while a search or an assignee is set: the sum of the columns' `total`, so the whole board, not only the pages loaded;
     - "New task", the one primary button, for members.
   - **URL:** the search, the filters, the view and the list's order live in the query (`q`, `phase`, `assignee`, `view`, `sort`; see [URL parameters](#url-parameters)), so a reload or a shared link opens the same board. The search box keeps its own value and writes it to `?q=` (`useTextParam` in `web/src/links.ts`), so fast typing and an input method's composition are not lost to the router's transition: it writes when a composition ends, not during it, and takes the URL's value on Back, Forward or a link. With a phase set, only that column is read and shown, at most 32rem wide from 1024 px. A filter change keeps the focus on its control.
+  - **Filters:** every column's read sends the search, trimmed, as `?q=` and the assignee as `?assignee=` (both left out when empty), so the server filters the whole board, every role alike. The search is sent once the typing has paused for 300 ms (`searchDelayMs`); a reload or a link reads with it at once, and clearing it reads the whole board at once. A filter change reads each column from its first page again, and shows the skeleton columns until that read is back, not the cards, pills or count of the filter before it. Hints and polling read the filtered columns as they read the board. A filter the server refuses (a 400 `invalid`, such as a search of more than 200 characters) shows "Could not filter the board: <message>" in place of the columns until the filter changes. A cadre-server without the filters answers no `total` and ignores them: a column without `total` is filtered in the browser over its loaded pages, as before, and the toolbar says "n of m loaded tasks shown".
   - **Columns:** a horizontal scroller.
     - Under 1024 px it snaps, and each column is 80 vw.
     - From 1024 px there are seven columns of `minmax(15rem, 1fr)`.
-    - Each column is a `--surface-2` well with a sticky header: a dot in the phase's hue, the name, and a count pill (`50+` while there is more).
+    - Each column is a `--surface-2` well with a sticky header: a dot in the phase's hue, the name, and a count pill: the column's `total` from its last page read (re-read on each poll and hint), or, from a server without it, the loaded count (`50+` while there is more). "Load more" shows while the last page was full, whatever the total.
     - The column body scrolls on its own, so headers stay in view. The board fills the viewport below the top bar and the team nav.
     - Terminal columns (Done, Cancelled, Failed) mute their header.
     - The phases are read in parallel, so a task that changes phase between two reads comes back in both. It is shown once, in the column whose read came back last (board and list alike).
