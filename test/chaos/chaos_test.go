@@ -140,7 +140,7 @@ func TestChaos(t *testing.T) {
 		}
 	}
 
-	px := newProxy(rnd)
+	px := newProxy(rnd, t.Logf)
 	defer px.Close()
 	cl := client.New(px.URL, nil)
 	var srvMu sync.Mutex
