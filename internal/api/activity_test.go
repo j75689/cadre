@@ -161,7 +161,8 @@ func TestActivityOrderAndFields(t *testing.T) {
 			t.Errorf("an item without its uid first: %s", item)
 			continue
 		}
-		uids = append(uids, uid[:strings.Index(uid, ",")])
+		uid, _, _ = strings.Cut(uid, ",")
+		uids = append(uids, uid)
 	}
 	if want := []string{`"uid-e-schedule"`, `"uid-e-access"`, `"uid-e-team"`, `"uid-e-agent"`, `""`}; !slices.Equal(uids, want) {
 		t.Errorf("uids %v, want %v", uids, want)
