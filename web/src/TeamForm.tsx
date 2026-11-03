@@ -183,6 +183,10 @@ export function TeamForm({
   // removed is the index of the role just removed: the focus goes to the
   // role now there, else the one before, else "Add role".
   const removed = useRef<number | undefined>(undefined);
+  // removedSubject is the role and the index of the subject just removed:
+  // the focus goes to the Remove button of the subject now there, else of
+  // the one before, else to the role's "Add subject".
+  const removedSubject = useRef<{ role: number; at: number } | undefined>(undefined);
   // An error takes the focus, as the button that had it is disabled
   // during the request, and so does each conflict: a save clears it
   // first.
@@ -197,6 +201,14 @@ export function TeamForm({
     const selects = rolesRef.current?.querySelectorAll("select") ?? [];
     (selects[Math.min(removed.current, selects.length - 1)] ?? addRoleRef.current)?.focus();
     removed.current = undefined;
+  });
+  useEffect(() => {
+    if (removedSubject.current === undefined) return;
+    const { role, at } = removedSubject.current;
+    const fieldset = rolesRef.current?.querySelectorAll("fieldset.role-edit")[role];
+    const buttons = fieldset?.querySelectorAll<HTMLButtonElement>(".subject-row > button") ?? [];
+    (buttons[Math.min(at, buttons.length - 1)] ?? fieldset?.querySelector<HTMLButtonElement>(".buttons > button"))?.focus();
+    removedSubject.current = undefined;
   });
   const roles = draft.roles ?? [];
   const setRoles = (f: (rs: TeamRole[]) => TeamRole[]) => setDraft((d) => ({ ...d, roles: f(d.roles ?? []) }));
@@ -357,7 +369,10 @@ export function TeamForm({
                     small
                     icon="x"
                     aria-label={`Remove subject ${j + 1}`}
-                    onClick={() => setRole(i, (x) => ({ ...x, subjects: x.subjects.filter((_, k) => k !== j) }))}
+                    onClick={() => {
+                      removedSubject.current = { role: i, at: j };
+                      setRole(i, (x) => ({ ...x, subjects: x.subjects.filter((_, k) => k !== j) }));
+                    }}
                   />
                 </li>
               ))}

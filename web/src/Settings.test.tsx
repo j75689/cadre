@@ -413,6 +413,27 @@ describe("Editing the Team", () => {
     await waitFor(() => expect(document.activeElement).toBe(form.getByRole("button", { name: "Add role" })));
   });
 
+  it("moves the focus to the next subject, else the one before, else Add subject, once a subject is removed", async () => {
+    const { form } = await edit([() => json(full)]);
+    const role = () => within(form.getByRole("group", { name: "Role 2" }));
+    const remove = (n: number) => role().getByRole("button", { name: `Remove subject ${n}` });
+    // A click on a button focuses it in a browser, not in jsdom.
+    const press = (button: HTMLElement) => {
+      act(() => button.focus());
+      fireEvent.click(button);
+    };
+    fireEvent.click(role().getByRole("button", { name: "Add subject" }));
+    // The middle one: the one after takes its place, and its button.
+    press(remove(2));
+    await waitFor(() => expect(document.activeElement).toBe(remove(2)));
+    expect((role().getByLabelText("Name of subject 2") as HTMLInputElement).value).toBe("");
+    // The last one: the one before.
+    press(remove(2));
+    await waitFor(() => expect(document.activeElement).toBe(remove(1)));
+    press(remove(1));
+    await waitFor(() => expect(document.activeElement).toBe(role().getByRole("button", { name: "Add subject" })));
+  });
+
   // A role given by the Team goes with it: the server answers a regular
   // admin with a 403, not a 409.
   it("stops editing when a save is refused for want of a role, and reads /me again", async () => {
