@@ -407,7 +407,7 @@ Buttons are disabled while a call is in flight, and the server's error shows und
 - **Contrast:** text is at 4.5:1 or more in both themes. That includes `--fg-muted` on `--surface`, `--bg` and `--surface-2`, every status `-fg` on `--surface`, `--surface-2` and its `-soft` tint, and text on the accent and on the success and danger buttons. Change a token only after checking it again.
 - **Focus:**
   - Every control and card has a 2 px `--ring` `:focus-visible` outline. A card's ring is drawn by its covering link.
-  - After a route change, focus moves to the new page's `h1` (`tabindex="-1"`). The first page of a visit keeps the browser's focus, and so does a change of the query only (a run linked, Back and Forward between runs), so focus stays where it was and the title is not read again.
+  - After a route change, focus moves to the new page's `h1` (`tabindex="-1"`), also on Back or Forward to a page whose `h1` took it before. The first page of a visit keeps the browser's focus, and so does a change of the query only (a run linked, Back and Forward between runs), so focus stays where it was and the title is not read again.
 - **Names:**
   - Icon-only controls (keyboard shortcuts, theme, clear search, a dialog's Close) have an `aria-label`.
   - Decorative icons and skeleton blocks are `aria-hidden`.
