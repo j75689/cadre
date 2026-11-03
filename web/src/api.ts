@@ -303,17 +303,19 @@ export async function logout(): Promise<void> {
 
 export const listTeams = (signal?: AbortSignal) => get<{ items: Team[] }>("/teams", signal);
 
-// TaskFilter narrows a list: q is the search, assignee an exact name. An
-// empty one is none.
+// TaskFilter narrows a list: q is the search, assignee an exact name, and
+// labels the ones a task has all of. An empty one is none.
 export interface TaskFilter {
   q?: string;
   assignee?: string;
+  labels?: string[];
 }
 
 export function listTasks(ns: string, phase: Phase, offset: number, limit: number, signal?: AbortSignal, filter: TaskFilter = {}) {
   const q = new URLSearchParams({ phase, offset: String(offset), limit: String(limit) });
   if (filter.q) q.set("q", filter.q);
   if (filter.assignee) q.set("assignee", filter.assignee);
+  for (const l of filter.labels ?? []) q.append("label", l);
   return get<TaskList>(`/namespaces/${encodeURIComponent(ns)}/tasks?${q}`, signal);
 }
 

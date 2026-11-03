@@ -1240,7 +1240,8 @@ main.board {
   white-space: nowrap;
 }
 
-.task-card .parent {
+.task-card .parent,
+.task-card .label-button {
   position: relative;
   z-index: 1;
 }
@@ -2132,6 +2133,48 @@ main.board {
 .filters select {
   min-width: 0;
   max-width: 12rem;
+}
+
+/* Labels: a card's label pills add theirs to the filter; the toolbar's
+   chips remove one. */
+
+.label-button,
+.label-chip {
+  font: inherit;
+  font-size: var(--text-xs);
+  cursor: pointer;
+}
+
+.label-button:hover:not(:disabled),
+.label-chip:hover {
+  border-color: var(--fg-muted);
+  color: var(--fg);
+}
+
+.label-button:disabled {
+  cursor: default;
+}
+
+.label-button[aria-pressed="true"] {
+  border-color: var(--accent);
+  color: var(--fg);
+}
+
+.label-chip {
+  gap: var(--space-1);
+}
+
+.label-filter {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-1);
+  min-width: 0;
+}
+
+.label-note {
+  color: var(--fg-muted);
+  font-size: var(--text-xs);
 }
 
 @media (min-width: 1024px) {
