@@ -12,6 +12,7 @@ import (
 	"net/http/httptest"
 	"net/http/httputil"
 	"net/url"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -222,7 +223,9 @@ type proxy struct {
 	count atomic.Int64
 }
 
-func newProxy(rnd *lockedRand) *proxy {
+// newProxy logs the proxy's errors to logf, but for responses a kill cut
+// short.
+func newProxy(rnd *lockedRand, logf func(format string, args ...any)) *proxy {
 	p := &proxy{live: map[string]*url.URL{}, rnd: rnd}
 	rp := &httputil.ReverseProxy{
 		Rewrite: func(r *httputil.ProxyRequest) {
@@ -233,8 +236,7 @@ func newProxy(rnd *lockedRand) *proxy {
 		ErrorHandler: func(w http.ResponseWriter, _ *http.Request, err error) {
 			httpjson.WriteError(w, http.StatusServiceUnavailable, httpjson.CodeUnavailable, err.Error())
 		},
-		// A kill cuts the watch streams it relays: that is no news.
-		ErrorLog: stdlog.New(io.Discard, "", 0),
+		ErrorLog: stdlog.New(proxyLog(logf), "", 0),
 	}
 	p.Server = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		p.count.Add(1)
@@ -245,6 +247,18 @@ func newProxy(rnd *lockedRand) *proxy {
 		rp.ServeHTTP(w, r)
 	}))
 	return p
+}
+
+// proxyLog passes the proxy's error log on, but for a cut response: a kill
+// cuts the watch streams and the other responses it relays, and that is no
+// news.
+type proxyLog func(format string, args ...any)
+
+func (l proxyLog) Write(b []byte) (int, error) {
+	if line := strings.TrimSuffix(string(b), "\n"); line != "httputil: ReverseProxy read error during body copy: unexpected EOF" {
+		l("proxy: %s", line)
+	}
+	return len(b), nil
 }
 
 func (p *proxy) pick() *url.URL {
