@@ -223,6 +223,9 @@ func TestNumberTaskCallsTakeTurns(t *testing.T) {
 		t.Fatal(err)
 	}
 	gate := &gatedGet{Driver: e.store, inside: make(chan struct{}), release: make(chan struct{})}
+	// Released however the test ends, so a failure leaves no call stopped.
+	release := sync.OnceFunc(func() { close(gate.release) })
+	t.Cleanup(release)
 	m := e.manager(gate)
 
 	type result struct {
@@ -253,7 +256,7 @@ func TestNumberTaskCallsTakeTurns(t *testing.T) {
 		t.Fatalf("%d reads of the task begun while the first call is inside, want 1: the second did not wait", n)
 	}
 
-	close(gate.release)
+	release()
 	var numbers []int64
 	for _, c := range []chan result{first, second} {
 		r := <-c
