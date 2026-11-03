@@ -1,7 +1,8 @@
-import { cleanup, render, screen, within } from "@testing-library/react";
+import { cleanup, render, screen, waitFor, within } from "@testing-library/react";
 import { MemoryRouter } from "react-router";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { App } from "./App";
+import type { Me } from "./api";
 
 afterEach(() => {
   cleanup();
@@ -50,5 +51,30 @@ describe("TeamNav", () => {
       </MemoryRouter>,
     );
     expect(screen.queryByRole("navigation", { name: "Team" })).toBeNull();
+  });
+
+  // Every tab's show is true today: no role or mode hides one.
+  const tabs = ["Board", "Agents", "Model providers", "Tool servers", "Schedules", "Notifiers", "Runners", "Settings"];
+  it.each<[string, Me | null]>([
+    ["a viewer", { mode: "oidc", name: "lee", roles: { a: "viewer" } }],
+    ["a member", { mode: "oidc", name: "lee", roles: { a: "member" } }],
+    ["an admin", { mode: "oidc", name: "dana", roles: { a: "admin" } }],
+    ["an oidc user with no role in the team", { mode: "oidc", name: "lee", roles: {} }],
+    ["--auth=none", { mode: "none", admin: true }],
+    ["no /me yet (bootstrap)", null],
+  ])("shows exactly the 8 tabs to %s", async (_, me) => {
+    vi.stubGlobal("fetch", (url: string) => {
+      if (url.endsWith("/me")) return Promise.resolve(me ? new Response(JSON.stringify(me), { status: 200, headers: { "Content-Type": "application/json" } }) : new Response("{}", { status: 503 }));
+      return new Promise(() => {});
+    });
+    render(
+      <MemoryRouter initialEntries={["/t/a"]}>
+        <App />
+      </MemoryRouter>,
+    );
+    const nav = within(screen.getByRole("navigation", { name: "Team" }));
+    await waitFor(() => expect(nav.getAllByRole("link").map((l) => l.textContent)).toEqual(tabs));
+    await new Promise((r) => setTimeout(r, 20));
+    expect(nav.getAllByRole("link").map((l) => l.textContent)).toEqual(tabs);
   });
 });
