@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useRef, useState, type Ref } from "react";
 import { Link, useParams } from "react-router";
 import { SettingsNav } from "./Access";
 import { APIError, getTeam, type Team } from "./api";
@@ -131,14 +131,7 @@ export function Settings() {
           <Banner className="banner-warning">Your role on {ns} is gone or has changed: its Team was deleted, or someone changed its roles.</Banner>
         </div>
       )}
-      {missing && (
-        <div className="card empty">
-          <p ref={missingRef} tabIndex={-1}>
-            This namespace has no Team. A namespace becomes a team when it has a Team resource:
-          </p>
-          <pre>cadre team init -n {ns}</pre>
-        </div>
-      )}
+      {missing && <NoTeam ns={ns} ref={missingRef} />}
       {!team && !missing && !error && !lost && (
         <Loading what="the settings" className="card card-pad stack">
           <Skeleton width="40%" />
@@ -301,5 +294,17 @@ function RunSlots({ team }: { team: Team }) {
         </div>
       )}
     </section>
+  );
+}
+
+// NoTeam says namespace ns has no Team, and how to make it one.
+export function NoTeam({ ns, ref }: { ns: string; ref?: Ref<HTMLParagraphElement> }) {
+  return (
+    <div className="card empty">
+      <p ref={ref} tabIndex={-1}>
+        This namespace has no Team. A namespace becomes a team when it has a Team resource:
+      </p>
+      <pre>cadre team init -n {ns}</pre>
+    </div>
   );
 }
