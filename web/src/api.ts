@@ -199,6 +199,27 @@ export interface ConfigResource extends AgentSummary {
   status?: Record<string, unknown>;
 }
 
+// Activity is an Event about one of cadre's objects: when it last
+// happened, what happened, to what, which component said so, and how many
+// times.
+export interface Activity {
+  time: string;
+  type: "Normal" | "Warning" | string;
+  reason: string;
+  action: string;
+  note: string;
+  regarding: { kind: string; name: string };
+  reportedBy: string;
+  count: number;
+}
+
+export interface ActivityList {
+  items: Activity[];
+  offset: number;
+  // limit is the one applied: the server caps what was asked for.
+  limit: number;
+}
+
 export class APIError extends Error {
   constructor(
     readonly status: number,
@@ -282,19 +303,17 @@ export async function logout(): Promise<void> {
 
 export const listTeams = (signal?: AbortSignal) => get<{ items: Team[] }>("/teams", signal);
 
-// TaskFilter narrows a list: q is the search, assignee an exact name, and
-// labels the ones a task has all of. An empty one is none.
+// TaskFilter narrows a list: q is the search, assignee an exact name. An
+// empty one is none.
 export interface TaskFilter {
   q?: string;
   assignee?: string;
-  labels?: string[];
 }
 
 export function listTasks(ns: string, phase: Phase, offset: number, limit: number, signal?: AbortSignal, filter: TaskFilter = {}) {
   const q = new URLSearchParams({ phase, offset: String(offset), limit: String(limit) });
   if (filter.q) q.set("q", filter.q);
   if (filter.assignee) q.set("assignee", filter.assignee);
-  for (const l of filter.labels ?? []) q.append("label", l);
   return get<TaskList>(`/namespaces/${encodeURIComponent(ns)}/tasks?${q}`, signal);
 }
 
@@ -376,6 +395,13 @@ export const getTeam = (ns: string, signal?: AbortSignal) => get<Team>(`/namespa
 // not under a "spec" key.
 export const putTeam = (ns: string, spec: TeamSpec, resourceVersion?: string) =>
   put<Team>(`/namespaces/${encodeURIComponent(ns)}/team`, { ...spec, resourceVersion });
+
+// listActivity reads a page of the namespace's recent activity, newest
+// first, for its admins.
+export function listActivity(ns: string, page: { offset: number; limit: number }, signal?: AbortSignal) {
+  const q = new URLSearchParams({ offset: String(page.offset), limit: String(page.limit) });
+  return get<ActivityList>(`/namespaces/${encodeURIComponent(ns)}/activity?${q}`, signal);
+}
 
 const accessPath = (ns: string, name: string) =>
   `/namespaces/${encodeURIComponent(ns)}/agentaccesses/${encodeURIComponent(name)}`;
