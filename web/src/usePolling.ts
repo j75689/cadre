@@ -1,4 +1,4 @@
-import { useEffect, useRef } from "react";
+import { useEffect, useLayoutEffect, useRef } from "react";
 import { subscribe, type Hint, type Topic } from "./live";
 
 // livePollMs is how often a live page still reads, as hints may be lost.
@@ -29,7 +29,10 @@ export interface Live {
 export function usePolling(load: (signal: AbortSignal) => Promise<void>, intervalMs: number, deps: unknown[], live?: Live) {
   const latest = useRef(load);
   const match = useRef(live?.match);
-  useEffect(() => {
+  // In the commit, before anything can call them: a visibilitychange or a
+  // hint that comes before the passive effects run reads with this render's
+  // load, not the one before.
+  useLayoutEffect(() => {
     latest.current = load;
     match.current = live?.match;
   });

@@ -1,4 +1,5 @@
 import { cleanup, renderHook } from "@testing-library/react";
+import { useLayoutEffect } from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { FakeEventSource, fakeTabs } from "./testing";
 import { hintDelayMs, livePollMs, usePolling, type Live } from "./usePolling";
@@ -54,6 +55,25 @@ describe("usePolling", () => {
     await vi.advanceTimersByTimeAsync(1050);
     expect(starts.map((s) => s - t0)).toEqual([0, 3050, 4050]);
     vi.restoreAllMocks();
+  });
+
+  it("reads with the latest load when the tab is shown before the passive effects ran", async () => {
+    const loads: string[] = [];
+    const { rerender } = renderHook(
+      ({ name }) => {
+        usePolling(async () => void loads.push(name), 1000, []);
+        // Shown in the commit that brings load b, as a MutationObserver
+        // reacting to the new DOM would be.
+        useLayoutEffect(() => {
+          if (name === "b") document.dispatchEvent(new Event("visibilitychange"));
+        }, [name]);
+      },
+      { initialProps: { name: "a" } },
+    );
+    await vi.advanceTimersByTimeAsync(0);
+    rerender({ name: "b" });
+    await vi.advanceTimersByTimeAsync(0);
+    expect(loads).toEqual(["a", "b"]);
   });
 
   it("stops when unmounted", async () => {
