@@ -62,6 +62,19 @@ func eventually(t *testing.T, what string, ok func() bool) {
 	t.Fatalf("%s: not within 3s, with the scans an hour away", what)
 }
 
+// receive waits up to 3s for a value on c, so a call that never ends
+// fails the test instead of hanging the package.
+func receive[T any](t *testing.T, what string, c <-chan T) T {
+	t.Helper()
+	select {
+	case v := <-c:
+		return v
+	case <-time.After(3 * time.Second):
+		t.Fatalf("%s: not within 3s", what)
+		panic("unreachable")
+	}
+}
+
 // A task the Manager creates and numbers itself, and a subtask a run
 // creates, take one number each, whether or not the hints their writes
 // send get to them first.
@@ -241,7 +254,7 @@ func TestNumberTaskCallsTakeTurns(t *testing.T) {
 		return out
 	}
 	first := call()
-	<-gate.inside
+	receive(t, "the first call reading the task", gate.inside)
 	second := call()
 
 	// The second call waits for the lock once it is counted as a holder;
@@ -258,8 +271,11 @@ func TestNumberTaskCallsTakeTurns(t *testing.T) {
 
 	release()
 	var numbers []int64
-	for _, c := range []chan result{first, second} {
-		r := <-c
+	for _, c := range []struct {
+		name string
+		out  chan result
+	}{{"first", first}, {"second", second}} {
+		r := receive(t, "the "+c.name+" call returning", c.out)
 		if r.err != nil {
 			t.Fatal(r.err)
 		}
