@@ -205,10 +205,11 @@ func TestEndingsAndErrors(t *testing.T) {
 	overloaded := func(w http.ResponseWriter) {
 		http.Error(w, `{"error":{"message":"busy","type":"server_error"}}`, http.StatusServiceUnavailable)
 	}
-	b := newAPI(t, overloaded, overloaded, overloaded)
+	// One request: the SDK does not retry against the fake (export_test.go).
+	b := newAPI(t, overloaded)
 	conv, _ = (&openai.Provider{}).Start(ctx, setup(b.URL))
-	if _, err := conv.Turn(ctx); err == nil || builtin.IsPermanent(err) {
-		t.Fatalf("a 503: %v, want a retriable error", err)
+	if _, err := conv.Turn(ctx); err == nil || builtin.IsPermanent(err) || len(b.requests) != 1 {
+		t.Fatalf("a 503: %v after %d requests, want a retriable error after one", err, len(b.requests))
 	}
 }
 
