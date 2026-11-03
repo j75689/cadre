@@ -3,7 +3,9 @@ import { Link, useParams } from "react-router";
 import { APIError, listTasks, phases, terminalPhases, type Phase, type Task, type TaskFilter } from "./api";
 import { RoleLine, useIdentityDetails, useRole } from "./Identity";
 import { params, useParam, useParamList, useTextParam } from "./links";
+import { retryMs } from "./live";
 import { can } from "./roles";
+import { NoTeam } from "./Settings";
 import { TaskTable } from "./TaskTable";
 import { useTeamName } from "./teamList";
 import { assigneeIcon, Meta, phaseTone, Pills, PriorityChip, RoleBadge } from "./ui/Badge";
@@ -90,6 +92,9 @@ export function Board() {
   // refusal is why the server refused the filters, such as a search too
   // long, and the filters it refused.
   const [refusal, setRefusal] = useState({ filter: "", message: "" });
+  // missing is a 404: the namespace has no Team, so no board. It is read
+  // again as seldom as the stream is opened again, until it has one.
+  const [missing, setMissing] = useState(false);
   const [search, setSearch, searchBox] = useTextParam(params.q);
   const [phaseParam, setPhase] = useParam(params.phase);
   const [assignee, setAssignee] = useParam(params.assignee);
@@ -122,7 +127,7 @@ export function Board() {
   }
   // Until a new filter's read is back, the board shows neither the columns
   // nor the refusal nor the error of the filter before it.
-  const columns = last?.filter === filter ? last.columns : null;
+  const columns = !missing && last?.filter === filter ? last.columns : null;
   const refused = refusal.filter === filter ? refusal.message : "";
   const error = failure.filter === filter ? failure.message : "";
   // seen are the assignees read on this team's board, as the select's
@@ -153,13 +158,18 @@ export function Board() {
         setUpdated(new Date());
         setFailure({ filter, message: "" });
         setRefusal({ filter, message: "" });
+        setMissing(false);
       } catch (e) {
         if (signal.aborted) return;
-        if (e instanceof APIError && e.status === 400 && e.code === "invalid") setRefusal({ filter, message: e.message });
+        if (e instanceof APIError && e.status === 404) {
+          setMissing(true);
+          setFailure({ filter, message: "" });
+          setRefusal({ filter, message: "" });
+        } else if (e instanceof APIError && e.status === 400 && e.code === "invalid") setRefusal({ filter, message: e.message });
         else setFailure({ filter, message: String((e as Error).message) });
       }
     },
-    pollMs,
+    missing ? retryMs : pollMs,
     [ns, pages, retry, phase, filter],
     { ns, topic: "tasks" },
   );
@@ -258,7 +268,8 @@ export function Board() {
         <Banner onRetry={() => setRetry((n) => n + 1)}>Could not load the board: {error}</Banner>
       )}
       {refused && <Banner>Could not filter the board: {refused}</Banner>}
-      {columns === null && !error && !refused && <BoardSkeleton />}
+      {missing && <NoTeam ns={ns} />}
+      {columns === null && !error && !refused && !missing && <BoardSkeleton />}
       {shownColumns && list && (
         <TaskTable
           ns={ns}

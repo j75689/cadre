@@ -230,9 +230,16 @@ func (s *Server) createTask(w http.ResponseWriter, r *http.Request) {
 	httpjson.Write(w, http.StatusCreated, t)
 }
 
+// listTasks answers a page of a namespace's tasks. A namespace without a
+// Team has no board: whatever the query, that is a 404, as on the
+// configuration routes.
 func (s *Server) listTasks(w http.ResponseWriter, r *http.Request) {
-	query := r.URL.Query()
 	q := storage.Query{Namespace: r.PathValue("ns")}
+	if _, err := s.configTeam(r.Context(), q.Namespace); err != nil {
+		httpjson.Fail(w, s.log, err)
+		return
+	}
+	query := r.URL.Query()
 	for _, p := range query["phase"] {
 		q.Phases = append(q.Phases, v1alpha1.Phase(p))
 	}

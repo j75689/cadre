@@ -14,6 +14,7 @@ afterEach(() => {
 const admin: Me = { mode: "oidc", name: "dana", roles: { a: "admin" } };
 
 const item = (reason: string, kind: string, name: string, extra: Partial<Activity> = {}): Activity => ({
+  uid: `${reason}/${kind}/${name}`,
   time: "2026-11-01T05:30:00Z",
   type: "Normal",
   reason,
@@ -130,7 +131,7 @@ describe("Activity", () => {
     }
   });
 
-  it("drops an item a later page repeats, as an Event written between the page reads moves it down", async () => {
+  it("drops an item a later page repeats by uid, as an Event written between the page reads moves it down", async () => {
     const full = Array.from({ length: activityPage }, (_, i) => item(`R${i}`, "Agent", `a${i}`));
     const moved = [full[activityPage - 1], item("Last", "Agent", "z")];
     open("/t/a/settings/activity", admin, page(full), page(full), page(moved, activityPage));
@@ -150,16 +151,37 @@ describe("Activity", () => {
     expect(screen.getAllByRole("row")).toHaveLength(activityPage + 2);
   });
 
-  it("shows two Events with equal fields twice, as the server sends both", async () => {
-    const twin = item("Restarted", "Agent", "bot", { reportedBy: "ops-tool" });
-    const full = Array.from({ length: activityPage }, (_, i) => (i === 3 || i === 4 ? twin : item(`R${i}`, "Agent", `a${i}`)));
-    open("/t/a/settings/activity", admin, page(full), page(full), page([twin, twin, item("Last", "Agent", "z")], activityPage));
+  it("shows two Events with equal fields on either side of a page boundary, as their uids differ", async () => {
+    // 49 newer Events, twins at items 50 and 51, then 5 older ones.
+    const twin = (uid: string) => item("Restarted", "Agent", "bot", { uid, reportedBy: "ops-tool" });
+    const first = [...Array.from({ length: activityPage - 1 }, (_, i) => item(`R${i}`, "Agent", `a${i}`)), twin("t1")];
+    const older = Array.from({ length: 5 }, (_, i) => item(`O${i}`, "Agent", `o${i}`));
+    open("/t/a/settings/activity", admin, page(first), page(first), page([twin("t2"), ...older], activityPage));
+    fireEvent.click(await screen.findByRole("button", { name: "Load more" }));
+    expect(await screen.findByText("O4")).toBeTruthy();
+    expect(screen.getAllByText("Restarted")).toHaveLength(2);
+    expect(screen.getAllByRole("row")).toHaveLength(56 + 1);
+  });
+
+  it("drops a uid a later page repeats anywhere, not only where the page before ended", async () => {
+    const full = Array.from({ length: activityPage }, (_, i) => item(`R${i}`, "Agent", `a${i}`));
+    open("/t/a/settings/activity", admin, page(full), page(full), page([item("Next", "Agent", "n"), full[3], item("Last", "Agent", "z")], activityPage));
+    fireEvent.click(await screen.findByRole("button", { name: "Load more" }));
+    expect(await screen.findByText("Last")).toBeTruthy();
+    expect(screen.getAllByText("R3")).toHaveLength(1);
+    expect(screen.getAllByRole("row")).toHaveLength(activityPage + 2 + 1);
+  });
+
+  it("never drops an item without a uid, as an older server sends", async () => {
+    const twin = item("Restarted", "Agent", "bot", { uid: undefined });
+    const full = Array.from({ length: activityPage }, (_, i) => (i >= activityPage - 2 ? twin : item(`R${i}`, "Agent", `a${i}`, { uid: undefined })));
+    open("/t/a/settings/activity", admin, page(full), page(full), page([twin, full[3], item("Last", "Agent", "z", { uid: "" })], activityPage));
     expect(await screen.findAllByText("Restarted")).toHaveLength(2);
     fireEvent.click(screen.getByRole("button", { name: "Load more" }));
     expect(await screen.findByText("Last")).toBeTruthy();
-    // The next page starts with no item the first one ended with.
-    expect(screen.getAllByText("Restarted")).toHaveLength(4);
-    expect(screen.getAllByRole("row")).toHaveLength(activityPage + 4);
+    expect(screen.getAllByText("Restarted")).toHaveLength(3);
+    expect(screen.getAllByText("R3")).toHaveLength(2);
+    expect(screen.getAllByRole("row")).toHaveLength(activityPage + 3 + 1);
   });
 
   it("shows placeholders until the first read comes back", async () => {

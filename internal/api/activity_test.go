@@ -18,6 +18,7 @@ import (
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime/schema"
+	"k8s.io/apimachinery/pkg/types"
 	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
@@ -36,7 +37,7 @@ var activityStart = time.Date(2026, 11, 1, 5, 0, 0, 0, time.UTC)
 // event is an Event in ns about obj, of apiVersion, at minute minute.
 func event(ns, name, apiVersion, kind, obj, reason string, minute int) *eventsv1.Event {
 	return &eventsv1.Event{
-		ObjectMeta: metav1.ObjectMeta{Namespace: ns, Name: name},
+		ObjectMeta: metav1.ObjectMeta{Namespace: ns, Name: name, UID: types.UID("uid-" + name)},
 		EventTime:  metav1.NewMicroTime(activityStart.Add(time.Duration(minute) * time.Minute)),
 		Regarding:  corev1.ObjectReference{APIVersion: apiVersion, Kind: kind, Namespace: ns, Name: obj},
 		Type:       corev1.EventTypeNormal, Reason: reason, Action: "Act", Note: reason + " happened",
@@ -56,11 +57,13 @@ func activityEvents() []client.Object {
 	core.EventTime = metav1.MicroTime{}
 	core.DeprecatedLastTimestamp = metav1.NewTime(activityStart.Add(5 * time.Minute))
 	core.DeprecatedCount = 3
+	// One without a uid, which the route still names.
+	task := event("team-a", "e-task", cadre, "Task", "x", "Notified", 1)
+	task.UID = ""
 	return []client.Object{
 		event("team-a", "e-team", cadre, "Team", v1alpha1.TeamName, "TeamUpdated", 10),
 		event("team-a", "e-access", cadre, "AgentAccess", "bot", "TokenRotated", 20),
-		event("team-a", "e-task", cadre, "Task", "x", "Notified", 1),
-		repeated, core,
+		task, repeated, core,
 		event("team-a", "e-pod", "v1", "Pod", "web", "Pulled", 40),
 		event("team-b", "e-other", cadre, "Team", v1alpha1.TeamName, "TeamUpdated", 50),
 	}
@@ -123,7 +126,7 @@ func TestActivityOrderAndFields(t *testing.T) {
 		t.Errorf("listed %v, want %v (the Pod's and team-b's left out): %s", reasons, want, out)
 	}
 	if want := (api.Activity{
-		Time: activityStart.Add(30 * time.Minute), Type: "Warning", Reason: "MissedTicks", Action: "Act", Note: "MissedTicks happened",
+		UID: "uid-e-schedule", Time: activityStart.Add(30 * time.Minute), Type: "Warning", Reason: "MissedTicks", Action: "Act", Note: "MissedTicks happened",
 		Regarding: api.ActivityObject{Kind: "Schedule", Name: "nightly"}, ReportedBy: "cadre-server", Count: 7,
 	}); got.Items[0] != want {
 		t.Errorf("a repeated Event %+v, want %+v", got.Items[0], want)
@@ -143,8 +146,26 @@ func TestActivityOrderAndFields(t *testing.T) {
 		keys = append(keys, k)
 	}
 	slices.Sort(keys)
-	if want := []string{"action", "count", "note", "reason", "regarding", "reportedBy", "time", "type"}; !slices.Equal(keys, want) {
+	if want := []string{"action", "count", "note", "reason", "regarding", "reportedBy", "time", "type", "uid"}; !slices.Equal(keys, want) {
 		t.Errorf("an item's fields %v, want %v", keys, want)
+	}
+	// Every item leads with its uid, sent even when empty.
+	var items struct{ Items []json.RawMessage }
+	if err := json.Unmarshal([]byte(out), &items); err != nil {
+		t.Fatal(err)
+	}
+	var uids []string
+	for _, item := range items.Items {
+		uid, ok := strings.CutPrefix(string(item), `{"uid":`)
+		if !ok {
+			t.Errorf("an item without its uid first: %s", item)
+			continue
+		}
+		uid, _, _ = strings.Cut(uid, ",")
+		uids = append(uids, uid)
+	}
+	if want := []string{`"uid-e-schedule"`, `"uid-e-access"`, `"uid-e-team"`, `"uid-e-agent"`, `""`}; !slices.Equal(uids, want) {
+		t.Errorf("uids %v, want %v", uids, want)
 	}
 	if !strings.Contains(out, `"regarding":{"kind":"Schedule","name":"nightly"}`) {
 		t.Errorf("regarding has more than its kind and name: %s", out)
@@ -215,15 +236,29 @@ func TestActivityFromTheAPIServer(t *testing.T) {
 		t.Fatal(err)
 	}
 	cadre := v1alpha1.GroupVersion.String()
+	uids := map[string]string{}
 	for _, o := range []*eventsv1.Event{
 		event(ns, "e-team", cadre, "Team", v1alpha1.TeamName, "TeamUpdated", 10),
 		event(ns, "e-task", cadre, "Task", "x", "Notified", 20),
 		event(ns, "e-pod", "v1", "Pod", "web", "Pulled", 30),
 	} {
+		o.UID = ""
 		if err := c.Create(ctx, o); err != nil {
 			t.Fatal(err)
 		}
+		uids[o.Reason] = string(o.UID)
 	}
+	// One written through core/v1, read as events.k8s.io/v1 by the same uid.
+	core := &corev1.Event{
+		ObjectMeta:     metav1.ObjectMeta{Namespace: ns, Name: "e-agent"},
+		InvolvedObject: corev1.ObjectReference{APIVersion: cadre, Kind: "Agent", Namespace: ns, Name: "writer"},
+		Type:           corev1.EventTypeNormal, Reason: "JobRefused", Message: "JobRefused happened",
+		LastTimestamp: metav1.NewTime(activityStart.Add(time.Minute)),
+	}
+	if err := c.Create(ctx, core); err != nil {
+		t.Fatal(err)
+	}
+	uids[core.Reason] = string(core.UID)
 	mux := http.NewServeMux()
 	api.NewServer(manager.New(memory.NewBackend().Open(), manager.Config{}), slog.New(slog.NewTextHandler(io.Discard, nil)), api.WithActivity(c)).Register(mux)
 	srv := httptest.NewServer(mux)
@@ -240,8 +275,11 @@ func TestActivityFromTheAPIServer(t *testing.T) {
 	var reasons []string
 	for _, a := range got.Items {
 		reasons = append(reasons, a.Reason)
+		if a.UID == "" || a.UID != uids[a.Reason] {
+			t.Errorf("%s has uid %q, want its metadata.uid %q", a.Reason, a.UID, uids[a.Reason])
+		}
 	}
-	if want := []string{"Notified", "TeamUpdated"}; !slices.Equal(reasons, want) {
+	if want := []string{"Notified", "TeamUpdated", "JobRefused"}; !slices.Equal(reasons, want) {
 		t.Errorf("listed %v, want %v", reasons, want)
 	}
 }

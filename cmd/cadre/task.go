@@ -93,7 +93,10 @@ func newTaskList(g *globals) *cobra.Command {
 				}
 			}
 			list, err := c.ListTasks(cmd.Context(), g.namespace, client.TaskQuery{Phases: ps, Parent: parent, Limit: limit})
-			if err != nil {
+			switch {
+			case client.IsCode(err, httpjson.CodeNotFound):
+				return fmt.Errorf("namespace %s has no Team, so it has no board; run cadre team init -n %s to make it a team", g.namespace, g.namespace)
+			case err != nil:
 				return err
 			}
 			w := tabwriter.NewWriter(cmd.OutOrStdout(), 0, 4, 2, ' ', 0)

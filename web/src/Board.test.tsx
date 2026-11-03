@@ -730,6 +730,52 @@ describe("Board", () => {
     expect(screen.queryByText(/Could not/)).toBeNull();
   });
 
+  it("shows the no-Team card on a 404, reads again every 60 seconds, and the board once there is a Team", async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    let team = false;
+    let reads = 0;
+    vi.stubGlobal("fetch", (url: string) => {
+      if (url.endsWith("/me")) return json({ mode: "none", admin: true });
+      if (url.endsWith("/teams")) return json({ items: [] });
+      if (!url.includes("/tasks")) return json({ items: [] });
+      reads++;
+      if (!team) return json({ error: { code: "not_found", message: "not found" } }, 404);
+      return json({ items: url.includes("phase=Todo") ? [task("a", "Todo")] : [], offset: 0, limit: 50 });
+    });
+    renderPage();
+    expect(await screen.findByText("This namespace has no Team. A namespace becomes a team when it has a Team resource:")).toBeTruthy();
+    expect(screen.getByText("cadre team init -n team-a")).toBeTruthy();
+    expect(screen.queryByText(/Could not/)).toBeNull();
+    expect(screen.queryByRole("button", { name: "Retry" })).toBeNull();
+    expect(screen.queryByText("Loading the board")).toBeNull();
+    await act(() => vi.advanceTimersByTimeAsync(0));
+    const before = reads;
+    await act(() => vi.advanceTimersByTimeAsync(59000));
+    expect(reads).toBe(before);
+    await act(() => vi.advanceTimersByTimeAsync(1000));
+    expect(reads).toBe(before + phases.length);
+    team = true;
+    await act(() => vi.advanceTimersByTimeAsync(60000));
+    expect(await screen.findByText("Title of a")).toBeTruthy();
+    expect(screen.queryByText(/has no Team/)).toBeNull();
+  });
+
+  it("drops a failed read's banner when a read then finds no Team", async () => {
+    let missing = false;
+    vi.stubGlobal("fetch", (url: string) => {
+      if (url.endsWith("/me")) return json({ mode: "none", admin: true });
+      if (url.endsWith("/teams")) return json({ items: [] });
+      if (missing) return json({ error: { code: "not_found", message: "not found" } }, 404);
+      return json({ error: { code: "unavailable", message: "not synced" } }, 503);
+    });
+    renderPage();
+    expect(await screen.findByText("Could not load the board: not synced")).toBeTruthy();
+    missing = true;
+    fireEvent.click(screen.getByRole("button", { name: "Retry" }));
+    expect(await screen.findByText(/This namespace has no Team/)).toBeTruthy();
+    expect(screen.queryByText(/Could not/)).toBeNull();
+  });
+
   describe("labels", () => {
     const labelled = (name: string, phase: Phase, ...labels: string[]) => task(name, phase, { labels });
     const card = (name: string) => screen.getByRole("link", { name: `Title of ${name}` }).closest("article")!;

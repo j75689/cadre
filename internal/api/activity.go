@@ -74,7 +74,7 @@ func (s *Server) listActivity(w http.ResponseWriter, r *http.Request) {
 // many times.
 func activity(e *eventsv1.Event) Activity {
 	out := Activity{
-		Type: e.Type, Reason: e.Reason, Action: e.Action, Note: e.Note,
+		UID: string(e.UID), Type: e.Type, Reason: e.Reason, Action: e.Action, Note: e.Note,
 		Regarding: ActivityObject{Kind: e.Regarding.Kind, Name: e.Regarding.Name}, ReportedBy: e.ReportingController,
 		Time: e.EventTime.Time, Count: max(e.DeprecatedCount, 1),
 	}

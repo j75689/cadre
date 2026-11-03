@@ -51,9 +51,11 @@ type ActivityList struct {
 	Limit  int        `json:"limit"`
 }
 
-// Activity is an Event about one of cadre's objects: when it last happened,
-// what happened, to what, which component said so, and how many times.
+// Activity is an Event about one of cadre's objects: its uid, which tells
+// two equal ones apart, when it last happened, what happened, to what,
+// which component said so, and how many times.
 type Activity struct {
+	UID        string         `json:"uid"`
 	Time       time.Time      `json:"time"`
 	Type       string         `json:"type"`
 	Reason     string         `json:"reason"`

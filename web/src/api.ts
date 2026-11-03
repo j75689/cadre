@@ -203,6 +203,9 @@ export interface ConfigResource extends AgentSummary {
 // happened, what happened, to what, which component said so, and how many
 // times.
 export interface Activity {
+  // uid is the Event's, which tells two equal ones apart; an older server
+  // sends none.
+  uid?: string;
   time: string;
   type: "Normal" | "Warning" | string;
   reason: string;

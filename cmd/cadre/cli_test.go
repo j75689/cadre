@@ -147,6 +147,20 @@ func TestTaskLifeFromTheCLI(t *testing.T) {
 	}
 }
 
+// task list in a namespace without a Team says how to make it one.
+func TestTaskListWithoutTeam(t *testing.T) {
+	mux := http.NewServeMux()
+	api.NewServer(manager.New(memory.NewBackend().Open(), manager.Config{}), slog.New(slog.NewTextHandler(io.Discard, nil))).Register(mux)
+	srv := httptest.NewServer(mux)
+	defer srv.Close()
+	err := cadreFails(t, srv.URL, "task", "list")
+	if want := "namespace team-a has no Team, so it has no board; run cadre team init -n team-a to make it a team"; err.Error() != want {
+		t.Fatalf("task list without a Team: %v, want %q", err, want)
+	}
+	cadre(t, srv.URL, "team", "init")
+	mustContain(t, cadre(t, srv.URL, "task", "list"), "NUMBER")
+}
+
 // CADRE_NAMESPACE limits the fake runner as -n does.
 func TestRunnerFakeHonoursCadreNamespace(t *testing.T) {
 	// The handler may still be running when the command returns, so the
