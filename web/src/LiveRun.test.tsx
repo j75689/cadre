@@ -140,4 +140,25 @@ describe("The task page", () => {
     await vi.waitFor(() => expect(screen.queryByRole("region", { name: "Run in progress" })).toBeNull());
     expect(screen.getByText("Run ended")).toBeTruthy();
   });
+
+  it("moves the focus from the live run's link to the Runs card when the run ends", async () => {
+    let status: Record<string, unknown> = { phase: "Running", run: { id: runId, mode: "runtime" }, runs: { count: 1 } };
+    vi.stubGlobal("fetch", (url: string) => {
+      if (url.endsWith("/me")) return json({ mode: "none", admin: true });
+      if (url.includes("/thread") || url.endsWith("/runs") || url.includes("/events") || url.includes("parent=")) return json({ items: [] });
+      return json({ metadata: { name: "x", namespace: "a" }, spec: { title: "Task x" }, status });
+    });
+    localStorage.setItem("cadre.identity", "dana");
+    render(
+      <MemoryRouter initialEntries={["/t/a/tasks/x"]}>
+        <App />
+      </MemoryRouter>,
+    );
+    const link = await screen.findByRole("link", { name: `Run ${runId}` });
+    act(() => link.focus());
+    status = { phase: "Review", runs: { count: 1 } };
+    await act(() => vi.advanceTimersByTimeAsync(5000));
+    await vi.waitFor(() => expect(screen.queryByRole("region", { name: "Run in progress" })).toBeNull());
+    expect(document.activeElement).toBe(screen.getByRole("heading", { level: 2, name: "Runs" }));
+  });
 });
