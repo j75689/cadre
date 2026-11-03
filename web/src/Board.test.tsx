@@ -661,13 +661,38 @@ describe("Board", () => {
     renderPage();
     press(await within(await screen.findByRole("region", { name: "Todo" })).findByRole("button", { name: "Load more" }));
     await vi.waitFor(() => expect(screen.queryByRole("button", { name: "Load more" })).toBeNull());
-    expect(document.activeElement).toBe(screen.getByRole("link", { name: "Title of Todo-50" }));
+    // The focus moves in an effect, which may run after the button is gone.
+    await vi.waitFor(() => expect(document.activeElement).toBe(screen.getByRole("link", { name: "Title of Todo-50" })));
     cleanup();
 
     renderPage("/t/team-a?view=list");
     press(await screen.findByRole("button", { name: "Load more" }));
     await vi.waitFor(() => expect(screen.queryByRole("button", { name: "Load more" })).toBeNull());
-    expect(document.activeElement).toBe(screen.getByRole("region", { name: "Tasks" }));
+    await vi.waitFor(() => expect(document.activeElement).toBe(screen.getByRole("region", { name: "Tasks" })));
+  });
+
+  it("moves the focus from the last Load more to the column's last card when that read none", async () => {
+    vi.stubGlobal("fetch", (url: string) => {
+      if (url.endsWith("/me")) return json({ mode: "none", admin: true });
+      if (url.endsWith("/teams")) return json({ items: [] });
+      const q = new URL(url, "http://cadre.test").searchParams;
+      const phase = q.get("phase") as Phase;
+      const offset = Number(q.get("offset"));
+      // Todo has exactly 100: its last page is empty.
+      const n = phase === "Todo" && offset < 100 ? 50 : 0;
+      return json({ items: Array.from({ length: n }, (_, i) => task(`${phase}-${offset + i}`, phase)), offset, limit: 50 });
+    });
+    renderPage();
+    const todo = await screen.findByRole("region", { name: "Todo" });
+    const more = await within(todo).findByRole("button", { name: "Load more" });
+    act(() => more.focus());
+    fireEvent.click(more);
+    await within(todo).findByRole("link", { name: "Title of Todo-99" });
+    const last = within(todo).getByRole("button", { name: "Load more" });
+    act(() => last.focus());
+    fireEvent.click(last);
+    await vi.waitFor(() => expect(screen.queryByRole("button", { name: "Load more" })).toBeNull());
+    await vi.waitFor(() => expect(document.activeElement).toBe(screen.getByRole("link", { name: "Title of Todo-99" })));
   });
 
   it("leaves the focus where it went while the last Load more read", async () => {
