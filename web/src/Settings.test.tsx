@@ -493,6 +493,20 @@ describe("Editing the Team", () => {
     }
   });
 
+  it("leaves the focus where it is, outside the Team, when a read loses the Team", async () => {
+    for (const answer of [noRole, noTeam]) {
+      const reads = open(admin, () => json(full), answer);
+      await screen.findByRole("region", { name: "Team" });
+      const tab = screen.getByRole("link", { name: "Team" });
+      act(() => tab.focus());
+      document.dispatchEvent(new Event("visibilitychange")); // the page reads the Team again
+      await waitFor(() => expect(reads()).toBe(2));
+      await waitFor(() => expect(screen.queryByRole("region", { name: "Team" })).toBeNull());
+      expect(document.activeElement).toBe(tab);
+      cleanup();
+    }
+  });
+
   it("hides what only admins see once a save took the caller's own admin role", async () => {
     let me = 0;
     const sent: Record<string, unknown>[] = [];

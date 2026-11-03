@@ -1,4 +1,4 @@
-import { act, cleanup, render, screen } from "@testing-library/react";
+import { act, cleanup, render, screen, within } from "@testing-library/react";
 import { MemoryRouter } from "react-router";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { App } from "./App";
@@ -160,5 +160,30 @@ describe("The task page", () => {
     await act(() => vi.advanceTimersByTimeAsync(5000));
     await vi.waitFor(() => expect(screen.queryByRole("region", { name: "Run in progress" })).toBeNull());
     expect(document.activeElement).toBe(screen.getByRole("heading", { level: 2, name: "Runs" }));
+  });
+
+  // React puts the focus back on what held it, if still in the page, after
+  // the commit that takes the card away; this pins that nothing moves it
+  // later either.
+  it("leaves the focus outside the live run where it is when the run ends", async () => {
+    let status: Record<string, unknown> = { phase: "Running", run: { id: runId, mode: "runtime" }, runs: { count: 1 } };
+    vi.stubGlobal("fetch", (url: string) => {
+      if (url.endsWith("/me")) return json({ mode: "none", admin: true });
+      if (url.includes("/thread") || url.endsWith("/runs") || url.includes("/events") || url.includes("parent=")) return json({ items: [] });
+      return json({ metadata: { name: "x", namespace: "a" }, spec: { title: "Task x" }, status });
+    });
+    localStorage.setItem("cadre.identity", "dana");
+    render(
+      <MemoryRouter initialEntries={["/t/a/tasks/x"]}>
+        <App />
+      </MemoryRouter>,
+    );
+    await screen.findByRole("region", { name: "Run in progress" });
+    const team = within(screen.getByRole("navigation", { name: "Breadcrumb" })).getByRole("link");
+    act(() => team.focus());
+    status = { phase: "Review", runs: { count: 1 } };
+    await act(() => vi.advanceTimersByTimeAsync(5000));
+    await vi.waitFor(() => expect(screen.queryByRole("region", { name: "Run in progress" })).toBeNull());
+    expect(document.activeElement).toBe(team);
   });
 });

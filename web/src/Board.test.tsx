@@ -670,6 +670,32 @@ describe("Board", () => {
     expect(document.activeElement).toBe(screen.getByRole("region", { name: "Tasks" }));
   });
 
+  it("leaves the focus where it went while the last Load more read", async () => {
+    let answer: (() => void) | undefined;
+    vi.stubGlobal("fetch", async (url: string) => {
+      if (url.endsWith("/me")) return json({ mode: "none", admin: true });
+      if (url.endsWith("/teams")) return json({ items: [] });
+      const q = new URL(url, "http://cadre.test").searchParams;
+      const phase = q.get("phase") as Phase;
+      const offset = Number(q.get("offset"));
+      if (offset > 0) await new Promise<void>((resolve) => (answer = resolve));
+      const n = phase === "Todo" ? (offset === 0 ? 50 : 1) : 0;
+      return json({ items: Array.from({ length: n }, (_, i) => task(`${phase}-${offset + i}`, phase)), offset, limit: 50 });
+    });
+    renderPage();
+    const more = await within(await screen.findByRole("region", { name: "Todo" })).findByRole("button", { name: "Load more" });
+    act(() => more.focus());
+    fireEvent.click(more);
+    // The user moves on before the page comes.
+    const agents = screen.getByRole("link", { name: "Agents" });
+    act(() => agents.focus());
+    await vi.waitFor(() => expect(answer).toBeDefined());
+    act(() => answer?.());
+    await screen.findByRole("link", { name: "Title of Todo-50" });
+    expect(screen.queryByRole("button", { name: "Load more" })).toBeNull();
+    expect(document.activeElement).toBe(agents);
+  });
+
   it("shows a task that changed phase between the reads once, as the read back last has it", async () => {
     const answer = new Map<string, () => void>();
     vi.stubGlobal("fetch", async (url: string) => {
