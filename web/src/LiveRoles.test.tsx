@@ -186,4 +186,41 @@ describe("Roles without a stream", () => {
     expect(screen.getByText("You are an admin of a.")).toBeTruthy();
     expect(screen.getByRole("button", { name: "Edit" })).toBeTruthy();
   });
+
+  // A member is sent the Team without its roles (project()): saved as is,
+  // it would take every role away.
+  it("give a member made an admin Edit only on the Team read as an admin", async () => {
+    roles = { a: "member" };
+    const admins = [{ role: "admin" as const, subjects: [{ kind: "user" as const, name: "dana@example.test" }] }];
+    let release = () => {};
+    const held = new Promise<void>((resolve) => (release = resolve));
+    const sent: { roles?: unknown[] }[] = [];
+    const inner = globalThis.fetch;
+    vi.stubGlobal("fetch", async (url: string, init?: RequestInit) => {
+      if (!url.endsWith("/namespaces/a/team")) return inner(url, init);
+      if (init?.method === "PUT") {
+        sent.push(JSON.parse(String(init.body)));
+        return json(team({ spec: { displayName: "Team A", roles: admins } }));
+      }
+      if (roles.a !== "admin") return json(team());
+      await held;
+      return json(team({ metadata: { name: "team", namespace: "a", resourceVersion: "8" }, spec: { displayName: "Team A", roles: admins } }));
+    });
+    await open("/t/a", /You are a member of a/);
+    await act(() => vi.advanceTimersByTimeAsync(7000));
+    fireEvent.click(screen.getByRole("link", { name: "Settings" }));
+    expect(await screen.findByText("This page shows a team's limits, roles and run slots to its admins only.")).toBeTruthy();
+
+    roles = { a: "admin" };
+    await act(() => vi.advanceTimersByTimeAsync(rolesPollMs - 7000));
+    expect(screen.getByText("You are an admin of a.")).toBeTruthy();
+    expect(screen.queryByRole("button", { name: "Edit" })).toBeNull();
+    expect(screen.queryByRole("region", { name: "Roles" })).toBeNull();
+
+    await act(async () => release());
+    fireEvent.click(await screen.findByRole("button", { name: "Edit" }));
+    await act(async () => fireEvent.click(screen.getByRole("button", { name: "Save" })));
+    expect(sent).toHaveLength(1);
+    expect(sent[0].roles).toEqual(admins);
+  });
 });

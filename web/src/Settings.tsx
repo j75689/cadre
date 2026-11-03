@@ -4,7 +4,7 @@ import { SettingsNav } from "./Access";
 import { APIError, getTeam, type Team } from "./api";
 import { RoleLine, useIdentity, useRole } from "./Identity";
 import { taskLink, teamPath } from "./links";
-import { can } from "./roles";
+import { can, type Role } from "./roles";
 import { TeamForm } from "./TeamForm";
 import { useTeamName } from "./teamList";
 import { RoleBadge } from "./ui/Badge";
@@ -26,8 +26,12 @@ export function Settings() {
   const { ns = "" } = useParams();
   const role = useRole(ns);
   const name = useTeamName(ns);
-  // team is null until read, and after a 404 (missing).
+  // team is null until read, and after a 404 (missing). readAs is the role
+  // it was read with: the server sends a Team without its roles to those
+  // who are not admins of it, so a Team read with a lower role than the
+  // caller has now is not one to edit.
   const [team, setTeam] = useState<Team | null>(null);
+  const [readAs, setReadAs] = useState<Role | undefined>(undefined);
   const [missing, setMissing] = useState(false);
   const [error, setError] = useState("");
   // forbidden is a 403: reading again cannot help, so there is no Retry.
@@ -58,7 +62,7 @@ export function Settings() {
   // closed is whether a read closed the form, so the message that took its
   // place takes the focus.
   const closed = useRef(false);
-  const { refresh } = useIdentity();
+  const { mode, refresh } = useIdentity();
   useEffect(() => {
     if (demoted) demotedRef.current?.focus();
   }, [demoted]);
@@ -94,8 +98,12 @@ export function Settings() {
   useTitle("Settings", name);
   usePolling(
     async (signal) => {
+      // The Team is read with the role /me gives, once it is read.
+      if (mode === "loading") return;
       try {
+        const as = role;
         setTeam(await getTeam(ns, signal));
+        setReadAs(as);
         setMissing(false);
         setError("");
         setForbidden(false);
@@ -118,10 +126,11 @@ export function Settings() {
       }
     },
     15000,
-    [ns, retry],
+    // A new role reads the Team again at once.
+    [ns, retry, mode, role],
     { ns, topic: "config", match: (h) => h.event === "config" && h.kind === "Team" },
   );
-  const admin = can(role, "manage") && !demoted && !lost;
+  const admin = can(role, "manage") && readAs === role && !demoted && !lost;
   return (
     <main id="main" className="page settings-page">
       <nav className="breadcrumb" aria-label="Breadcrumb">
@@ -216,7 +225,7 @@ export function Settings() {
                 You no longer have the admin role on {ns}, so its limits, roles and run slots are hidden.
               </p>
             ) : (
-              !admin && role !== undefined && <p className="hint card-body">This page shows a team's limits, roles and run slots to its admins only.</p>
+              !can(role, "manage") && role !== undefined && <p className="hint card-body">This page shows a team's limits, roles and run slots to its admins only.</p>
             )}
           </section>
           {admin && <Roles team={team} />}
