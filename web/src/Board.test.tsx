@@ -648,8 +648,9 @@ describe("Board", () => {
       const q = new URL(url, "http://cadre.test").searchParams;
       const phase = q.get("phase") as Phase;
       const offset = Number(q.get("offset"));
-      // Todo has a full first page, and a short second one.
-      const n = phase === "Todo" ? (offset === 0 ? 50 : 1) : 0;
+      // Todo has a full first page, and a short second one of three: the
+      // first card it read is not the column's last.
+      const n = phase === "Todo" ? (offset === 0 ? 50 : 3) : 0;
       return json({ items: Array.from({ length: n }, (_, i) => task(`${phase}-${offset + i}`, phase)), offset, limit: 50 });
     });
     // A click on a button focuses it in a browser, not in jsdom.
