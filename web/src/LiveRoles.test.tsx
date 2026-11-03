@@ -167,6 +167,23 @@ describe("Roles without a stream", () => {
     expect(screen.getByRole("link", { name: "New task" })).toBeTruthy();
   });
 
+  it("are not read again without logins", async () => {
+    const inner = globalThis.fetch;
+    vi.stubGlobal("fetch", (url: string, init?: RequestInit) => {
+      if (!url.endsWith("/me")) return inner(url, init);
+      me++;
+      return json({ mode: "none", admin: true });
+    });
+    render(
+      <MemoryRouter initialEntries={["/t/a"]}>
+        <App />
+      </MemoryRouter>,
+    );
+    expect(await screen.findByRole("link", { name: "New task" })).toBeTruthy();
+    await act(() => vi.advanceTimersByTimeAsync(2 * rolesPollMs));
+    expect(me).toBe(1);
+  });
+
   it("keep the roles they had when a read again fails", async () => {
     await open("/t/a", /You are a viewer of a/);
     const inner = globalThis.fetch;

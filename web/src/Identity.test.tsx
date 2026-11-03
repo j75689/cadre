@@ -1,9 +1,9 @@
-import { cleanup, fireEvent, render, screen } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen } from "@testing-library/react";
 import { MemoryRouter } from "react-router";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { App } from "./App";
 import { auth } from "./api";
-import { IdentityBox, IdentityProvider } from "./Identity";
+import { IdentityBox, IdentityProvider, RoleLine, useIdentity } from "./Identity";
 import { loadIdentity } from "./identityStore";
 import { json } from "./testing";
 
@@ -77,5 +77,58 @@ describe("an unauthenticated request", () => {
     renderBox();
     expect(await screen.findByText(/did not keep the session/)).toBeTruthy();
     expect(toLogin).not.toHaveBeenCalled();
+  });
+});
+
+describe("the shared read of /me", () => {
+  // answers are the reads of /me in flight, in the order they were sent,
+  // each ended by its signal as the browser's fetch.
+  let answers: { answer: (body: unknown, status?: number) => void }[] = [];
+  beforeEach(() => {
+    answers = [];
+    vi.stubGlobal(
+      "fetch",
+      (_url: string, init?: RequestInit) =>
+        new Promise<Response>((resolve, reject) => {
+          init?.signal?.addEventListener("abort", () => reject(new DOMException("The read was aborted.", "AbortError")));
+          answers.push({ answer: (body, status = 200) => void json(body, status).then(resolve) });
+        }),
+    );
+  });
+
+  function Refresh() {
+    const { refresh } = useIdentity();
+    return <button onClick={refresh}>Read again</button>;
+  }
+  function renderRoles() {
+    render(
+      <IdentityProvider>
+        <IdentityBox />
+        <RoleLine ns="a" />
+        <Refresh />
+      </IdentityProvider>,
+    );
+  }
+  const roles = (r: Record<string, string>) => ({ mode: "oidc", username: "dana@example.test", name: "Dana", roles: r });
+
+  it("keeps the newest answer, not the last one to come", async () => {
+    renderRoles();
+    await act(async () => answers[0].answer(roles({ a: "viewer" })));
+    expect(await screen.findByText("You are a viewer of a.")).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: "Read again" }));
+    fireEvent.click(screen.getByRole("button", { name: "Read again" }));
+    await act(async () => answers[2].answer(roles({})));
+    expect(await screen.findByText("You have no role on a.")).toBeTruthy();
+    await act(async () => answers[1].answer(roles({ a: "admin" })));
+    expect(screen.getByText("You have no role on a.")).toBeTruthy();
+  });
+
+  it("does not report the read it ended as a failure", async () => {
+    renderRoles();
+    fireEvent.click(screen.getByRole("button", { name: "Read again" }));
+    await act(async () => {});
+    expect(screen.queryByText(/Could not tell who you are/)).toBeNull();
+    await act(async () => answers[1].answer(roles({ a: "viewer" })));
+    expect(await screen.findByText("You are a viewer of a.")).toBeTruthy();
   });
 });
