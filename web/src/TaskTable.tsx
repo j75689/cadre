@@ -3,6 +3,7 @@ import { phases, type Task } from "./api";
 import { params, taskLink, useParam } from "./links";
 import { PhaseBadge, PriorityChip } from "./ui/Badge";
 import { Button } from "./ui/Button";
+import { useFocusWhenGone } from "./ui/focus";
 import { Icon } from "./ui/Icon";
 import { Time } from "./ui/Time";
 
@@ -50,6 +51,8 @@ export function TaskTable(props: { ns: string; tasks: Task[]; more: boolean; onM
   const { col, desc } = parseSort(sortParam);
   const key = col.key;
   const dir = desc ? "descending" : "ascending";
+  // The last page read takes Load more away: the focus goes to the table.
+  const press = useFocusWhenGone();
   // A header sorts ascending, then descending; the default needs no key.
   const toggle = (k: string) => {
     const next = k === key && dir === "ascending" ? `-${k}` : k;
@@ -95,7 +98,16 @@ export function TaskTable(props: { ns: string; tasks: Task[]; more: boolean; onM
         </tbody>
       </table>
       {props.more && (
-        <Button variant="ghost" small className="btn-block" onClick={props.onMore}>
+        <Button
+          variant="ghost"
+          small
+          className="btn-block"
+          onClick={(e) => {
+            const table = e.currentTarget.parentElement;
+            press(e.currentTarget, () => table);
+            props.onMore();
+          }}
+        >
           Load more
         </Button>
       )}
