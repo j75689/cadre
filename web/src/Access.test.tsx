@@ -221,6 +221,25 @@ describe("AccessDetail", () => {
     expect(screen.getByRole("link", { name: "All agent accesses" }).getAttribute("href")).toBe("/t/a/settings/access");
   });
 
+  it("shows a banner with Retry when the access cannot be read, and Retry reads it again", async () => {
+    let reads = 0;
+    open("/t/a/settings/access/bot", admin, () => {
+      reads++;
+      return reads === 1 ? json({ error: { code: "unavailable", message: "not synced" } }, 500) : json(access({ name: "bot" }));
+    });
+    expect(await screen.findByText("Could not load the agent access: not synced")).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: "Retry" }));
+    expect(await screen.findByRole("region", { name: "AgentAccess" })).toBeTruthy();
+    expect(reads).toBe(2);
+    expect(screen.queryByText(/Could not load the agent access/)).toBeNull();
+  });
+
+  it("shows a banner without Retry for a 403", async () => {
+    open("/t/a/settings/access/bot", admin, () => json({ error: { code: "forbidden", message: "not allowed" } }, 403));
+    expect(await screen.findByText("Could not load the agent access: not allowed")).toBeTruthy();
+    expect(screen.queryByRole("button", { name: "Retry" })).toBeNull();
+  });
+
   it("explains a plain 404 when /me failed, and requests nothing without logins", async () => {
     open("/t/a/settings/access/bot", null, plainNotFound);
     expect(await screen.findByText(notServed)).toBeTruthy();
