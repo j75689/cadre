@@ -139,14 +139,27 @@ func TestEventsOfARunInProgress(t *testing.T) {
 		t.Fatalf("claim: %+v, %v", claim, err)
 	}
 	ref := runner.TaskRef{Namespace: ns, Name: claim.Task.Name}
-	if err := c.Event(ctx, runner.EventsRequest{Task: ref, RunID: claim.RunID, Seq: 1, Progress: "reading"}); err != nil {
-		t.Fatal(err)
+	progress := []string{"reading", "editing"}
+	for i, p := range progress {
+		if err := c.Event(ctx, runner.EventsRequest{Task: ref, RunID: claim.RunID, Seq: int64(i + 1), Progress: p}); err != nil {
+			t.Fatal(err)
+		}
 	}
 
+	// The run has not ended: nothing is recorded in its history yet.
+	runs, err := c.Runs(ctx, ns, "fix-login")
+	if err != nil || len(runs.Items) != 0 {
+		t.Fatalf("runs of a run in progress: %+v, %v", runs, err)
+	}
 	for _, id := range []string{claim.RunID, strings.ToLower(claim.RunID)} {
 		events, err := c.Events(ctx, ns, "fix-login", id)
-		if err != nil || len(events.Items) != 1 {
+		if err != nil || len(events.Items) != len(progress) {
 			t.Fatalf("events of run %s: %+v, %v", id, events, err)
+		}
+		for i, ev := range events.Items {
+			if ev.Seq != int64(i+1) || ev.Progress != progress[i] || ev.RunID != claim.RunID {
+				t.Errorf("event %d of run %s: %+v, want seq %d, progress %q, run %s", i, id, ev, i+1, progress[i], claim.RunID)
+			}
 		}
 	}
 }

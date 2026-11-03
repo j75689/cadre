@@ -62,6 +62,19 @@ func eventually(t *testing.T, what string, ok func() bool) {
 	t.Fatalf("%s: not within 3s, with the scans an hour away", what)
 }
 
+// receive waits up to 3s for a value on c, so a call that never ends
+// fails the test instead of hanging the package.
+func receive[T any](t *testing.T, what string, c <-chan T) T {
+	t.Helper()
+	select {
+	case v := <-c:
+		return v
+	case <-time.After(3 * time.Second):
+		t.Fatalf("%s: not within 3s", what)
+		panic("unreachable")
+	}
+}
+
 // A task the Manager creates and numbers itself, and a subtask a run
 // creates, take one number each, whether or not the hints their writes
 // send get to them first.
@@ -178,5 +191,100 @@ func TestConcurrentNumberingClaimsOnce(t *testing.T) {
 	// The counter moved past the one number claimed, no further.
 	if got := e.team(t).Status.NextNumber; got != numbers[0]+1 {
 		t.Errorf("next number %d after #%d: a number was claimed more than once", got, numbers[0])
+	}
+}
+
+// gatedGet is a store whose first GetTask stops until it is released, and
+// that counts the GetTask calls it has begun.
+type gatedGet struct {
+	storage.Driver
+	mu      sync.Mutex
+	started int
+	inside  chan struct{} // closed when the first call has stopped
+	release chan struct{}
+}
+
+func (g *gatedGet) GetTask(ctx context.Context, key storage.Key) (*v1alpha1.Task, error) {
+	g.mu.Lock()
+	g.started++
+	first := g.started == 1
+	g.mu.Unlock()
+	if first {
+		close(g.inside)
+		<-g.release
+	}
+	return g.Driver.GetTask(ctx, key)
+}
+
+func (g *gatedGet) begun() int {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	return g.started
+}
+
+// Calls of numberTask for one key take turns: while the first is inside,
+// the second waits for the lock without reading the task, and once the
+// first is done the second finds the task numbered and claims nothing.
+// This holds on every run, unlike the race TestOneNumberPerTask waits for.
+func TestNumberTaskCallsTakeTurns(t *testing.T) {
+	e := newEnv(t, 5)
+	key := storage.Key{Namespace: ns, Name: "unborn"}
+	if err := e.store.CreateTask(ctx, &v1alpha1.Task{
+		ObjectMeta: metav1.ObjectMeta{Namespace: ns, Name: key.Name},
+		Spec:       v1alpha1.TaskSpec{Title: "unborn", Assignee: &v1alpha1.Assignee{Kind: v1alpha1.AssigneeAgent, Name: "coder"}},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	gate := &gatedGet{Driver: e.store, inside: make(chan struct{}), release: make(chan struct{})}
+	// Released however the test ends, so a failure leaves no call stopped.
+	release := sync.OnceFunc(func() { close(gate.release) })
+	t.Cleanup(release)
+	m := e.manager(gate)
+
+	type result struct {
+		task *v1alpha1.Task
+		err  error
+	}
+	call := func() chan result {
+		out := make(chan result, 1)
+		go func() {
+			tk, err := m.numberTask(ctx, key)
+			out <- result{tk, err}
+		}()
+		return out
+	}
+	first := call()
+	receive(t, "the first call reading the task", gate.inside)
+	second := call()
+
+	// The second call waits for the lock once it is counted as a holder;
+	// without the lock it reads the task instead.
+	eventually(t, "the second call waiting or reading", func() bool {
+		m.numberingMu.Lock()
+		defer m.numberingMu.Unlock()
+		l := m.numbering[key]
+		return gate.begun() > 1 || l != nil && l.holders == 2
+	})
+	if n := gate.begun(); n != 1 {
+		t.Fatalf("%d reads of the task begun while the first call is inside, want 1: the second did not wait", n)
+	}
+
+	release()
+	var numbers []int64
+	for _, c := range []struct {
+		name string
+		out  chan result
+	}{{"first", first}, {"second", second}} {
+		r := receive(t, "the "+c.name+" call returning", c.out)
+		if r.err != nil {
+			t.Fatal(r.err)
+		}
+		numbers = append(numbers, r.task.Status.Number)
+	}
+	if numbers[0] != 1 || numbers[1] != 1 {
+		t.Errorf("numbers %v, want both calls to return the one number 1", numbers)
+	}
+	if got := e.team(t).Status.NextNumber; got != 2 {
+		t.Errorf("next number %d after one task, want 2: a number was claimed twice", got)
 	}
 }
