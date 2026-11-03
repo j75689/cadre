@@ -47,9 +47,13 @@ export function Settings() {
   // lost is a 403 no_role after the Team was read, on a save or a read:
   // the Team was deleted, or the caller's role on it taken away, so the
   // role /me gave is out of date. It is read again, and the page edits no
-  // more.
+  // more, unless the role is given again (gone).
   const [lost, setLost] = useState(false);
   const lostRef = useRef<HTMLDivElement>(null);
+  // gone is whether /me, read again while lost, gave no role on ns: one
+  // that gives a role after that is a role given again, and the page shows
+  // what the role allows once more.
+  const gone = useRef(false);
   const missingRef = useRef<HTMLParagraphElement>(null);
   // closed is whether a read closed the form, so the message that took its
   // place takes the focus.
@@ -63,6 +67,18 @@ export function Settings() {
     closed.current = false;
     (lost ? lostRef : missingRef).current?.focus();
   }, [lost, missing]);
+  useEffect(() => {
+    if (!lost) return;
+    if (!role) {
+      gone.current = true;
+      return;
+    }
+    if (!gone.current) return;
+    gone.current = false;
+    // The alert goes: its focus goes to the heading, not to the body.
+    if (lostRef.current?.contains(document.activeElement)) lostRef.current.closest("main")?.querySelector("h1")?.focus();
+    setLost(false);
+  }, [lost, role]);
   const leave = () => {
     setEditing(false);
     setLeft(true);
