@@ -132,6 +132,9 @@ func (p *Provider) Resume(_ context.Context, s builtin.Setup, o *builtin.Opening
 	return c, nil
 }
 
+// extraOptions are added to every chat service; nil outside tests.
+var extraOptions []option.RequestOption
+
 // open builds a conversation from s, with its chat service and the
 // parameters every request carries, and no messages.
 func (p *Provider) open(s builtin.Setup) (*conversation, error) {
@@ -150,7 +153,8 @@ func (p *Provider) open(s builtin.Setup) (*conversation, error) {
 	if base == "" {
 		base = defaultBase
 	}
-	chat := oai.NewChatCompletionService(option.WithHTTPClient(hc), option.WithBaseURL(base), option.WithAPIKey(s.Credential))
+	opts := append([]option.RequestOption{option.WithHTTPClient(hc), option.WithBaseURL(base), option.WithAPIKey(s.Credential)}, extraOptions...)
+	chat := oai.NewChatCompletionService(opts...)
 
 	tools := make([]oai.ChatCompletionToolUnionParam, 0, len(s.Tools))
 	for _, t := range s.Tools {
