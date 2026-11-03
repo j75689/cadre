@@ -50,6 +50,9 @@ export interface TaskList {
   offset: number;
   // The limit that applied: the server caps what it is asked for.
   limit: number;
+  // total is how many tasks the filters select, before the page. A server
+  // without the filters answers none, and ignores them.
+  total?: number;
 }
 
 export interface ObjectMeta {
@@ -279,8 +282,17 @@ export async function logout(): Promise<void> {
 
 export const listTeams = (signal?: AbortSignal) => get<{ items: Team[] }>("/teams", signal);
 
-export function listTasks(ns: string, phase: Phase, offset: number, limit: number, signal?: AbortSignal) {
+// TaskFilter narrows a list: q is the search, assignee an exact name. An
+// empty one is none.
+export interface TaskFilter {
+  q?: string;
+  assignee?: string;
+}
+
+export function listTasks(ns: string, phase: Phase, offset: number, limit: number, signal?: AbortSignal, filter: TaskFilter = {}) {
   const q = new URLSearchParams({ phase, offset: String(offset), limit: String(limit) });
+  if (filter.q) q.set("q", filter.q);
+  if (filter.assignee) q.set("assignee", filter.assignee);
   return get<TaskList>(`/namespaces/${encodeURIComponent(ns)}/tasks?${q}`, signal);
 }
 

@@ -3,7 +3,7 @@ import { MemoryRouter, useLocation, useNavigate, type NavigateFunction } from "r
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { App } from "./App";
 import { phases, type Phase, type Task } from "./api";
-import { Columns, latest, matches, type Column } from "./Board";
+import { Columns, latest, matches, searchDelayMs, type Column } from "./Board";
 import { json } from "./testing";
 
 afterEach(cleanup);
@@ -62,6 +62,18 @@ describe("Columns", () => {
   it("filters the loaded page by the search", () => {
     renderBoard(columns([task("a", "Todo", { labels: ["ops"] }), task("b", "Todo")]), "ops");
     expect(screen.getAllByRole("link")).toHaveLength(1);
+  });
+
+  it("shows what the server filtered as it is, and its total in the pill", () => {
+    const cols = columns([task("a", "Todo"), task("b", "Done")], ["Done"]).map((c) => (c.phase === "Todo" ? { ...c, total: 120 } : c));
+    renderBoard(cols, "nothing");
+    const pill = (phase: string) => screen.getByRole("region", { name: phase }).querySelector(".count-pill")!.textContent;
+    expect(pill("Todo")).toBe("120");
+    expect(screen.getByText("Title of a")).toBeTruthy();
+    // A column without a total, from a server without the filters, counts
+    // what is loaded, and filters it here.
+    expect(pill("Done")).toBe("1+");
+    expect(screen.queryByText("Title of b")).toBeNull();
   });
 });
 
@@ -137,6 +149,26 @@ describe("Board", () => {
     return () => go();
   }
 
+  // urls are the board's reads of serveFiltered.
+  let urls: URLSearchParams[] = [];
+
+  // serveFiltered answers as a server with the filters: it filters by q and
+  // assignee, and counts the matches, or answers total[phase] if set.
+  function serveFiltered(tasks: Task[], total: Partial<Record<Phase, number>> = {}) {
+    urls = [];
+    vi.stubGlobal("fetch", (url: string) => {
+      if (url.endsWith("/me")) return json({ mode: "none", admin: true });
+      if (url.endsWith("/teams")) return json({ items: [] });
+      const p = new URL(url, "http://cadre.test").searchParams;
+      urls.push(p);
+      const q = p.get("q") ?? "";
+      if (q.length > 200) return json({ error: { code: "invalid", message: `q is ${q.length} characters: at most 200` } }, 400);
+      const phase = p.get("phase") as Phase;
+      const items = tasks.filter((t) => t.status?.phase === phase && matches(t, q, p.get("assignee") ?? ""));
+      return json({ items, offset: 0, limit: 50, total: total[phase] ?? items.length });
+    });
+  }
+
   let navigate: NavigateFunction;
   function Navigator() {
     navigate = useNavigate();
@@ -200,7 +232,7 @@ describe("Board", () => {
     renderPage();
     await screen.findByText("Title of a");
     expect(screen.queryByText(/shown$/)).toBeNull();
-    fireEvent.change(screen.getByLabelText("Search the loaded page"), { target: { value: "ops" } });
+    fireEvent.change(screen.getByLabelText("Search the board"), { target: { value: "ops" } });
     expect(screen.getByText("2 of 3 loaded tasks shown")).toBeTruthy();
     expect(screen.queryByText("Title of b")).toBeNull();
     fireEvent.click(screen.getByRole("button", { name: "Clear the search" }));
@@ -213,7 +245,7 @@ describe("Board", () => {
     go();
     renderPage("/t/team-a?q=title&phase=Todo&assignee=bot-1");
     expect(await screen.findByText("Title of a")).toBeTruthy();
-    expect((screen.getByLabelText("Search the loaded page") as HTMLInputElement).value).toBe("title");
+    expect((screen.getByLabelText("Search the board") as HTMLInputElement).value).toBe("title");
     expect(select("Phase").value).toBe("Todo");
     expect(select("Assignee").value).toBe("bot-1");
     expect(screen.getAllByRole("region").map((r) => r.getAttribute("aria-label"))).toEqual(["Todo"]);
@@ -258,11 +290,160 @@ describe("Board", () => {
     expect(await screen.findByText("Title of b")).toBeTruthy();
   });
 
+  it("sends the search trimmed to every phase once the typing pauses, and counts the board's matches", async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    serveFiltered([task("a", "Todo", { labels: ["ops"] }), task("b", "Todo"), task("c", "Done", { labels: ["ops"] })], { Done: 80 });
+    renderPage();
+    await screen.findByText("Title of b");
+    urls = [];
+    const search = screen.getByLabelText("Search the board");
+    fireEvent.change(search, { target: { value: " op" } });
+    await act(() => vi.advanceTimersByTimeAsync(searchDelayMs - 100));
+    fireEvent.change(search, { target: { value: " ops " } });
+    await act(() => vi.advanceTimersByTimeAsync(searchDelayMs - 100));
+    expect(urls).toEqual([]);
+    await act(() => vi.advanceTimersByTimeAsync(150));
+    await vi.waitFor(() => expect(urls).toHaveLength(7));
+    expect(new Set(urls.map((u) => u.get("q")))).toEqual(new Set(["ops"]));
+    expect(new Set(urls.map((u) => u.get("phase")))).toEqual(new Set(phases));
+    await vi.waitFor(() => expect(screen.queryByText("Title of b")).toBeNull());
+    expect(screen.getByText("Title of a")).toBeTruthy();
+    expect(screen.getByText("81 tasks match")).toBeTruthy();
+  });
+
+  it("reads a link's search and assignee at once, and the whole board when they are cleared", async () => {
+    serveFiltered([bot("fix-a", "Todo"), task("fix-b", "Todo"), bot("c", "Done")]);
+    renderPage("/t/team-a?q=%20fix%20&assignee=bot-1");
+    expect(await screen.findByText("Title of fix-a")).toBeTruthy();
+    expect(new Set(urls.map((u) => `${u.get("q")}/${u.get("assignee")}`))).toEqual(new Set(["fix/bot-1"]));
+    expect(screen.queryByText("Title of fix-b")).toBeNull();
+    expect(screen.getByText("1 task matches")).toBeTruthy();
+    act(() => {
+      fireEvent.click(screen.getByRole("button", { name: "Clear the search" }));
+      fireEvent.change(select("Assignee"), { target: { value: "" } });
+    });
+    expect(query()).toBe("");
+    expect(await screen.findByText("Title of fix-b")).toBeTruthy();
+    expect(screen.getByText("Title of c")).toBeTruthy();
+    expect(urls.at(-1)!.has("q") || urls.at(-1)!.has("assignee")).toBe(false);
+    expect(screen.queryByText(/match/)).toBeNull();
+  });
+
+  it("keeps the assignees read before as options while one is chosen", async () => {
+    serveFiltered([bot("a", "Todo"), task("b", "Todo", { assignee: { kind: "User", name: "dana" } })]);
+    renderPage();
+    await screen.findByText("Title of b");
+    fireEvent.change(select("Assignee"), { target: { value: "dana" } });
+    await vi.waitFor(() => expect(screen.queryByText("Title of a")).toBeNull());
+    expect([...select("Assignee").options].map((o) => o.text)).toEqual(["Anyone", "bot-1", "dana"]);
+  });
+
+  it("shows each column's total in its pill, as each read counts it", async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    const total: Partial<Record<Phase, number>> = { Todo: 120 };
+    serveFiltered([task("a", "Todo")], total);
+    renderPage("/t/team-a?q=title");
+    await screen.findByText("Title of a");
+    const pill = () => screen.getByRole("region", { name: "Todo" }).querySelector(".count-pill")!.textContent;
+    expect(pill()).toBe("120");
+    total.Todo = 121;
+    await act(() => vi.advanceTimersByTimeAsync(5000));
+    await vi.waitFor(() => expect(pill()).toBe("121"));
+    expect(urls.at(-1)!.get("q")).toBe("title");
+  });
+
+  it("reads the first pages again when a filter changes, and offers more by the page, not the total", async () => {
+    const offsets: string[] = [];
+    vi.stubGlobal("fetch", (url: string) => {
+      if (url.endsWith("/me")) return json({ mode: "none", admin: true });
+      if (url.endsWith("/teams")) return json({ items: [] });
+      const q = new URL(url, "http://cadre.test").searchParams;
+      const phase = q.get("phase") as Phase;
+      const offset = Number(q.get("offset"));
+      offsets.push(`${phase}@${offset}`);
+      // Todo has a full first page and a short second one, and a task more
+      // by the second read; Done says it has more than its one short page.
+      const n = phase === "Todo" ? (offset === 0 ? 50 : 1) : phase === "Done" ? 1 : 0;
+      const items = Array.from({ length: n }, (_, i) => bot(`${phase}-${offset + i}`, phase));
+      return json({ items, offset, limit: 50, total: phase === "Done" ? 999 : phase === "Todo" ? 51 + offset / 50 : 0 });
+    });
+    renderPage();
+    const todo = await screen.findByRole("region", { name: "Todo" });
+    expect(within(screen.getByRole("region", { name: "Done" })).queryByRole("button", { name: "Load more" })).toBeNull();
+    fireEvent.click(await within(todo).findByRole("button", { name: "Load more" }));
+    await vi.waitFor(() => expect(offsets).toContain("Todo@50"));
+    await vi.waitFor(() => expect(within(screen.getByRole("region", { name: "Todo" })).queryByRole("button", { name: "Load more" })).toBeNull());
+    // The pill shows the total of the last page read.
+    expect(screen.getByRole("region", { name: "Todo" }).querySelector(".count-pill")!.textContent).toBe("52");
+    offsets.length = 0;
+    fireEvent.change(select("Assignee"), { target: { value: "bot-1" } });
+    await vi.waitFor(() => expect(screen.getByRole("region", { name: "Todo" }).querySelector(".count-pill")!.textContent).toBe("51"));
+    expect(offsets.sort()).toEqual(phases.map((ph) => `${ph}@0`).sort());
+  });
+
+  it("says why the server refused the search, and shows the board again once it is cleared", async () => {
+    serveFiltered([task("a", "Todo")]);
+    renderPage(`/t/team-a?q=${"x".repeat(201)}`);
+    expect(await screen.findByText("Could not filter the board: q is 201 characters: at most 200")).toBeTruthy();
+    expect(screen.queryByText("Loading the board")).toBeNull();
+    expect(screen.queryByRole("region", { name: "Todo" })).toBeNull();
+    fireEvent.click(screen.getByRole("button", { name: "Clear the search" }));
+    expect(await screen.findByText("Title of a")).toBeTruthy();
+    expect(screen.queryByText(/Could not filter/)).toBeNull();
+  });
+
+  it("shows the skeleton, not the last filter's cards, until a new filter's read is back", async () => {
+    serveFiltered([task("b", "Todo", { assignee: { kind: "User", name: "dana" } }), task("c", "Todo", { assignee: { kind: "User", name: "carol" } })]);
+    const served = globalThis.fetch;
+    let go: () => void = () => {};
+    const held = new Promise<void>((r) => (go = r));
+    let asked = false;
+    vi.stubGlobal("fetch", async (url: string) => {
+      if (url.includes("assignee=carol")) {
+        asked = true;
+        await held;
+      }
+      return served(url);
+    });
+    renderPage();
+    await screen.findByText("Title of c");
+    fireEvent.change(select("Assignee"), { target: { value: "dana" } });
+    expect(await screen.findByText("1 task matches")).toBeTruthy();
+    expect(screen.queryByText("Title of c")).toBeNull();
+    fireEvent.change(select("Assignee"), { target: { value: "carol" } });
+    await vi.waitFor(() => expect(asked).toBe(true));
+    expect(query()).toBe("?assignee=carol");
+    expect(screen.getByText("Loading the board")).toBeTruthy();
+    expect(screen.queryByText("Title of b")).toBeNull();
+    expect(screen.queryByRole("region", { name: "Todo" })).toBeNull();
+    expect(screen.queryByText(/match/)).toBeNull();
+    await act(async () => go());
+    expect(await screen.findByText("Title of c")).toBeTruthy();
+    expect(screen.getByText("1 task matches")).toBeTruthy();
+  });
+
+  it("clears the refusal when the search changes, so a failed read shows the error and retry", async () => {
+    serveFiltered([task("fix-a", "Todo")]);
+    renderPage(`/t/team-a?q=${"x".repeat(201)}`);
+    await screen.findByText("Could not filter the board: q is 201 characters: at most 200");
+    const served = globalThis.fetch;
+    vi.stubGlobal("fetch", async (url: string) => {
+      if (url.includes("/tasks")) throw new TypeError("Failed to fetch");
+      return served(url);
+    });
+    fireEvent.change(screen.getByLabelText("Search the board"), { target: { value: "fix" } });
+    expect(await screen.findByText("Could not load the board: Failed to fetch")).toBeTruthy();
+    expect(screen.queryByText(/Could not filter/)).toBeNull();
+    vi.stubGlobal("fetch", served);
+    fireEvent.click(screen.getByRole("button", { name: "Retry" }));
+    expect(await screen.findByText("Title of fix-a")).toBeTruthy();
+  });
+
   it("keeps the search in the URL in place of the history entry", async () => {
     serve([task("a", "Todo", { labels: ["ops"] }), task("b", "Todo")])();
     renderPage("/t/team-a?phase=Done", "/t/team-a");
     await screen.findByText("Title of b");
-    const search = screen.getByLabelText("Search the loaded page");
+    const search = screen.getByLabelText("Search the board");
     fireEvent.change(search, { target: { value: "o" } });
     fireEvent.change(search, { target: { value: "ops" } });
     expect(query()).toBe("?q=ops");
@@ -275,7 +456,7 @@ describe("Board", () => {
     serve([task("a", "Todo", { title: "是務" }), task("b", "Todo")])();
     renderPage();
     await screen.findByText("Title of b");
-    const search = screen.getByLabelText("Search the loaded page") as HTMLInputElement;
+    const search = screen.getByLabelText("Search the board") as HTMLInputElement;
     fireEvent.compositionStart(search);
     for (const value of ["ㄕ", "ㄕˋ", "是", "是ㄨ", "是ㄨˋ", "是務"]) {
       fireEvent.change(search, { target: { value } });
@@ -292,7 +473,7 @@ describe("Board", () => {
     serve([task("a", "Todo", { title: "release notes" }), task("b", "Todo")])();
     renderPage();
     await screen.findByText("Title of b");
-    const search = screen.getByLabelText("Search the loaded page") as HTMLInputElement;
+    const search = screen.getByLabelText("Search the board") as HTMLInputElement;
     // One act: the keys come faster than the router's transition commits.
     act(() => {
       for (const key of "release") fireEvent.change(search, { target: { value: search.value + key } });
@@ -305,7 +486,7 @@ describe("Board", () => {
     serve([task("a", "Todo")])();
     renderPage();
     await screen.findByText("Title of a");
-    const search = screen.getByLabelText("Search the loaded page") as HTMLInputElement;
+    const search = screen.getByLabelText("Search the board") as HTMLInputElement;
     // "a" is written; the router commits it after the composition began.
     act(() => {
       fireEvent.change(search, { target: { value: "a" } });
@@ -324,7 +505,7 @@ describe("Board", () => {
     serve([task("a", "Todo"), task("b", "Todo")])();
     renderPage("/t/team-a?q=a", "/t/team-a");
     await screen.findByText("Title of b");
-    const search = screen.getByLabelText("Search the loaded page") as HTMLInputElement;
+    const search = screen.getByLabelText("Search the board") as HTMLInputElement;
     expect(search.value).toBe("");
     act(() => navigate(-1));
     expect(search.value).toBe("a");
@@ -403,7 +584,7 @@ describe("Board", () => {
     const list = await screen.findByRole("region", { name: "Tasks" });
     expect(within(list).getAllByRole("link").map((l) => l.textContent)).toEqual(["Title of fix-a"]);
     expect(screen.queryByRole("region", { name: "Todo" })).toBeNull();
-    expect((screen.getByLabelText("Search the loaded page") as HTMLInputElement).value).toBe("fix");
+    expect((screen.getByLabelText("Search the board") as HTMLInputElement).value).toBe("fix");
     expect(select("Phase").value).toBe("Todo");
     expect(select("Assignee").value).toBe("bot-1");
     expect(screen.getByRole("button", { name: "List" }).getAttribute("aria-pressed")).toBe("true");
@@ -502,5 +683,40 @@ describe("Board", () => {
     await act(() => vi.advanceTimersByTimeAsync(5000));
     await vi.waitFor(() => expect(screen.getByRole("status").textContent).toBe("Could not refresh: not synced"));
     expect(screen.getByText("Title of a")).toBeTruthy();
+  });
+
+  it("shows the skeleton, not the last filter's failed refresh, until a new filter's read is back", async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    serveFiltered([bot("a", "Todo"), task("c", "Todo", { assignee: { kind: "User", name: "carol" } })]);
+    const served = globalThis.fetch;
+    let down = false;
+    let go: () => void = () => {};
+    const held = new Promise<void>((r) => (go = r));
+    let asked = false;
+    vi.stubGlobal("fetch", async (url: string) => {
+      if (down && url.includes("/tasks")) throw new TypeError("Failed to fetch");
+      const who = new URL(url, "http://cadre.test").searchParams.get("assignee");
+      if (who === "bot-1") {
+        asked = true;
+        await held;
+      }
+      return served(url);
+    });
+    renderPage();
+    await screen.findByText("Title of a");
+    fireEvent.change(select("Assignee"), { target: { value: "carol" } });
+    await screen.findByText("1 task matches");
+    down = true;
+    await act(() => vi.advanceTimersByTimeAsync(5000));
+    await vi.waitFor(() => expect(screen.getByRole("status").textContent).toBe("Could not refresh: Failed to fetch"));
+    down = false;
+    fireEvent.change(select("Assignee"), { target: { value: "bot-1" } });
+    await vi.waitFor(() => expect(asked).toBe(true));
+    expect(screen.getByText("Loading the board")).toBeTruthy();
+    expect(screen.queryByText(/Could not/)).toBeNull();
+    expect(screen.queryByRole("button", { name: "Retry" })).toBeNull();
+    await act(async () => go());
+    expect(await screen.findByText("Title of a")).toBeTruthy();
+    expect(screen.queryByText(/Could not/)).toBeNull();
   });
 });
