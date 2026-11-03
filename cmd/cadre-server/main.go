@@ -23,12 +23,9 @@ import (
 	"unicode"
 
 	"github.com/go-logr/logr"
-	"sigs.k8s.io/controller-runtime/pkg/cache"
-	"sigs.k8s.io/controller-runtime/pkg/client"
 	ctrl "sigs.k8s.io/controller-runtime/pkg/client/config"
 	ctrllog "sigs.k8s.io/controller-runtime/pkg/log"
 
-	v1alpha1 "github.com/j75689/cadre/api/v1alpha1"
 	"github.com/j75689/cadre/internal/api"
 	"github.com/j75689/cadre/internal/auth"
 	"github.com/j75689/cadre/internal/authz"
@@ -174,9 +171,6 @@ func run() error {
 	}
 	opened(nil)
 	defer func() { _ = store.Close() }()
-	if err := warmConfig(ctx, ctrls.GetCache()); err != nil {
-		return err
-	}
 	// Schedules create tasks through the store, which exists only now that
 	// the manager runs: their controller joins it late, as controller-runtime
 	// allows, and starts once this replica leads.
@@ -197,6 +191,9 @@ func run() error {
 		log.Warn("runners are not authenticated (--runner-auth=none): any client may claim and finish runs")
 	}
 	hub := newHub(store)
+	// This also starts the informers of the kinds the API reads: the cache
+	// starts one only at its first read, and on a replica that does not lead
+	// no controller has.
 	if err := api.ConfigEvents(ctx, ctrls.GetCache(), hub); err != nil {
 		return err
 	}
@@ -401,18 +398,6 @@ func newHub(store interface {
 	hub := api.NewHub(store)
 	hub.TailRuns(store)
 	return hub
-}
-
-// warmConfig starts c's informers for the configuration kinds the API
-// reads. The cache starts one at its first read, and on a replica that does
-// not lead no controller has: they start now, not on a request.
-func warmConfig(ctx context.Context, c cache.Informers) error {
-	for _, obj := range []client.Object{&v1alpha1.Agent{}, &v1alpha1.ModelProvider{}, &v1alpha1.ToolServer{}, &v1alpha1.Schedule{}, &v1alpha1.Notifier{}, &v1alpha1.Runner{}} {
-		if _, err := c.GetInformer(ctx, obj); err != nil {
-			return fmt.Errorf("cache %T: %w", obj, err)
-		}
-	}
-	return nil
 }
 
 // validateTimings checks what runners are told: whole seconds, at least one,
