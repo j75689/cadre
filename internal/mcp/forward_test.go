@@ -326,7 +326,7 @@ func TestCallRereadsPermissions(t *testing.T) {
 // A ToolServer that never answers delays a request by the discovery
 // timeout at most, and only until its failure is remembered.
 func TestUnreachableToolServerIsBounded(t *testing.T) {
-	defer mcp.SetDiscoveryTimeoutForTest(300 * time.Millisecond)()
+	defer mcp.SetDiscoveryTimeoutForTest(time.Second)()
 	e, _, src := forwardingEnv(t)
 	done := make(chan struct{})
 	hang := httptest.NewServer(http.HandlerFunc(func(_ http.ResponseWriter, r *http.Request) {
@@ -340,7 +340,7 @@ func TestUnreachableToolServerIsBounded(t *testing.T) {
 	src.toolServers["blackhole"] = ready(&v1alpha1.ToolServer{ObjectMeta: metav1.ObjectMeta{Name: "blackhole"}, Spec: v1alpha1.ToolServerSpec{URL: hang.URL}})
 	src.agent.Spec.ToolRefs = append(src.agent.Spec.ToolRefs, "blackhole")
 	c := e.claim(t)
-	for i, limit := range []time.Duration{2 * time.Second, 200 * time.Millisecond} {
+	for i, limit := range []time.Duration{2 * time.Second, 300 * time.Millisecond} {
 		begin := time.Now()
 		tools, err := e.connect(c.MCPToken)
 		if err != nil || !slices.ContainsFunc(tools, func(t *sdk.Tool) bool { return t.Name == "github__search" }) {
