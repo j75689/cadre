@@ -8,12 +8,14 @@ export const hintDelayMs = 100;
 
 // Live names the watch stream's hints a page reads again on: those of topic
 // in namespace ns that match (all of them without match), and for "runs"
-// the task whose run it shows.
+// the task whose run it shows. steady keeps the interval while live, for a
+// page whose changes not all send a hint.
 export interface Live {
   ns: string;
   topic: Topic;
   task?: string;
   match?: (hint: Hint) => boolean;
+  steady?: boolean;
 }
 
 // usePolling calls load now and every interval while the page is visible,
@@ -22,7 +24,8 @@ export interface Live {
 // followed a fifth of the interval after it ends, so a slow server is not
 // read back to back. The signal ends a load that is overtaken or unmounted.
 // With live, a matching hint calls load at once (after any load in flight),
-// and while the topic is live the interval is livePollMs at least.
+// and while the topic is live the interval is livePollMs at least, unless
+// steady.
 export function usePolling(load: (signal: AbortSignal) => Promise<void>, intervalMs: number, deps: unknown[], live?: Live) {
   const latest = useRef(load);
   const match = useRef(live?.match);
@@ -40,7 +43,7 @@ export function usePolling(load: (signal: AbortSignal) => Promise<void>, interva
     let again = false;
     let started = 0;
     const schedule = () => {
-      const period = streamed ? Math.max(intervalMs, livePollMs) : intervalMs;
+      const period = streamed && !live?.steady ? Math.max(intervalMs, livePollMs) : intervalMs;
       const now = Date.now();
       timer = setTimeout(tick, Math.max(started + period, now + intervalMs / 5) - now);
     };

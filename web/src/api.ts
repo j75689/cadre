@@ -199,6 +199,27 @@ export interface ConfigResource extends AgentSummary {
   status?: Record<string, unknown>;
 }
 
+// Activity is an Event about one of cadre's objects: when it last
+// happened, what happened, to what, which component said so, and how many
+// times.
+export interface Activity {
+  time: string;
+  type: "Normal" | "Warning" | string;
+  reason: string;
+  action: string;
+  note: string;
+  regarding: { kind: string; name: string };
+  reportedBy: string;
+  count: number;
+}
+
+export interface ActivityList {
+  items: Activity[];
+  offset: number;
+  // limit is the one applied: the server caps what was asked for.
+  limit: number;
+}
+
 export class APIError extends Error {
   constructor(
     readonly status: number,
@@ -376,6 +397,13 @@ export const getTeam = (ns: string, signal?: AbortSignal) => get<Team>(`/namespa
 // not under a "spec" key.
 export const putTeam = (ns: string, spec: TeamSpec, resourceVersion?: string) =>
   put<Team>(`/namespaces/${encodeURIComponent(ns)}/team`, { ...spec, resourceVersion });
+
+// listActivity reads a page of the namespace's recent activity, newest
+// first, for its admins.
+export function listActivity(ns: string, page: { offset: number; limit: number }, signal?: AbortSignal) {
+  const q = new URLSearchParams({ offset: String(page.offset), limit: String(page.limit) });
+  return get<ActivityList>(`/namespaces/${encodeURIComponent(ns)}/activity?${q}`, signal);
+}
 
 const accessPath = (ns: string, name: string) =>
   `/namespaces/${encodeURIComponent(ns)}/agentaccesses/${encodeURIComponent(name)}`;
