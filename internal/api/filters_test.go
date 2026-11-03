@@ -297,3 +297,49 @@ func TestListFiltersAreTheSameForEveryRole(t *testing.T) {
 		}
 	}
 }
+
+// A namespace without a Team has no board: whoever the guard lets through,
+// a bootstrap admin or anyone without logins, is told so whatever the query,
+// even one the list would refuse. A namespace that is no label is refused,
+// and the guard still refuses those with no role there.
+func TestListTasksWithoutTeam(t *testing.T) {
+	store := memory.NewBackend().Open()
+	e := startRolesOn(t, store, nil)
+	mux := http.NewServeMux()
+	api.NewServer(manager.New(store, manager.Config{}), slog.New(slog.NewTextHandler(io.Discard, nil))).Register(mux)
+	open := httptest.NewServer(mux)
+	t.Cleanup(open.Close)
+	without := func(path string) (int, string) {
+		res, err := http.Get(open.URL + api.Base + path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer func() { _ = res.Body.Close() }()
+		out, _ := io.ReadAll(res.Body)
+		return res.StatusCode, string(out)
+	}
+	root := e.as("root@example.test")
+	callers := map[string]func(path string) (int, string){
+		"a bootstrap admin": func(path string) (int, string) { return e.do(root, "GET", path, "") },
+		"no logins":         without,
+	}
+	for _, who := range slices.Sorted(maps.Keys(callers)) {
+		do := callers[who]
+		for _, query := range []string{"", "?offset=-1", "?limit=x", "?number=1", "?number=0", "?parent=x", "?parent=a%2Fb",
+			"?label=auth", "?label=", "?q=login", "?assignee=dana@example.test", "?phase=Nope", "?q=a&q=b"} {
+			if code, out := do("/namespaces/team-c/tasks" + query); code != http.StatusNotFound || out != `{"error":{"code":"not_found","message":"not found"}}`+"\n" {
+				t.Errorf("%s, team-c%s: %d %s, want 404 not_found", who, query, code, out)
+			}
+		}
+		if code, out := do("/namespaces/Team-C/tasks?offset=-1"); code != http.StatusBadRequest || !strings.Contains(out, `"code":"invalid"`) {
+			t.Errorf("%s, a namespace that is no label: %d %s, want 400 invalid", who, code, out)
+		}
+	}
+	for who, token := range map[string]string{"a viewer": e.as("eve@example.test", "readers"), "a stranger": e.as("mallory@example.test", "elsewhere")} {
+		for _, ns := range []string{"team-c", "Team-C"} {
+			if code, out := e.do(token, "GET", "/namespaces/"+ns+"/tasks?offset=-1", ""); code != http.StatusForbidden || !strings.Contains(out, `"no_role"`) {
+				t.Errorf("%s, %s: %d %s, want 403 no_role", who, ns, code, out)
+			}
+		}
+	}
+}

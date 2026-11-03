@@ -175,6 +175,10 @@ func TestRefreshUnanswered(t *testing.T) {
 	idp := oidctest.New(t)
 	idp.SetOffline(true)
 	server := refreshEnv(t, idp)
+	// task list needs a board: a namespace without a Team is a 404.
+	if _, err := run("--server", server, "-n", "team-a", "team", "init"); err != nil {
+		t.Fatal(err)
+	}
 	tok := kept(t, server).RefreshToken
 	idp.SetRefreshStatus(http.StatusTooManyRequests)
 	expire(t, server) // 30 s left: within the margin, not expired
