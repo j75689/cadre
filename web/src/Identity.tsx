@@ -1,4 +1,4 @@
-import { createContext, useCallback, useContext, useEffect, useRef, useState, type ReactNode } from "react";
+import { createContext, useCallback, useContext, useEffect, useLayoutEffect, useRef, useState, type ReactNode, type RefObject } from "react";
 import { getMe, logout, type Me } from "./api";
 import { isRole, type Role } from "./roles";
 import { loadIdentity, saveIdentity } from "./identityStore";
@@ -18,6 +18,8 @@ interface IdentityState {
   // is the same read, done once it is back.
   refresh: () => void;
   read: () => Promise<void>;
+  // held is what had the focus when the last answer came, for LiveRoles.
+  held?: RefObject<Element | null>;
   // name is shown; author is sent with actions ("" with a login).
   name: string;
   author: string;
@@ -35,12 +37,14 @@ export function IdentityProvider({ children }: { children: ReactNode }) {
   // Every component shares the one read of /me: a new one ends the one in
   // flight, so the newest answer is the one kept.
   const reading = useRef<AbortController | undefined>(undefined);
+  const held = useRef<Element | null>(null);
   const read = useCallback(() => {
     reading.current?.abort();
     const controller = new AbortController();
     reading.current = controller;
     return getMe(controller.signal).then(
       (got) => {
+        held.current = document.activeElement;
         setMe(got);
         if (got.mode === "oidc") {
           setMode("oidc");
@@ -70,7 +74,7 @@ export function IdentityProvider({ children }: { children: ReactNode }) {
   };
   const value: IdentityState =
     mode === "oidc"
-      ? { mode, name: user, author: "", setName, me, refresh, read }
+      ? { mode, name: user, author: "", setName, me, refresh, read, held }
       : mode === "none"
         ? { mode, name: typed, author: typed, setName, me, refresh, read }
         : { mode, name: "", author: "", setName, problem, refresh, read };
@@ -122,7 +126,14 @@ export function LiveRoles({ ns }: { ns: string }) {
 export const rolesPollMs = 15000;
 
 function ReadRoles({ ns }: { ns: string }) {
-  const { read } = useContext(IdentityContext);
+  const { me, read, held } = useContext(IdentityContext);
+  // When the roles a read gives take away what had the focus, such as a
+  // tab or "New task", it goes to the page's heading, not to the body. A
+  // role gone altogether is the page's to say (Settings' alert).
+  useLayoutEffect(() => {
+    const was = held?.current;
+    if (was && !was.isConnected && document.activeElement === document.body && roleOf(me, ns)) document.querySelector<HTMLElement>("main h1")?.focus();
+  }, [me, held, ns]);
   // shown skips usePolling's read at once: /me was just read, and it says
   // the roles on every team, so another team needs no read either.
   const shown = useRef(true);

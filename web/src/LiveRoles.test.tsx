@@ -121,6 +121,16 @@ describe("Roles while live", () => {
     expect(screen.queryByRole("link", { name: "Activity" })).toBeNull();
   });
 
+  it("move the focus from a tab the new role takes away to the heading", async () => {
+    roles = { a: "admin" };
+    const stream = await open("/t/a/settings", /You are an admin of a/);
+    act(() => screen.getByRole("link", { name: "Activity" }).focus());
+    roles = { a: "member" };
+    expect(await send(stream, teamHint)).toBe(1);
+    expect(screen.queryByRole("link", { name: "Activity" })).toBeNull();
+    expect(document.activeElement).toBe(screen.getByRole("heading", { name: "Settings" }));
+  });
+
   it("show Settings again to a caller whose role was taken and given back, the focus off the body", async () => {
     roles = { a: "admin" };
     const stream = await open("/t/a/settings", /You are an admin of a/);
