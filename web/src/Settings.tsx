@@ -51,9 +51,12 @@ export function Settings() {
   const [lost, setLost] = useState(false);
   const lostRef = useRef<HTMLDivElement>(null);
   const missingRef = useRef<HTMLParagraphElement>(null);
-  // closed is whether a read closed the form, so the message that took its
-  // place takes the focus.
+  // closed is whether a read closed the form, or took the Team away while
+  // the focus was in it (on Edit), so the message that took its place takes
+  // the focus.
   const closed = useRef(false);
+  const teamRef = useRef<HTMLDivElement>(null);
+  const closing = () => editing || Boolean(teamRef.current?.contains(document.activeElement));
   const { refresh } = useIdentity();
   useEffect(() => {
     if (demoted) demotedRef.current?.focus();
@@ -69,7 +72,7 @@ export function Settings() {
   };
   const lose = () => {
     if (!lost) refresh();
-    closed.current ||= editing;
+    closed.current ||= closing();
     setEditing(false);
     setLost(true);
     setTeam(null);
@@ -90,7 +93,7 @@ export function Settings() {
           return;
         }
         if (e instanceof APIError && e.status === 404) {
-          closed.current ||= editing;
+          closed.current ||= closing();
           setTeam(null);
           setMissing(true);
           setEditing(false);
@@ -140,7 +143,7 @@ export function Settings() {
         </Loading>
       )}
       {team && (
-        <div className="stack">
+        <div className="stack" ref={teamRef}>
           <section className="card" aria-labelledby="team">
             <div className="card-head">
               <h2 id="team">Team</h2>

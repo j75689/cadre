@@ -456,6 +456,22 @@ describe("Editing the Team", () => {
     expect(screen.queryByRole("form", { name: "Edit the team" })).toBeNull();
   });
 
+  it("moves the focus from Edit to what takes the Team's place when a read loses it, the form closed", async () => {
+    const lost = [
+      { answer: noRole, focused: () => screen.getByText(/Your role on a is gone or has changed/).closest("[role=alert]") },
+      { answer: noTeam, focused: () => screen.getByText(/This namespace has no Team/) },
+    ];
+    for (const { answer, focused } of lost) {
+      const reads = open(admin, () => json(full), answer);
+      const button = await screen.findByRole("button", { name: "Edit" });
+      act(() => button.focus());
+      document.dispatchEvent(new Event("visibilitychange")); // the page reads the Team again
+      await waitFor(() => expect(reads()).toBe(2));
+      await waitFor(() => expect(document.activeElement).toBe(focused()));
+      cleanup();
+    }
+  });
+
   it("hides what only admins see once a save took the caller's own admin role", async () => {
     let me = 0;
     const sent: Record<string, unknown>[] = [];
