@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import { Link, Outlet, Route, Routes, useParams } from "react-router";
 import { AccessDetail, AccessList } from "./Access";
+import { Activity } from "./Activity";
 import { AgentDetail } from "./AgentDetail";
 import { Agents } from "./Agents";
 import { ModelProviderDetail, ModelProviders } from "./ModelProviders";
@@ -124,6 +125,12 @@ function TeamAccesses() {
 function OneAccess() {
   const { ns = "", name = "" } = useParams();
   return <AccessDetail key={`${ns}/${name}`} />;
+}
+
+// the activity,
+function TeamActivity() {
+  const { ns = "" } = useParams();
+  return <Activity key={ns} />;
 }
 
 // and a task page to one task.
@@ -289,6 +296,7 @@ export function App() {
               <Route path="settings" element={<TeamSettings />} />
               <Route path="settings/access" element={<TeamAccesses />} />
               <Route path="settings/access/:name" element={<OneAccess />} />
+              <Route path="settings/activity" element={<TeamActivity />} />
               <Route path="*" element={<NotFound />} />
             </Route>
             <Route path="*" element={<NotFound />} />

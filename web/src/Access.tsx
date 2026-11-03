@@ -29,9 +29,10 @@ import { usePolling } from "./usePolling";
 // pollMs is how often the AgentAccesses are read again.
 const pollMs = 15000;
 
-const settingsPath = (ns: string) => `${teamPath(ns)}/settings`;
+export const settingsPath = (ns: string) => `${teamPath(ns)}/settings`;
 const accessPath = (ns: string) => `${settingsPath(ns)}/access`;
-const accessLink = (ns: string, name: string) => `${accessPath(ns)}/${encodeURIComponent(name)}`;
+export const accessLink = (ns: string, name: string) => `${accessPath(ns)}/${encodeURIComponent(name)}`;
+const activityPath = (ns: string) => `${settingsPath(ns)}/activity`;
 
 // useAccessShown says whether the Agent access pages are for the caller.
 // The server serves AgentAccesses with logins only (Register in
@@ -42,12 +43,13 @@ function useAccessShown(ns: string): boolean {
   return mode === "oidc" && can(role, "manage");
 }
 
-// SettingsNav is the settings' tabs: the Team, and Agent access for those
-// who may manage it.
+// SettingsNav is the settings' tabs: the Team, and Agent access and
+// Activity for those who may manage it.
 export function SettingsNav() {
   const { ns = "" } = useParams();
   const { pathname } = useLocation();
   const shown = useAccessShown(ns);
+  const admin = can(useRole(ns), "manage");
   const team = settingsPath(ns);
   return (
     <nav className="subnav" aria-label="Settings">
@@ -58,6 +60,11 @@ export function SettingsNav() {
       {shown && (
         <NavLink className="subnav-tab" to={accessPath(ns)}>
           Agent access
+        </NavLink>
+      )}
+      {admin && (
+        <NavLink className="subnav-tab" to={activityPath(ns)}>
+          Activity
         </NavLink>
       )}
     </nav>
