@@ -486,9 +486,10 @@ describe("Editing the Team", () => {
       const reads = open(admin, () => json(full), answer);
       const button = await screen.findByRole("button", { name: "Edit" });
       act(() => button.focus());
+      await act(async () => {}); // the effects of the render that drew the Team have run
       document.dispatchEvent(new Event("visibilitychange")); // the page reads the Team again
-      await waitFor(() => expect(reads()).toBe(2), { timeout: 5000 });
-      await waitFor(() => expect(document.activeElement).toBe(focused()), { timeout: 5000 });
+      await waitFor(() => expect(reads()).toBe(2));
+      await waitFor(() => expect(document.activeElement).toBe(focused()));
       cleanup();
     }
   });
@@ -518,9 +519,10 @@ describe("Editing the Team", () => {
       await screen.findByRole("region", { name: "Team" });
       const tab = screen.getByRole("link", { name: "Team" });
       act(() => tab.focus());
+      await act(async () => {}); // the effects of the render that drew the Team have run
       document.dispatchEvent(new Event("visibilitychange")); // the page reads the Team again
-      await waitFor(() => expect(reads()).toBe(2), { timeout: 5000 });
-      await waitFor(() => expect(screen.queryByRole("region", { name: "Team" })).toBeNull(), { timeout: 5000 });
+      await waitFor(() => expect(reads()).toBe(2));
+      await waitFor(() => expect(screen.queryByRole("region", { name: "Team" })).toBeNull());
       expect(document.activeElement).toBe(tab);
       cleanup();
     }
