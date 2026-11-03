@@ -297,6 +297,23 @@ Cadre is not a SaaS, not a workflow engine, not an LLM gateway and not a sandbox
   Nothing else of cadre-server changes with the old role: `GET /tasks` and the rest answer as before.
 
   To fix it, upgrade the chart (`helm upgrade cadre oci://ghcr.io/j75689/charts/cadre -n cadre-system`, the release name of the install above; the chart's ClusterRole `<release>-server` is `config/rbac/role.yaml`), or without the chart apply that file (`kubectl apply -f config/rbac/role.yaml`); the request above then answers 200.
+- Reading the activity's `uid`, and the board of a namespace without a Team, with the same token as above (cadre-server with the `uid` and the 404 below; an older one sends no `uid` and answers 200 for the board). `team-a` has a Team and two Events equal in every field, a `MissedTicks` about the Schedule `nightly`; `demo` has no Team. `uid` is the first field of an item, the Event's `metadata.uid`, and tells the two apart:
+
+  ```sh
+  curl -s -H "Authorization: Bearer $(cadre auth token)" \
+    "$CADRE_SERVER/api/v1/namespaces/team-a/activity"
+  curl -s -H "Authorization: Bearer $(cadre auth token)" \
+    "$CADRE_SERVER/api/v1/namespaces/demo/tasks"
+  cadre task list -n demo
+  ```
+
+  ```json
+  {"items":[{"uid":"cc10adb3-b9bc-4956-96cd-d164a9d0b1db","time":"2026-11-01T05:00:00Z","type":"Normal","reason":"MissedTicks","action":"Act","note":"MissedTicks happened","regarding":{"kind":"Schedule","name":"nightly"},"reportedBy":"cadre-server","count":1},{"uid":"f2f917ee-635a-4ed1-908d-b86a4eb7df0d","time":"2026-11-01T05:00:00Z","type":"Normal","reason":"MissedTicks","action":"Act","note":"MissedTicks happened","regarding":{"kind":"Schedule","name":"nightly"},"reportedBy":"cadre-server","count":1}],"offset":0,"limit":100}
+  {"error":{"code":"not_found","message":"not found"}}
+  cadre: namespace demo has no Team, so it has no board; run cadre team init -n demo to make it a team
+  ```
+
+  The board's 404 is the answer to every query there, `?number=3` and the filters too, where it was 200 with `"items":[]`. A client that took the empty list for "no tasks" should take the 404 for "no board": make the team (`cadre team init -n demo`, or `PUT /team`) and the same request answers 200, `{"items":[],"offset":0,"limit":100,"total":0}`. Right after the Team is made, cadre-server may still answer 404 for a few milliseconds, until its index has the Team: read again (the web UI's board does, every 60 s). The other routes under `/tasks/<name>` are as they were.
 - Reading what the API's own writes left in the activity, with the same request, token and role as above. A Team admin, `ada@example.test`, edits the Team's `displayName` and `maxConcurrentRuns`, makes the AgentAccess `ci-bot` and deletes it; the Team had been made by a bootstrap admin, `root@example.test`, with `PUT /team`. Each successful write is one Normal Event on the object written, newest first below (an edit that changed nothing, and a second delete answered 404, left none):
 
   ```sh
