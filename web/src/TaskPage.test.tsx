@@ -434,6 +434,30 @@ describe("A link to a run", () => {
     expect(scroll).toHaveBeenCalledWith({ block: "start" });
   });
 
+  it("scrolls to the run in progress after a failed read of the runs", async () => {
+    const scroll = vi.fn();
+    Element.prototype.scrollIntoView = scroll;
+    runServer();
+    const serve = globalThis.fetch;
+    vi.stubGlobal("fetch", (url: string) => (url.endsWith("/runs") ? json({ error: { message: "unavailable" } }, 503) : serve(url)));
+    renderAt(current);
+    await screen.findByText(/Could not load the runs: unavailable/);
+    await vi.waitFor(() => expect(scroll).toHaveBeenCalledTimes(1));
+    expect(scroll).toHaveBeenCalledWith({ block: "start" });
+  });
+
+  it("scrolls to the run in progress after a failed read of the thread", async () => {
+    const scroll = vi.fn();
+    Element.prototype.scrollIntoView = scroll;
+    runServer();
+    const serve = globalThis.fetch;
+    vi.stubGlobal("fetch", (url: string) => (url.includes("/thread") ? Promise.reject(new TypeError("offline")) : serve(url)));
+    renderAt(current);
+    await screen.findByText(/Could not load the task: offline/);
+    await vi.waitFor(() => expect(scroll).toHaveBeenCalledTimes(1));
+    expect(scroll).toHaveBeenCalledWith({ block: "start" });
+  });
+
   it("gives up on a read of the runs that never answers, and scrolls to the run in progress", async () => {
     const scroll = vi.fn();
     Element.prototype.scrollIntoView = scroll;
