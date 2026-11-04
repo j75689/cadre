@@ -294,7 +294,10 @@ async function answer<T>(res: Response): Promise<T> {
     auth.toLogin();
   }
   if (!res.ok) {
-    let message = res.statusText;
+    // HTTP/2 has no status text, and a proxy's own error page is no JSON:
+    // the status then stands in, since a page tells a failed read by its
+    // message.
+    let message = res.statusText || `HTTP ${res.status}`;
     let code = "";
     try {
       const body = await res.json();

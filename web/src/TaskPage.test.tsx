@@ -480,6 +480,23 @@ describe("A link to a run", () => {
     expect(scroll).toHaveBeenCalledWith({ block: "start" });
   });
 
+  // A proxy's own error page is no JSON, and HTTP/2 has no status text.
+  it.each([
+    ["a proxy's error page", () => Promise.resolve(new Response("<html>Bad gateway</html>", { status: 502 })), "HTTP 502"],
+    ["an error", () => json({ error: { message: "unavailable" } }, 503), "unavailable"],
+  ])("scrolls to the run in progress after %s for its events", async (_, failed, message) => {
+    const scroll = vi.fn();
+    Element.prototype.scrollIntoView = scroll;
+    runServer();
+    const serve = globalThis.fetch;
+    vi.stubGlobal("fetch", (url: string) => (url.includes(`/runs/${current}/events`) ? failed() : serve(url)));
+    renderAt(current);
+    await screen.findByRole("region", { name: "Run in progress" });
+    await act(() => vi.advanceTimersByTimeAsync(10_000));
+    expect(scroll).toHaveBeenCalledTimes(1);
+    expect(screen.getByText(`Could not load the events: ${message}`)).toBeTruthy();
+  });
+
   it("gives up on a read of the runs that never answers, and scrolls to the run in progress", async () => {
     const scroll = vi.fn();
     Element.prototype.scrollIntoView = scroll;

@@ -59,6 +59,12 @@ describe("the Team and its AgentAccesses", () => {
     expect(err).toMatchObject({ status: 409, code: "conflict", message: "AgentAccess bot changed since it was read" });
   });
 
+  it("makes a non-JSON error without a status text an APIError with its status for a message", async () => {
+    sent(() => Promise.resolve(new Response("<html>Bad gateway</html>", { status: 502 })));
+    const err = await runEvents("a", "x", "r1").catch((e: unknown) => e);
+    expect(err).toMatchObject({ status: 502, code: "", message: "HTTP 502" });
+  });
+
   it("rotates a token with a POST to its token", async () => {
     const calls = sent(() => json({ token: "t0ken", tokenSecret: "bot-token" }));
     await expect(rotateAgentAccessToken("a", "bot")).resolves.toEqual({ token: "t0ken", tokenSecret: "bot-token" });
