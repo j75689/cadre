@@ -122,15 +122,15 @@ describe("a request that never answers", () => {
     vi.useRealTimers();
   });
 
-  it("fails as a read once readTimeoutMs has passed", async () => {
+  it("fails as a read once 35 s have passed", async () => {
     hung();
     let err: unknown;
     void runEvents("a", "x", "r1").catch((e: unknown) => (err = e));
-    await vi.advanceTimersByTimeAsync(readTimeoutMs - 1);
+    await vi.advanceTimersByTimeAsync(34_999);
     expect(err).toBeUndefined();
     await vi.advanceTimersByTimeAsync(1);
     expect(err).toBeInstanceOf(Error);
-    expect((err as Error).message).toBe(readTimedOut);
+    expect((err as Error).message).toBe("The server did not answer within 35 s.");
   });
 
   it("is given up on as a read while its body never comes", async () => {
