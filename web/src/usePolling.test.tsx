@@ -1,4 +1,5 @@
 import { cleanup, renderHook } from "@testing-library/react";
+import { useLayoutEffect } from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { FakeEventSource, fakeTabs } from "./testing";
 import { hintDelayMs, livePollMs, usePolling, type Live } from "./usePolling";
@@ -54,6 +55,25 @@ describe("usePolling", () => {
     await vi.advanceTimersByTimeAsync(1050);
     expect(starts.map((s) => s - t0)).toEqual([0, 3050, 4050]);
     vi.restoreAllMocks();
+  });
+
+  it("reads with the latest load when the tab is shown before the passive effects ran", async () => {
+    const loads: string[] = [];
+    const { rerender } = renderHook(
+      ({ name }) => {
+        usePolling(async () => void loads.push(name), 1000, []);
+        // Shown in the commit that brings load b, as a MutationObserver
+        // reacting to the new DOM would be.
+        useLayoutEffect(() => {
+          if (name === "b") document.dispatchEvent(new Event("visibilitychange"));
+        }, [name]);
+      },
+      { initialProps: { name: "a" } },
+    );
+    await vi.advanceTimersByTimeAsync(0);
+    rerender({ name: "b" });
+    await vi.advanceTimersByTimeAsync(0);
+    expect(loads).toEqual(["a", "b"]);
   });
 
   it("stops when unmounted", async () => {
@@ -162,6 +182,32 @@ describe("usePolling with live", () => {
     // 100ms make what it read show by 1300.
     expect(at()).toEqual([0, 100, 1100 + hintDelayMs]);
     expect(hintDelayMs).toBeLessThanOrEqual(250);
+  });
+
+  it("matches a hint with the match of the commit it comes in", async () => {
+    const loads: string[] = [];
+    const { rerender } = renderHook(
+      ({ name }) => {
+        usePolling(async () => void loads.push(name), 5000, [], {
+          ...board,
+          match: (h) => h.event === "task" && h.name === name,
+        });
+        // The hint for y comes in the commit that brings match y, before
+        // the passive effects ran.
+        useLayoutEffect(() => {
+          if (name === "y") FakeEventSource.open()[0].emit("task", { name: "y", phase: "Todo" });
+        }, [name]);
+      },
+      { initialProps: { name: "x" } },
+    );
+    await vi.advanceTimersByTimeAsync(0);
+    const stream = FakeEventSource.open()[0];
+    stream.emit("hello", hello);
+    await vi.advanceTimersByTimeAsync(100);
+    const before = loads.length;
+    rerender({ name: "y" });
+    await vi.advanceTimersByTimeAsync(hintDelayMs + 50);
+    expect(loads.slice(before)).toEqual(["y"]);
   });
 
   it("makes hints that come together one read", async () => {

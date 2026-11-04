@@ -10,6 +10,7 @@ import { useTeamName } from "./teamList";
 import { RoleBadge } from "./ui/Badge";
 import { Banner } from "./ui/Banner";
 import { Button } from "./ui/Button";
+import { useFocusWhenGone } from "./ui/focus";
 import { Heading, useTitle } from "./ui/Page";
 import { Loading, Skeleton } from "./ui/Skeleton";
 import { Time } from "./ui/Time";
@@ -61,6 +62,15 @@ export function Settings() {
   const closed = useRef(false);
   const teamRef = useRef<HTMLDivElement>(null);
   const closing = () => editing || Boolean(teamRef.current?.contains(document.activeElement));
+  // Focus elsewhere stays, unless what holds it goes too, such as the
+  // admins' settings tabs once /me is read again: then it goes where the
+  // Team card's would.
+  const press = useFocusWhenGone();
+  const losing = () => {
+    const at = document.activeElement;
+    if (closing()) closed.current = true;
+    else if (at instanceof HTMLElement && at !== document.body) press(at, () => lostRef.current ?? missingRef.current);
+  };
   const { mode, refresh } = useIdentity();
   const { me } = useIdentityDetails();
   useEffect(() => {
@@ -89,7 +99,7 @@ export function Settings() {
   };
   const lose = () => {
     if (!lost) refresh();
-    closed.current ||= closing();
+    losing();
     setEditing(false);
     setLost(true);
     setTeam(null);
@@ -112,7 +122,7 @@ export function Settings() {
           return;
         }
         if (e instanceof APIError && e.status === 404) {
-          closed.current ||= closing();
+          losing();
           setTeam(null);
           setMissing(true);
           setEditing(false);
