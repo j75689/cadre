@@ -12,13 +12,14 @@ import { usePolling } from "./usePolling";
 // and its token totals. The list is no live region, so a
 // screen reader is not read each poll; RunEnded says when the run ends. A
 // linked run (?run=<id>) is scrolled into view as an ended one is, once
-// ready. When the card goes (the run ended, or another started) while it
+// ready and its events have first been read (or failed to be), so it does
+// not grow after the scroll. When the card goes (the run ended, or another started) while it
 // holds the focus, the focus goes to the Runs card, which lists the run.
 export function LiveRun({ ns, name, run, linked, ready }: { ns: string; name: string; run: NonNullable<TaskStatus["run"]>; linked: boolean; ready: boolean }) {
   const [events, setEvents] = useState<RunEvent[] | null>(null);
   const [error, setError] = useState("");
   const card = useRef<HTMLElement>(null);
-  useLinkScroll(card, linked, ready);
+  useLinkScroll(card, linked, ready && (events !== null || error !== ""));
   // A layout effect's cleanup runs while the card is still in the page.
   useLayoutEffect(() => {
     const el = card.current;

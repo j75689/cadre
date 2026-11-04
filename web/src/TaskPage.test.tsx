@@ -458,6 +458,28 @@ describe("A link to a run", () => {
     expect(scroll).toHaveBeenCalledWith({ block: "start" });
   });
 
+  it("scrolls to the run in progress once its events are read, after a failed read of the runs", async () => {
+    const scroll = vi.fn();
+    Element.prototype.scrollIntoView = scroll;
+    const calls = runServer();
+    const serve = globalThis.fetch;
+    let answer = () => {};
+    vi.stubGlobal("fetch", (url: string) => {
+      if (url.endsWith("/runs")) return json({ error: { message: "unavailable" } }, 503);
+      if (url.includes(`/runs/${current}/events`)) return new Promise<Response>((r) => (answer = () => r(serve(url) as unknown as Response)));
+      return serve(url);
+    });
+    renderAt(current);
+    await screen.findByText(/Could not load the runs/);
+    await vi.waitFor(() => expect(calls.some((c) => c.includes("/thread")) && calls.some((c) => c.includes("parent="))).toBe(true));
+    await act(() => vi.advanceTimersByTimeAsync(10));
+    expect(scroll).not.toHaveBeenCalled();
+    await act(async () => answer());
+    await screen.findByText(/progress: working/);
+    await vi.waitFor(() => expect(scroll).toHaveBeenCalledTimes(1));
+    expect(scroll).toHaveBeenCalledWith({ block: "start" });
+  });
+
   it("gives up on a read of the runs that never answers, and scrolls to the run in progress", async () => {
     const scroll = vi.fn();
     Element.prototype.scrollIntoView = scroll;
