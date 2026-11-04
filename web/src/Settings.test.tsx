@@ -26,12 +26,14 @@ const full = team({
 // What project() leaves a viewer or a member.
 const stripped = team({ spec: { displayName: "Team A" }, status: {} });
 
-// open renders the settings of team a, with /me as given and the Team's
-// answers in turn, the last one repeated.
-function open(me: Me, ...answers: (() => Promise<Response>)[]) {
+// open renders the settings of team a, with /me's answers and the Team's
+// in turn, the last one repeated.
+function open(me: Me | Me[], ...answers: (() => Promise<Response>)[]) {
+  const mes = [me].flat();
   let reads = 0;
+  let m = 0;
   vi.stubGlobal("fetch", (url: string) => {
-    if (url.endsWith("/me")) return json(me);
+    if (url.endsWith("/me")) return json(mes[Math.min(m++, mes.length - 1)]);
     if (url.endsWith("/namespaces/a/team")) return answers[Math.min(reads++, answers.length - 1)]();
     return json({ items: [] });
   });
@@ -503,6 +505,45 @@ describe("Editing the Team", () => {
       await waitFor(() => expect(reads()).toBe(2), { timeout: 5000 });
       await waitFor(() => expect(screen.queryByRole("region", { name: "Team" })).toBeNull(), { timeout: 5000 });
       expect(document.activeElement).toBe(tab);
+      cleanup();
+    }
+  });
+
+  // The admins' settings tabs go once /me, read again on a no_role, says
+  // the role has gone.
+  it("moves the focus from a settings tab that goes with the role to the alert", async () => {
+    const nobody: Me = { mode: "oidc", name: "dana", roles: {} };
+    for (const name of ["Activity", "Agent access"]) {
+      const reads = open([admin, nobody], () => json(full), noRole);
+      await screen.findByRole("region", { name: "Team" });
+      const tab = within(screen.getByRole("navigation", { name: "Settings" })).getByRole("link", { name });
+      await act(async () => tab.focus());
+      await act(async () => document.dispatchEvent(new Event("visibilitychange"))); // the page reads the Team again
+      await waitFor(() => expect(reads()).toBe(2), { timeout: 5000 });
+      expect(await screen.findByText("You have no role on a.")).toBeTruthy();
+      expect(tab.isConnected).toBe(false);
+      await waitFor(() => expect(document.activeElement).toBe(screen.getByText(/Your role on a is gone or has changed/).closest("[role=alert]")), { timeout: 5000 });
+      cleanup();
+    }
+  });
+
+  it("leaves the focus on a settings tab that stays, or outside the settings, when a read loses the Team", async () => {
+    const nobody: Me = { mode: "oidc", name: "dana", roles: {} };
+    const cases = [
+      // A 404 reads no /me: the role, and the tab, stay.
+      { answer: noTeam, gone: /This namespace has no Team/, focus: () => within(screen.getByRole("navigation", { name: "Settings" })).getByRole("link", { name: "Activity" }) },
+      { answer: noRole, gone: /Your role on a is gone or has changed/, focus: () => within(screen.getByRole("navigation", { name: "Team" })).getByRole("link", { name: "Agents" }) },
+    ];
+    for (const { answer, gone, focus } of cases) {
+      const reads = open([admin, nobody], () => json(full), answer);
+      await screen.findByRole("region", { name: "Team" });
+      const at = focus();
+      await act(async () => at.focus());
+      await act(async () => document.dispatchEvent(new Event("visibilitychange"))); // the page reads the Team again
+      await waitFor(() => expect(reads()).toBe(2), { timeout: 5000 });
+      await screen.findByText(gone);
+      if (answer === noRole) expect(await screen.findByText("You have no role on a.")).toBeTruthy();
+      expect(document.activeElement).toBe(at);
       cleanup();
     }
   });
