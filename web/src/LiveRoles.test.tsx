@@ -230,6 +230,18 @@ describe("Roles while live", () => {
     expect(document.activeElement).toBe(heading);
   });
 
+  it("leave the focus on the body when the role goes but what held it stays", async () => {
+    roles = { a: "admin" };
+    const stream = await open("/t/a/settings", /You are an admin of a/);
+    act(() => (document.activeElement as HTMLElement).blur());
+    roles = {};
+    await send(stream, teamHint);
+    expect(await screen.findByText(/Your role on a is gone or has changed/)).toBeTruthy();
+    expect(await screen.findByText("You have no role on a.")).toBeTruthy();
+    await act(() => vi.advanceTimersByTimeAsync(500));
+    expect(document.activeElement).toBe(document.body);
+  });
+
   it("show Settings again to a caller whose role was taken and given back, the focus off the body", async () => {
     roles = { a: "admin" };
     const stream = await open("/t/a/settings", /You are an admin of a/);
