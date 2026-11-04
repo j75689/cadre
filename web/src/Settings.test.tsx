@@ -2,7 +2,7 @@ import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testi
 import { MemoryRouter } from "react-router";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { App } from "./App";
-import type { Me } from "./api";
+import type { Me, Team } from "./api";
 import { json, team } from "./testing";
 
 afterEach(() => {
@@ -141,8 +141,8 @@ const admin: Me = { mode: "oidc", name: "dana", roles: { a: "admin" } };
 
 // edit opens team a's settings as an admin and the Team card's form. The
 // Team's reads and PUTs, and /me, are answered in turn, the last one
-// repeated; sent holds the PUTs' bodies.
-async function edit(reads: (() => Promise<Response>)[], puts: (() => Promise<Response>)[] = [], mes: Me[] = [admin]) {
+// repeated; /teams lists teams; sent holds the PUTs' bodies.
+async function edit(reads: (() => Promise<Response>)[], puts: (() => Promise<Response>)[] = [], mes: Me[] = [admin], teams: Team[] = []) {
   const sent: Record<string, unknown>[] = [];
   let n = 0;
   let m = 0;
@@ -153,6 +153,7 @@ async function edit(reads: (() => Promise<Response>)[], puts: (() => Promise<Res
       return puts[Math.min(sent.length - 1, puts.length - 1)]();
     }
     if (url.endsWith("/namespaces/a/team")) return reads[Math.min(n++, reads.length - 1)]();
+    if (url.endsWith("/teams")) return json({ items: teams });
     return json({ items: [] });
   });
   render(
@@ -686,7 +687,7 @@ describe("Editing the Team", () => {
 
   it("names the team by the Team saved, before /teams is read again", async () => {
     const after = team({ metadata: { name: "team", namespace: "a", resourceVersion: "8" }, spec: { ...full.spec, displayName: "Team B" } });
-    const { form } = await edit([() => json(full)], [() => json(after)]);
+    const { form } = await edit([() => json(full)], [() => json(after)], [admin], [full]);
     const crumbs = within(screen.getByRole("navigation", { name: "Breadcrumb" }));
     expect(crumbs.getByRole("link", { name: "Team A" })).toBeTruthy();
     fireEvent.change(form.getByLabelText("Display name"), { target: { value: "Team B" } });
