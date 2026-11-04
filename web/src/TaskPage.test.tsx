@@ -484,6 +484,7 @@ describe("A link to a run", () => {
   it.each([
     ["a proxy's error page", () => Promise.resolve(new Response("<html>Bad gateway</html>", { status: 502 })), "HTTP 502"],
     ["an error", () => json({ error: { message: "unavailable" } }, 503), "unavailable"],
+    ["an error with an empty message", () => json({ error: { message: "" } }, 503), "HTTP 503"],
   ])("scrolls to the run in progress after %s for its events", async (_, failed, message) => {
     const scroll = vi.fn();
     Element.prototype.scrollIntoView = scroll;

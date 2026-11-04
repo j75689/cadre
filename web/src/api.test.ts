@@ -65,6 +65,12 @@ describe("the Team and its AgentAccesses", () => {
     expect(err).toMatchObject({ status: 502, code: "", message: "HTTP 502" });
   });
 
+  it("makes a JSON error with an empty message an APIError with its status for a message", async () => {
+    sent(() => json({ error: { code: "unavailable", message: "" } }, 503));
+    const err = await runEvents("a", "x", "r1").catch((e: unknown) => e);
+    expect(err).toMatchObject({ status: 503, code: "unavailable", message: "HTTP 503" });
+  });
+
   it("rotates a token with a POST to its token", async () => {
     const calls = sent(() => json({ token: "t0ken", tokenSecret: "bot-token" }));
     await expect(rotateAgentAccessToken("a", "bot")).resolves.toEqual({ token: "t0ken", tokenSecret: "bot-token" });

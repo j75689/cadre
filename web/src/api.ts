@@ -301,7 +301,7 @@ async function answer<T>(res: Response): Promise<T> {
     let code = "";
     try {
       const body = await res.json();
-      message = body?.error?.message ?? message;
+      message = body?.error?.message || message;
       code = body?.error?.code ?? "";
     } catch {
       // not JSON: keep the status text
