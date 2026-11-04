@@ -2,7 +2,7 @@ import { act, cleanup, fireEvent, render, screen } from "@testing-library/react"
 import { MemoryRouter, useNavigate, type NavigateFunction } from "react-router";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { App } from "./App";
-import type { Phase, Task } from "./api";
+import { readTimedOut, readTimeoutMs, type Phase, type Task } from "./api";
 import { subtaskPage } from "./Subtasks";
 import { entry, json, task } from "./testing";
 
@@ -430,6 +430,27 @@ describe("A link to a run", () => {
     vi.stubGlobal("fetch", (url: string) => (url.includes("parent=") ? Promise.reject(new TypeError("offline")) : serve(url)));
     renderAt(current);
     await screen.findByText(/Could not load the subtasks/);
+    await vi.waitFor(() => expect(scroll).toHaveBeenCalledTimes(1));
+    expect(scroll).toHaveBeenCalledWith({ block: "start" });
+  });
+
+  it("gives up on a read of the runs that never answers, and scrolls to the run in progress", async () => {
+    const scroll = vi.fn();
+    Element.prototype.scrollIntoView = scroll;
+    runServer();
+    const serve = globalThis.fetch;
+    vi.stubGlobal("fetch", (url: string, init?: RequestInit) =>
+      url.endsWith("/runs")
+        ? new Promise<Response>((_, reject) => init?.signal?.addEventListener("abort", () => reject(new DOMException("aborted", "AbortError"))))
+        : serve(url),
+    );
+    renderAt(current);
+    await screen.findByRole("region", { name: "Run in progress" });
+    await act(() => vi.advanceTimersByTimeAsync(readTimeoutMs - 1000));
+    expect(scroll).not.toHaveBeenCalled();
+    expect(screen.queryByText(/Could not load the runs/)).toBeNull();
+    await act(() => vi.advanceTimersByTimeAsync(1000));
+    expect(await screen.findByText(`Could not load the runs: ${readTimedOut}`)).toBeTruthy();
     await vi.waitFor(() => expect(scroll).toHaveBeenCalledTimes(1));
     expect(scroll).toHaveBeenCalledWith({ block: "start" });
   });

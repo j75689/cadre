@@ -1,5 +1,5 @@
-import { afterEach, describe, expect, it, vi } from "vitest";
-import { APIError, deleteAgentAccess, loginURL, putAgentAccess, putTeam, rotateAgentAccessToken, runEvents } from "./api";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { APIError, deleteAgentAccess, loginURL, putAgentAccess, putTeam, readTimedOut, readTimeoutMs, rotateAgentAccessToken, runEvents } from "./api";
 import { access, json, team } from "./testing";
 
 describe("loginURL", () => {
@@ -67,13 +67,65 @@ describe("the Team and its AgentAccesses", () => {
   });
 });
 
+// hung stubs fetch with one that never answers, but stops, as fetch does,
+// when its signal is aborted.
+function hung() {
+  const calls: { url: string; init?: RequestInit }[] = [];
+  vi.stubGlobal("fetch", (url: string, init?: RequestInit) => {
+    calls.push({ url, init });
+    return new Promise<Response>((_, reject) => init?.signal?.addEventListener("abort", () => reject(new DOMException("aborted", "AbortError"))));
+  });
+  return calls;
+}
+
 describe("runEvents", () => {
   afterEach(() => vi.unstubAllGlobals());
 
-  it("passes its signal to fetch", async () => {
-    const calls = sent(() => json({ items: [] }));
+  it("aborts the fetch when its signal is aborted", async () => {
+    const calls = hung();
     const ctrl = new AbortController();
-    await runEvents("a", "x", "r1", ctrl.signal);
-    expect(calls[0].init?.signal).toBe(ctrl.signal);
+    const read = runEvents("a", "x", "r1", ctrl.signal).catch((e: unknown) => e);
+    expect(calls[0].init?.signal?.aborted).toBe(false);
+    ctrl.abort();
+    expect(calls[0].init?.signal?.aborted).toBe(true);
+    expect(await read).toMatchObject({ name: "AbortError" });
+  });
+});
+
+describe("a request that never answers", () => {
+  beforeEach(() => vi.useFakeTimers());
+  afterEach(() => {
+    vi.unstubAllGlobals();
+    vi.useRealTimers();
+  });
+
+  it("fails as a read once readTimeoutMs has passed", async () => {
+    hung();
+    let err: unknown;
+    void runEvents("a", "x", "r1").catch((e: unknown) => (err = e));
+    await vi.advanceTimersByTimeAsync(readTimeoutMs - 1);
+    expect(err).toBeUndefined();
+    await vi.advanceTimersByTimeAsync(1);
+    expect(err).toBeInstanceOf(Error);
+    expect((err as Error).message).toBe(readTimedOut);
+  });
+
+  it("is given up on as a read while its body never comes", async () => {
+    vi.stubGlobal("fetch", (_url: string, init?: RequestInit) =>
+      Promise.resolve({ ok: true, status: 200, json: () => new Promise((_, reject) => init?.signal?.addEventListener("abort", () => reject(new DOMException("aborted", "AbortError")))) }),
+    );
+    let err: unknown;
+    void runEvents("a", "x", "r1").catch((e: unknown) => (err = e));
+    await vi.advanceTimersByTimeAsync(readTimeoutMs);
+    expect((err as Error)?.message).toBe(readTimedOut);
+  });
+
+  it("is waited for as a write", async () => {
+    const calls = hung();
+    let settled = false;
+    void putTeam("a", { displayName: "Team A" }).finally(() => (settled = true)).catch(() => {});
+    await vi.advanceTimersByTimeAsync(10 * readTimeoutMs);
+    expect(settled).toBe(false);
+    expect(calls[0].init?.signal).toBeUndefined();
   });
 });
