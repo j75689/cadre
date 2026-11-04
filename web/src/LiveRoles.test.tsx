@@ -214,6 +214,22 @@ describe("Roles while live", () => {
     expect(document.activeElement).toBe(crumb);
   });
 
+  it("move the focus from Edit to the heading when the Team read as a member comes before /me", async () => {
+    roles = { a: "admin" };
+    const stream = await open("/t/a/settings", /You are an admin of a/);
+    act(() => screen.getByRole("button", { name: "Edit" }).focus());
+    const release = gate("/me");
+    roles = { a: "member" };
+    await send(stream, teamHint);
+    expect(screen.getByText("You are an admin of a.")).toBeTruthy();
+    expect(screen.queryByRole("button", { name: "Edit" })).toBeNull();
+    const heading = screen.getByRole("heading", { name: "Settings" });
+    expect(document.activeElement).toBe(heading);
+    await release();
+    expect(await screen.findByText("You are a member of a.")).toBeTruthy();
+    expect(document.activeElement).toBe(heading);
+  });
+
   it("show Settings again to a caller whose role was taken and given back, the focus off the body", async () => {
     roles = { a: "admin" };
     const stream = await open("/t/a/settings", /You are an admin of a/);
