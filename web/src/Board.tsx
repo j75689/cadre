@@ -11,6 +11,7 @@ import { useTeamName } from "./teamList";
 import { assigneeIcon, Meta, phaseTone, Pills, PriorityChip, RoleBadge } from "./ui/Badge";
 import { Banner } from "./ui/Banner";
 import { Button, ButtonLink } from "./ui/Button";
+import { useFocusWhenGone } from "./ui/focus";
 import { Icon } from "./ui/Icon";
 import { Heading, useTitle } from "./ui/Page";
 import { Loading, Skeleton, SkeletonCard } from "./ui/Skeleton";
@@ -368,6 +369,9 @@ export function Columns(props: {
   onMore: (phase: Phase) => void;
 }) {
   const labels = props.labels ?? [];
+  // The last page read takes Load more away: the focus goes to the first
+  // card it read, else the column's last.
+  const press = useFocusWhenGone();
   return (
     <div className={props.columns.length === 1 ? "columns one-phase" : "columns"}>
       {props.columns.map((col) => {
@@ -386,7 +390,20 @@ export function Columns(props: {
                 <Card key={t.metadata.name} ns={props.ns} task={t} labels={labels} onLabel={props.onLabel} />
               ))}
               {col.more && (
-                <Button variant="ghost" small className="btn-block" onClick={() => props.onMore(col.phase)}>
+                <Button
+                  variant="ghost"
+                  small
+                  className="btn-block"
+                  onClick={(e) => {
+                    const body = e.currentTarget.parentElement;
+                    const before = body?.querySelectorAll(".task-card").length ?? 0;
+                    press(e.currentTarget, () => {
+                      const cards = body?.querySelectorAll<HTMLElement>(".task-card a.title") ?? [];
+                      return cards[Math.min(before, cards.length - 1)] ?? document.getElementById("board-search");
+                    });
+                    props.onMore(col.phase);
+                  }}
+                >
                   Load more
                 </Button>
               )}

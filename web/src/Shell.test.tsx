@@ -1,5 +1,5 @@
 import { act, cleanup, fireEvent, render, screen, within } from "@testing-library/react";
-import { MemoryRouter } from "react-router";
+import { MemoryRouter, useNavigate, type NavigateFunction } from "react-router";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { App } from "./App";
 import { json, task } from "./testing";
@@ -188,6 +188,33 @@ describe("pages", () => {
     act(() => card.click());
     // The task is still loading: no h1 yet. Its breadcrumb goes back.
     act(() => within(screen.getByRole("navigation", { name: "Breadcrumb" })).getByRole("link", { name: "Team A" }).click());
+    const h1 = await screen.findByRole("heading", { level: 1, name: "Team A" });
+    await vi.waitFor(() => expect(document.activeElement).toBe(h1));
+  });
+
+  it("move the focus to the h1 on Back to a page through one still loading", async () => {
+    server();
+    const serve = globalThis.fetch;
+    vi.stubGlobal("fetch", (url: string) => (url.endsWith("/tasks/fix") ? new Promise(() => {}) : serve(url)));
+    let navigate: NavigateFunction = () => {};
+    function Back() {
+      navigate = useNavigate();
+      return null;
+    }
+    render(
+      <MemoryRouter initialEntries={["/"]}>
+        <App />
+        <Back />
+      </MemoryRouter>,
+    );
+    const team = await screen.findByRole("link", { name: "Team A" });
+    act(() => team.click());
+    // The board's h1 took the focus for this entry.
+    await vi.waitFor(() => expect(document.activeElement).toBe(screen.getByRole("heading", { level: 1, name: "Team A" })));
+    const card = await screen.findByRole("link", { name: "Fix the build" });
+    act(() => card.click());
+    // The task is still loading: no h1 yet. Back returns to the board's entry.
+    await act(async () => navigate(-1));
     const h1 = await screen.findByRole("heading", { level: 1, name: "Team A" });
     await vi.waitFor(() => expect(document.activeElement).toBe(h1));
   });

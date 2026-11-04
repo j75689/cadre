@@ -641,6 +641,86 @@ describe("Board", () => {
     expect(within(screen.getByRole("region", { name: "Tasks" })).getAllByRole("link")).toHaveLength(102);
   });
 
+  it("moves the focus from the last Load more to the first card it read, or in the list to the table", async () => {
+    vi.stubGlobal("fetch", (url: string) => {
+      if (url.endsWith("/me")) return json({ mode: "none", admin: true });
+      if (url.endsWith("/teams")) return json({ items: [] });
+      const q = new URL(url, "http://cadre.test").searchParams;
+      const phase = q.get("phase") as Phase;
+      const offset = Number(q.get("offset"));
+      // Todo has a full first page, and a short second one of three: the
+      // first card it read is not the column's last.
+      const n = phase === "Todo" ? (offset === 0 ? 50 : 3) : 0;
+      return json({ items: Array.from({ length: n }, (_, i) => task(`${phase}-${offset + i}`, phase)), offset, limit: 50 });
+    });
+    // A click on a button focuses it in a browser, not in jsdom.
+    const press = (button: HTMLElement) => {
+      act(() => button.focus());
+      fireEvent.click(button);
+    };
+    renderPage();
+    press(await within(await screen.findByRole("region", { name: "Todo" })).findByRole("button", { name: "Load more" }));
+    await vi.waitFor(() => expect(screen.queryByRole("button", { name: "Load more" })).toBeNull());
+    // The focus moves in an effect, which may run after the button is gone.
+    await vi.waitFor(() => expect(document.activeElement).toBe(screen.getByRole("link", { name: "Title of Todo-50" })));
+    cleanup();
+
+    renderPage("/t/team-a?view=list");
+    press(await screen.findByRole("button", { name: "Load more" }));
+    await vi.waitFor(() => expect(screen.queryByRole("button", { name: "Load more" })).toBeNull());
+    await vi.waitFor(() => expect(document.activeElement).toBe(screen.getByRole("region", { name: "Tasks" })));
+  });
+
+  it("moves the focus from the last Load more to the column's last card when that read none", async () => {
+    vi.stubGlobal("fetch", (url: string) => {
+      if (url.endsWith("/me")) return json({ mode: "none", admin: true });
+      if (url.endsWith("/teams")) return json({ items: [] });
+      const q = new URL(url, "http://cadre.test").searchParams;
+      const phase = q.get("phase") as Phase;
+      const offset = Number(q.get("offset"));
+      // Todo has exactly 100: its last page is empty.
+      const n = phase === "Todo" && offset < 100 ? 50 : 0;
+      return json({ items: Array.from({ length: n }, (_, i) => task(`${phase}-${offset + i}`, phase)), offset, limit: 50 });
+    });
+    renderPage();
+    const todo = await screen.findByRole("region", { name: "Todo" });
+    const more = await within(todo).findByRole("button", { name: "Load more" });
+    act(() => more.focus());
+    fireEvent.click(more);
+    await within(todo).findByRole("link", { name: "Title of Todo-99" });
+    const last = within(todo).getByRole("button", { name: "Load more" });
+    act(() => last.focus());
+    fireEvent.click(last);
+    await vi.waitFor(() => expect(screen.queryByRole("button", { name: "Load more" })).toBeNull());
+    await vi.waitFor(() => expect(document.activeElement).toBe(screen.getByRole("link", { name: "Title of Todo-99" })));
+  });
+
+  it("leaves the focus where it went while the last Load more read", async () => {
+    let answer: (() => void) | undefined;
+    vi.stubGlobal("fetch", async (url: string) => {
+      if (url.endsWith("/me")) return json({ mode: "none", admin: true });
+      if (url.endsWith("/teams")) return json({ items: [] });
+      const q = new URL(url, "http://cadre.test").searchParams;
+      const phase = q.get("phase") as Phase;
+      const offset = Number(q.get("offset"));
+      if (offset > 0) await new Promise<void>((resolve) => (answer = resolve));
+      const n = phase === "Todo" ? (offset === 0 ? 50 : 1) : 0;
+      return json({ items: Array.from({ length: n }, (_, i) => task(`${phase}-${offset + i}`, phase)), offset, limit: 50 });
+    });
+    renderPage();
+    const more = await within(await screen.findByRole("region", { name: "Todo" })).findByRole("button", { name: "Load more" });
+    act(() => more.focus());
+    fireEvent.click(more);
+    // The user moves on before the page comes.
+    const agents = screen.getByRole("link", { name: "Agents" });
+    act(() => agents.focus());
+    await vi.waitFor(() => expect(answer).toBeDefined());
+    act(() => answer?.());
+    await screen.findByRole("link", { name: "Title of Todo-50" });
+    expect(screen.queryByRole("button", { name: "Load more" })).toBeNull();
+    expect(document.activeElement).toBe(agents);
+  });
+
   it("shows a task that changed phase between the reads once, as the read back last has it", async () => {
     const answer = new Map<string, () => void>();
     vi.stubGlobal("fetch", async (url: string) => {

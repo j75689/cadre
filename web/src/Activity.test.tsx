@@ -114,6 +114,18 @@ describe("Activity", () => {
     expect(reads.map((u) => new URL(u, "http://x").searchParams.get("offset"))).toEqual(["0", "0", String(activityPage)]);
   });
 
+  it("moves the focus from the last Load more to the table", async () => {
+    const full = Array.from({ length: activityPage }, (_, i) => item(`R${i}`, "Agent", `a${i}`));
+    open("/t/a/settings/activity", admin, page(full), page(full), page([item("Last", "Agent", "z")], activityPage));
+    const more = await screen.findByRole("button", { name: "Load more" });
+    // A click on a button focuses it in a browser, not in jsdom.
+    act(() => more.focus());
+    fireEvent.click(more);
+    expect(await screen.findByText("Last")).toBeTruthy();
+    expect(screen.queryByRole("button", { name: "Load more" })).toBeNull();
+    await vi.waitFor(() => expect(document.activeElement).toBe(screen.getByRole("region", { name: "Activity" })));
+  });
+
   it("reads no further than a short page when it reads the shown pages again", async () => {
     vi.useFakeTimers({ shouldAdvanceTime: true });
     try {

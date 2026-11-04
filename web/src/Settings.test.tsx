@@ -414,6 +414,27 @@ describe("Editing the Team", () => {
     await waitFor(() => expect(document.activeElement).toBe(form.getByRole("button", { name: "Add role" })));
   });
 
+  it("moves the focus to the next subject, else the one before, else Add subject, once a subject is removed", async () => {
+    const { form } = await edit([() => json(full)]);
+    const role = () => within(form.getByRole("group", { name: "Role 2" }));
+    const remove = (n: number) => role().getByRole("button", { name: `Remove subject ${n}` });
+    // A click on a button focuses it in a browser, not in jsdom.
+    const press = (button: HTMLElement) => {
+      act(() => button.focus());
+      fireEvent.click(button);
+    };
+    fireEvent.click(role().getByRole("button", { name: "Add subject" }));
+    // The middle one: the one after takes its place, and its button.
+    press(remove(2));
+    await waitFor(() => expect(document.activeElement).toBe(remove(2)));
+    expect((role().getByLabelText("Name of subject 2") as HTMLInputElement).value).toBe("");
+    // The last one: the one before.
+    press(remove(2));
+    await waitFor(() => expect(document.activeElement).toBe(remove(1)));
+    press(remove(1));
+    await waitFor(() => expect(document.activeElement).toBe(role().getByRole("button", { name: "Add subject" })));
+  });
+
   // A role given by the Team goes with it: the server answers a regular
   // admin with a 403, not a 409.
   it("stops editing when a save is refused for want of a role, and reads /me again", async () => {
@@ -455,6 +476,36 @@ describe("Editing the Team", () => {
     const empty = await screen.findByText(/This namespace has no Team/);
     await waitFor(() => expect(document.activeElement).toBe(empty));
     expect(screen.queryByRole("form", { name: "Edit the team" })).toBeNull();
+  });
+
+  it("moves the focus from Edit to what takes the Team's place when a read loses it, the form closed", async () => {
+    const lost = [
+      { answer: noRole, focused: () => screen.getByText(/Your role on a is gone or has changed/).closest("[role=alert]") },
+      { answer: noTeam, focused: () => screen.getByText(/This namespace has no Team/) },
+    ];
+    for (const { answer, focused } of lost) {
+      const reads = open(admin, () => json(full), answer);
+      const button = await screen.findByRole("button", { name: "Edit" });
+      act(() => button.focus());
+      document.dispatchEvent(new Event("visibilitychange")); // the page reads the Team again
+      await waitFor(() => expect(reads()).toBe(2), { timeout: 5000 });
+      await waitFor(() => expect(document.activeElement).toBe(focused()), { timeout: 5000 });
+      cleanup();
+    }
+  });
+
+  it("leaves the focus where it is, outside the Team, when a read loses the Team", async () => {
+    for (const answer of [noRole, noTeam]) {
+      const reads = open(admin, () => json(full), answer);
+      await screen.findByRole("region", { name: "Team" });
+      const tab = screen.getByRole("link", { name: "Team" });
+      act(() => tab.focus());
+      document.dispatchEvent(new Event("visibilitychange")); // the page reads the Team again
+      await waitFor(() => expect(reads()).toBe(2), { timeout: 5000 });
+      await waitFor(() => expect(screen.queryByRole("region", { name: "Team" })).toBeNull(), { timeout: 5000 });
+      expect(document.activeElement).toBe(tab);
+      cleanup();
+    }
   });
 
   it("hides what only admins see once a save took the caller's own admin role", async () => {

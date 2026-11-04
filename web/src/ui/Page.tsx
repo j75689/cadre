@@ -28,11 +28,14 @@ export function useRouteChanges() {
   useLayoutEffect(() => {
     if (pathname === lastPath) samePageFor = key;
     lastPath = pathname;
+    focusedFor = "";
   }, [key, pathname]);
 }
 
 // focusedFor is the navigation whose h1 took the focus: one h1 per route
-// change, even when it mounts only once the page has loaded.
+// change, even when it mounts only once the page has loaded. Each
+// navigation clears it, so Back to an entry whose h1 took the focus before
+// focuses it again.
 let focusedFor = "";
 
 // Heading is a page's h1, the target of the focus after a route change.

@@ -8,6 +8,7 @@ import { useTeamName } from "./teamList";
 import { Badge } from "./ui/Badge";
 import { Banner } from "./ui/Banner";
 import { Button } from "./ui/Button";
+import { useFocusWhenGone } from "./ui/focus";
 import { Icon } from "./ui/Icon";
 import { Heading, useTitle } from "./ui/Page";
 import { Loading, Skeleton } from "./ui/Skeleton";
@@ -49,6 +50,8 @@ export function Activity() {
   // retry reads the activity again at once, after a failed read.
   const [retry, setRetry] = useState(0);
   useTitle("Activity", name);
+  // The last page read takes Load more away: the focus goes to the table.
+  const press = useFocusWhenGone();
   usePolling(
     async (signal) => {
       try {
@@ -147,7 +150,16 @@ export function Activity() {
           </table>
           {more && !error && (
             <div className="card-foot">
-              <Button variant="ghost" small className="btn-block" onClick={() => setShown((p) => p + 1)}>
+              <Button
+                variant="ghost"
+                small
+                className="btn-block"
+                onClick={(e) => {
+                  const table = e.currentTarget.closest<HTMLElement>(".table-wrap");
+                  press(e.currentTarget, () => table);
+                  setShown((p) => p + 1);
+                }}
+              >
                 Load more
               </Button>
             </div>
