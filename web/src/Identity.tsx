@@ -88,10 +88,11 @@ export function useIdentity() {
   return { mode, name, author, refresh, ready: mode === "oidc" || (mode === "none" && author !== "") };
 }
 
-// useIdentityDetails is the mode and /me, for showing roles.
+// useIdentityDetails is the mode and /me, for showing roles, and what held
+// the focus when /me was answered.
 export function useIdentityDetails() {
-  const { mode, me } = useContext(IdentityContext);
-  return { mode, me };
+  const { mode, me, held } = useContext(IdentityContext);
+  return { mode, me, held };
 }
 
 // roleOf is the caller's role on the team in namespace ns, as /me says:

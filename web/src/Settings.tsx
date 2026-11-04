@@ -72,7 +72,7 @@ export function Settings() {
     else if (at instanceof HTMLElement && at !== document.body) press(at, () => lostRef.current ?? missingRef.current);
   };
   const { mode, refresh } = useIdentity();
-  const { me } = useIdentityDetails();
+  const { me, held } = useIdentityDetails();
   useEffect(() => {
     if (demoted) demotedRef.current?.focus();
   }, [demoted]);
@@ -81,10 +81,20 @@ export function Settings() {
     closed.current = false;
     (lost ? lostRef : missingRef).current?.focus();
   }, [lost, missing]);
+  // dropped is whether the /me answer that took the role took what held
+  // the focus too (Edit, a tab), before or after the Team's 403: the alert
+  // takes it then, from the body or the heading LiveRoles gives it to.
+  const dropped = useRef(false);
+  useEffect(() => {
+    const was = held?.current;
+    dropped.current = !role && !!was && !was.isConnected;
+  }, [role, held]);
   useEffect(() => {
     if (!lost) return;
     if (!role) {
       gone.current = true;
+      const at = document.activeElement;
+      if (dropped.current && (at === document.body || at === lostRef.current?.closest("main")?.querySelector("h1"))) lostRef.current?.focus();
       return;
     }
     if (!gone.current) return;

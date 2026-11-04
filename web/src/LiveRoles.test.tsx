@@ -1,4 +1,4 @@
-import { act, cleanup, fireEvent, render, screen } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen, within } from "@testing-library/react";
 import { MemoryRouter } from "react-router";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { App } from "./App";
@@ -130,6 +130,62 @@ describe("Roles while live", () => {
     expect(await send(stream, teamHint)).toBe(1);
     expect(screen.queryByRole("link", { name: "Activity" })).toBeNull();
     expect(document.activeElement).toBe(screen.getByRole("heading", { name: "Settings" }));
+  });
+
+  // gate holds the answers to the URLs ending in suffix until released.
+  function gate(suffix: string) {
+    const inner = globalThis.fetch;
+    let release = () => {};
+    const held = new Promise<void>((r) => (release = r));
+    vi.stubGlobal("fetch", (url: string, init?: RequestInit) => (url.endsWith(suffix) ? held.then(() => inner(url, init)) : inner(url, init)));
+    return () => act(async () => release());
+  }
+
+  it("move the focus from Edit to Settings' alert when /me says the role went before the Team's 403", async () => {
+    roles = { a: "admin" };
+    const stream = await open("/t/a/settings", /You are an admin of a/);
+    act(() => screen.getByRole("button", { name: "Edit" }).focus());
+    // As in Chrome: the /me answer is shown before the Team's 403 comes.
+    const release = gate("/namespaces/a/team");
+    roles = {};
+    await send(stream, teamHint);
+    expect(screen.getByText("You have no role on a.")).toBeTruthy();
+    expect(screen.queryByRole("button", { name: "Edit" })).toBeNull();
+    await release();
+    const alert = (await screen.findByText(/Your role on a is gone or has changed/)).closest<HTMLElement>("[role=alert]")!;
+    await act(() => vi.advanceTimersByTimeAsync(500));
+    expect(document.activeElement).toBe(alert);
+  });
+
+  it("move the focus from a tab to Settings' alert when the Team's 403 comes before /me", async () => {
+    roles = { a: "admin" };
+    const stream = await open("/t/a/settings", /You are an admin of a/);
+    act(() => screen.getByRole("link", { name: "Activity" }).focus());
+    const release = gate("/me");
+    roles = {};
+    await send(stream, teamHint);
+    const alert = (await screen.findByText(/Your role on a is gone or has changed/)).closest<HTMLElement>("[role=alert]")!;
+    expect(screen.getByRole("link", { name: "Activity" })).toBeTruthy();
+    await release();
+    expect(await screen.findByText("You have no role on a.")).toBeTruthy();
+    await act(() => vi.advanceTimersByTimeAsync(500));
+    expect(screen.queryByRole("link", { name: "Activity" })).toBeNull();
+    expect(document.activeElement).toBe(alert);
+  });
+
+  it("leave the focus on what stays when /me says the role went before the Team's 403", async () => {
+    roles = { a: "admin" };
+    const stream = await open("/t/a/settings", /You are an admin of a/);
+    const crumb = within(screen.getByRole("navigation", { name: "Breadcrumb" })).getAllByRole("link")[0];
+    act(() => crumb.focus());
+    const release = gate("/namespaces/a/team");
+    roles = {};
+    await send(stream, teamHint);
+    expect(screen.getByText("You have no role on a.")).toBeTruthy();
+    await release();
+    expect(await screen.findByText(/Your role on a is gone or has changed/)).toBeTruthy();
+    await act(() => vi.advanceTimersByTimeAsync(500));
+    expect(document.activeElement).toBe(crumb);
   });
 
   it("show Settings again to a caller whose role was taken and given back, the focus off the body", async () => {
