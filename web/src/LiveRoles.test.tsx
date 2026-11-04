@@ -198,6 +198,22 @@ describe("Roles while live", () => {
     expect(document.activeElement).toBe(crumb);
   });
 
+  it("leave the focus where it was put after /me took Edit, when the Team's 403 comes", async () => {
+    roles = { a: "admin" };
+    const stream = await open("/t/a/settings", /You are an admin of a/);
+    act(() => screen.getByRole("button", { name: "Edit" }).focus());
+    const release = gate("/namespaces/a/team");
+    roles = {};
+    await send(stream, teamHint);
+    expect(screen.getByText("You have no role on a.")).toBeTruthy();
+    const crumb = within(screen.getByRole("navigation", { name: "Breadcrumb" })).getAllByRole("link")[0];
+    act(() => crumb.focus());
+    await release();
+    expect(await screen.findByText(/Your role on a is gone or has changed/)).toBeTruthy();
+    await act(() => vi.advanceTimersByTimeAsync(500));
+    expect(document.activeElement).toBe(crumb);
+  });
+
   it("show Settings again to a caller whose role was taken and given back, the focus off the body", async () => {
     roles = { a: "admin" };
     const stream = await open("/t/a/settings", /You are an admin of a/);
