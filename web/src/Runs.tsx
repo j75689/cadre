@@ -7,6 +7,10 @@ import { taskLink } from "./links";
 import { Icon } from "./ui/Icon";
 import { Loading, Skeleton } from "./ui/Skeleton";
 
+// runsHeading is the id of the Runs card's h2, which takes the focus when
+// the live run's card goes with it.
+export const runsHeading = "runs";
+
 // Runs lists a task's ended runs, read again when current (the run in
 // progress and the phase) changes: a run is in the list once it is not the
 // current one any more. Expanding one reads its events once; the run named
@@ -36,7 +40,9 @@ export function Runs({ ns, name, current, open = "", ready, onRead }: { ns: stri
   return (
     <section className="card runs" aria-label="Runs">
       <div className="card-head">
-        <h2>Runs</h2>
+        <h2 id={runsHeading} tabIndex={-1}>
+          Runs
+        </h2>
         {runs && <span className="count-pill">{runs.length}</span>}
       </div>
       {error && <Banner onRetry={() => setRetry((n) => n + 1)}>Could not load the runs: {error}</Banner>}

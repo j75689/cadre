@@ -1,8 +1,8 @@
-import { useRef, useState } from "react";
+import { useLayoutEffect, useRef, useState } from "react";
 import { Link } from "react-router";
 import { runEvents, type RunEvent, type TaskStatus } from "./api";
 import { taskLink } from "./links";
-import { EventList, totals, useLinkScroll } from "./Runs";
+import { EventList, runsHeading, totals, useLinkScroll } from "./Runs";
 import { Loading, Skeleton } from "./ui/Skeleton";
 import { usePolling } from "./usePolling";
 
@@ -12,12 +12,20 @@ import { usePolling } from "./usePolling";
 // and its token totals. The list is no live region, so a
 // screen reader is not read each poll; RunEnded says when the run ends. A
 // linked run (?run=<id>) is scrolled into view as an ended one is, once
-// ready.
+// ready. When the card goes (the run ended, or another started) while it
+// holds the focus, the focus goes to the Runs card, which lists the run.
 export function LiveRun({ ns, name, run, linked, ready }: { ns: string; name: string; run: NonNullable<TaskStatus["run"]>; linked: boolean; ready: boolean }) {
   const [events, setEvents] = useState<RunEvent[] | null>(null);
   const [error, setError] = useState("");
   const card = useRef<HTMLElement>(null);
   useLinkScroll(card, linked, ready);
+  // A layout effect's cleanup runs while the card is still in the page.
+  useLayoutEffect(() => {
+    const el = card.current;
+    return () => {
+      if (el?.contains(document.activeElement)) document.getElementById(runsHeading)?.focus();
+    };
+  }, []);
   usePolling(
     async (signal) => {
       try {
