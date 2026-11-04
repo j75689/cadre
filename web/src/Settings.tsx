@@ -6,7 +6,7 @@ import { RoleLine, useIdentity, useIdentityDetails, useRole } from "./Identity";
 import { taskLink, teamPath } from "./links";
 import { can } from "./roles";
 import { TeamForm } from "./TeamForm";
-import { useTeamName } from "./teamList";
+import { teamName, useTeamName } from "./teamList";
 import { RoleBadge } from "./ui/Badge";
 import { Banner } from "./ui/Banner";
 import { Button } from "./ui/Button";
@@ -26,9 +26,12 @@ const defaultMaxRuns = 1;
 export function Settings() {
   const { ns = "" } = useParams();
   const role = useRole(ns);
-  const name = useTeamName(ns);
+  const listed = useTeamName(ns);
   // team is null until read, and after a 404 (missing).
   const [team, setTeam] = useState<Team | null>(null);
+  // The Team read here, or saved, names the team before /teams is read
+  // again.
+  const name = team ? teamName(team) : listed;
   const [missing, setMissing] = useState(false);
   const [error, setError] = useState("");
   // forbidden is a 403: reading again cannot help, so there is no Retry.

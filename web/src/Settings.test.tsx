@@ -683,4 +683,15 @@ describe("Editing the Team", () => {
     fireEvent.click(within(form.getByRole("group", { name: "Role 3" })).getByRole("button", { name: "Remove role" }));
     expect(form.queryByRole("alert")).toBeNull();
   });
+
+  it("names the team by the Team saved, before /teams is read again", async () => {
+    const after = team({ metadata: { name: "team", namespace: "a", resourceVersion: "8" }, spec: { ...full.spec, displayName: "Team B" } });
+    const { form } = await edit([() => json(full)], [() => json(after)]);
+    const crumbs = within(screen.getByRole("navigation", { name: "Breadcrumb" }));
+    expect(crumbs.getByRole("link", { name: "Team A" })).toBeTruthy();
+    fireEvent.change(form.getByLabelText("Display name"), { target: { value: "Team B" } });
+    fireEvent.click(form.getByRole("button", { name: "Save" }));
+    expect(await crumbs.findByRole("link", { name: "Team B" })).toBeTruthy();
+    expect(document.title).toBe("Settings · Team B · Cadre");
+  });
 });
