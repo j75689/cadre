@@ -51,7 +51,8 @@ export function Settings() {
   // lost is a 403 no_role after the Team was read, on a save or a read:
   // the Team was deleted, or the caller's role on it taken away, so the
   // role /me gave is out of date. It is read again, and the page edits no
-  // more, unless the role is given again (gone).
+  // more, unless the role is given again (gone). After a save that took
+  // the caller's admin role, its alert does not blame someone else.
   const [lost, setLost] = useState(false);
   const lostRef = useRef<HTMLDivElement>(null);
   // gone is whether /me, read again while lost, gave no role on ns: one
@@ -186,7 +187,9 @@ export function Settings() {
       )}
       {lost && (
         <div ref={lostRef} tabIndex={-1} role="alert">
-          <Banner className="banner-warning">Your role on {ns} is gone or has changed: its Team was deleted, or someone changed its roles.</Banner>
+          <Banner className="banner-warning">
+            Your role on {ns} is gone or has changed{demoted ? "." : ": its Team was deleted, or someone changed its roles."}
+          </Banner>
         </div>
       )}
       {missing && <NoTeam ns={ns} ref={missingRef} />}

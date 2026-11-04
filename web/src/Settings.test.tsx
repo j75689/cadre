@@ -701,4 +701,16 @@ describe("Editing the Team", () => {
     fireEvent.click(form.getByRole("button", { name: "Save" }));
     expect((await form.findByRole("alert")).textContent).toBe("Role 2, subject 1: a group needs a name");
   });
+
+  it("does not blame someone else when the role a save took away is then refused", async () => {
+    const nobody: Me = { mode: "oidc", name: "dana", roles: {} };
+    const { form } = await edit([() => json(full), noRole], [() => json(stripped)], [admin, nobody]);
+    fireEvent.click(within(form.getByRole("group", { name: "Role 1" })).getByRole("button", { name: "Remove role" }));
+    fireEvent.click(form.getByRole("button", { name: "Save" }));
+
+    expect(await screen.findByText("You have no role on a.")).toBeTruthy();
+    const alert = (await screen.findByText(/Your role on a is gone or has changed/)).closest("[role=alert]");
+    expect(alert?.textContent).toBe("Your role on a is gone or has changed.");
+    await waitFor(() => expect(document.activeElement).toBe(alert));
+  });
 });
