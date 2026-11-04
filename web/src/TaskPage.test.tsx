@@ -479,6 +479,37 @@ describe("A link to a run", () => {
     expect(scroll).toHaveBeenCalledWith({ block: "start" });
   });
 
+  it.each([
+    ["", 200],
+    [", also after a failed first read of the runs", 503],
+  ])("scrolls the linked run in progress, once it has ended, only as far as it takes%s", async (_, firstRuns) => {
+    const scroll = vi.fn();
+    Element.prototype.scrollIntoView = scroll;
+    let status: Record<string, unknown> = { phase: "Running", run: { id: current, mode: "runtime" }, runs: { count: 1 } };
+    let runs: unknown[] = [];
+    let runsAnswer = firstRuns;
+    vi.stubGlobal("fetch", (url: string) => {
+      if (url.endsWith("/me")) return json({ mode: "none", admin: true });
+      if (url.endsWith("/runs")) return runsAnswer === 200 ? json({ items: runs }) : json({ error: { message: "unavailable" } }, runsAnswer);
+      if (url.includes("/events")) return json({ items: [{ runId: "", seq: 1, progress: "working" }] });
+      if (url.includes("/thread") || url.includes("parent=")) return json({ items: [] });
+      return json({ metadata: { name: "x", namespace: "a" }, spec: { title: "Task x" }, status });
+    });
+    renderAt(current);
+    await screen.findByRole("region", { name: "Run in progress" });
+    await vi.waitFor(() => expect(scroll).toHaveBeenCalledTimes(1));
+    expect(scroll).toHaveBeenLastCalledWith({ block: "start" });
+    status = { phase: "Review", runs: { count: 1 } };
+    runsAnswer = 200;
+    runs = [{ id: current, mode: "runtime", runner: "r1", reason: "claimed", outcome: "Review", endedAt: "2026-10-25T10:00:00Z" }];
+    await act(() => vi.advanceTimersByTimeAsync(5000));
+    expect((await rowOf("r1")).getAttribute("aria-expanded")).toBe("true");
+    await vi.waitFor(() => expect(scroll.mock.calls.length).toBeGreaterThan(1));
+    await act(() => vi.advanceTimersByTimeAsync(10));
+    // The page is at a POP entry, so it is scrolled again in the next task.
+    expect(scroll.mock.calls.slice(1)).toEqual([[{ block: "nearest" }], [{ block: "nearest" }]]);
+  });
+
   it("scrolls the run in progress only as far as it takes when its link on the page is clicked", async () => {
     const scroll = vi.fn();
     Element.prototype.scrollIntoView = scroll;
