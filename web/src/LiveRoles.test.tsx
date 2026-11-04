@@ -132,6 +132,16 @@ describe("Roles while live", () => {
     expect(document.activeElement).toBe(screen.getByRole("heading", { name: "Settings" }));
   });
 
+  it("move the focus from New task to the heading when the role goes altogether", async () => {
+    roles = { a: "member" };
+    const stream = await open("/t/a", /You are a member of a/);
+    act(() => screen.getByRole("link", { name: "New task" }).focus());
+    roles = {};
+    await send(stream, teamHint);
+    expect(screen.queryByRole("link", { name: "New task" })).toBeNull();
+    expect(document.activeElement).toBe(screen.getByRole("heading", { level: 1 }));
+  });
+
   // gate holds the answers to the URLs ending in suffix until released.
   function gate(suffix: string) {
     const inner = globalThis.fetch;

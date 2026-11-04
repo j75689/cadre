@@ -129,12 +129,12 @@ export const rolesPollMs = 15000;
 function ReadRoles({ ns }: { ns: string }) {
   const { me, read, held } = useContext(IdentityContext);
   // When the roles a read gives take away what had the focus, such as a
-  // tab or "New task", it goes to the page's heading, not to the body. A
-  // role gone altogether is the page's to say (Settings' alert).
+  // tab or "New task", it goes to the page's heading, not to the body, also
+  // for a role gone altogether. Settings then hands it to its alert.
   useLayoutEffect(() => {
     const was = held?.current;
-    if (was && !was.isConnected && document.activeElement === document.body && roleOf(me, ns)) document.querySelector<HTMLElement>("main h1")?.focus();
-  }, [me, held, ns]);
+    if (was && !was.isConnected && document.activeElement === document.body) document.querySelector<HTMLElement>("main h1")?.focus();
+  }, [me, held]);
   // shown skips usePolling's read at once: /me was just read, and it says
   // the roles on every team, so another team needs no read either.
   const shown = useRef(true);
