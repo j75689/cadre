@@ -685,6 +685,19 @@ describe("Editing the Team", () => {
     expect(form.queryByRole("alert")).toBeNull();
   });
 
+  it("keeps showing the settings after a save removed every role, under --auth=none", async () => {
+    const none = team({ spec: { ...full.spec, roles: undefined }, status: full.status });
+    const { form } = await edit([() => json(full)], [() => json(none)], [{ mode: "none", admin: true }]);
+    fireEvent.click(form.getAllByRole("button", { name: "Remove role" })[1]);
+    fireEvent.click(form.getByRole("button", { name: "Remove role" }));
+    fireEvent.click(form.getByRole("button", { name: "Save" }));
+    await screen.findByText("Saved");
+    await waitFor(() => expect(document.activeElement).toBe(screen.getByRole("button", { name: "Edit" })));
+    expect(screen.queryByText(/You no longer have the admin role/)).toBeNull();
+    expect(screen.getByText("No roles are given on this team.")).toBeTruthy();
+    expect(screen.getByRole("heading", { name: "Run slots" })).toBeTruthy();
+  });
+
   it("names the team by the Team saved, before /teams is read again", async () => {
     const after = team({ metadata: { name: "team", namespace: "a", resourceVersion: "8" }, spec: { ...full.spec, displayName: "Team B" } });
     const { form } = await edit([() => json(full)], [() => json(after)], [admin], [full]);
