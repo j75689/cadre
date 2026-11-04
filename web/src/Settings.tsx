@@ -2,7 +2,7 @@ import { useEffect, useRef, useState, type Ref } from "react";
 import { Link, useParams } from "react-router";
 import { SettingsNav } from "./Access";
 import { APIError, getTeam, type Team } from "./api";
-import { RoleLine, useIdentity, useRole } from "./Identity";
+import { RoleLine, useIdentity, useIdentityDetails, useRole } from "./Identity";
 import { taskLink, teamPath } from "./links";
 import { can } from "./roles";
 import { TeamForm } from "./TeamForm";
@@ -48,9 +48,13 @@ export function Settings() {
   // lost is a 403 no_role after the Team was read, on a save or a read:
   // the Team was deleted, or the caller's role on it taken away, so the
   // role /me gave is out of date. It is read again, and the page edits no
-  // more.
+  // more, unless the role is given again (gone).
   const [lost, setLost] = useState(false);
   const lostRef = useRef<HTMLDivElement>(null);
+  // gone is whether /me, read again while lost, gave no role on ns: one
+  // that gives a role after that is a role given again, and the page shows
+  // what the role allows once more.
+  const gone = useRef(false);
   const missingRef = useRef<HTMLParagraphElement>(null);
   // closed is whether a read closed the form, or took the Team away while
   // the focus was in it (on Edit), so the message that took its place takes
@@ -67,7 +71,8 @@ export function Settings() {
     if (closing()) closed.current = true;
     else if (at instanceof HTMLElement && at !== document.body) press(at, () => lostRef.current ?? missingRef.current);
   };
-  const { refresh } = useIdentity();
+  const { mode, refresh } = useIdentity();
+  const { me, held } = useIdentityDetails();
   useEffect(() => {
     if (demoted) demotedRef.current?.focus();
   }, [demoted]);
@@ -76,6 +81,28 @@ export function Settings() {
     closed.current = false;
     (lost ? lostRef : missingRef).current?.focus();
   }, [lost, missing]);
+  // dropped is whether the /me answer that took the role took what held
+  // the focus too (Edit, a tab), before or after the Team's 403: the alert
+  // takes it then, from the body or the heading LiveRoles gives it to.
+  const dropped = useRef(false);
+  useEffect(() => {
+    const was = held?.current;
+    dropped.current = !role && !!was && !was.isConnected;
+  }, [role, held]);
+  useEffect(() => {
+    if (!lost) return;
+    if (!role) {
+      gone.current = true;
+      const at = document.activeElement;
+      if (dropped.current && (at === document.body || at === lostRef.current?.closest("main")?.querySelector("h1"))) lostRef.current?.focus();
+      return;
+    }
+    if (!gone.current) return;
+    gone.current = false;
+    // The alert goes: its focus goes to the heading, not to the body.
+    if (lostRef.current?.contains(document.activeElement)) lostRef.current.closest("main")?.querySelector("h1")?.focus();
+    setLost(false);
+  }, [lost, role]);
   const leave = () => {
     setEditing(false);
     setLeft(true);
@@ -91,8 +118,15 @@ export function Settings() {
   useTitle("Settings", name);
   usePolling(
     async (signal) => {
+      // The Team is read with the role /me gives, once it is read.
+      if (mode === "loading") return;
       try {
-        setTeam(await getTeam(ns, signal));
+        const got = await getTeam(ns, signal);
+        // A read for a lower role than /me gave takes Edit away before /me
+        // says so: its focus goes to the heading, as LiveRoles' would.
+        const at = document.activeElement;
+        if (!got.spec?.roles?.length && !me?.admin && at instanceof HTMLElement) press(at, () => teamRef.current?.closest("main")?.querySelector("h1"));
+        setTeam(got);
         setMissing(false);
         setError("");
         setForbidden(false);
@@ -115,10 +149,18 @@ export function Settings() {
       }
     },
     15000,
-    [ns, retry],
+    // A new role reads the Team again at once.
+    [ns, retry, mode, role],
     { ns, topic: "config", match: (h) => h.event === "config" && h.kind === "Team" },
   );
-  const admin = can(role, "manage") && !demoted && !lost;
+  // full is whether the Team read is the one its admins see. The server
+  // leaves its roles out for anyone else (project()), and the answer says
+  // nothing else of who it was read as, so a Team with roles is an admin's
+  // read. One without is too for a bootstrap admin, or without a policy:
+  // the server leaves those reads whole. A Team read for a lower role than
+  // /me gives now is not one to edit: its form would save no roles.
+  const full = !!team?.spec?.roles?.length || !!me?.admin;
+  const admin = can(role, "manage") && full && !demoted && !lost;
   return (
     <main id="main" className="page settings-page">
       <nav className="breadcrumb" aria-label="Breadcrumb">
@@ -213,7 +255,7 @@ export function Settings() {
                 You no longer have the admin role on {ns}, so its limits, roles and run slots are hidden.
               </p>
             ) : (
-              !admin && role !== undefined && <p className="hint card-body">This page shows a team's limits, roles and run slots to its admins only.</p>
+              !can(role, "manage") && role !== undefined && <p className="hint card-body">This page shows a team's limits, roles and run slots to its admins only.</p>
             )}
           </section>
           {admin && <Roles team={team} />}

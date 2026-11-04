@@ -1,5 +1,5 @@
 import { NavLink, Outlet, useLocation, useParams } from "react-router";
-import { roleOf, useIdentityDetails } from "./Identity";
+import { LiveRoles, roleOf, useIdentityDetails } from "./Identity";
 import { teamPath } from "./links";
 import type { Role } from "./roles";
 import { Icon, type IconName } from "./ui/Icon";
@@ -43,10 +43,13 @@ export function TeamNav() {
   );
 }
 
-// TeamLayout is a team page: the team's tabs, then the page.
+// TeamLayout is a team page: the team's tabs, then the page, with the
+// caller's roles kept current.
 export function TeamLayout() {
+  const { ns = "" } = useParams();
   return (
     <>
+      <LiveRoles ns={ns} />
       <TeamNav />
       <Outlet />
     </>

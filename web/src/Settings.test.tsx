@@ -66,16 +66,17 @@ describe("Settings", () => {
     expect(slots.getByText("01JRUN")).toBeTruthy();
   });
 
-  // An idle Team comes without slots (omitempty), and often without roles.
+  // An idle Team comes without slots (omitempty). One without roles has
+  // no admin but a bootstrap one.
   it("shows an admin a Team without roles or slots", async () => {
-    open({ mode: "oidc", name: "dana", roles: { a: "admin" } }, () => json(team({ spec: { maxConcurrentRuns: 1 }, status: {} })));
+    open({ mode: "oidc", name: "dana", roles: { a: "admin" }, admin: true }, () => json(team({ spec: { maxConcurrentRuns: 1 }, status: {} })));
     expect(await screen.findByText("No roles are given on this team.")).toBeTruthy();
     expect(screen.getByText("No run holds a slot.")).toBeTruthy();
     expect(screen.getByText("0 of 1 in use")).toBeTruthy();
   });
 
   it("shows an admin the server's defaults for unset limits", async () => {
-    open({ mode: "oidc", name: "dana", roles: { a: "admin" } }, () => json(team({ status: { running: 1 } })));
+    open({ mode: "oidc", name: "dana", roles: { a: "admin" } }, () => json(team({ spec: { roles: full.spec?.roles }, status: { running: 1 } })));
     const card = within(await screen.findByRole("region", { name: "Team" }));
     expect(card.getByText("(default)").parentElement?.textContent).toBe("1 (default)");
     expect(card.getByText("never")).toBeTruthy();
@@ -540,7 +541,7 @@ describe("Editing the Team", () => {
       const tab = within(screen.getByRole("navigation", { name: "Settings" })).getByRole("link", { name });
       await act(async () => tab.focus());
       await act(async () => document.dispatchEvent(new Event("visibilitychange"))); // the page reads the Team again
-      await waitFor(() => expect(reads()).toBe(2), { timeout: 5000 });
+      await waitFor(() => expect(reads()).toBeGreaterThanOrEqual(2), { timeout: 5000 }); // and one more for the new role
       expect(await screen.findByText("You have no role on a.")).toBeTruthy();
       expect(tab.isConnected).toBe(false);
       await waitFor(() => expect(document.activeElement).toBe(screen.getByText(/Your role on a is gone or has changed/).closest("[role=alert]")), { timeout: 5000 });
@@ -551,17 +552,17 @@ describe("Editing the Team", () => {
   it("leaves the focus on a settings tab that stays, or outside the settings, when a read loses the Team", async () => {
     const nobody: Me = { mode: "oidc", name: "dana", roles: {} };
     const cases = [
-      // A 404 reads no /me: the role, and the tab, stay.
-      { answer: noTeam, gone: /This namespace has no Team/, focus: () => within(screen.getByRole("navigation", { name: "Settings" })).getByRole("link", { name: "Activity" }) },
-      { answer: noRole, gone: /Your role on a is gone or has changed/, focus: () => within(screen.getByRole("navigation", { name: "Team" })).getByRole("link", { name: "Agents" }) },
+      // A 404 leaves the role, and the tab: /me, read again with the Team, gives it still.
+      { me: admin, answer: noTeam, gone: /This namespace has no Team/, focus: () => within(screen.getByRole("navigation", { name: "Settings" })).getByRole("link", { name: "Activity" }) },
+      { me: [admin, nobody], answer: noRole, gone: /Your role on a is gone or has changed/, focus: () => within(screen.getByRole("navigation", { name: "Team" })).getByRole("link", { name: "Agents" }) },
     ];
-    for (const { answer, gone, focus } of cases) {
-      const reads = open([admin, nobody], () => json(full), answer);
+    for (const { me, answer, gone, focus } of cases) {
+      const reads = open(me, () => json(full), answer);
       await screen.findByRole("region", { name: "Team" });
       const at = focus();
       await act(async () => at.focus());
       await act(async () => document.dispatchEvent(new Event("visibilitychange"))); // the page reads the Team again
-      await waitFor(() => expect(reads()).toBe(2), { timeout: 5000 });
+      await waitFor(() => expect(reads()).toBeGreaterThanOrEqual(2), { timeout: 5000 }); // and one more for the new role
       await screen.findByText(gone);
       if (answer === noRole) expect(await screen.findByText("You have no role on a.")).toBeTruthy();
       expect(document.activeElement).toBe(at);
@@ -602,9 +603,11 @@ describe("Editing the Team", () => {
   });
 
   // A bootstrap admin keeps the admin role without being named in one.
+  // Only a bootstrap admin can: the server refuses to leave a Team with no
+  // admin otherwise (orphans()).
   it("keeps showing an admin the settings after they removed every role", async () => {
     const none = team({ spec: { ...full.spec, roles: undefined }, status: full.status });
-    const { form, sent } = await edit([() => json(full)], [() => json(none)]);
+    const { form, sent } = await edit([() => json(full)], [() => json(none)], [{ ...admin, admin: true }]);
     fireEvent.click(form.getAllByRole("button", { name: "Remove role" })[1]);
     fireEvent.click(form.getByRole("button", { name: "Remove role" }));
     fireEvent.click(form.getByRole("button", { name: "Save" }));

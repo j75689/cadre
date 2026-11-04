@@ -31,7 +31,8 @@ afterEach(() => {
 function server(role: string, t = task("Todo")) {
   vi.stubGlobal("fetch", (url: string, init?: RequestInit) => {
     if (url.endsWith("/me")) return json({ mode: "oidc", username: "dana@example.test", name: "Dana", roles: { a: role }, admin: false });
-    if (url.endsWith("/team")) return json(team());
+    // An admin's Team comes with its roles (project()).
+    if (url.endsWith("/team")) return json(role === "admin" ? team({ spec: { displayName: "Team A", roles: [{ role: "admin", subjects: [{ kind: "user", name: "dana@example.test" }] }] } }) : team());
     if (init?.method === "POST") return json({ error: { code: "invalid", message: "title is too long" } }, 400);
     if (url.includes("/agentaccesses")) return json(access());
     if (url.endsWith("/teams")) return json({ items: [{ metadata: { name: "team", namespace: "a" } }] });
