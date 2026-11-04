@@ -219,10 +219,13 @@ export function Settings() {
             {editing ? (
               <TeamForm
                 team={team}
-                onSaved={(t, sent) => {
+                onSaved={(t) => {
                   setTeam(t);
                   setSaved(true);
-                  if ((sent.roles ?? []).length > 0 && !t.spec?.roles?.length) {
+                  // A Team saved without roles answers a bootstrap admin
+                  // whole, so it is theirs; anyone else's role went with
+                  // them.
+                  if (!t.spec?.roles?.length && !me?.admin) {
                     setDemoted(true);
                     refresh();
                   }

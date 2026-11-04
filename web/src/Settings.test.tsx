@@ -647,4 +647,31 @@ describe("Editing the Team", () => {
     await waitFor(() => expect(document.activeElement).toBe(card.getByRole("button", { name: "Edit" })));
     expect(sent).toHaveLength(0);
   });
+
+  // #79 (backlog of #134's review and QA).
+
+  it("says the admin role is gone once a save removed every role, for anyone but a bootstrap admin", async () => {
+    let me = 0;
+    vi.stubGlobal("fetch", (url: string, init?: RequestInit) => {
+      // The second /me stays unanswered, so what the save showed stays.
+      if (url.endsWith("/me")) return me++ === 0 ? json(admin) : new Promise(() => {});
+      if (url.endsWith("/namespaces/a/team") && init?.method === "PUT") return json(stripped); // project(): no role left
+      if (url.endsWith("/namespaces/a/team")) return json(full);
+      return json({ items: [] });
+    });
+    render(
+      <MemoryRouter initialEntries={["/t/a/settings"]}>
+        <App />
+      </MemoryRouter>,
+    );
+    fireEvent.click(await screen.findByRole("button", { name: "Edit" }));
+    const form = within(screen.getByRole("form", { name: "Edit the team" }));
+    fireEvent.click(form.getAllByRole("button", { name: "Remove role" })[1]);
+    fireEvent.click(form.getByRole("button", { name: "Remove role" }));
+    fireEvent.click(form.getByRole("button", { name: "Save" }));
+
+    const hint = await screen.findByText("You no longer have the admin role on a, so its limits, roles and run slots are hidden.");
+    await waitFor(() => expect(document.activeElement).toBe(hint));
+    expect(me).toBe(2); // /me was read again
+  });
 });
