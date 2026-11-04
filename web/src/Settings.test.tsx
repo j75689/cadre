@@ -713,4 +713,12 @@ describe("Editing the Team", () => {
     expect(alert?.textContent).toBe("Your role on a is gone or has changed.");
     await waitFor(() => expect(document.activeElement).toBe(alert));
   });
+
+  it("shows a CSRF 403 as the server says it, beside Save", async () => {
+    const csrf = () => json({ error: { code: "forbidden", message: "a change made with a session cookie must come from this site" } }, 403);
+    const { form } = await edit([() => json(full)], [csrf]);
+    fireEvent.click(form.getByRole("button", { name: "Save" }));
+    expect((await form.findByRole("alert")).textContent).toBe("a change made with a session cookie must come from this site");
+    expect(screen.queryByText(/Your role on a is gone/)).toBeNull();
+  });
 });
