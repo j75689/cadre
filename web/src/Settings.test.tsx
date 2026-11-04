@@ -488,11 +488,31 @@ describe("Editing the Team", () => {
       const reads = open(admin, () => json(full), answer);
       const button = await screen.findByRole("button", { name: "Edit" });
       act(() => button.focus());
+      await act(async () => {}); // the effects of the render that drew the Team have run
       document.dispatchEvent(new Event("visibilitychange")); // the page reads the Team again
-      await waitFor(() => expect(reads()).toBe(2), { timeout: 5000 });
-      await waitFor(() => expect(document.activeElement).toBe(focused()), { timeout: 5000 });
+      await waitFor(() => expect(reads()).toBe(2));
+      await waitFor(() => expect(document.activeElement).toBe(focused()));
       cleanup();
     }
+  });
+
+  it("reads with the Team it drew when the tab is shown right after the commit that drew it", async () => {
+    let shown = false;
+    // Shown as soon as Edit is in the DOM, before React's passive effects run.
+    const observer = new MutationObserver(() => {
+      const button = screen.queryByRole("button", { name: "Edit" });
+      if (shown || !button) return;
+      shown = true;
+      button.focus();
+      document.dispatchEvent(new Event("visibilitychange")); // the page reads the Team again
+    });
+    observer.observe(document.body, { childList: true, subtree: true });
+    const reads = open(admin, () => json(full), noRole);
+    await waitFor(() => expect(reads()).toBe(2));
+    const banner = await screen.findByText(/Your role on a is gone or has changed/);
+    observer.disconnect();
+    await waitFor(() => expect(document.activeElement).toBe(banner.closest("[role=alert]")));
+    expect(screen.queryByText(/Could not load the team/)).toBeNull();
   });
 
   it("leaves the focus where it is, outside the Team, when a read loses the Team", async () => {
@@ -501,9 +521,10 @@ describe("Editing the Team", () => {
       await screen.findByRole("region", { name: "Team" });
       const tab = screen.getByRole("link", { name: "Team" });
       act(() => tab.focus());
+      await act(async () => {}); // the effects of the render that drew the Team have run
       document.dispatchEvent(new Event("visibilitychange")); // the page reads the Team again
-      await waitFor(() => expect(reads()).toBe(2), { timeout: 5000 });
-      await waitFor(() => expect(screen.queryByRole("region", { name: "Team" })).toBeNull(), { timeout: 5000 });
+      await waitFor(() => expect(reads()).toBe(2));
+      await waitFor(() => expect(screen.queryByRole("region", { name: "Team" })).toBeNull());
       expect(document.activeElement).toBe(tab);
       cleanup();
     }
