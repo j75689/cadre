@@ -721,4 +721,50 @@ describe("Editing the Team", () => {
     expect((await form.findByRole("alert")).textContent).toBe("a change made with a session cookie must come from this site");
     expect(screen.queryByText(/Your role on a is gone/)).toBeNull();
   });
+
+  it("describes a role without subjects by the error", async () => {
+    const { form } = await edit([() => json(full)]);
+    const role = form.getByRole("group", { name: "Role 1" });
+    fireEvent.click(within(role).getByRole("button", { name: "Remove subject 1" }));
+    fireEvent.click(form.getByRole("button", { name: "Save" }));
+    expect(form.getByRole("alert").textContent).toBe("Role 1 needs at least one subject.");
+    expect(role.getAttribute("aria-describedby")).toBe(form.getByRole("alert").id);
+  });
+
+  it("announces each failed save again, as a new alert", async () => {
+    const { form } = await edit([() => json(full)]);
+    fireEvent.change(form.getByLabelText(/^Archive after/), { target: { value: "0s" } });
+    fireEvent.click(form.getByRole("button", { name: "Save" }));
+    const first = form.getByRole("alert");
+    fireEvent.click(form.getByRole("button", { name: "Save" }));
+    expect(form.getByRole("alert").textContent).toBe(first.textContent);
+    expect(form.getByRole("alert")).not.toBe(first);
+  });
+
+  it("drops a failed read's error when a later read loses the role", async () => {
+    const failed = () => json({ error: { code: "internal", message: "the cache is not synced" } }, 500);
+    const reads = open(admin, () => json(full), failed, noRole);
+    await screen.findByRole("region", { name: "Team" });
+    await act(async () => {}); // the effects of the render that drew the Team have run
+    document.dispatchEvent(new Event("visibilitychange")); // the page reads the Team again
+    expect(await screen.findByText(/Could not load the team: the cache is not synced/)).toBeTruthy();
+    await act(async () => {});
+    document.dispatchEvent(new Event("visibilitychange"));
+    await waitFor(() => expect(reads()).toBeGreaterThanOrEqual(3));
+    expect(await screen.findByText(/Your role on a is gone or has changed/)).toBeTruthy();
+    expect(screen.queryByText(/Could not load the team/)).toBeNull();
+  });
+
+  // /me can still give the role a moment after the Team took it: the
+  // index it reads lags.
+  it("offers no Edit once a role was lost, though /me and a read still say admin", async () => {
+    const { form, reads } = await edit([() => json(full)], [noRole], [admin]);
+    fireEvent.click(form.getByRole("button", { name: "Save" }));
+    await screen.findByText(/Your role on a is gone or has changed/);
+    await waitFor(() => expect(reads()).toBe(2)); // read again at once
+    await screen.findByRole("region", { name: "Team" });
+    expect(screen.queryByRole("button", { name: "Edit" })).toBeNull();
+    expect(screen.queryByRole("heading", { name: "Roles" })).toBeNull();
+    expect(screen.queryByRole("heading", { name: "Run slots" })).toBeNull();
+  });
 });
