@@ -72,4 +72,10 @@ describe("refusal", () => {
     expect(refusal("maxConcurrentRuns -1: invalid").at).toBe("maxConcurrentRuns");
     expect(refusal("the Team would have no admin: keep an admin role")).toEqual({ message: "the Team would have no admin: keep an admin role", at: undefined });
   });
+
+  it("leaves out the invalid request the server ends a 400's message with", () => {
+    expect(refusal("roles[0]: a viewer role needs at least one subject: invalid request")).toEqual({ message: "Role 1: a viewer role needs at least one subject", at: "role-0" });
+    expect(refusal("maxConcurrentRuns -1: invalid request")).toEqual({ message: "maxConcurrentRuns -1", at: "maxConcurrentRuns" });
+    expect(refusal("an invalid request: keep it")).toEqual({ message: "an invalid request: keep it", at: undefined });
+  });
 });

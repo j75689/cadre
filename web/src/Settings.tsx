@@ -6,7 +6,7 @@ import { RoleLine, useIdentity, useIdentityDetails, useRole } from "./Identity";
 import { taskLink, teamPath } from "./links";
 import { can } from "./roles";
 import { TeamForm } from "./TeamForm";
-import { useTeamName } from "./teamList";
+import { teamName, useTeamName } from "./teamList";
 import { RoleBadge } from "./ui/Badge";
 import { Banner } from "./ui/Banner";
 import { Button } from "./ui/Button";
@@ -26,9 +26,12 @@ const defaultMaxRuns = 1;
 export function Settings() {
   const { ns = "" } = useParams();
   const role = useRole(ns);
-  const name = useTeamName(ns);
+  const listed = useTeamName(ns);
   // team is null until read, and after a 404 (missing).
   const [team, setTeam] = useState<Team | null>(null);
+  // The Team read here, or saved, names the team before /teams is read
+  // again.
+  const name = team ? teamName(team) : listed;
   const [missing, setMissing] = useState(false);
   const [error, setError] = useState("");
   // forbidden is a 403: reading again cannot help, so there is no Retry.
@@ -48,7 +51,8 @@ export function Settings() {
   // lost is a 403 no_role after the Team was read, on a save or a read:
   // the Team was deleted, or the caller's role on it taken away, so the
   // role /me gave is out of date. It is read again, and the page edits no
-  // more, unless the role is given again (gone).
+  // more, unless the role is given again (gone). After a save that took
+  // the caller's admin role, its alert does not blame someone else.
   const [lost, setLost] = useState(false);
   const lostRef = useRef<HTMLDivElement>(null);
   // gone is whether /me, read again while lost, gave no role on ns: one
@@ -183,7 +187,9 @@ export function Settings() {
       )}
       {lost && (
         <div ref={lostRef} tabIndex={-1} role="alert">
-          <Banner className="banner-warning">Your role on {ns} is gone or has changed: its Team was deleted, or someone changed its roles.</Banner>
+          <Banner className="banner-warning">
+            Your role on {ns} is gone or has changed{demoted ? "." : ": its Team was deleted, or someone changed its roles."}
+          </Banner>
         </div>
       )}
       {missing && <NoTeam ns={ns} ref={missingRef} />}
@@ -219,10 +225,13 @@ export function Settings() {
             {editing ? (
               <TeamForm
                 team={team}
-                onSaved={(t, sent) => {
+                onSaved={(t) => {
                   setTeam(t);
                   setSaved(true);
-                  if ((sent.roles ?? []).length > 0 && !t.spec?.roles?.length) {
+                  // A Team saved without roles answers a bootstrap admin
+                  // whole, so it is theirs; anyone else's role went with
+                  // them.
+                  if (!t.spec?.roles?.length && !me?.admin) {
                     setDemoted(true);
                     refresh();
                   }

@@ -2,7 +2,7 @@ import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testi
 import { MemoryRouter } from "react-router";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { App } from "./App";
-import type { Me } from "./api";
+import type { Me, Team } from "./api";
 import { json, team } from "./testing";
 
 afterEach(() => {
@@ -141,8 +141,8 @@ const admin: Me = { mode: "oidc", name: "dana", roles: { a: "admin" } };
 
 // edit opens team a's settings as an admin and the Team card's form. The
 // Team's reads and PUTs, and /me, are answered in turn, the last one
-// repeated; sent holds the PUTs' bodies.
-async function edit(reads: (() => Promise<Response>)[], puts: (() => Promise<Response>)[] = [], mes: Me[] = [admin]) {
+// repeated; /teams lists teams; sent holds the PUTs' bodies.
+async function edit(reads: (() => Promise<Response>)[], puts: (() => Promise<Response>)[] = [], mes: Me[] = [admin], teams: Team[] = []) {
   const sent: Record<string, unknown>[] = [];
   let n = 0;
   let m = 0;
@@ -153,6 +153,7 @@ async function edit(reads: (() => Promise<Response>)[], puts: (() => Promise<Res
       return puts[Math.min(sent.length - 1, puts.length - 1)]();
     }
     if (url.endsWith("/namespaces/a/team")) return reads[Math.min(n++, reads.length - 1)]();
+    if (url.endsWith("/teams")) return json({ items: teams });
     return json({ items: [] });
   });
   render(
@@ -646,5 +647,138 @@ describe("Editing the Team", () => {
     expect(card.getByText("Team A")).toBeTruthy();
     await waitFor(() => expect(document.activeElement).toBe(card.getByRole("button", { name: "Edit" })));
     expect(sent).toHaveLength(0);
+  });
+
+  // #79 (backlog of #134's review and QA).
+
+  it("says the admin role is gone once a save removed every role, for anyone but a bootstrap admin", async () => {
+    let me = 0;
+    vi.stubGlobal("fetch", (url: string, init?: RequestInit) => {
+      // The second /me stays unanswered, so what the save showed stays.
+      if (url.endsWith("/me")) return me++ === 0 ? json(admin) : new Promise(() => {});
+      if (url.endsWith("/namespaces/a/team") && init?.method === "PUT") return json(stripped); // project(): no role left
+      if (url.endsWith("/namespaces/a/team")) return json(full);
+      return json({ items: [] });
+    });
+    render(
+      <MemoryRouter initialEntries={["/t/a/settings"]}>
+        <App />
+      </MemoryRouter>,
+    );
+    fireEvent.click(await screen.findByRole("button", { name: "Edit" }));
+    const form = within(screen.getByRole("form", { name: "Edit the team" }));
+    fireEvent.click(form.getAllByRole("button", { name: "Remove role" })[1]);
+    fireEvent.click(form.getByRole("button", { name: "Remove role" }));
+    fireEvent.click(form.getByRole("button", { name: "Save" }));
+
+    const hint = await screen.findByText("You no longer have the admin role on a, so its limits, roles and run slots are hidden.");
+    await waitFor(() => expect(document.activeElement).toBe(hint));
+    expect(me).toBe(2); // /me was read again
+  });
+
+  it("drops an error about the roles once a role is removed", async () => {
+    const { form } = await edit([() => json(full)]);
+    fireEvent.click(form.getByRole("button", { name: "Add role" }));
+    fireEvent.click(form.getByRole("button", { name: "Save" }));
+    expect(form.getByRole("alert").textContent).toBe("Role 3, subject 1 needs a name.");
+    fireEvent.click(within(form.getByRole("group", { name: "Role 3" })).getByRole("button", { name: "Remove role" }));
+    expect(form.queryByRole("alert")).toBeNull();
+  });
+
+  it("keeps showing the settings after a save removed every role, under --auth=none", async () => {
+    const none = team({ spec: { ...full.spec, roles: undefined }, status: full.status });
+    const { form } = await edit([() => json(full)], [() => json(none)], [{ mode: "none", admin: true }]);
+    fireEvent.click(form.getAllByRole("button", { name: "Remove role" })[1]);
+    fireEvent.click(form.getByRole("button", { name: "Remove role" }));
+    fireEvent.click(form.getByRole("button", { name: "Save" }));
+    await screen.findByText("Saved");
+    await waitFor(() => expect(document.activeElement).toBe(screen.getByRole("button", { name: "Edit" })));
+    expect(screen.queryByText(/You no longer have the admin role/)).toBeNull();
+    expect(screen.getByText("No roles are given on this team.")).toBeTruthy();
+    expect(screen.getByRole("heading", { name: "Run slots" })).toBeTruthy();
+  });
+
+  it("names the team by the Team saved, before /teams is read again", async () => {
+    const after = team({ metadata: { name: "team", namespace: "a", resourceVersion: "8" }, spec: { ...full.spec, displayName: "Team B" } });
+    const { form } = await edit([() => json(full)], [() => json(after)], [admin], [full]);
+    const crumbs = within(screen.getByRole("navigation", { name: "Breadcrumb" }));
+    expect(crumbs.getByRole("link", { name: "Team A" })).toBeTruthy();
+    fireEvent.change(form.getByLabelText("Display name"), { target: { value: "Team B" } });
+    fireEvent.click(form.getByRole("button", { name: "Save" }));
+    expect(await crumbs.findByRole("link", { name: "Team B" })).toBeTruthy();
+    expect(document.title).toBe("Settings · Team B · Cadre");
+  });
+
+  it("shows the server's message without its invalid request suffix", async () => {
+    const refused = () => json({ error: { code: "invalid", message: "roles[1].subjects[0]: a group needs a name: invalid request" } }, 400);
+    const { form } = await edit([() => json(full)], [refused]);
+    fireEvent.click(form.getByRole("button", { name: "Save" }));
+    expect((await form.findByRole("alert")).textContent).toBe("Role 2, subject 1: a group needs a name");
+  });
+
+  it("does not blame someone else when the role a save took away is then refused", async () => {
+    const nobody: Me = { mode: "oidc", name: "dana", roles: {} };
+    const { form } = await edit([() => json(full), noRole], [() => json(stripped)], [admin, nobody]);
+    fireEvent.click(within(form.getByRole("group", { name: "Role 1" })).getByRole("button", { name: "Remove role" }));
+    fireEvent.click(form.getByRole("button", { name: "Save" }));
+
+    expect(await screen.findByText("You have no role on a.")).toBeTruthy();
+    const alert = (await screen.findByText(/Your role on a is gone or has changed/)).closest("[role=alert]");
+    expect(alert?.textContent).toBe("Your role on a is gone or has changed.");
+    await waitFor(() => expect(document.activeElement).toBe(alert));
+  });
+
+  it("shows a CSRF 403 as the server says it, beside Save", async () => {
+    const csrf = () => json({ error: { code: "forbidden", message: "a change made with a session cookie must come from this site" } }, 403);
+    const { form } = await edit([() => json(full)], [csrf]);
+    fireEvent.click(form.getByRole("button", { name: "Save" }));
+    expect((await form.findByRole("alert")).textContent).toBe("a change made with a session cookie must come from this site");
+    expect(screen.queryByText(/Your role on a is gone/)).toBeNull();
+  });
+
+  it("describes a role without subjects by the error", async () => {
+    const { form } = await edit([() => json(full)]);
+    const role = form.getByRole("group", { name: "Role 1" });
+    fireEvent.click(within(role).getByRole("button", { name: "Remove subject 1" }));
+    fireEvent.click(form.getByRole("button", { name: "Save" }));
+    expect(form.getByRole("alert").textContent).toBe("Role 1 needs at least one subject.");
+    expect(role.getAttribute("aria-describedby")).toBe(form.getByRole("alert").id);
+  });
+
+  it("announces each failed save again, as a new alert", async () => {
+    const { form } = await edit([() => json(full)]);
+    fireEvent.change(form.getByLabelText(/^Archive after/), { target: { value: "0s" } });
+    fireEvent.click(form.getByRole("button", { name: "Save" }));
+    const first = form.getByRole("alert");
+    fireEvent.click(form.getByRole("button", { name: "Save" }));
+    expect(form.getByRole("alert").textContent).toBe(first.textContent);
+    expect(form.getByRole("alert")).not.toBe(first);
+  });
+
+  it("drops a failed read's error when a later read loses the role", async () => {
+    const failed = () => json({ error: { code: "internal", message: "the cache is not synced" } }, 500);
+    const reads = open(admin, () => json(full), failed, noRole);
+    await screen.findByRole("region", { name: "Team" });
+    await act(async () => {}); // the effects of the render that drew the Team have run
+    document.dispatchEvent(new Event("visibilitychange")); // the page reads the Team again
+    expect(await screen.findByText(/Could not load the team: the cache is not synced/)).toBeTruthy();
+    await act(async () => {});
+    document.dispatchEvent(new Event("visibilitychange"));
+    await waitFor(() => expect(reads()).toBeGreaterThanOrEqual(3));
+    expect(await screen.findByText(/Your role on a is gone or has changed/)).toBeTruthy();
+    expect(screen.queryByText(/Could not load the team/)).toBeNull();
+  });
+
+  // /me can still give the role a moment after the Team took it: the
+  // index it reads lags.
+  it("offers no Edit once a role was lost, though /me and a read still say admin", async () => {
+    const { form, reads } = await edit([() => json(full)], [noRole], [admin]);
+    fireEvent.click(form.getByRole("button", { name: "Save" }));
+    await screen.findByText(/Your role on a is gone or has changed/);
+    await waitFor(() => expect(reads()).toBe(2)); // read again at once
+    await screen.findByRole("region", { name: "Team" });
+    expect(screen.queryByRole("button", { name: "Edit" })).toBeNull();
+    expect(screen.queryByRole("heading", { name: "Roles" })).toBeNull();
+    expect(screen.queryByRole("heading", { name: "Run slots" })).toBeNull();
   });
 });
