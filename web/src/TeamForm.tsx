@@ -64,8 +64,10 @@ export function validate(d: TeamSpec): Problem | undefined {
 }
 
 // refusal is a server message as a Problem: its roles and subjects
-// numbered as the form does, and the field its prefix names.
+// numbered as the form does, the field its prefix names, and without the
+// ": invalid request" the server ends a 400's message with.
 export function refusal(msg: string): Problem {
+  msg = msg.replace(/: invalid request$/, "");
   const m = /^(maxConcurrentRuns|archiveAfter)\b|^roles\[(\d+)\](?:\.subjects\[(\d+)\])?/.exec(msg);
   const at = !m ? undefined : (m[1] ?? (m[3] !== undefined ? `subject-${m[2]}-${m[3]}` : `role-${m[2]}`));
   return { message: formIndexes(msg), at };

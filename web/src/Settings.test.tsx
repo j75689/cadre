@@ -694,4 +694,11 @@ describe("Editing the Team", () => {
     expect(await crumbs.findByRole("link", { name: "Team B" })).toBeTruthy();
     expect(document.title).toBe("Settings · Team B · Cadre");
   });
+
+  it("shows the server's message without its invalid request suffix", async () => {
+    const refused = () => json({ error: { code: "invalid", message: "roles[1].subjects[0]: a group needs a name: invalid request" } }, 400);
+    const { form } = await edit([() => json(full)], [refused]);
+    fireEvent.click(form.getByRole("button", { name: "Save" }));
+    expect((await form.findByRole("alert")).textContent).toBe("Role 2, subject 1: a group needs a name");
+  });
 });
