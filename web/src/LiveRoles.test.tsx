@@ -8,7 +8,8 @@ import { hintDelayMs } from "./usePolling";
 
 // roles is what /me says the caller is, by namespace, as an admin changes
 // it; me counts the reads of /me. A Team read without a role on a is a 403
-// no_role, as cadre-server answers it.
+// no_role, and one with a role other than admin comes without its roles,
+// as cadre-server answers them.
 let roles: Record<string, string> = {};
 let me = 0;
 
@@ -27,7 +28,7 @@ beforeEach(() => {
     }
     if (url.endsWith("/namespaces/a/team")) {
       if (!roles.a) return json({ error: { code: "no_role", message: "you have no role on a" } }, 403);
-      return json(team());
+      return json(roles.a === "admin" ? team({ spec: { displayName: "Team A", roles: [{ role: "admin", subjects: [{ kind: "user", name: "dana@example.test" }] }] } }) : team());
     }
     if (url.includes("/tasks?")) return json({ items: [], offset: 0, limit: 50 });
     return json({ items: [] });
@@ -249,5 +250,73 @@ describe("Roles without a stream", () => {
     await act(async () => fireEvent.click(screen.getByRole("button", { name: "Save" })));
     expect(sent).toHaveLength(1);
     expect(sent[0].roles).toEqual(admins);
+  });
+
+  // The role is taken and given back between two reads of /me (#468): the
+  // Team was read without it, and /me says nothing changed. Saving that
+  // Team would take every role away.
+  it("give an admin Edit only on a Team the server sent with its roles", async () => {
+    roles = { a: "admin" };
+    let rv = 7;
+    const admins = [{ role: "admin" as const, subjects: [{ kind: "user" as const, name: "dana@example.test" }] }, { role: "member" as const, subjects: [{ kind: "user" as const, name: "erin@example.test" }] }];
+    const give = (role: string) => {
+      roles = { a: role };
+      rv++;
+    };
+    const sent: { roles?: unknown[]; resourceVersion?: string }[] = [];
+    const inner = globalThis.fetch;
+    vi.stubGlobal("fetch", (url: string, init?: RequestInit) => {
+      if (!url.endsWith("/namespaces/a/team")) return inner(url, init);
+      if (init?.method === "PUT") {
+        const body = JSON.parse(String(init.body));
+        sent.push(body);
+        if (body.resourceVersion !== String(rv)) return json({ error: { code: "conflict", message: "the Team of a changed since it was read" } }, 409);
+        rv++;
+        return json(team({ metadata: { name: "team", namespace: "a", resourceVersion: String(rv) }, spec: { displayName: body.displayName, roles: body.roles } }));
+      }
+      const metadata = { name: "team", namespace: "a", resourceVersion: String(rv) };
+      return json(roles.a === "admin" ? team({ metadata, spec: { displayName: "Team A", roles: admins } }) : team({ metadata }));
+    });
+    await open("/t/a", /You are an admin of a/);
+    await act(() => vi.advanceTimersByTimeAsync(6000));
+    give("member");
+    fireEvent.click(screen.getByRole("link", { name: "Settings" }));
+    await act(() => vi.advanceTimersByTimeAsync(500));
+    give("admin");
+    await act(() => vi.advanceTimersByTimeAsync(rolesPollMs - 6000));
+    expect(screen.getByText("You are an admin of a.")).toBeTruthy();
+    expect(screen.getByRole("region", { name: "Team" })).toBeTruthy();
+    expect(screen.queryByRole("button", { name: "Edit" })).toBeNull();
+    expect(screen.queryByRole("region", { name: "Roles" })).toBeNull();
+    expect(screen.queryByText("No roles are given on this team.")).toBeNull();
+
+    // Settings' next read is an admin's.
+    await act(() => vi.advanceTimersByTimeAsync(6000));
+    fireEvent.click(await screen.findByRole("button", { name: "Edit" }));
+    await act(async () => fireEvent.click(screen.getByRole("button", { name: "Save" })));
+    await screen.findByText("Saved");
+    expect(sent).toEqual([expect.objectContaining({ resourceVersion: "9", roles: admins })]);
+  });
+
+  // The Team read as an admin has its roles, and the read again for the new
+  // role has not come back yet.
+  it("take Edit away on the role /me gives before the Team is read again", async () => {
+    roles = { a: "admin" };
+    const admins = [{ role: "admin" as const, subjects: [{ kind: "user" as const, name: "dana@example.test" }] }];
+    let reads = 0;
+    const inner = globalThis.fetch;
+    vi.stubGlobal("fetch", (url: string, init?: RequestInit) => {
+      if (!url.endsWith("/namespaces/a/team")) return inner(url, init);
+      if (reads++ > 0) return new Promise<Response>(() => {});
+      return json(team({ spec: { displayName: "Team A", roles: admins } }));
+    });
+    await open("/t/a/settings", /You are an admin of a/);
+    expect(await screen.findByRole("button", { name: "Edit" })).toBeTruthy();
+    roles = { a: "member" };
+    await act(() => vi.advanceTimersByTimeAsync(rolesPollMs));
+    expect(screen.getByText("You are a member of a.")).toBeTruthy();
+    expect(reads).toBeGreaterThan(1);
+    expect(screen.queryByRole("button", { name: "Edit" })).toBeNull();
+    expect(screen.queryByRole("region", { name: "Roles" })).toBeNull();
   });
 });

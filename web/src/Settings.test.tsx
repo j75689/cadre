@@ -64,16 +64,17 @@ describe("Settings", () => {
     expect(slots.getByText("01JRUN")).toBeTruthy();
   });
 
-  // An idle Team comes without slots (omitempty), and often without roles.
+  // An idle Team comes without slots (omitempty). One without roles has
+  // no admin but a bootstrap one.
   it("shows an admin a Team without roles or slots", async () => {
-    open({ mode: "oidc", name: "dana", roles: { a: "admin" } }, () => json(team({ spec: { maxConcurrentRuns: 1 }, status: {} })));
+    open({ mode: "oidc", name: "dana", roles: { a: "admin" }, admin: true }, () => json(team({ spec: { maxConcurrentRuns: 1 }, status: {} })));
     expect(await screen.findByText("No roles are given on this team.")).toBeTruthy();
     expect(screen.getByText("No run holds a slot.")).toBeTruthy();
     expect(screen.getByText("0 of 1 in use")).toBeTruthy();
   });
 
   it("shows an admin the server's defaults for unset limits", async () => {
-    open({ mode: "oidc", name: "dana", roles: { a: "admin" } }, () => json(team({ status: { running: 1 } })));
+    open({ mode: "oidc", name: "dana", roles: { a: "admin" } }, () => json(team({ spec: { roles: full.spec?.roles }, status: { running: 1 } })));
     const card = within(await screen.findByRole("region", { name: "Team" }));
     expect(card.getByText("(default)").parentElement?.textContent).toBe("1 (default)");
     expect(card.getByText("never")).toBeTruthy();
@@ -489,9 +490,11 @@ describe("Editing the Team", () => {
   });
 
   // A bootstrap admin keeps the admin role without being named in one.
+  // Only a bootstrap admin can: the server refuses to leave a Team with no
+  // admin otherwise (orphans()).
   it("keeps showing an admin the settings after they removed every role", async () => {
     const none = team({ spec: { ...full.spec, roles: undefined }, status: full.status });
-    const { form, sent } = await edit([() => json(full)], [() => json(none)]);
+    const { form, sent } = await edit([() => json(full)], [() => json(none)], [{ ...admin, admin: true }]);
     fireEvent.click(form.getAllByRole("button", { name: "Remove role" })[1]);
     fireEvent.click(form.getByRole("button", { name: "Remove role" }));
     fireEvent.click(form.getByRole("button", { name: "Save" }));

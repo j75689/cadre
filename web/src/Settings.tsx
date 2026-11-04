@@ -2,9 +2,9 @@ import { useEffect, useRef, useState, type Ref } from "react";
 import { Link, useParams } from "react-router";
 import { SettingsNav } from "./Access";
 import { APIError, getTeam, type Team } from "./api";
-import { RoleLine, useIdentity, useRole } from "./Identity";
+import { RoleLine, useIdentity, useIdentityDetails, useRole } from "./Identity";
 import { taskLink, teamPath } from "./links";
-import { can, type Role } from "./roles";
+import { can } from "./roles";
 import { TeamForm } from "./TeamForm";
 import { useTeamName } from "./teamList";
 import { RoleBadge } from "./ui/Badge";
@@ -26,12 +26,8 @@ export function Settings() {
   const { ns = "" } = useParams();
   const role = useRole(ns);
   const name = useTeamName(ns);
-  // team is null until read, and after a 404 (missing). readAs is the role
-  // it was read with: the server sends a Team without its roles to those
-  // who are not admins of it, so a Team read with a lower role than the
-  // caller has now is not one to edit.
+  // team is null until read, and after a 404 (missing).
   const [team, setTeam] = useState<Team | null>(null);
-  const [readAs, setReadAs] = useState<Role | undefined>(undefined);
   const [missing, setMissing] = useState(false);
   const [error, setError] = useState("");
   // forbidden is a 403: reading again cannot help, so there is no Retry.
@@ -63,6 +59,7 @@ export function Settings() {
   // place takes the focus.
   const closed = useRef(false);
   const { mode, refresh } = useIdentity();
+  const { me } = useIdentityDetails();
   useEffect(() => {
     if (demoted) demotedRef.current?.focus();
   }, [demoted]);
@@ -101,9 +98,7 @@ export function Settings() {
       // The Team is read with the role /me gives, once it is read.
       if (mode === "loading") return;
       try {
-        const as = role;
         setTeam(await getTeam(ns, signal));
-        setReadAs(as);
         setMissing(false);
         setError("");
         setForbidden(false);
@@ -130,7 +125,14 @@ export function Settings() {
     [ns, retry, mode, role],
     { ns, topic: "config", match: (h) => h.event === "config" && h.kind === "Team" },
   );
-  const admin = can(role, "manage") && readAs === role && !demoted && !lost;
+  // full is whether the Team read is the one its admins see. The server
+  // leaves its roles out for anyone else (project()), and the answer says
+  // nothing else of who it was read as, so a Team with roles is an admin's
+  // read. One without is too for a bootstrap admin, or without a policy:
+  // the server leaves those reads whole. A Team read for a lower role than
+  // /me gives now is not one to edit: its form would save no roles.
+  const full = !!team?.spec?.roles?.length || !!me?.admin;
+  const admin = can(role, "manage") && full && !demoted && !lost;
   return (
     <main id="main" className="page settings-page">
       <nav className="breadcrumb" aria-label="Breadcrumb">
