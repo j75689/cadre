@@ -74,12 +74,14 @@ describe("the Team and its AgentAccesses", () => {
 });
 
 // hung stubs fetch with one that never answers, but stops, as fetch does,
-// when its signal is aborted.
+// when its signal is aborted (or already was).
 function hung() {
   const calls: { url: string; init?: RequestInit }[] = [];
   vi.stubGlobal("fetch", (url: string, init?: RequestInit) => {
     calls.push({ url, init });
-    return new Promise<Response>((_, reject) => init?.signal?.addEventListener("abort", () => reject(new DOMException("aborted", "AbortError"))));
+    const aborted = () => new DOMException("aborted", "AbortError");
+    if (init?.signal?.aborted) return Promise.reject(aborted());
+    return new Promise<Response>((_, reject) => init?.signal?.addEventListener("abort", () => reject(aborted())));
   });
   return calls;
 }
@@ -93,6 +95,15 @@ describe("runEvents", () => {
     const read = runEvents("a", "x", "r1", ctrl.signal).catch((e: unknown) => e);
     expect(calls[0].init?.signal?.aborted).toBe(false);
     ctrl.abort();
+    expect(calls[0].init?.signal?.aborted).toBe(true);
+    expect(await read).toMatchObject({ name: "AbortError" });
+  });
+
+  it("aborts the fetch at once when its signal is aborted before the call", async () => {
+    const calls = hung();
+    const ctrl = new AbortController();
+    ctrl.abort();
+    const read = runEvents("a", "x", "r1", ctrl.signal).catch((e: unknown) => e);
     expect(calls[0].init?.signal?.aborted).toBe(true);
     expect(await read).toMatchObject({ name: "AbortError" });
   });
