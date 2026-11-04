@@ -387,6 +387,8 @@ export function TeamForm({
                 icon="x"
                 onClick={() => {
                   removed.current = i;
+                  // The error numbers the roles as they were.
+                  setError(undefined);
                   setRoles((rs) => rs.filter((_, k) => k !== i));
                 }}
               >

@@ -674,4 +674,13 @@ describe("Editing the Team", () => {
     await waitFor(() => expect(document.activeElement).toBe(hint));
     expect(me).toBe(2); // /me was read again
   });
+
+  it("drops an error about the roles once a role is removed", async () => {
+    const { form } = await edit([() => json(full)]);
+    fireEvent.click(form.getByRole("button", { name: "Add role" }));
+    fireEvent.click(form.getByRole("button", { name: "Save" }));
+    expect(form.getByRole("alert").textContent).toBe("Role 3, subject 1 needs a name.");
+    fireEvent.click(within(form.getByRole("group", { name: "Role 3" })).getByRole("button", { name: "Remove role" }));
+    expect(form.queryByRole("alert")).toBeNull();
+  });
 });
