@@ -52,7 +52,10 @@ type Config struct {
 	Events events.EventRecorder
 	// Snapshot saves a finished task before its logs and object are
 	// deleted; an error stops the delete until the next tick. Without it
-	// nothing is saved.
+	// nothing is saved. It must be idempotent: every replica runs it, so
+	// it may run again for a task after a stopped delete, run concurrently
+	// with itself for one task, and see the task's logs deleted under it
+	// by another replica; only a run that returns nil counts as saved.
 	Snapshot func(context.Context, *v1alpha1.Task) error
 }
 
