@@ -312,3 +312,30 @@ func TestDeleteStreamRetryDeletesNestedDirectories(t *testing.T) {
 		})
 	}
 }
+
+// The directories DeleteStream deletes are all inside the stream, never the
+// parent that holds its siblings, whatever the store's prefix.
+func TestDeleteStreamStaysInsideTheStream(t *testing.T) {
+	ctx := context.Background()
+	for _, prefix := range []string{"cadre/", ""} {
+		l, _ := fakeLog(t, false)
+		l.prefix = prefix
+		for _, s := range []string{"ns/a/thread", "ns/a/thread/files", "ns/a/runs/R1/events", "ns/a2/thread"} {
+			if err := l.Append(ctx, s, "0001", nil); err != nil {
+				t.Fatal(err)
+			}
+		}
+		var deleted []string
+		l.s3 = s3.New(l.s3.Options(), func(o *s3.Options) {
+			o.HTTPClient = &http.Client{Transport: recordDeletes{http.DefaultTransport, &deleted}}
+		})
+		if err := l.DeleteStream(ctx, "ns/a"); err != nil {
+			t.Fatal(err)
+		}
+		for _, k := range deleted {
+			if !strings.HasPrefix(k, prefix+"ns/a/") {
+				t.Errorf("prefix %q: deleted %s, outside the stream", prefix, k)
+			}
+		}
+	}
+}
