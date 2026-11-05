@@ -35,7 +35,7 @@ export function durationOf(v: string): number | undefined {
 const maxInt32 = 2147483647;
 
 // A Problem is why a save cannot go through, and the field it is about, if
-// any: maxConcurrentRuns, archiveAfter, role-<i> or subject-<i>-<j>,
+// any: maxConcurrentRuns, deleteFinishedAfter, role-<i> or subject-<i>-<j>,
 // numbered from 0.
 export interface Problem {
   message: string;
@@ -49,11 +49,11 @@ export function validate(d: TeamSpec): Problem | undefined {
   const max = d.maxConcurrentRuns;
   if (max !== undefined && (!Number.isInteger(max) || max < 0 || max > maxInt32))
     return { message: `Max concurrent runs is a whole number, from 0 to ${maxInt32}.`, at: "maxConcurrentRuns" };
-  const after = d.archiveAfter?.trim();
+  const after = d.deleteFinishedAfter?.trim();
   if (after) {
     const n = nanosOf(after);
-    if (n !== undefined && n > maxDuration) return { message: "Archive after is too long: the longest the server takes is 2562047h47m16.854775807s.", at: "archiveAfter" };
-    if (!(n !== undefined && n > 0n)) return { message: "Archive after is a duration longer than 0, such as 168h or 30m.", at: "archiveAfter" };
+    if (n !== undefined && n > maxDuration) return { message: "Delete finished after is too long: the longest the server takes is 2562047h47m16.854775807s.", at: "deleteFinishedAfter" };
+    if (!(n !== undefined && n > 0n)) return { message: "Delete finished after is a duration longer than 0, such as 720h or 168h.", at: "deleteFinishedAfter" };
   }
   for (const [i, r] of (d.roles ?? []).entries()) {
     if (r.subjects.length === 0) return { message: `Role ${i + 1} needs at least one subject.`, at: `role-${i}` };
@@ -68,7 +68,7 @@ export function validate(d: TeamSpec): Problem | undefined {
 // ": invalid request" the server ends a 400's message with.
 export function refusal(msg: string): Problem {
   msg = msg.replace(/: invalid request$/, "");
-  const m = /^(maxConcurrentRuns|archiveAfter)\b|^roles\[(\d+)\](?:\.subjects\[(\d+)\])?/.exec(msg);
+  const m = /^(maxConcurrentRuns|deleteFinishedAfter)\b|^roles\[(\d+)\](?:\.subjects\[(\d+)\])?/.exec(msg);
   const at = !m ? undefined : (m[1] ?? (m[3] !== undefined ? `subject-${m[2]}-${m[3]}` : `role-${m[2]}`));
   return { message: formIndexes(msg), at };
 }
@@ -81,14 +81,14 @@ export function formIndexes(msg: string): string {
 
 // toSpec is the whole spec, as the PUT replaces it: an unset cap goes as
 // 0, which the server saves as 1, and no duration as none (never). The
-// fields the form does not show, such as deleteFinishedAfter, go as they
+// fields the form does not show, such as archiveAfter, go as they
 // were, after the ones it does, so that two specs compare in one order.
 export function toSpec(d: TeamSpec): TeamSpec {
-  const { displayName, maxConcurrentRuns, archiveAfter, roles, ...rest } = d;
+  const { displayName, maxConcurrentRuns, deleteFinishedAfter, roles, ...rest } = d;
   return {
     displayName: displayName?.trim() ?? "",
     maxConcurrentRuns: maxConcurrentRuns ?? 0,
-    archiveAfter: archiveAfter?.trim() || undefined,
+    deleteFinishedAfter: deleteFinishedAfter?.trim() || undefined,
     roles: (roles ?? []).map((r) => ({ role: r.role, subjects: r.subjects.map((s) => ({ kind: s.kind, name: s.name.trim() })) })),
     ...rest,
   };
@@ -100,15 +100,15 @@ function draftOf(t: Team): TeamSpec {
   return { ...s, roles: (s.roles ?? []).map((r) => ({ role: r.role, subjects: r.subjects.map((x) => ({ ...x })) })) };
 }
 
-type Field = "displayName" | "maxConcurrentRuns" | "archiveAfter" | "roles";
+type Field = "displayName" | "maxConcurrentRuns" | "deleteFinishedAfter" | "roles";
 
-// same says, per field, what a spec would save, so that 168h and 168h0m0s
+// same says, per field, what a spec would save, so that 720h and 720h0m0s
 // or an empty cap and 1 compare equal.
 const same: Record<Field, (s: TeamSpec) => string> = {
   displayName: (s) => s.displayName?.trim() ?? "",
   maxConcurrentRuns: (s) => String(s.maxConcurrentRuns || 1),
-  archiveAfter: (s) => {
-    const a = s.archiveAfter?.trim() ?? "";
+  deleteFinishedAfter: (s) => {
+    const a = s.deleteFinishedAfter?.trim() ?? "";
     return String(durationOf(a) ?? a);
   },
   roles: (s) => JSON.stringify(toSpec(s).roles),
@@ -121,8 +121,8 @@ function shown(s: TeamSpec, f: Field): string {
       return s.displayName || "none";
     case "maxConcurrentRuns":
       return String(s.maxConcurrentRuns || 1);
-    case "archiveAfter":
-      return s.archiveAfter || "never";
+    case "deleteFinishedAfter":
+      return s.deleteFinishedAfter || "never";
     case "roles":
       return (s.roles ?? []).map((r) => `${r.role}: ${r.subjects.map((x) => `${x.kind}:${x.name}`).join(", ")}`).join("; ") || "none";
   }
@@ -240,8 +240,8 @@ export function TeamForm({
     setBusy(true);
     // The fields the form does not show go as base has them, so that a
     // save after a 409 does not put back the ones someone else changed.
-    const { displayName, maxConcurrentRuns, archiveAfter, roles: rs } = draft;
-    const spec = toSpec({ ...base.spec, displayName, maxConcurrentRuns, archiveAfter, roles: rs });
+    const { displayName, maxConcurrentRuns, deleteFinishedAfter, roles: rs } = draft;
+    const spec = toSpec({ ...base.spec, displayName, maxConcurrentRuns, deleteFinishedAfter, roles: rs });
     try {
       onSaved(await putTeam(ns, spec, base.metadata.resourceVersion), spec);
       return;
@@ -321,18 +321,18 @@ export function TeamForm({
         {changed("maxConcurrentRuns") && <Changed field="maxConcurrentRuns" spec={base.spec ?? {}} />}
       </label>
       <label className="field">
-        Archive after
+        Delete finished after
         <input
           className="mono"
-          value={draft.archiveAfter ?? ""}
-          onChange={(e) => setDraft((d) => ({ ...d, archiveAfter: e.target.value }))}
-          aria-invalid={invalid("archiveAfter") || undefined}
-          aria-describedby={ids("archive-after-help", note("archiveAfter"), invalid("archiveAfter") && "team-error")}
+          value={draft.deleteFinishedAfter ?? ""}
+          onChange={(e) => setDraft((d) => ({ ...d, deleteFinishedAfter: e.target.value }))}
+          aria-invalid={invalid("deleteFinishedAfter") || undefined}
+          aria-describedby={ids("delete-finished-after-help", note("deleteFinishedAfter"), invalid("deleteFinishedAfter") && "team-error")}
         />
-        <span id="archive-after-help" className="help">
-          A duration such as 168h or 30m. Empty: never.
+        <span id="delete-finished-after-help" className="help">
+          A duration such as 720h or 168h. A finished task (Done, Cancelled or Failed) is deleted for good that long after it finished, with its thread, runs and files. Empty: finished tasks are kept.
         </span>
-        {changed("archiveAfter") && <Changed field="archiveAfter" spec={base.spec ?? {}} />}
+        {changed("deleteFinishedAfter") && <Changed field="deleteFinishedAfter" spec={base.spec ?? {}} />}
       </label>
       <fieldset ref={rolesRef} aria-describedby={ids(note("roles"))}>
         <legend>Roles</legend>
@@ -475,8 +475,8 @@ function Current({ team }: { team: Team }) {
         <dd>{s.displayName || <span className="muted">none</span>}</dd>
         <dt>Max concurrent runs</dt>
         <dd>{s.maxConcurrentRuns || 1}</dd>
-        <dt>Archive after</dt>
-        <dd>{s.archiveAfter ? <span className="mono">{s.archiveAfter}</span> : <span className="muted">never</span>}</dd>
+        <dt>Delete finished after</dt>
+        <dd>{s.deleteFinishedAfter ? <span className="mono">{s.deleteFinishedAfter}</span> : <span className="muted">never</span>}</dd>
         <dt>Roles</dt>
         <dd>
           {(s.roles ?? []).length === 0 ? (
