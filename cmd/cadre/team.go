@@ -53,11 +53,12 @@ func newTeamSet(g *globals) *cobra.Command {
 		displayName  string
 		maxRuns      int32
 		archiveAfter time.Duration
+		delAfter     time.Duration
 		roles        []string
 	)
 	cmd := &cobra.Command{
 		Use:   "set",
-		Short: "Edit the team: its display name, run cap, archiving and roles",
+		Short: "Edit the team: its display name, run cap, delete-after and roles",
 		Args:  cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			c := g.client()
@@ -83,6 +84,13 @@ func newTeamSet(g *globals) *cobra.Command {
 					s.ArchiveAfter = &metav1.Duration{Duration: archiveAfter}
 				}
 			}
+			if f.Changed("delete-finished-after") {
+				// 0 is the default: finished tasks are kept.
+				s.DeleteFinishedAfter = nil
+				if delAfter != 0 {
+					s.DeleteFinishedAfter = &metav1.Duration{Duration: delAfter}
+				}
+			}
 			if f.Changed("role") {
 				if s.Roles, err = parseRoles(roles); err != nil {
 					return err
@@ -101,7 +109,9 @@ func newTeamSet(g *globals) *cobra.Command {
 	f.StringVar(&displayName, "display-name", "", "name shown on the board")
 	f.Int32Var(&maxRuns, "max-concurrent-runs", 0, "how many of the team's tasks may run at once; unchanged when not given")
 	f.DurationVar(&archiveAfter, "archive-after", 0, "how long a finished task stays on the board, as 720h; 0 for never")
+	f.DurationVar(&delAfter, "delete-finished-after", 0, "how long a finished task stays before it is deleted for good, with its thread, runs and files, as 720h; 0 keeps finished tasks")
 	f.StringArrayVar(&roles, "role", nil, roleUsage+"; replaces all the team's roles (to remove them all, use the API or kubectl)")
+	_ = f.MarkDeprecated("archive-after", "it archives nothing; use --delete-finished-after")
 	return cmd
 }
 
