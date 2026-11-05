@@ -15,6 +15,7 @@ import (
 
 	"github.com/oklog/ulid/v2"
 	"k8s.io/apimachinery/pkg/api/equality"
+	"k8s.io/client-go/tools/events"
 
 	v1alpha1 "github.com/j75689/cadre/api/v1alpha1"
 	"github.com/j75689/cadre/internal/storage"
@@ -45,6 +46,14 @@ type Config struct {
 	// ExternalURL is where people's browsers reach the board, for the link
 	// in a notification; Version names this server in its User-Agent.
 	ExternalURL, Version string
+
+	// Events records a TaskDeleted Event for every finished task deleted.
+	// Without it none is.
+	Events events.EventRecorder
+	// Snapshot saves a finished task before its logs and object are
+	// deleted; an error stops the delete until the next tick. Without it
+	// nothing is saved.
+	Snapshot func(context.Context, *v1alpha1.Task) error
 }
 
 // DefaultConfig is the configuration used when a field is zero.
