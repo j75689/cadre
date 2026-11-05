@@ -5,12 +5,15 @@ import (
 	"errors"
 	"io"
 	"net/http"
+	"os"
 	"slices"
 	"strings"
 	"testing"
 	"time"
 
+	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/service/s3"
+	"github.com/oklog/ulid/v2"
 
 	"github.com/j75689/cadre/internal/s3fake"
 	"github.com/j75689/cadre/internal/storage"
@@ -249,5 +252,63 @@ func TestDeleteStreamRetryDeletesTheDirectories(t *testing.T) {
 	}
 	if want := []string{"cadre/a/thread/~e/", "cadre/a/thread/"}; !slices.Equal(deleted, want) {
 		t.Errorf("retry deleted %v, want %v", deleted, want)
+	}
+}
+
+// filerLogs are a log on a filer fake and, with CADRE_TEST_S3_ENDPOINT set,
+// one on that store (SeaweedFS in CI), each under a prefix of its own.
+func filerLogs(t *testing.T) map[string]*objectLog {
+	t.Helper()
+	fl, fake := fakeLog(t, false)
+	fake.Filer = true
+	logs := map[string]*objectLog{"filer fake": fl}
+	if ep := os.Getenv("CADRE_TEST_S3_ENDPOINT"); ep != "" {
+		l, err := newObjectLog(context.Background(), S3Config{
+			Endpoint: ep, Bucket: os.Getenv("CADRE_TEST_S3_BUCKET"), Prefix: "test-" + ulid.Make().String() + "/", PathStyle: true,
+			AccessKey: os.Getenv("CADRE_TEST_S3_ACCESS_KEY"), SecretKey: os.Getenv("CADRE_TEST_S3_SECRET_KEY"),
+		})
+		if err != nil {
+			t.Fatalf("new log: %v", err)
+		}
+		logs["store"] = l
+	}
+	return logs
+}
+
+// A retry of a parent stream after a failed directory delete finds no
+// objects of the nested streams the first call emptied, and still deletes
+// their directories, which a filer store keeps.
+func TestDeleteStreamRetryDeletesNestedDirectories(t *testing.T) {
+	ctx := context.Background()
+	for name, l := range filerLogs(t) {
+		t.Run(name, func(t *testing.T) {
+			for _, s := range []string{"ns/a/thread", "ns/a2/thread"} {
+				if err := l.Append(ctx, s, "0001", nil); err != nil {
+					t.Fatal(err)
+				}
+			}
+			opts := l.s3.Options()
+			l.s3 = s3.New(opts, func(o *s3.Options) {
+				o.HTTPClient = &http.Client{Transport: refuseDeletes{http.DefaultTransport, true, http.StatusServiceUnavailable, "ServiceUnavailable"}}
+			})
+			if err := l.DeleteStream(ctx, "ns/a"); err == nil {
+				t.Fatal("delete with the directory deletes refused: got nil")
+			}
+			l.s3 = s3.New(opts)
+			if err := l.DeleteStream(ctx, "ns/a"); err != nil {
+				t.Fatal(err)
+			}
+			res, err := l.s3.ListObjectsV2(ctx, &s3.ListObjectsV2Input{Bucket: &l.bucket, Prefix: aws.String(l.prefix + "ns/"), Delimiter: aws.String("/")})
+			if err != nil {
+				t.Fatal(err)
+			}
+			var dirs []string
+			for _, p := range res.CommonPrefixes {
+				dirs = append(dirs, strings.TrimPrefix(aws.ToString(p.Prefix), l.prefix))
+			}
+			if want := []string{"ns/a2/"}; !slices.Equal(dirs, want) {
+				t.Errorf("directories left under ns/: %v, want %v", dirs, want)
+			}
+		})
 	}
 }

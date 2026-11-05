@@ -316,7 +316,36 @@ func (l *objectLog) DeleteStream(ctx context.Context, stream string) error {
 		}
 		in.ContinuationToken = res.NextContinuationToken
 	}
+	// A retry lists no objects of the nested streams an earlier call
+	// emptied, so their directories are found by listing them.
+	if err := l.listDirs(ctx, root, dirs); err != nil {
+		return err
+	}
 	return l.deleteDirs(ctx, dirs)
+}
+
+// listDirs adds to dirs the directories below dir. A filesystem-backed
+// store (SeaweedFS) lists an empty directory only as a common prefix of a
+// listing with a delimiter; elsewhere there are none once the objects are
+// gone.
+func (l *objectLog) listDirs(ctx context.Context, dir string, dirs map[string]bool) error {
+	in := &s3.ListObjectsV2Input{Bucket: &l.bucket, Prefix: aws.String(dir), Delimiter: aws.String("/")}
+	for {
+		res, err := l.s3.ListObjectsV2(ctx, in)
+		if err != nil {
+			return fmt.Errorf("list log directory %s: %w", dir, err)
+		}
+		for _, p := range res.CommonPrefixes {
+			dirs[aws.ToString(p.Prefix)] = true
+			if err := l.listDirs(ctx, aws.ToString(p.Prefix), dirs); err != nil {
+				return err
+			}
+		}
+		if !aws.ToBool(res.IsTruncated) {
+			return nil
+		}
+		in.ContinuationToken = res.NextContinuationToken
+	}
 }
 
 // deleteDirs deletes the directories a filesystem-backed store (SeaweedFS)
