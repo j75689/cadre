@@ -93,6 +93,15 @@ rules:
   - cadre.dev
   resources:
   - tasks
+  verbs:
+  - create
+  - delete
+  - get
+  - list
+  - watch
+- apiGroups:
+  - cadre.dev
+  resources:
   - teams
   verbs:
   - create

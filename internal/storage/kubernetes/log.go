@@ -6,7 +6,10 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"maps"
 	"math/rand/v2"
+	"path"
+	"slices"
 	"strings"
 	"time"
 
@@ -274,6 +277,92 @@ func (l *objectLog) get(ctx context.Context, key string) ([]byte, error) {
 	}
 	defer func() { _ = obj.Body.Close() }()
 	return io.ReadAll(obj.Body)
+}
+
+// DeleteStream lists without a delimiter, so the objects of nested streams
+// are listed and deleted too; the trailing "/" keeps siblings out.
+func (l *objectLog) DeleteStream(ctx context.Context, stream string) error {
+	if err := storage.ValidateStream(stream); err != nil {
+		return err
+	}
+	root := l.prefix + stream + "/"
+	// The stream's own directories are deleted even when nothing is listed,
+	// so a retry after a failed directory delete still finishes the job.
+	dirs := map[string]bool{root: true, root + storage.EntrySegment + "/": true}
+	in := &s3.ListObjectsV2Input{Bucket: &l.bucket, Prefix: aws.String(root)}
+	for {
+		res, err := l.s3.ListObjectsV2(ctx, in)
+		if err != nil {
+			return fmt.Errorf("list log %s: %w", stream, err)
+		}
+		g, gctx := errgroup.WithContext(ctx)
+		g.SetLimit(readParallelism)
+		for _, obj := range res.Contents {
+			for dir := path.Dir(strings.TrimPrefix(*obj.Key, root)); dir != "." && dir != "/"; dir = path.Dir(dir) {
+				dirs[root+dir+"/"] = true
+			}
+			g.Go(func() error {
+				if _, err := l.s3.DeleteObject(gctx, &s3.DeleteObjectInput{Bucket: &l.bucket, Key: obj.Key}); err != nil {
+					return fmt.Errorf("delete log entry %s: %w", *obj.Key, err)
+				}
+				return nil
+			})
+		}
+		if err := g.Wait(); err != nil {
+			return err
+		}
+		if !aws.ToBool(res.IsTruncated) {
+			break
+		}
+		in.ContinuationToken = res.NextContinuationToken
+	}
+	// A retry lists no objects of the nested streams an earlier call
+	// emptied, so their directories are found by listing them.
+	if err := l.listDirs(ctx, root, dirs); err != nil {
+		return err
+	}
+	return l.deleteDirs(ctx, dirs)
+}
+
+// listDirs adds to dirs the directories below dir. A filesystem-backed
+// store (SeaweedFS) lists an empty directory only as a common prefix of a
+// listing with a delimiter; elsewhere there are none once the objects are
+// gone.
+func (l *objectLog) listDirs(ctx context.Context, dir string, dirs map[string]bool) error {
+	in := &s3.ListObjectsV2Input{Bucket: &l.bucket, Prefix: aws.String(dir), Delimiter: aws.String("/")}
+	for {
+		res, err := l.s3.ListObjectsV2(ctx, in)
+		if err != nil {
+			return fmt.Errorf("list log directory %s: %w", dir, err)
+		}
+		for _, p := range res.CommonPrefixes {
+			dirs[aws.ToString(p.Prefix)] = true
+			if err := l.listDirs(ctx, aws.ToString(p.Prefix), dirs); err != nil {
+				return err
+			}
+		}
+		if !aws.ToBool(res.IsTruncated) {
+			return nil
+		}
+		in.ContinuationToken = res.NextContinuationToken
+	}
+}
+
+// deleteDirs deletes the directories a filesystem-backed store (SeaweedFS)
+// keeps once their objects are gone, deepest first, as it deletes only an
+// empty one. Such a store lists an empty "<stream>/~e/" as an object with
+// the stream's own prefix, which Read would return as an entry. Elsewhere
+// the keys do not exist, and deleting them is a no-op.
+func (l *objectLog) deleteDirs(ctx context.Context, dirs map[string]bool) error {
+	keys := slices.Collect(maps.Keys(dirs))
+	slices.SortFunc(keys, func(a, b string) int { return strings.Count(b, "/") - strings.Count(a, "/") })
+	for _, key := range keys {
+		_, err := l.s3.DeleteObject(ctx, &s3.DeleteObjectInput{Bucket: &l.bucket, Key: aws.String(key)})
+		if code := errorCode(err); err != nil && code != "NoSuchKey" && code != "NotFound" {
+			return fmt.Errorf("delete log directory %s: %w", key, err)
+		}
+	}
+	return nil
 }
 
 func errorCode(err error) string {
