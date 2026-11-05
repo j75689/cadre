@@ -5,6 +5,7 @@ import (
 	"errors"
 	"io"
 	"net/http"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -207,5 +208,46 @@ func TestDeleteStreamWithNoPrefix(t *testing.T) {
 	}
 	if keys := fake.Keys("b"); len(keys) != 0 {
 		t.Errorf("objects left: %v", keys)
+	}
+}
+
+// recordDeletes records the keys of the DELETE requests it passes on.
+type recordDeletes struct {
+	http.RoundTripper
+	keys *[]string
+}
+
+func (r recordDeletes) RoundTrip(req *http.Request) (*http.Response, error) {
+	if req.Method == http.MethodDelete {
+		*r.keys = append(*r.keys, strings.TrimPrefix(req.URL.Path, "/probe-test/"))
+	}
+	return r.RoundTripper.RoundTrip(req)
+}
+
+// A retry after a failed directory delete finds no objects left, and still
+// deletes the stream's directories, which a filer store would otherwise list
+// as an entry.
+func TestDeleteStreamRetryDeletesTheDirectories(t *testing.T) {
+	ctx := context.Background()
+	l, _ := fakeLog(t, false)
+	if err := l.Append(ctx, "a/thread", "0001", nil); err != nil {
+		t.Fatal(err)
+	}
+	opts := l.s3.Options()
+	l.s3 = s3.New(opts, func(o *s3.Options) {
+		o.HTTPClient = &http.Client{Transport: refuseDeletes{http.DefaultTransport, true, http.StatusServiceUnavailable, "ServiceUnavailable"}}
+	})
+	if err := l.DeleteStream(ctx, "a/thread"); err == nil {
+		t.Fatal("delete with the directory delete refused: got nil")
+	}
+	var deleted []string
+	l.s3 = s3.New(opts, func(o *s3.Options) {
+		o.HTTPClient = &http.Client{Transport: recordDeletes{http.DefaultTransport, &deleted}}
+	})
+	if err := l.DeleteStream(ctx, "a/thread"); err != nil {
+		t.Fatal(err)
+	}
+	if want := []string{"cadre/a/thread/~e/", "cadre/a/thread/"}; !slices.Equal(deleted, want) {
+		t.Errorf("retry deleted %v, want %v", deleted, want)
 	}
 }

@@ -286,7 +286,9 @@ func (l *objectLog) DeleteStream(ctx context.Context, stream string) error {
 		return err
 	}
 	root := l.prefix + stream + "/"
-	dirs := map[string]bool{root: true}
+	// The stream's own directories are deleted even when nothing is listed,
+	// so a retry after a failed directory delete still finishes the job.
+	dirs := map[string]bool{root: true, root + storage.EntrySegment + "/": true}
 	in := &s3.ListObjectsV2Input{Bucket: &l.bucket, Prefix: aws.String(root)}
 	for {
 		res, err := l.s3.ListObjectsV2(ctx, in)
