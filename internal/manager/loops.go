@@ -553,10 +553,13 @@ func (m *Manager) handleHint(ctx context.Context, key storage.Key) error {
 type LoopConfig struct {
 	Reclaim  time.Duration // how often expired leases are reclaimed
 	Dispatch time.Duration // how often the outbox is applied, new tasks numbered and Team counts reconciled
+	// DeleteFinished is how often finished tasks past their Team's
+	// deleteFinishedAfter are deleted.
+	DeleteFinished time.Duration
 }
 
 // DefaultLoopConfig is used for any zero field of a LoopConfig.
-var DefaultLoopConfig = LoopConfig{Reclaim: 5 * time.Second, Dispatch: 10 * time.Second}
+var DefaultLoopConfig = LoopConfig{Reclaim: 5 * time.Second, Dispatch: 10 * time.Second, DeleteFinished: time.Minute}
 
 // Run runs the background loops until ctx is done. A nil log logs to
 // slog.Default().
@@ -569,6 +572,9 @@ func (m *Manager) Run(ctx context.Context, cfg LoopConfig, log *slog.Logger) {
 	}
 	if cfg.Dispatch <= 0 {
 		cfg.Dispatch = DefaultLoopConfig.Dispatch
+	}
+	if cfg.DeleteFinished <= 0 {
+		cfg.DeleteFinished = DefaultLoopConfig.DeleteFinished
 	}
 	m.FollowHints(ctx, log)
 	// Notifications go out on their own ticker: a webhook that does not
@@ -583,6 +589,21 @@ func (m *Manager) Run(ctx context.Context, cfg LoopConfig, log *slog.Logger) {
 			case <-tick.C:
 				if err := m.DeliverNotifications(ctx); err != nil {
 					log.Warn("deliver notifications", "err", err)
+				}
+			}
+		}
+	}()
+	// So are deletes: a slow log store must not either.
+	go func() {
+		tick := time.NewTicker(cfg.DeleteFinished)
+		defer tick.Stop()
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-tick.C:
+				if err := m.DeleteFinished(ctx); err != nil {
+					log.Warn("delete finished tasks", "err", err)
 				}
 			}
 		}

@@ -58,6 +58,7 @@ func run() error {
 		heartbeat = flag.Duration("heartbeat", manager.DefaultConfig.Heartbeat, "how often runners renew; also the reclaim grace")
 		reclaim   = flag.Duration("reclaim-interval", manager.DefaultLoopConfig.Reclaim, "how often expired leases are reclaimed")
 		dispatch  = flag.Duration("dispatch-interval", manager.DefaultLoopConfig.Dispatch, "how often the outbox is dispatched and new tasks numbered")
+		deletes   = flag.Duration("delete-finished-interval", manager.DefaultLoopConfig.DeleteFinished, "how often finished tasks past their Team's deleteFinishedAfter are deleted, with their logs")
 		auth      = flag.String("runner-auth", "required", "required: runners authenticate with a ServiceAccount token for audience cadre; none: no runner authentication, for tests and local development only")
 		builtin   = flag.String("builtin-runner", "system:serviceaccount:cadre-system:cadre-runner", "the identity of cadre-runner, the only runner that may claim builtin agents' tasks")
 		elect     = flag.Bool("leader-elect", true, "run the controllers on one replica at a time, elected with a Lease; the API, the runner protocol and the MCP endpoint serve on every replica")
@@ -179,9 +180,10 @@ func run() error {
 	}
 
 	forwarder := mcp.NewForwarder(controller.ToolServerSources(ctrls), log)
+	recorder := ctrls.GetEventRecorder("cadre-server")
 	m := manager.New(store, manager.Config{
 		Lease: *lease, Heartbeat: *heartbeat, StepIdle: *stepIdle, Agents: controller.Agents(ctrls), Tools: forwarder,
-		Notifiers: controller.Notifiers(ctrls), ExternalURL: *external, Version: version,
+		Notifiers: controller.Notifiers(ctrls), ExternalURL: *external, Version: version, Events: recorder,
 	})
 	var runnerOpts []runner.Option
 	if *auth == "required" {
@@ -197,7 +199,6 @@ func run() error {
 	if err := api.ConfigEvents(ctx, ctrls.GetCache(), hub); err != nil {
 		return err
 	}
-	recorder := ctrls.GetEventRecorder("cadre-server")
 	apiOpts := []api.Option{
 		api.WithAgentAccesses(controller.AgentAccessStore(ctrls.GetClient(), ctrls.GetAPIReader(), recorder)),
 		api.WithEvents(recorder),
@@ -220,7 +221,7 @@ func run() error {
 	loops := make(chan struct{})
 	go func() {
 		defer close(loops)
-		m.Run(ctx, manager.LoopConfig{Reclaim: *reclaim, Dispatch: *dispatch}, log)
+		m.Run(ctx, manager.LoopConfig{Reclaim: *reclaim, Dispatch: *dispatch, DeleteFinished: *deletes}, log)
 	}()
 	served := make(chan error, 1)
 	go func() { served <- srv.ListenAndServe() }()

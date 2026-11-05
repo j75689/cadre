@@ -104,6 +104,9 @@ spec:
             {{- with .dispatchInterval }}
             - --dispatch-interval={{ . }}
             {{- end }}
+            {{- with .deleteFinishedInterval }}
+            - --delete-finished-interval={{ . }}
+            {{- end }}
             {{- end }}
             {{- with .Values.server.watchMaxStreams }}
             - --watch-max-streams={{ . }}

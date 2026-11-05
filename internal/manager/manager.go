@@ -15,6 +15,7 @@ import (
 
 	"github.com/oklog/ulid/v2"
 	"k8s.io/apimachinery/pkg/api/equality"
+	"k8s.io/client-go/tools/events"
 
 	v1alpha1 "github.com/j75689/cadre/api/v1alpha1"
 	"github.com/j75689/cadre/internal/storage"
@@ -45,6 +46,17 @@ type Config struct {
 	// ExternalURL is where people's browsers reach the board, for the link
 	// in a notification; Version names this server in its User-Agent.
 	ExternalURL, Version string
+
+	// Events records a TaskDeleted Event for every finished task deleted.
+	// Without it none is.
+	Events events.EventRecorder
+	// Snapshot saves a finished task before its logs and object are
+	// deleted; an error stops the delete until the next tick. Without it
+	// nothing is saved. It must be idempotent: every replica runs it, so
+	// it may run again for a task after a stopped delete, run concurrently
+	// with itself for one task, and see the task's logs deleted under it
+	// by another replica; only a run that returns nil counts as saved.
+	Snapshot func(context.Context, *v1alpha1.Task) error
 }
 
 // DefaultConfig is the configuration used when a field is zero.

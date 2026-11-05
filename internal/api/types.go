@@ -229,13 +229,14 @@ type WatchHello struct {
 	LifetimeSeconds int  `json:"lifetimeSeconds"`
 }
 
-// TaskHint says a Task changed in a way the board shows: read it again. It
-// carries no spec and no thread.
+// TaskHint says a Task changed in a way the board shows, or was deleted:
+// read it again. It carries no spec and no thread.
 type TaskHint struct {
-	Name   string         `json:"name"`
-	Number int64          `json:"number"`
-	Phase  v1alpha1.Phase `json:"phase"`
-	Parent string         `json:"parent,omitempty"`
+	Name    string         `json:"name"`
+	Number  int64          `json:"number"`
+	Phase   v1alpha1.Phase `json:"phase"`
+	Parent  string         `json:"parent,omitempty"`
+	Deleted bool           `json:"deleted,omitempty"`
 }
 
 // ConfigHint says a configuration resource or the Team of a namespace was
