@@ -35,7 +35,8 @@ metadata: { name: team, namespace: team-a }
 spec:
   displayName: Backend
   maxConcurrentRuns: 5
-  archiveAfter: 720h
+  archiveAfter: 720h          # deprecated, not acted on
+  deleteFinishedAfter: 720h   # no effect yet, see below
   roles:
     - role: admin
       subjects: [{ kind: user, name: lead@example.test }]
@@ -68,7 +69,8 @@ Three roles:
 | --- | --- |
 | `metadata.name` | must be `team` |
 | `spec.maxConcurrentRuns` | at least 1, default 1 |
-| `spec.archiveAfter` | a positive duration, such as `720h` |
+| `spec.archiveAfter` | deprecated and not acted on; a positive duration, such as `720h`, still checked as before |
+| `spec.deleteFinishedAfter` | optional, no default; a positive duration, such as `720h`: how long a finished task stays on the board before it is deleted, with its thread and runs. `0s` and negative durations are refused by the CRD ("deleteFinishedAfter must be a positive duration such as 720h") and by `PUT /team`. Unset, finished tasks are kept. **Nothing deletes Tasks yet**: setting it has no effect until a cadre-server that has the delete loop; the field is accepted and kept so it can be set ahead |
 | `status.nextNumber`, `status.slots`, `status.running` | written by the Task Manager only; `slots` is a list keyed by `runId`; `running` is `len(slots)`, written with it |
 
 ## Task
@@ -106,6 +108,7 @@ status:
     - { id: 01JB..., kind: Notify, ... }
   thread: { revision: 42 }
   runs: { count: 3, lastId: 01JB... }
+  finishedAt: ...             # only once Done, Cancelled or Failed
   conditions: [...]
 ```
 
@@ -121,6 +124,8 @@ status:
 | `spec.priority` | `low`, `medium`, `high`, `urgent`; default `medium` |
 | `spec.parentRef` | another Task in the same namespace, never the task itself. A task's subtasks are listed with `GET /tasks?parent=<name>` (one level: their own subtasks are listed from their pages), which the task page shows and `cadre task list --parent` prints |
 | `status.phase` | the seven phases above |
+| `status.finishedAt` | when the task became `Done`, `Cancelled` or `Failed`; set once and never cleared. Tasks that finished before this field existed have none |
+| `status.deletingSince` | when the task's deletion began; written by the Task Manager only, and nothing sets it yet. Once set the task is read-only: it takes no event, and the API answers `409 deleting` for its thread, runs and events (see [architecture.md](architecture.md#web-ui-and-api)); `GET` of the task itself still answers 200 |
 | `status.waiting.reason` | `Question`, `ToolApproval`, `Review` |
 | `status.waiting.threadSeq` | a thread sequence; sequences start at 1 |
 | `status.run.id`, `status.outbox[].id` | ULIDs |
