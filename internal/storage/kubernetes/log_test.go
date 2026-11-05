@@ -109,15 +109,20 @@ func TestTakenRetriesATransientHead(t *testing.T) {
 	}
 }
 
-// refuseDeletes answers every DELETE with 403, as a store would to a
-// role without the permission.
-type refuseDeletes struct{ http.RoundTripper }
+// refuseDeletes answers with status and code the DELETE of an entry, or
+// with dirs that of a directory key ("…/").
+type refuseDeletes struct {
+	http.RoundTripper
+	dirs   bool
+	status int
+	code   string
+}
 
 func (r refuseDeletes) RoundTrip(req *http.Request) (*http.Response, error) {
-	if req.Method != http.MethodDelete {
+	if req.Method != http.MethodDelete || strings.HasSuffix(req.URL.Path, "/") != r.dirs {
 		return r.RoundTripper.RoundTrip(req)
 	}
-	return &http.Response{StatusCode: http.StatusForbidden, Header: http.Header{}, Body: io.NopCloser(strings.NewReader("<Error><Code>AccessDenied</Code></Error>")), Request: req}, nil
+	return &http.Response{StatusCode: r.status, Header: http.Header{}, Body: io.NopCloser(strings.NewReader("<Error><Code>" + r.code + "</Code></Error>")), Request: req}, nil
 }
 
 // A delete the store refuses is an error, not a deleted stream.
@@ -127,9 +132,33 @@ func TestDeleteStreamFailsWhenTheStoreRefuses(t *testing.T) {
 	if err := l.Append(ctx, "a/thread", "0001", nil); err != nil {
 		t.Fatal(err)
 	}
-	l.s3 = s3.New(l.s3.Options(), func(o *s3.Options) { o.HTTPClient = &http.Client{Transport: refuseDeletes{http.DefaultTransport}} })
-	if err := l.DeleteStream(ctx, "a"); err == nil {
-		t.Fatal("delete refused by the store: got nil")
+	for _, rt := range []refuseDeletes{
+		{http.DefaultTransport, false, http.StatusForbidden, "AccessDenied"},
+		{http.DefaultTransport, true, http.StatusForbidden, "AccessDenied"},
+	} {
+		l.s3 = s3.New(l.s3.Options(), func(o *s3.Options) { o.HTTPClient = &http.Client{Transport: rt} })
+		if err := l.DeleteStream(ctx, "a"); err == nil {
+			t.Errorf("delete refused by the store (directories: %v): got nil", rt.dirs)
+		}
+	}
+}
+
+// A store that answers 404 to deleting a directory it never had (GCS) has
+// still deleted the stream.
+func TestDeleteStreamIgnoresAMissingDirectory(t *testing.T) {
+	ctx := context.Background()
+	l, fake := fakeLog(t, false)
+	if err := l.Append(ctx, "a/thread", "0001", nil); err != nil {
+		t.Fatal(err)
+	}
+	l.s3 = s3.New(l.s3.Options(), func(o *s3.Options) {
+		o.HTTPClient = &http.Client{Transport: refuseDeletes{http.DefaultTransport, true, http.StatusNotFound, "NoSuchKey"}}
+	})
+	if err := l.DeleteStream(ctx, "a"); err != nil {
+		t.Fatal(err)
+	}
+	if keys := fake.Keys("probe-test"); len(keys) != 0 {
+		t.Errorf("objects left: %v", keys)
 	}
 }
 

@@ -6,7 +6,10 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"maps"
 	"math/rand/v2"
+	"path"
+	"slices"
 	"strings"
 	"time"
 
@@ -282,7 +285,9 @@ func (l *objectLog) DeleteStream(ctx context.Context, stream string) error {
 	if err := storage.ValidateStream(stream); err != nil {
 		return err
 	}
-	in := &s3.ListObjectsV2Input{Bucket: &l.bucket, Prefix: aws.String(l.prefix + stream + "/")}
+	root := l.prefix + stream + "/"
+	dirs := map[string]bool{}
+	in := &s3.ListObjectsV2Input{Bucket: &l.bucket, Prefix: aws.String(root)}
 	for {
 		res, err := l.s3.ListObjectsV2(ctx, in)
 		if err != nil {
@@ -291,6 +296,9 @@ func (l *objectLog) DeleteStream(ctx context.Context, stream string) error {
 		g, gctx := errgroup.WithContext(ctx)
 		g.SetLimit(readParallelism)
 		for _, obj := range res.Contents {
+			for dir := path.Dir(*obj.Key) + "/"; len(dir) >= len(root); dir = path.Dir(strings.TrimSuffix(dir, "/")) + "/" {
+				dirs[dir] = true
+			}
 			g.Go(func() error {
 				if _, err := l.s3.DeleteObject(gctx, &s3.DeleteObjectInput{Bucket: &l.bucket, Key: obj.Key}); err != nil {
 					return fmt.Errorf("delete log entry %s: %w", *obj.Key, err)
@@ -302,10 +310,28 @@ func (l *objectLog) DeleteStream(ctx context.Context, stream string) error {
 			return err
 		}
 		if !aws.ToBool(res.IsTruncated) {
-			return nil
+			break
 		}
 		in.ContinuationToken = res.NextContinuationToken
 	}
+	return l.deleteDirs(ctx, dirs)
+}
+
+// deleteDirs deletes the directories a filesystem-backed store (SeaweedFS)
+// keeps once their objects are gone, deepest first, as it deletes only an
+// empty one. Such a store lists an empty "<stream>/~e/" as an object with
+// the stream's own prefix, which Read would return as an entry. Elsewhere
+// the keys do not exist, and deleting them is a no-op.
+func (l *objectLog) deleteDirs(ctx context.Context, dirs map[string]bool) error {
+	keys := slices.Collect(maps.Keys(dirs))
+	slices.SortFunc(keys, func(a, b string) int { return strings.Count(b, "/") - strings.Count(a, "/") })
+	for _, key := range keys {
+		_, err := l.s3.DeleteObject(ctx, &s3.DeleteObjectInput{Bucket: &l.bucket, Key: aws.String(key)})
+		if code := errorCode(err); err != nil && code != "NoSuchKey" && code != "NotFound" {
+			return fmt.Errorf("delete log directory %s: %w", key, err)
+		}
+	}
+	return nil
 }
 
 func errorCode(err error) string {
