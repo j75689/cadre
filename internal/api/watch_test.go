@@ -179,6 +179,32 @@ func TestWatchHints(t *testing.T) {
 	quiet(t, events, 300*time.Millisecond)
 }
 
+// A Task deleted is no hint, and the stream goes on to hint the next
+// change.
+func TestWatchTaskDeleted(t *testing.T) {
+	store := memory.NewBackend().Open()
+	e := startRolesWith(t, store, nil, &authz.Policy{}, api.WithWatch(api.NewHub(store), fastWatch))
+	_, events := watch(t, e.url, e.as("eve@example.test", "readers"), "/namespaces/team-a/watch")
+	if ev := next(t, events); ev.kind != "hello" {
+		t.Fatalf("first event %+v, want hello", ev)
+	}
+	x, err := store.GetTask(ctx, storage.Key{Namespace: "team-a", Name: "x"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := store.DeleteTask(ctx, x); err != nil {
+		t.Fatal(err)
+	}
+	quiet(t, events, 300*time.Millisecond)
+
+	if err := store.CreateTask(ctx, &v1alpha1.Task{ObjectMeta: metav1.ObjectMeta{Namespace: "team-a", Name: "y"}, Spec: v1alpha1.TaskSpec{Title: "y"}}); err != nil {
+		t.Fatal(err)
+	}
+	if ev := next(t, events); ev.kind != "task" || !strings.Contains(ev.data, `"name":"y"`) {
+		t.Fatalf("event %+v, want y's hint", ev)
+	}
+}
+
 func TestWatchWithoutNotifier(t *testing.T) {
 	e := startRolesWith(t, memory.NewBackend().Open(), nil, &authz.Policy{}, api.WithWatch(api.NewHub(nil), fastWatch))
 	_, events := watch(t, e.url, e.as("eve@example.test", "readers"), "/namespaces/team-a/watch")
