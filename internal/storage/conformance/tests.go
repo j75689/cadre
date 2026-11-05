@@ -871,7 +871,8 @@ func testTeamSpecWritesLeaveStatusAlone(t *testing.T, s *suite) {
 }
 
 // A delete carries the version it was read at: a stale or missing one
-// conflicts and the Task stays; a Task already gone is not found.
+// conflicts and the Task stays; a Task already gone is not found, unless the
+// version is missing, which conflicts first.
 func testDeleteTaskIsConditional(t *testing.T, s *suite) {
 	d := s.open()
 	s.newTask(d, "t", 1, "")
@@ -901,6 +902,9 @@ func testDeleteTaskIsConditional(t *testing.T, s *suite) {
 	}
 	if err := d.DeleteTask(s.ctx, cur); !errors.Is(err, storage.ErrNotFound) {
 		t.Fatalf("delete again: got %v, want ErrNotFound", err)
+	}
+	if err := d.DeleteTask(s.ctx, unversioned); !errors.Is(err, storage.ErrConflict) {
+		t.Fatalf("delete a Task already gone with no version: got %v, want ErrConflict", err)
 	}
 
 	// The name is free again, and the old Task's version is no use on the

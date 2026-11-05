@@ -62,7 +62,8 @@ type Objects interface {
 	UpdateTaskStatus(ctx context.Context, t *v1alpha1.Task) error
 	// DeleteTask deletes the Task, conditionally on the version: an empty or
 	// stale version fails with ErrConflict and the Task stays, and a Task
-	// already gone fails with ErrNotFound.
+	// already gone fails with ErrNotFound. An empty version is ErrConflict
+	// whether or not the Task exists.
 	DeleteTask(ctx context.Context, t *v1alpha1.Task) error
 
 	GetTeam(ctx context.Context, namespace string) (*v1alpha1.Team, error)

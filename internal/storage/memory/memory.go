@@ -205,6 +205,9 @@ func (d *Driver) DeleteTask(_ context.Context, t *v1alpha1.Task) error {
 	key := storage.Key{Namespace: t.Namespace, Name: t.Name}
 	d.b.mu.Lock()
 	defer d.b.mu.Unlock()
+	if t.ResourceVersion == "" {
+		return fmt.Errorf("task %s: no resourceVersion: %w", key, storage.ErrConflict)
+	}
 	cur, ok := d.b.tasks[key]
 	if !ok {
 		return notFound("task", key)
