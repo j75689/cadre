@@ -2,7 +2,7 @@ import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testi
 import { MemoryRouter } from "react-router";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { App } from "./App";
-import type { Me, Team } from "./api";
+import type { Me, Team, TeamSpec } from "./api";
 import { json, team } from "./testing";
 
 afterEach(() => {
@@ -198,6 +198,23 @@ describe("Editing the Team", () => {
     await waitFor(() => expect(document.activeElement).toBe(card.getByRole("button", { name: "Edit" })));
   });
 
+  it("keeps the spec fields the form does not show, and saves a removed role as removed", async () => {
+    const kept = { deleteFinishedAfter: "720h", futureKnob: "on" };
+    const set = team({ spec: { ...full.spec, ...kept } as TeamSpec });
+    const { form, sent } = await edit([() => json(set)], [() => json(set)]);
+    fireEvent.change(form.getByLabelText("Display name"), { target: { value: "Team B" } });
+    fireEvent.click(within(form.getByRole("group", { name: "Role 2" })).getByRole("button", { name: "Remove role" }));
+    fireEvent.click(form.getByRole("button", { name: "Save" }));
+    await screen.findByText("Saved");
+    expect(sent).toEqual([{ ...full.spec, displayName: "Team B", roles: full.spec!.roles!.slice(0, 1), ...kept, resourceVersion: "7" }]);
+  });
+
+  it("is not data-dirty on a Team with fields the form does not show", async () => {
+    // Without roles, as only a bootstrap admin may leave a Team.
+    await edit([() => json(team({ spec: { deleteFinishedAfter: "720h" } }))], [], [{ ...admin, admin: true }]);
+    expect(document.querySelector("[data-dirty]")).toBeNull();
+  });
+
   it("edits the roles and their subjects", async () => {
     const { form, sent } = await edit([() => json(full)], [() => json(full)]);
     const viewer = within(form.getByRole("group", { name: "Role 2" }));
@@ -236,6 +253,21 @@ describe("Editing the Team", () => {
     await screen.findByText("Saved");
     expect(sent.map((b) => b.resourceVersion)).toEqual(["7", "9"]);
     expect(sent[1].displayName).toBe("Team B");
+  });
+
+  it("saves again with the fields the form does not show as the Team read after a 409 has them", async () => {
+    const mine = team({ spec: { ...full.spec, deleteFinishedAfter: "720h", futureKnob: "on" } as TeamSpec });
+    const theirs = team({ metadata: { name: "team", namespace: "a", resourceVersion: "9" }, spec: { ...full.spec, deleteFinishedAfter: "8760h" } });
+    const { form, sent } = await edit([() => json(mine), () => json(theirs)], [conflict, () => json(theirs)]);
+    fireEvent.change(form.getByLabelText("Display name"), { target: { value: "Team B" } });
+    fireEvent.click(form.getByRole("button", { name: "Save" }));
+    await form.findByRole("region", { name: "Current" });
+    expect(form.queryAllByText(/Changed by someone else/)).toHaveLength(0);
+
+    fireEvent.click(form.getByRole("button", { name: "Save" }));
+    await screen.findByText("Saved");
+    expect(sent[0]).toMatchObject({ deleteFinishedAfter: "720h", futureKnob: "on" });
+    expect(sent[1]).toEqual({ ...full.spec, displayName: "Team B", deleteFinishedAfter: "8760h", resourceVersion: "9" }); // futureKnob removed
   });
 
   it("marks the fields someone else changed, unless the form holds their value", async () => {
