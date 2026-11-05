@@ -77,6 +77,8 @@ var validEvents = []struct {
 	{ReserveItem{ID: "01JB0000000000000000000001", To: 1}, step},
 	{NotifyDelivered{ID: "01JB0000000000000000000001", To: []string{"hook"}}, step},
 	{NotifyClaim{ID: "01JB0000000000000000000003", By: "s1", Until: time.Now().Add(time.Hour)}, step},
+	{Delete{}, step},
+	{StampFinished{}, step},
 }
 
 // setups give a task what an event of a kind acts on, where the task of
@@ -85,6 +87,7 @@ var setups = map[Kind]func(*v1alpha1.Task){
 	KindSending: func(t *v1alpha1.Task) {
 		t.Status.Outbox = append(t.Status.Outbox, v1alpha1.OutboxItem{ID: "01JB0000000000000000000003", Kind: v1alpha1.OutboxNotify, Notify: &v1alpha1.Notification{Event: v1alpha1.NotifyDone}})
 	},
+	KindDelete: func(t *v1alpha1.Task) { t.Status.Outbox = nil },
 }
 
 func TestTableIsExhaustive(t *testing.T) {
@@ -510,6 +513,89 @@ func TestCancel(t *testing.T) {
 	s := apply(t, &v1alpha1.Task{Status: finished.Status}, Cancel{}).Status
 	if rec := runEnded(s); rec == nil || rec.Reason != v1alpha1.RunFinished {
 		t.Fatalf("cancel dropped the run record: %+v", s.Outbox)
+	}
+}
+
+func TestDelete(t *testing.T) {
+	done := taskIn(v1alpha1.PhaseDone, step)
+	wantErr(t, done, Delete{}, ErrInvalidTransition) // its subtask is not created yet
+	done.Status.Outbox = nil
+	s := apply(t, done, Delete{}).Status
+	if s.DeletingSince == nil || !s.DeletingSince.Time.Equal(now) {
+		t.Fatalf("deletingSince = %v, want %v", s.DeletingSince, now)
+	}
+	deleting := &v1alpha1.Task{Spec: done.Spec, Status: s}
+	for _, v := range validEvents {
+		if _, ok := v.ev.(fenced); !ok {
+			wantErr(t, deleting, v.ev, ErrDeleting)
+		}
+	}
+	// A run that lost its task still learns so first.
+	wantErr(t, deleting, Heartbeat{RunID: runB, Lease: time.Minute}, ErrRunMismatch)
+
+	// Only a finished task is deleted or stamped, even with an empty outbox.
+	for _, p := range append([]v1alpha1.Phase{unborn}, allPhases...) {
+		tk := taskIn(p, runtime)
+		tk.Status.Outbox = nil
+		if Finished(p) {
+			apply(t, tk, Delete{})
+			continue
+		}
+		wantErr(t, tk, Delete{}, ErrInvalidTransition)
+		wantErr(t, tk, StampFinished{}, ErrInvalidTransition)
+		if tk.Status.DeletingSince != nil || tk.Status.FinishedAt != nil {
+			t.Errorf("refused from %q: deletingSince = %v, finishedAt = %v", p, tk.Status.DeletingSince, tk.Status.FinishedAt)
+		}
+	}
+}
+
+func TestFinishedAt(t *testing.T) {
+	for name, ev := range map[string]Event{
+		"done":   Finish{RunID: runA, Outcome: OutcomeDone},
+		"failed": Finish{RunID: runA, Outcome: OutcomeFailed},
+		"cancel": Cancel{},
+	} {
+		s := apply(t, taskIn(v1alpha1.PhaseRunning, runtime), ev).Status
+		if s.FinishedAt == nil || !s.FinishedAt.Time.Equal(now) {
+			t.Errorf("%s: finishedAt = %v, want %v", name, s.FinishedAt, now)
+		}
+	}
+	// A step-mode run whose step has no attempt left fails at its reclaim.
+	exhausted := taskIn(v1alpha1.PhaseRunning, step)
+	exhausted.Status.Run.Attempt = MaxAttempts
+	if s := apply(t, exhausted, Reclaim{}).Status; s.Phase != v1alpha1.PhaseFailed || s.FinishedAt == nil || !s.FinishedAt.Time.Equal(now) {
+		t.Errorf("failed at reclaim: phase %s, finishedAt = %v", s.Phase, s.FinishedAt)
+	}
+	for _, ev := range []Event{Finish{RunID: runA, Outcome: OutcomeReview}, Reclaim{}, Heartbeat{RunID: runA, Lease: time.Minute}} {
+		if s := apply(t, taskIn(v1alpha1.PhaseRunning, runtime), ev).Status; s.FinishedAt != nil {
+			t.Errorf("%s: finishedAt = %v, want unset", KindOf(ev), s.FinishedAt)
+		}
+	}
+
+	// Cancelling a Done task keeps when it finished.
+	done := &v1alpha1.Task{Status: apply(t, taskIn(v1alpha1.PhaseRunning, runtime), Finish{RunID: runA, Outcome: OutcomeDone}).Status}
+	later, err := Apply(done, Cancel{}, now.Add(time.Hour))
+	if err != nil || !later.Status.FinishedAt.Time.Equal(now) {
+		t.Fatalf("cancel after done: finishedAt = %v, %v", later.Status.FinishedAt, err)
+	}
+
+	// A task that finished before finishedAt existed is stamped once, in any
+	// finished phase.
+	for _, p := range finished {
+		tk := taskIn(p, runtime)
+		tk.Status.Outbox = nil
+		if s := apply(t, tk, StampFinished{}).Status; s.Phase != p || s.FinishedAt == nil || !s.FinishedAt.Time.Equal(now) {
+			t.Errorf("stamp %s: phase %s, finishedAt = %v, want %v", p, s.Phase, s.FinishedAt, now)
+		}
+	}
+	legacy := taskIn(v1alpha1.PhaseDone, step)
+	s := apply(t, legacy, StampFinished{}).Status
+	if s.FinishedAt == nil || !s.FinishedAt.Time.Equal(now) {
+		t.Fatalf("stamp: finishedAt = %v, want %v", s.FinishedAt, now)
+	}
+	legacy.Status = s
+	if again, err := Apply(legacy, StampFinished{}, now.Add(time.Hour)); err != nil || !again.Status.FinishedAt.Time.Equal(now) {
+		t.Fatalf("stamp again: finishedAt = %v, %v", again.Status.FinishedAt, err)
 	}
 }
 

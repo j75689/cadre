@@ -26,6 +26,7 @@ func TestFail(t *testing.T) {
 		code   string
 	}{
 		task.ErrRunMismatch:        {409, httpjson.CodeRunMismatch},
+		task.ErrDeleting:           {409, httpjson.CodeDeleting},
 		task.ErrStepMismatch:       {409, httpjson.CodeStepMismatch},
 		task.ErrAttemptMismatch:    {409, httpjson.CodeAttemptMismatch},
 		task.ErrStepTaken:          {409, httpjson.CodeStepTaken},

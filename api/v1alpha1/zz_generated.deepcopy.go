@@ -1131,6 +1131,14 @@ func (in *TaskStatus) DeepCopyInto(out *TaskStatus) {
 		*out = new(RunsStatus)
 		**out = **in
 	}
+	if in.FinishedAt != nil {
+		in, out := &in.FinishedAt, &out.FinishedAt
+		*out = (*in).DeepCopy()
+	}
+	if in.DeletingSince != nil {
+		in, out := &in.DeletingSince, &out.DeletingSince
+		*out = (*in).DeepCopy()
+	}
 	if in.Conditions != nil {
 		in, out := &in.Conditions, &out.Conditions
 		*out = make([]v1.Condition, len(*in))
@@ -1234,6 +1242,11 @@ func (in *TeamSpec) DeepCopyInto(out *TeamSpec) {
 	*out = *in
 	if in.ArchiveAfter != nil {
 		in, out := &in.ArchiveAfter, &out.ArchiveAfter
+		*out = new(v1.Duration)
+		**out = **in
+	}
+	if in.DeleteFinishedAfter != nil {
+		in, out := &in.DeleteFinishedAfter, &out.DeleteFinishedAfter
 		*out = new(v1.Duration)
 		**out = **in
 	}

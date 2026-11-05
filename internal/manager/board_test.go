@@ -297,6 +297,54 @@ func TestAppendThreadKinds(t *testing.T) {
 	}
 }
 
+// A task being deleted takes no thread entries and has its logs read by
+// nobody, as they are going; the task itself can still be read.
+func TestDeletingTaskIsReadOnly(t *testing.T) {
+	e := newEnv(t, 1)
+	key := e.addTask(t, "t", v1alpha1.AssigneeAgent)
+	if _, err := e.m.Cancel(ctx, key); err != nil {
+		t.Fatal(err)
+	}
+	if err := e.m.Dispatch(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := e.m.transition(ctx, key, task.Delete{}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := e.m.AppendThread(ctx, key, alice, EntryComment, "x"); !errors.Is(err, task.ErrDeleting) {
+		t.Errorf("append: %v, want ErrDeleting", err)
+	}
+	if _, err := e.m.ReadThread(ctx, key, 0, 0); !errors.Is(err, task.ErrDeleting) {
+		t.Errorf("read thread: %v, want ErrDeleting", err)
+	}
+	if _, err := e.m.Runs(ctx, key); !errors.Is(err, task.ErrDeleting) {
+		t.Errorf("runs: %v, want ErrDeleting", err)
+	}
+	if _, err := e.m.RunEvents(ctx, key, "01JB0000000000000000000000"); !errors.Is(err, task.ErrDeleting) {
+		t.Errorf("run events: %v, want ErrDeleting", err)
+	}
+	if got, err := e.m.GetTask(ctx, key); err != nil || got.Status.DeletingSince == nil {
+		t.Errorf("get: %+v, %v", got, err)
+	}
+}
+
+func TestValidateTeamSpec(t *testing.T) {
+	for name, spec := range map[string]v1alpha1.TeamSpec{
+		"archiveAfter 0s":         {ArchiveAfter: &metav1.Duration{}},
+		"archiveAfter -1h":        {ArchiveAfter: &metav1.Duration{Duration: -time.Hour}},
+		"deleteFinishedAfter 0s":  {DeleteFinishedAfter: &metav1.Duration{}},
+		"deleteFinishedAfter -1h": {DeleteFinishedAfter: &metav1.Duration{Duration: -time.Hour}},
+	} {
+		if err := ValidateTeamSpec(&spec); !errors.Is(err, ErrInvalid) {
+			t.Errorf("%s: %v, want ErrInvalid", name, err)
+		}
+	}
+	spec := v1alpha1.TeamSpec{ArchiveAfter: &metav1.Duration{Duration: time.Hour}, DeleteFinishedAfter: &metav1.Duration{Duration: 720 * time.Hour}}
+	if err := ValidateTeamSpec(&spec); err != nil {
+		t.Errorf("positive durations: %v", err)
+	}
+}
+
 // A transition that changes nothing writes nothing.
 func TestNoOpTransitionDoesNotWrite(t *testing.T) {
 	e := newEnv(t, 1)

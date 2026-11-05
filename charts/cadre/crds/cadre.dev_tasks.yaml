@@ -176,6 +176,18 @@ spec:
                 x-kubernetes-list-map-keys:
                 - type
                 x-kubernetes-list-type: map
+              deletingSince:
+                description: |-
+                  DeletingSince is when the task's deletion began. Once set, the task
+                  is read-only.
+                format: date-time
+                type: string
+              finishedAt:
+                description: |-
+                  FinishedAt is when the task became Done, Cancelled or Failed. It is
+                  set once and never cleared.
+                format: date-time
+                type: string
               number:
                 description: Number is the human-facing number, claimed from the Team's
                   counter.

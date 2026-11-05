@@ -21,6 +21,7 @@ const (
 	CodeNotFound          = "not_found"          // 404: the object does not exist
 	CodeAlreadyExists     = "already_exists"     // 409: the object exists already
 	CodeRunMismatch       = "run_mismatch"       // 409: the run lost its task; stop
+	CodeDeleting          = "deleting"           // 409: the task is being deleted
 	CodeStepMismatch      = "step_mismatch"      // 409: step mode; drop this result
 	CodeAttemptMismatch   = "attempt_mismatch"   // 409: step mode; the attempt is over, stop
 	CodeStepTaken         = "step_taken"         // 409: step mode; another worker holds the step
@@ -107,6 +108,8 @@ func Classify(err error) string {
 	switch {
 	case errors.Is(err, task.ErrRunMismatch):
 		return CodeRunMismatch
+	case errors.Is(err, task.ErrDeleting):
+		return CodeDeleting
 	case errors.Is(err, task.ErrStepMismatch):
 		return CodeStepMismatch
 	case errors.Is(err, task.ErrAttemptMismatch):
@@ -144,6 +147,8 @@ func Fail(w http.ResponseWriter, log *slog.Logger, err error) {
 	switch code := Classify(err); code {
 	case CodeRunMismatch:
 		WriteError(w, http.StatusConflict, code, task.ErrRunMismatch.Error())
+	case CodeDeleting:
+		WriteError(w, http.StatusConflict, code, task.ErrDeleting.Error())
 	case CodeStepMismatch:
 		WriteError(w, http.StatusConflict, code, task.ErrStepMismatch.Error())
 	case CodeAttemptMismatch:

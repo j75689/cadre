@@ -117,6 +117,20 @@ func TestCRDs(t *testing.T) {
 		}
 	})
 
+	t.Run("team deleteFinishedAfter must be a positive duration", func(t *testing.T) {
+		for _, d := range []string{"30d", "-1h", "0s"} {
+			team := &unstructured.Unstructured{Object: map[string]any{
+				"apiVersion": v1alpha1.GroupVersion.String(),
+				"kind":       "Team",
+				"metadata":   map[string]any{"name": v1alpha1.TeamName, "namespace": "kube-public"},
+				"spec":       map[string]any{"deleteFinishedAfter": d},
+			}}
+			if err := c.Create(ctx, team); !apierrors.IsInvalid(err) {
+				t.Errorf("deleteFinishedAfter %q: got %v, want Invalid", d, err)
+			}
+		}
+	})
+
 	t.Run("task validation", func(t *testing.T) {
 		for name, spec := range map[string]v1alpha1.TaskSpec{
 			"missing title":     {},
@@ -200,6 +214,19 @@ func TestCRDs(t *testing.T) {
 		})
 		if err := c.Status().Update(ctx, got); err != nil {
 			t.Fatalf("valid RunEnded item: %v", err)
+		}
+
+		got.Status.Phase, got.Status.Run = v1alpha1.PhaseDone, nil
+		got.Status.FinishedAt, got.Status.DeletingSince = &lease, &lease
+		if err := c.Status().Update(ctx, got); err != nil {
+			t.Fatalf("update finishedAt and deletingSince: %v", err)
+		}
+		read := &v1alpha1.Task{}
+		if err := c.Get(ctx, client.ObjectKeyFromObject(task), read); err != nil {
+			t.Fatalf("get Task: %v", err)
+		}
+		if read.Status.FinishedAt == nil || !read.Status.FinishedAt.Equal(&lease) || read.Status.DeletingSince == nil || !read.Status.DeletingSince.Equal(&lease) {
+			t.Fatalf("finishedAt = %v, deletingSince = %v, want both %v", read.Status.FinishedAt, read.Status.DeletingSince, lease)
 		}
 	})
 }

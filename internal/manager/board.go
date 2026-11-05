@@ -166,7 +166,7 @@ func (m *Manager) appendEntry(ctx context.Context, key storage.Key, entry *Threa
 	if slices.Contains(callKinds, entry.Kind) != (entry.Call != nil) {
 		return nil, fmt.Errorf("a %s entry and its call: %w", entry.Kind, ErrInvalid)
 	}
-	t, err := m.store.GetTask(ctx, key)
+	t, err := m.liveTask(ctx, key)
 	if err != nil {
 		return nil, err
 	}
@@ -243,6 +243,19 @@ func (m *Manager) latestSeq(ctx context.Context, stream string, from int64) (int
 	return latest, nil
 }
 
+// liveTask reads a task whose logs may be read and written: one being
+// deleted fails with task.ErrDeleting, as its logs are going.
+func (m *Manager) liveTask(ctx context.Context, key storage.Key) (*v1alpha1.Task, error) {
+	t, err := m.store.GetTask(ctx, key)
+	if err != nil {
+		return nil, err
+	}
+	if t.Status.DeletingSince != nil {
+		return nil, task.ErrDeleting
+	}
+	return t, nil
+}
+
 // readStream reads a log stream after the key after, decoding each entry.
 func readStream[T any](ctx context.Context, store storage.Driver, stream, after string, limit int) ([]T, error) {
 	entries, err := store.Read(ctx, stream, after, limit)
@@ -262,7 +275,7 @@ func readStream[T any](ctx context.Context, store storage.Driver, stream, after 
 
 // ReadThread returns up to limit entries after sequence number after.
 func (m *Manager) ReadThread(ctx context.Context, key storage.Key, after int64, limit int) ([]ThreadEntry, error) {
-	if _, err := m.store.GetTask(ctx, key); err != nil {
+	if _, err := m.liveTask(ctx, key); err != nil {
 		return nil, err
 	}
 	var from string
@@ -322,7 +335,7 @@ func (m *Manager) Answer(ctx context.Context, key storage.Key, author Author, bo
 // Runs returns the task's run history, oldest first, including runs whose
 // end the dispatcher has not yet moved out of the outbox.
 func (m *Manager) Runs(ctx context.Context, key storage.Key) ([]v1alpha1.RunRecord, error) {
-	t, err := m.store.GetTask(ctx, key)
+	t, err := m.liveTask(ctx, key)
 	if err != nil {
 		return nil, err
 	}
@@ -347,7 +360,7 @@ func (m *Manager) RunEvents(ctx context.Context, key storage.Key, runID string) 
 	if _, err := ulid.ParseStrict(runID); err != nil {
 		return nil, fmt.Errorf("run id %q: %w", runID, ErrInvalid)
 	}
-	t, err := m.store.GetTask(ctx, key)
+	t, err := m.liveTask(ctx, key)
 	if err != nil {
 		return nil, err
 	}
@@ -416,6 +429,9 @@ func ValidateTeamSpec(spec *v1alpha1.TeamSpec) error {
 	}
 	if a := spec.ArchiveAfter; a != nil && a.Duration <= 0 {
 		return fmt.Errorf("archiveAfter %s must be a positive duration such as 720h: %w", a.Duration, ErrInvalid)
+	}
+	if d := spec.DeleteFinishedAfter; d != nil && d.Duration <= 0 {
+		return fmt.Errorf("deleteFinishedAfter %s must be a positive duration such as 720h: %w", d.Duration, ErrInvalid)
 	}
 	for i, r := range spec.Roles {
 		if !slices.Contains([]v1alpha1.RoleName{v1alpha1.RoleAdmin, v1alpha1.RoleMember, v1alpha1.RoleViewer}, r.Role) {
