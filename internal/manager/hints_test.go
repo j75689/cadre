@@ -2,9 +2,11 @@ package manager
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -286,5 +288,67 @@ func TestNumberTaskCallsTakeTurns(t *testing.T) {
 	}
 	if got := e.team(t).Status.NextNumber; got != 2 {
 		t.Errorf("next number %d after one task, want 2: a number was claimed twice", got)
+	}
+}
+
+// lockedBuffer is a buffer the hint workers can log to at once.
+type lockedBuffer struct {
+	mu  sync.Mutex
+	buf strings.Builder
+}
+
+func (b *lockedBuffer) Write(p []byte) (int, error) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.buf.Write(p)
+}
+
+func (b *lockedBuffer) String() string {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.buf.String()
+}
+
+// Deleted tasks notify as any change does; their hints end quietly and
+// the hints of the tasks after them still number them.
+func TestHintsOfDeletedTasks(t *testing.T) {
+	e := newEnv(t, 2)
+	runCtx, cancel := context.WithCancel(ctx)
+	defer cancel()
+	var logs lockedBuffer
+	e.m.FollowHints(runCtx, slog.New(slog.NewTextHandler(&logs, nil)))
+	for i := range 40 {
+		key := storage.Key{Namespace: ns, Name: fmt.Sprintf("t%d", i)}
+		if err := e.store.CreateTask(ctx, &v1alpha1.Task{
+			ObjectMeta: metav1.ObjectMeta{Namespace: ns, Name: key.Name},
+			Spec:       v1alpha1.TaskSpec{Title: "t", Assignee: &v1alpha1.Assignee{Kind: v1alpha1.AssigneeAgent, Name: "coder"}},
+		}); err != nil {
+			t.Fatal(err)
+		}
+		// A hint may number the task between the read and the delete.
+		for err := storage.ErrConflict; errors.Is(err, storage.ErrConflict); {
+			err = e.store.DeleteTask(ctx, e.get(t, key))
+			if err != nil && !errors.Is(err, storage.ErrConflict) {
+				t.Fatal(err)
+			}
+		}
+	}
+	key := storage.Key{Namespace: ns, Name: "after"}
+	if err := e.store.CreateTask(ctx, &v1alpha1.Task{
+		ObjectMeta: metav1.ObjectMeta{Namespace: ns, Name: key.Name},
+		Spec:       v1alpha1.TaskSpec{Title: "after", Assignee: &v1alpha1.Assignee{Kind: v1alpha1.AssigneeAgent, Name: "coder"}},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	eventually(t, "the task after the deleted ones numbered", func() bool { return e.get(t, key).Status.Number > 0 })
+	time.Sleep(200 * time.Millisecond) // let any stray hint land
+	if err := e.m.NumberNew(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if tasks, err := e.m.ListTasks(ctx, storage.Query{Namespace: ns}); err != nil || len(tasks) != 1 {
+		t.Errorf("tasks left: %d, %v; want only %s", len(tasks), err, key.Name)
+	}
+	if strings.Contains(logs.String(), "level=WARN") {
+		t.Errorf("hints of deleted tasks logged:\n%s", logs.String())
 	}
 }

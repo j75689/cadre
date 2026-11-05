@@ -13,6 +13,8 @@ import (
 	"strings"
 	"sync"
 
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+
 	v1alpha1 "github.com/j75689/cadre/api/v1alpha1"
 	"github.com/j75689/cadre/internal/storage"
 )
@@ -125,12 +127,17 @@ func (b *Backend) nextVersion() string {
 	return strconv.FormatInt(b.version, 10)
 }
 
-// notify delivers a watch event to every open driver. It must be called with
-// b.mu held.
+// notify delivers a watch event to every open driver; a Task with its
+// DeletionTimestamp set leaves the index. It must be called with b.mu held.
 func (b *Backend) notify(t *v1alpha1.Task) {
+	key := storage.Key{Namespace: t.Namespace, Name: t.Name}
 	for d := range b.drivers {
 		d.mu.Lock()
-		d.index[storage.Key{Namespace: t.Namespace, Name: t.Name}] = t.DeepCopy()
+		if t.DeletionTimestamp != nil {
+			delete(d.index, key)
+		} else {
+			d.index[key] = t.DeepCopy()
+		}
 		d.mu.Unlock()
 		select {
 		case d.events <- t.DeepCopy():
@@ -190,6 +197,29 @@ func (d *Driver) UpdateTaskStatus(_ context.Context, t *v1alpha1.Task) error {
 	d.b.tasks[key] = stored
 	d.b.notify(stored)
 	t.ResourceVersion = stored.ResourceVersion
+	return nil
+}
+
+// DeleteTask implements storage.Objects.
+func (d *Driver) DeleteTask(_ context.Context, t *v1alpha1.Task) error {
+	key := storage.Key{Namespace: t.Namespace, Name: t.Name}
+	d.b.mu.Lock()
+	defer d.b.mu.Unlock()
+	if t.ResourceVersion == "" {
+		return fmt.Errorf("task %s: no resourceVersion: %w", key, storage.ErrConflict)
+	}
+	cur, ok := d.b.tasks[key]
+	if !ok {
+		return notFound("task", key)
+	}
+	if cur.ResourceVersion != t.ResourceVersion {
+		return fmt.Errorf("task %s: %w", key, storage.ErrConflict)
+	}
+	delete(d.b.tasks, key)
+	gone := cur.DeepCopy()
+	now := metav1.Now()
+	gone.DeletionTimestamp = &now
+	d.b.notify(gone)
 	return nil
 }
 
@@ -312,6 +342,21 @@ func (d *Driver) Keys(ctx context.Context, stream, after string, limit int) ([]s
 		out[i] = storage.KeyInfo{Key: e.Key, Size: int64(len(e.Data))}
 	}
 	return out, nil
+}
+
+// DeleteStream implements storage.Log.
+func (d *Driver) DeleteStream(_ context.Context, stream string) error {
+	if err := storage.ValidateStream(stream); err != nil {
+		return err
+	}
+	d.b.mu.Lock()
+	defer d.b.mu.Unlock()
+	for k := range d.b.logs {
+		if k == stream || strings.HasPrefix(k, stream+"/") {
+			delete(d.b.logs, k)
+		}
+	}
+	return nil
 }
 
 // ListTeams implements storage.Index.

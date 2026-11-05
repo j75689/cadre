@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"slices"
+	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -88,6 +89,51 @@ func TestInvalidObjectsMapToErrInvalid(t *testing.T) {
 		if err := d.CreateTask(context.Background(), tk); !errors.Is(err, storage.ErrInvalid) {
 			t.Errorf("%s: %v, want storage.ErrInvalid", name, err)
 		}
+	}
+}
+
+// A delete of a Task with a finalizer is accepted and returns nil, but the
+// Task stays, terminating, until the finalizer clears.
+func TestDeleteTaskWithAFinalizerIsAccepted(t *testing.T) {
+	cfg := testenv.APIServer(t)
+	ctx := context.Background()
+	d, err := kubernetes.Open(ctx, kubernetes.Config{REST: cfg, S3: testenv.S3(t)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = d.Close() }()
+	key := storage.Key{Namespace: "default", Name: "held-" + strings.ToLower(ulid.Make().String())}
+	if err := d.CreateTask(ctx, &v1alpha1.Task{
+		ObjectMeta: metav1.ObjectMeta{Namespace: key.Namespace, Name: key.Name, Finalizers: []string{"example.com/hold"}},
+		Spec:       v1alpha1.TaskSpec{Title: "held"},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	tk, err := d.GetTask(ctx, key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := d.DeleteTask(ctx, tk); err != nil {
+		t.Fatalf("delete a Task with a finalizer: %v, want nil", err)
+	}
+	var held *v1alpha1.Task
+	for deadline := time.Now().Add(5 * time.Second); held == nil || held.DeletionTimestamp == nil; time.Sleep(10 * time.Millisecond) {
+		if time.Now().After(deadline) {
+			t.Fatalf("Task after the delete: %v, %v; want it terminating", held, err)
+		}
+		held, err = d.GetTask(ctx, key)
+	}
+	scheme := runtime.NewScheme()
+	if err := v1alpha1.AddToScheme(scheme); err != nil {
+		t.Fatal(err)
+	}
+	admin, err := client.New(cfg, client.Options{Scheme: scheme})
+	if err != nil {
+		t.Fatal(err)
+	}
+	held.Finalizers = nil
+	if err := admin.Update(ctx, held); err != nil {
+		t.Fatal(err)
 	}
 }
 
