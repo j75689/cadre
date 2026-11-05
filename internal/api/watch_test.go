@@ -179,8 +179,8 @@ func TestWatchHints(t *testing.T) {
 	quiet(t, events, 300*time.Millisecond)
 }
 
-// A Task deleted is no hint, and the stream goes on to hint the next
-// change.
+// A Task deleted is a hint that says so, and the stream goes on to hint
+// the next change.
 func TestWatchTaskDeleted(t *testing.T) {
 	store := memory.NewBackend().Open()
 	e := startRolesWith(t, store, nil, &authz.Policy{}, api.WithWatch(api.NewHub(store), fastWatch))
@@ -195,7 +195,9 @@ func TestWatchTaskDeleted(t *testing.T) {
 	if err := store.DeleteTask(ctx, x); err != nil {
 		t.Fatal(err)
 	}
-	quiet(t, events, 300*time.Millisecond)
+	if ev := next(t, events); ev.kind != "task" || !strings.Contains(ev.data, `"name":"x"`) || !strings.Contains(ev.data, `"deleted":true`) {
+		t.Fatalf("event %+v, want x's deleted hint", ev)
+	}
 
 	if err := store.CreateTask(ctx, &v1alpha1.Task{ObjectMeta: metav1.ObjectMeta{Namespace: "team-a", Name: "y"}, Spec: v1alpha1.TaskSpec{Title: "y"}}); err != nil {
 		t.Fatal(err)

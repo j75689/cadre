@@ -22,7 +22,8 @@ server:
   # for the audience cadre) or none (tests and local development only).
   runnerAuth: required
   # Timings, each passed only when set: lease, heartbeat, stepIdle,
-  # reclaimInterval, dispatchInterval (Go durations such as 30s).
+  # reclaimInterval, dispatchInterval, deleteFinishedInterval (Go durations
+  # such as 30s).
   timings: {}
   # watchMaxStreams is how many live-update streams each replica serves at
   # once (cadre-server's default, 2000, when unset); one more is answered
