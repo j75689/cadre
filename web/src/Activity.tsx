@@ -140,7 +140,7 @@ export function Activity() {
                   <td>{a.reason}</td>
                   <td className="table-text">{a.note}</td>
                   <td className="activity-name">
-                    <Regarding ns={ns} {...a.regarding} />
+                    <Regarding ns={ns} reason={a.reason} {...a.regarding} />
                   </td>
                   <td className="activity-name mono muted">{a.reportedBy}</td>
                   <td className="num">{a.count > 1 ? `×${a.count}` : ""}</td>
@@ -199,9 +199,10 @@ function TypeBadge({ type }: { type: string }) {
 }
 
 // Regarding is the object an Event is about, a link to its page where its
-// kind has one. A narrow column breaks it after the kind.
-function Regarding({ ns, kind, name }: { ns: string; kind: string; name: string }) {
-  const page = pages[kind];
+// kind has one, except a Task the Event says was deleted. A narrow column
+// breaks it after the kind.
+function Regarding({ ns, reason, kind, name }: { ns: string; reason: string; kind: string; name: string }) {
+  const page = kind === "Task" && reason === "TaskDeleted" ? undefined : pages[kind];
   return (
     <span className="mono">
       <span className="muted">{kind}/</span>

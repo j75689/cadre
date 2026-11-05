@@ -28,16 +28,18 @@ describe("validate", () => {
   const role = { role: "admin" as const, subjects: [{ kind: "user" as const, name: "dana" }] };
 
   it("takes durations longer than 0 only, as the server does", () => {
-    expect(validate({ archiveAfter: "30m" })).toBeUndefined();
-    expect(validate({ archiveAfter: " .5h " })).toBeUndefined();
-    for (const v of ["0s", "0h0m", "0.5ns", "-1h"]) expect(validate({ archiveAfter: v }), v).toEqual({ message: expect.stringMatching(/longer than 0/), at: "archiveAfter" });
-    expect(validate({ archiveAfter: "" })).toBeUndefined();
+    expect(validate({ deleteFinishedAfter: "720h" })).toBeUndefined();
+    expect(validate({ deleteFinishedAfter: " .5h " })).toBeUndefined();
+    for (const v of ["0s", "0h0m", "0.5ns", "-1h", "a week"])
+      expect(validate({ deleteFinishedAfter: v }), v).toEqual({ message: "Delete finished after is a duration longer than 0, such as 720h or 168h.", at: "deleteFinishedAfter" });
+    expect(validate({ deleteFinishedAfter: "" })).toBeUndefined();
+    expect(validate({ archiveAfter: "0s" })).toBeUndefined(); // not the form's to check
   });
 
   it("says when a duration is over the longest the server takes", () => {
-    expect(validate({ archiveAfter: "2562047h47m16.854775807s" })).toBeUndefined();
+    expect(validate({ deleteFinishedAfter: "2562047h47m16.854775807s" })).toBeUndefined();
     for (const v of ["2562048h", "9223372036854775808ns"])
-      expect(validate({ archiveAfter: v }), v).toEqual({ message: "Archive after is too long: the longest the server takes is 2562047h47m16.854775807s.", at: "archiveAfter" });
+      expect(validate({ deleteFinishedAfter: v }), v).toEqual({ message: "Delete finished after is too long: the longest the server takes is 2562047h47m16.854775807s.", at: "deleteFinishedAfter" });
   });
 
   it("takes a cap the server's int32 holds", () => {
@@ -69,7 +71,8 @@ describe("refusal", () => {
   it("names the field a server message is about", () => {
     expect(refusal("roles[1].subjects[0]: a user needs a name: invalid")).toEqual({ message: "Role 2, subject 1: a user needs a name: invalid", at: "subject-1-0" });
     expect(refusal("roles[0]: a viewer role needs at least one subject: invalid").at).toBe("role-0");
-    expect(refusal("archiveAfter -1h0m0s must be a positive duration such as 720h: invalid").at).toBe("archiveAfter");
+    expect(refusal("deleteFinishedAfter 0s must be a positive duration such as 720h: invalid").at).toBe("deleteFinishedAfter");
+    expect(refusal("archiveAfter -1h0m0s must be a positive duration such as 720h: invalid").at).toBeUndefined();
     expect(refusal("maxConcurrentRuns -1: invalid").at).toBe("maxConcurrentRuns");
     expect(refusal("the Team would have no admin: keep an admin role")).toEqual({ message: "the Team would have no admin: keep an admin role", at: undefined });
   });
@@ -90,19 +93,20 @@ describe("toSpec", () => {
   const unknown = { futureKnob: { on: true } } as TeamSpec;
 
   it("keeps the fields the form does not show", () => {
-    expect(toSpec({ displayName: "Team B", roles, deleteFinishedAfter: "720h", ...unknown })).toEqual({
+    expect(toSpec({ displayName: "Team B", roles, archiveAfter: "168h0m0s", ...unknown })).toEqual({
       displayName: "Team B",
       maxConcurrentRuns: 0,
       roles,
-      deleteFinishedAfter: "720h",
+      archiveAfter: "168h0m0s",
       futureKnob: { on: true },
     });
   });
 
   it("saves the shown fields as edited, cleared and removed ones included", () => {
-    const s = toSpec({ displayName: " ", archiveAfter: " ", roles: roles.slice(0, 1), deleteFinishedAfter: "720h" });
-    expect(s).toEqual({ displayName: "", maxConcurrentRuns: 0, roles: roles.slice(0, 1), deleteFinishedAfter: "720h" });
-    expect(s).not.toHaveProperty("archiveAfter", expect.anything());
+    const s = toSpec({ displayName: " ", deleteFinishedAfter: " ", roles: roles.slice(0, 1), archiveAfter: "168h0m0s" });
+    expect(s).toEqual({ displayName: "", maxConcurrentRuns: 0, roles: roles.slice(0, 1), archiveAfter: "168h0m0s" });
+    expect(s).not.toHaveProperty("deleteFinishedAfter", expect.anything());
+    expect(toSpec({ deleteFinishedAfter: " 720h " }).deleteFinishedAfter).toBe("720h");
   });
 
   it("puts the fields in one order, however the spec was built", () => {

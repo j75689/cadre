@@ -79,10 +79,10 @@ export interface TeamRole {
 export interface TeamSpec {
   displayName?: string;
   maxConcurrentRuns?: number;
-  // archiveAfter is a Go duration, such as "168h0m0s".
+  // archiveAfter is deprecated and not acted on; the form does not show it.
   archiveAfter?: string;
   roles?: TeamRole[];
-  // deleteFinishedAfter is a Go duration; the form does not show it.
+  // deleteFinishedAfter is a Go duration, such as "720h0m0s"; the form shows it.
   deleteFinishedAfter?: string;
 }
 
