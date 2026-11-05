@@ -80,13 +80,17 @@ export function formIndexes(msg: string): string {
 }
 
 // toSpec is the whole spec, as the PUT replaces it: an unset cap goes as
-// 0, which the server saves as 1, and no duration as none (never).
+// 0, which the server saves as 1, and no duration as none (never). The
+// fields the form does not show, such as deleteFinishedAfter, go as they
+// were, after the ones it does, so that two specs compare in one order.
 export function toSpec(d: TeamSpec): TeamSpec {
+  const { displayName, maxConcurrentRuns, archiveAfter, roles, ...rest } = d;
   return {
-    displayName: d.displayName?.trim() ?? "",
-    maxConcurrentRuns: d.maxConcurrentRuns ?? 0,
-    archiveAfter: d.archiveAfter?.trim() || undefined,
-    roles: (d.roles ?? []).map((r) => ({ role: r.role, subjects: r.subjects.map((s) => ({ kind: s.kind, name: s.name.trim() })) })),
+    displayName: displayName?.trim() ?? "",
+    maxConcurrentRuns: maxConcurrentRuns ?? 0,
+    archiveAfter: archiveAfter?.trim() || undefined,
+    roles: (roles ?? []).map((r) => ({ role: r.role, subjects: r.subjects.map((s) => ({ kind: s.kind, name: s.name.trim() })) })),
+    ...rest,
   };
 }
 

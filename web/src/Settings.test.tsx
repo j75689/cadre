@@ -2,7 +2,7 @@ import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testi
 import { MemoryRouter } from "react-router";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { App } from "./App";
-import type { Me, Team } from "./api";
+import type { Me, Team, TeamSpec } from "./api";
 import { json, team } from "./testing";
 
 afterEach(() => {
@@ -196,6 +196,23 @@ describe("Editing the Team", () => {
     expect(card.getByRole("status").textContent).toBe("Saved");
     expect(sent).toEqual([{ displayName: "Team B", maxConcurrentRuns: 3, archiveAfter: "30m", roles: full.spec!.roles, resourceVersion: "7" }]);
     await waitFor(() => expect(document.activeElement).toBe(card.getByRole("button", { name: "Edit" })));
+  });
+
+  it("keeps the spec fields the form does not show, and saves a removed role as removed", async () => {
+    const kept = { deleteFinishedAfter: "720h", futureKnob: "on" };
+    const set = team({ spec: { ...full.spec, ...kept } as TeamSpec });
+    const { form, sent } = await edit([() => json(set)], [() => json(set)]);
+    fireEvent.change(form.getByLabelText("Display name"), { target: { value: "Team B" } });
+    fireEvent.click(within(form.getByRole("group", { name: "Role 2" })).getByRole("button", { name: "Remove role" }));
+    fireEvent.click(form.getByRole("button", { name: "Save" }));
+    await screen.findByText("Saved");
+    expect(sent).toEqual([{ ...full.spec, displayName: "Team B", roles: full.spec!.roles!.slice(0, 1), ...kept, resourceVersion: "7" }]);
+  });
+
+  it("is not data-dirty on a Team with fields the form does not show", async () => {
+    // Without roles, as only a bootstrap admin may leave a Team.
+    await edit([() => json(team({ spec: { deleteFinishedAfter: "720h" } }))], [], [{ ...admin, admin: true }]);
+    expect(document.querySelector("[data-dirty]")).toBeNull();
   });
 
   it("edits the roles and their subjects", async () => {
