@@ -36,7 +36,7 @@ spec:
   displayName: Backend
   maxConcurrentRuns: 5
   archiveAfter: 720h          # deprecated, not acted on
-  deleteFinishedAfter: 720h   # no effect yet, see below
+  deleteFinishedAfter: 720h   # finished tasks are deleted after this, see below
   roles:
     - role: admin
       subjects: [{ kind: user, name: lead@example.test }]
@@ -70,8 +70,35 @@ Three roles:
 | `metadata.name` | must be `team` |
 | `spec.maxConcurrentRuns` | at least 1, default 1 |
 | `spec.archiveAfter` | deprecated and not acted on; a positive duration, such as `720h`, still checked as before |
-| `spec.deleteFinishedAfter` | optional, no default; a positive duration, such as `720h`: how long a finished task stays on the board before it is deleted, with its thread and runs. `0s` and negative durations are refused by the CRD ("deleteFinishedAfter must be a positive duration such as 720h") and by `PUT /team`. Unset, finished tasks are kept. **Nothing deletes Tasks yet**: setting it has no effect until a cadre-server that has the delete loop; the field is accepted and kept so it can be set ahead |
+| `spec.deleteFinishedAfter` | optional, no default; a positive duration, such as `720h`: how long a finished task stays on the board before it is deleted, with its thread and runs. `0s` and negative durations are refused by the CRD ("deleteFinishedAfter must be a positive duration such as 720h") and by `PUT /team`. Unset, finished tasks are kept. A cadre-server with the delete loop deletes them once it has passed, **for good**: see [Deleting finished tasks](#deleting-finished-tasks). The web form does not show it yet: set it with kubectl or GitOps |
 | `status.nextNumber`, `status.slots`, `status.running` | written by the Task Manager only; `slots` is a list keyed by `runId`; `running` is `len(slots)`, written with it |
+
+### Deleting finished tasks
+
+**This cannot be undone.** A Task that is `Done`, `Cancelled` or `Failed` is deleted `deleteFinishedAfter` after `status.finishedAt`, with its thread, runs, run events and files. cadre-server keeps no copy; check the value before you set it. A Team without `spec.deleteFinishedAfter` keeps every task: cadre-server reads none of its tasks and writes nothing for it.
+
+Apply the CRDs from the same version first (`kubectl apply -f charts/cadre/crds`): against older CRDs the API server prunes `finishedAt` and nothing is ever deleted.
+
+```sh
+# delete finished tasks 30 days (720h) after they finished
+kubectl -n team-a patch team team --type merge -p '{"spec":{"deleteFinishedAfter":"720h"}}'
+
+# keep them again; tasks already deleted stay deleted
+kubectl -n team-a patch team team --type merge -p '{"spec":{"deleteFinishedAfter":null}}'
+```
+
+A duration of `0s` or below is refused: `The Team "team" is invalid: spec.deleteFinishedAfter: Invalid value: "0s": deleteFinishedAfter must be a positive duration such as 720h`.
+
+How often cadre-server looks is its own setting:
+
+| Setting | Default | |
+| --- | --- | --- |
+| `--delete-finished-interval` (cadre-server) | `1m` | how often finished tasks past their Team's `deleteFinishedAfter` are deleted, with their logs |
+| `server.timings.deleteFinishedInterval` (chart) | unset, so the flag's `1m` | passed as `--delete-finished-interval` only when set, as `5m` |
+
+Each look deletes at most 20 tasks per Team, oldest first, so a Team that turns this on with a long history drains over several looks. A parent goes after its subtasks, and a task whose outbox is not applied yet goes after it is. A Task that finished before `finishedAt` existed is stamped at the first look, so it goes one full `deleteFinishedAfter` after the upgrade, not at once. How a delete is made safe against a crash, a second replica or a finalizer is in [the Task Manager](architecture.md#task-manager).
+
+Each delete leaves a Normal Event `TaskDeleted` (action `Delete`) on the Task, shown to the team's admins in Settings › Activity, and a `task` hint with `"deleted":true` on the watch stream; both are shown in [architecture.md](architecture.md#web-ui-and-api). The API server keeps the Event for its `--event-ttl`, one hour by default, so it is not a log.
 
 ## Task
 
@@ -124,8 +151,8 @@ status:
 | `spec.priority` | `low`, `medium`, `high`, `urgent`; default `medium` |
 | `spec.parentRef` | another Task in the same namespace, never the task itself. A task's subtasks are listed with `GET /tasks?parent=<name>` (one level: their own subtasks are listed from their pages), which the task page shows and `cadre task list --parent` prints |
 | `status.phase` | the seven phases above |
-| `status.finishedAt` | when the task became `Done`, `Cancelled` or `Failed`; set once and never cleared. Tasks that finished before this field existed have none |
-| `status.deletingSince` | when the task's deletion began; written by the Task Manager only, and nothing sets it yet. Once set the task is read-only: it takes no event, and the API answers `409 deleting` for its thread, runs and events (see [architecture.md](architecture.md#web-ui-and-api)); `GET` of the task itself still answers 200 |
+| `status.finishedAt` | when the task became `Done`, `Cancelled` or `Failed`; set once and never cleared. Tasks that finished before this field existed have none; where the Team has `spec.deleteFinishedAfter`, the Task Manager stamps them with the time of its first look |
+| `status.deletingSince` | when the task's deletion began; written by the Task Manager only, when it deletes the task (see [Deleting finished tasks](#deleting-finished-tasks)). Once set the task is read-only: it takes no event, and the API answers `409 deleting` for its thread, runs and events (see [architecture.md](architecture.md#web-ui-and-api)); `GET` of the task itself still answers 200 |
 | `status.waiting.reason` | `Question`, `ToolApproval`, `Review` |
 | `status.waiting.threadSeq` | a thread sequence; sequences start at 1 |
 | `status.run.id`, `status.outbox[].id` | ULIDs |
