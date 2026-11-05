@@ -136,7 +136,8 @@ const ids = (...xs: (string | false)[]) => xs.filter(Boolean).join(" ") || undef
 // version of base, the Team the draft was last checked against: after a
 // 409 that is the Team read again, shown as "Current" above the form, and
 // each field someone else changed since the form opened is marked, unless
-// the form already holds their value. onSaved gets the Team saved and the
+// the form already holds their value. The fields the form does not show
+// are saved as base has them, unmarked. onSaved gets the Team saved and the
 // spec sent; onLost is a save refused for want of a role: the Team was
 // deleted, or the caller's admin role taken away. The form is data-dirty
 // while the draft would save something other than the Team it opened with.
@@ -237,7 +238,10 @@ export function TeamForm({
     setConfirming(false);
     setConflict(false);
     setBusy(true);
-    const spec = toSpec(draft);
+    // The fields the form does not show go as base has them, so that a
+    // save after a 409 does not put back the ones someone else changed.
+    const { displayName, maxConcurrentRuns, archiveAfter, roles: rs } = draft;
+    const spec = toSpec({ ...base.spec, displayName, maxConcurrentRuns, archiveAfter, roles: rs });
     try {
       onSaved(await putTeam(ns, spec, base.metadata.resourceVersion), spec);
       return;

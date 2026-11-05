@@ -255,6 +255,21 @@ describe("Editing the Team", () => {
     expect(sent[1].displayName).toBe("Team B");
   });
 
+  it("saves again with the fields the form does not show as the Team read after a 409 has them", async () => {
+    const mine = team({ spec: { ...full.spec, deleteFinishedAfter: "720h", futureKnob: "on" } as TeamSpec });
+    const theirs = team({ metadata: { name: "team", namespace: "a", resourceVersion: "9" }, spec: { ...full.spec, deleteFinishedAfter: "8760h" } });
+    const { form, sent } = await edit([() => json(mine), () => json(theirs)], [conflict, () => json(theirs)]);
+    fireEvent.change(form.getByLabelText("Display name"), { target: { value: "Team B" } });
+    fireEvent.click(form.getByRole("button", { name: "Save" }));
+    await form.findByRole("region", { name: "Current" });
+    expect(form.queryAllByText(/Changed by someone else/)).toHaveLength(0);
+
+    fireEvent.click(form.getByRole("button", { name: "Save" }));
+    await screen.findByText("Saved");
+    expect(sent[0]).toMatchObject({ deleteFinishedAfter: "720h", futureKnob: "on" });
+    expect(sent[1]).toEqual({ ...full.spec, displayName: "Team B", deleteFinishedAfter: "8760h", resourceVersion: "9" }); // futureKnob removed
+  });
+
   it("marks the fields someone else changed, unless the form holds their value", async () => {
     const theirs = team({
       metadata: { name: "team", namespace: "a", resourceVersion: "9" },
