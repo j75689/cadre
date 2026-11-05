@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
-import { durationOf, formIndexes, refusal, validate } from "./TeamForm";
+import type { TeamSpec } from "./api";
+import { durationOf, formIndexes, refusal, toSpec, validate } from "./TeamForm";
 
 describe("durationOf", () => {
   it("reads what Go's time.ParseDuration reads", () => {
@@ -77,5 +78,34 @@ describe("refusal", () => {
     expect(refusal("roles[0]: a viewer role needs at least one subject: invalid request")).toEqual({ message: "Role 1: a viewer role needs at least one subject", at: "role-0" });
     expect(refusal("maxConcurrentRuns -1: invalid request")).toEqual({ message: "maxConcurrentRuns -1", at: "maxConcurrentRuns" });
     expect(refusal("an invalid request: keep it")).toEqual({ message: "an invalid request: keep it", at: undefined });
+  });
+});
+
+describe("toSpec", () => {
+  const roles = [
+    { role: "admin" as const, subjects: [{ kind: "user" as const, name: "dana" }] },
+    { role: "viewer" as const, subjects: [{ kind: "group" as const, name: "sre" }] },
+  ];
+  // A field cadre does not know yet, set with kubectl or GitOps.
+  const unknown = { futureKnob: { on: true } } as TeamSpec;
+
+  it("keeps the fields the form does not show", () => {
+    expect(toSpec({ displayName: "Team B", roles, deleteFinishedAfter: "720h", ...unknown })).toEqual({
+      displayName: "Team B",
+      maxConcurrentRuns: 0,
+      roles,
+      deleteFinishedAfter: "720h",
+      futureKnob: { on: true },
+    });
+  });
+
+  it("saves the shown fields as edited, cleared and removed ones included", () => {
+    const s = toSpec({ displayName: " ", archiveAfter: " ", roles: roles.slice(0, 1), deleteFinishedAfter: "720h" });
+    expect(s).toEqual({ displayName: "", maxConcurrentRuns: 0, roles: roles.slice(0, 1), deleteFinishedAfter: "720h" });
+    expect(s).not.toHaveProperty("archiveAfter", expect.anything());
+  });
+
+  it("puts the fields in one order, however the spec was built", () => {
+    expect(JSON.stringify(toSpec({ ...unknown, roles: [], displayName: "a" }))).toBe(JSON.stringify(toSpec({ displayName: "a", ...unknown })));
   });
 });
