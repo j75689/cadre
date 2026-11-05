@@ -4,6 +4,7 @@ server:
   timings:
     lease: 60s
     heartbeat: 20s
+    deleteFinishedInterval: 5m
   resources:
     requests: { cpu: 100m, memory: 128Mi }
 ingress:
