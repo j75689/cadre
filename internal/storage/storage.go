@@ -63,7 +63,9 @@ type Objects interface {
 	// DeleteTask deletes the Task, conditionally on the version: an empty or
 	// stale version fails with ErrConflict and the Task stays, and a Task
 	// already gone fails with ErrNotFound. An empty version is ErrConflict
-	// whether or not the Task exists.
+	// whether or not the Task exists. nil means the delete was accepted: a
+	// Task with finalizers (kubernetes) stays, with DeletionTimestamp set,
+	// until they clear.
 	DeleteTask(ctx context.Context, t *v1alpha1.Task) error
 
 	GetTeam(ctx context.Context, namespace string) (*v1alpha1.Team, error)
