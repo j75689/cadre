@@ -532,6 +532,21 @@ func TestDelete(t *testing.T) {
 	}
 	// A run that lost its task still learns so first.
 	wantErr(t, deleting, Heartbeat{RunID: runB, Lease: time.Minute}, ErrRunMismatch)
+
+	// Only a finished task is deleted or stamped, even with an empty outbox.
+	for _, p := range append([]v1alpha1.Phase{unborn}, allPhases...) {
+		tk := taskIn(p, runtime)
+		tk.Status.Outbox = nil
+		if Finished(p) {
+			apply(t, tk, Delete{})
+			continue
+		}
+		wantErr(t, tk, Delete{}, ErrInvalidTransition)
+		wantErr(t, tk, StampFinished{}, ErrInvalidTransition)
+		if tk.Status.DeletingSince != nil || tk.Status.FinishedAt != nil {
+			t.Errorf("refused from %q: deletingSince = %v, finishedAt = %v", p, tk.Status.DeletingSince, tk.Status.FinishedAt)
+		}
+	}
 }
 
 func TestFinishedAt(t *testing.T) {
