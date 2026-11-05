@@ -77,6 +77,9 @@ func (m *Manager) deleteFinished(ctx context.Context, ns string, d time.Duration
 		if deleted == deleteBatch {
 			break
 		}
+		if len(t.Status.Outbox) > 0 {
+			continue // refused until it is applied; uses none of the batch
+		}
 		subtasks, err := m.store.ListTasks(ctx, storage.Query{Namespace: ns, Parent: t.Name, Limit: 1})
 		if err != nil {
 			report(t.Name, err)

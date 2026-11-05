@@ -249,6 +249,32 @@ func TestDeleteFinishedOutboxWaits(t *testing.T) {
 	}
 }
 
+// Tasks waiting on their outbox use none of the batch: the tick deletes
+// the 20 due tasks after them.
+func TestDeleteFinishedOutboxSkipped(t *testing.T) {
+	e, rec := deleteEnv(t)
+	var keys []storage.Key
+	for i := range deleteBatch + 1 {
+		keys = append(keys, e.finished(t, fmt.Sprintf("t%02d", i)))
+		e.clock.add(time.Minute)
+	}
+	tk := e.get(t, keys[0])
+	tk.Status.Outbox = append(tk.Status.Outbox, v1alpha1.OutboxItem{ID: "item-1", Kind: v1alpha1.OutboxAppendThread})
+	if err := e.store.UpdateTaskStatus(ctx, tk); err != nil {
+		t.Fatal(err)
+	}
+	e.clock.add(time.Hour)
+	e.deleteFinished(t)
+	for i, key := range keys {
+		if gone := e.gone(t, key); gone != (i > 0) {
+			t.Errorf("%s gone: %v, want %v", key.Name, gone, i > 0)
+		}
+	}
+	if len(rec.Events) != deleteBatch {
+		t.Fatalf("%d Events, want %d", len(rec.Events), deleteBatch)
+	}
+}
+
 // A task marked deleting by a delete that stopped half way is deleted at
 // the next tick, however young.
 func TestDeleteFinishedResumes(t *testing.T) {
