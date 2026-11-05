@@ -101,9 +101,8 @@ type Hub struct {
 	subs    map[string]map[*watcher]struct{} // by namespace
 	streams int
 	// digests are the board-visible fields of every Task seen, so a change
-	// the board does not show (a lease renewed) is no hint. They are never
-	// pruned: the Notifier reports no deletes, and Cadre deletes no Tasks,
-	// so only a kubectl delete leaves one behind (about 100 B).
+	// the board does not show (a lease renewed) is no hint. A Task's is
+	// pruned when the Notifier reports it deleted.
 	digests map[storage.Key]uint64
 	runs    runTails
 
@@ -134,24 +133,31 @@ func NewHub(n storage.Notifier) *Hub {
 func (h *Hub) Close() { h.closeOnce.Do(func() { close(h.done) }) }
 
 // publishTask hints t's namespace's streams that t changed, if it changed
-// in a way the board shows. It never blocks.
+// in a way the board shows, or was deleted. It never blocks.
 func (h *Hub) publishTask(t *v1alpha1.Task) {
 	key := storage.Key{Namespace: t.Namespace, Name: t.Name}
 	d := boardDigest(t)
 	h.mu.Lock()
 	defer h.mu.Unlock()
-	if old, ok := h.digests[key]; ok && old == d {
-		return
+	// A deleted Task is always a hint, whatever its digest; a Task made
+	// again under its name is new to the hub.
+	deleted := t.DeletionTimestamp != nil
+	if deleted {
+		delete(h.digests, key)
+	} else {
+		if old, ok := h.digests[key]; ok && old == d {
+			return
+		}
+		h.digests[key] = d
 	}
-	h.digests[key] = d
-	hint := TaskHint{Name: t.Name, Number: t.Status.Number, Phase: t.Status.Phase}
+	hint := TaskHint{Name: t.Name, Number: t.Status.Number, Phase: t.Status.Phase, Deleted: deleted}
 	if t.Spec.ParentRef != nil {
 		hint.Parent = t.Spec.ParentRef.Name
 	}
 	h.send(t.Namespace, watchEvent{kind: "task", key: "task/" + t.Name, data: hint})
 	if rt := h.runs.tasks[key]; rt != nil {
 		var run string
-		if t.Status.Run != nil {
+		if t.Status.Run != nil && !deleted {
 			run = t.Status.Run.ID
 		}
 		h.switchRun(key, rt, run)

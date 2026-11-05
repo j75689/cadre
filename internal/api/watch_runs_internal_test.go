@@ -135,6 +135,37 @@ func TestRunTailReadAfterPublish(t *testing.T) {
 	}
 }
 
+// A Task deleted forgets its digest and stops its run's tailer.
+func TestRunTailDeleted(t *testing.T) {
+	h, w := tailHub(t, memory.NewBackend().Open())
+	key := storage.Key{Namespace: "team-a", Name: "y"}
+	y := &v1alpha1.Task{ObjectMeta: metav1.ObjectMeta{Namespace: "team-a", Name: "y"},
+		Status: v1alpha1.TaskStatus{Run: &v1alpha1.Run{ID: "01J00000000000000000000001"}}}
+	h.publishTask(y)
+	<-w.events
+	now := metav1.Now()
+	y.DeletionTimestamp = &now
+	h.publishTask(y)
+	if len(w.events) != 1 {
+		t.Fatalf("%d events, want the deleted task hint", len(w.events))
+	}
+	if ev := <-w.events; ev.kind != "task" || !ev.data.(TaskHint).Deleted {
+		t.Fatalf("event %+v, want a deleted task hint", ev)
+	}
+	h.mu.Lock()
+	_, digest := h.digests[key]
+	run := h.runs.tasks[key].run
+	h.mu.Unlock()
+	if digest || run != "" {
+		t.Fatalf("digest kept %v, tailing %q: want neither", digest, run)
+	}
+	for start := time.Now(); h.runs.live.Load() != 0; time.Sleep(time.Millisecond) {
+		if time.Since(start) > time.Second {
+			t.Fatalf("%d tailers, want none", h.runs.live.Load())
+		}
+	}
+}
+
 // A tailer lists its run every 500 ms.
 func TestRunTailInterval(t *testing.T) {
 	l := countLog{Log: memory.NewBackend().Open(), n: &atomic.Int64{}}
