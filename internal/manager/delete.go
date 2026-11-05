@@ -25,6 +25,7 @@ const deleteBatch = 20
 // before it was set, is stamped now instead, so it goes one full
 // deleteFinishedAfter later. A Task marked deleting, by a delete that
 // stopped half way here or on another replica, is deleted whatever its age.
+// A Task whose delete landed but that a finalizer holds is left alone.
 func (m *Manager) DeleteFinished(ctx context.Context) error {
 	teams, err := m.store.ListTeams(ctx)
 	if err != nil {
@@ -60,6 +61,8 @@ func (m *Manager) deleteFinished(ctx context.Context, ns string, d time.Duration
 	for _, t := range finished {
 		key := storage.Key{Namespace: ns, Name: t.Name}
 		switch {
+		case t.DeletionTimestamp != nil:
+			// Held by a finalizer: deleted already, it goes when that clears.
 		case t.Status.DeletingSince != nil:
 			report(t.Name, m.deleteTask(ctx, key, d))
 		case t.Status.FinishedAt == nil:
@@ -111,6 +114,9 @@ func (m *Manager) deleteTask(ctx context.Context, key storage.Key, d time.Durati
 	case err != nil:
 		return err
 	}
+	if t.DeletionTimestamp != nil {
+		return nil // a delete landed, read before the list saw it
+	}
 	if m.cfg.Snapshot != nil {
 		if err := m.cfg.Snapshot(ctx, t); err != nil {
 			return fmt.Errorf("snapshot: %w", err)
@@ -138,6 +144,9 @@ func (m *Manager) deleteTask(ctx context.Context, key storage.Key, d time.Durati
 		}
 		if t.Status.DeletingSince == nil {
 			return nil // made again under the name, after a delete landed
+		}
+		if t.DeletionTimestamp != nil {
+			return nil // another replica's delete landed, held by a finalizer
 		}
 	}
 	return fmt.Errorf("delete task %s: %w", key, ErrBusy)

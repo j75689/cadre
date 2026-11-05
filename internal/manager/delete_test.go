@@ -419,3 +419,159 @@ func TestRunDeletesFinished(t *testing.T) {
 		}
 	}
 }
+
+// finalizers is a store whose Tasks in held have a finalizer, as on
+// kubernetes: a delete that lands sets their DeletionTimestamp and bumps
+// their version, and they stay until it clears.
+type finalizers struct {
+	storage.Driver
+	held    map[string]bool
+	deleted map[string]bool
+}
+
+func (f *finalizers) mark(t *v1alpha1.Task) {
+	if f.deleted[t.Name] {
+		now := metav1.Now()
+		t.DeletionTimestamp = &now
+	}
+}
+
+func (f *finalizers) GetTask(ctx context.Context, key storage.Key) (*v1alpha1.Task, error) {
+	t, err := f.Driver.GetTask(ctx, key)
+	if err == nil {
+		f.mark(t)
+	}
+	return t, err
+}
+
+func (f *finalizers) ListTasks(ctx context.Context, q storage.Query) ([]v1alpha1.Task, error) {
+	tasks, err := f.Driver.ListTasks(ctx, q)
+	for i := range tasks {
+		f.mark(&tasks[i])
+	}
+	return tasks, err
+}
+
+func (f *finalizers) DeleteTask(ctx context.Context, t *v1alpha1.Task) error {
+	if !f.held[t.Name] {
+		return f.Driver.DeleteTask(ctx, t)
+	}
+	cur, err := f.Driver.GetTask(ctx, storage.Key{Namespace: t.Namespace, Name: t.Name})
+	if err != nil {
+		return err
+	}
+	if cur.ResourceVersion != t.ResourceVersion {
+		return storage.ErrConflict
+	}
+	if !f.deleted[t.Name] {
+		f.deleted[t.Name] = true
+		return f.UpdateTaskStatus(ctx, cur)
+	}
+	return nil
+}
+
+// heldEnv is deleteEnv on a store where a finalizer holds task "held",
+// with snapshots counted by task name.
+func heldEnv(t *testing.T) (*env, *events.FakeRecorder, map[string]int) {
+	t.Helper()
+	e, rec := deleteEnv(t)
+	e.store = &finalizers{Driver: e.store, held: map[string]bool{"held": true}, deleted: map[string]bool{}}
+	snapshots := map[string]int{}
+	e.m = e.deleter(rec, func(_ context.Context, tk *v1alpha1.Task) error {
+		snapshots[tk.Name]++
+		return nil
+	})
+	return e, rec, snapshots
+}
+
+// deletedEvents counts rec's TaskDeleted Events by task name.
+func deletedEvents(rec *events.FakeRecorder) map[string]int {
+	n := map[string]int{}
+	for len(rec.Events) > 0 {
+		ev := <-rec.Events
+		for _, name := range []string{"held", "free"} {
+			if strings.Contains(ev, " "+name+" finished ") {
+				n[name]++
+			}
+		}
+	}
+	return n
+}
+
+// A task held by a finalizer is deleted once, at one snapshot and one
+// Event, and left alone at the ticks of either replica after; a task
+// without one goes as before.
+func TestDeleteFinishedHeldByFinalizer(t *testing.T) {
+	e, rec, snapshots := heldEnv(t)
+	held := e.finished(t, "held")
+	free := e.finished(t, "free")
+	e.clock.add(time.Hour)
+	other := e.deleter(rec, e.m.cfg.Snapshot)
+	for range 3 {
+		for _, m := range []*Manager{e.m, other} {
+			if err := m.DeleteFinished(ctx); err != nil {
+				t.Fatal(err)
+			}
+		}
+		e.clock.add(time.Minute)
+	}
+	if tk := e.get(t, held); tk.DeletionTimestamp == nil {
+		t.Fatal("want the held task kept, terminating")
+	}
+	if !e.gone(t, free) {
+		t.Fatal("the task without a finalizer is kept")
+	}
+	if n := deletedEvents(rec); n["held"] != 1 || n["free"] != 1 {
+		t.Fatalf("TaskDeleted Events %v, want 1 each", n)
+	}
+	if snapshots["held"] != 1 || snapshots["free"] != 1 {
+		t.Fatalf("snapshots %v, want 1 each", snapshots)
+	}
+}
+
+// Of two replicas deleting a task held by a finalizer, only the one whose
+// delete lands records the Event: the other's delete conflicts and reads
+// the task terminating, or reads it so before its snapshot.
+func TestDeleteFinishedHeldTwoManagers(t *testing.T) {
+	e, rec, _ := heldEnv(t)
+	key := e.finished(t, "held")
+	e.clock.add(time.Hour)
+	other := e.deleter(rec, nil)
+	slow := e.deleter(rec, func(ctx context.Context, _ *v1alpha1.Task) error {
+		return other.DeleteFinished(ctx)
+	})
+	if err := slow.DeleteFinished(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if err := slow.deleteTask(ctx, key, time.Hour); err != nil {
+		t.Fatal(err)
+	}
+	if n := deletedEvents(rec); n["held"] != 1 {
+		t.Fatalf("%d TaskDeleted Events, want 1", n["held"])
+	}
+}
+
+// A task held by a finalizer since a delete from elsewhere (kubectl, say)
+// uses none of the batch and takes no write: the tick deletes the 20 due
+// tasks after it.
+func TestDeleteFinishedHeldSkipped(t *testing.T) {
+	e, rec, snapshots := heldEnv(t)
+	held := e.finished(t, "held")
+	e.store.(*finalizers).deleted["held"] = true
+	var keys []storage.Key
+	for i := range deleteBatch {
+		e.clock.add(time.Minute)
+		keys = append(keys, e.finished(t, fmt.Sprintf("t%02d", i)))
+	}
+	e.clock.add(time.Hour)
+	e.deleteFinished(t)
+	for _, key := range keys {
+		if !e.gone(t, key) {
+			t.Errorf("%s is kept", key.Name)
+		}
+	}
+	if e.get(t, held).Status.DeletingSince != nil || snapshots["held"] != 0 || len(rec.Events) != deleteBatch {
+		t.Fatalf("held task marked %v, %d snapshots, %d Events: want unmarked, 0, %d",
+			e.get(t, held).Status.DeletingSince != nil, snapshots["held"], len(rec.Events), deleteBatch)
+	}
+}
