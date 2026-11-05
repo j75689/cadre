@@ -3,6 +3,8 @@ package kubernetes
 import (
 	"context"
 	"errors"
+	"io"
+	"net/http"
 	"strings"
 	"testing"
 	"time"
@@ -104,5 +106,47 @@ func TestTakenRetriesATransientHead(t *testing.T) {
 	defer cancel()
 	if err := l.Append(short, "a/thread", "0001", []byte("y")); err == nil || errors.Is(err, storage.ErrAlreadyExists) {
 		t.Fatalf("append a taken key while HEAD keeps failing: %v, want an error that is not ErrAlreadyExists", err)
+	}
+}
+
+// refuseDeletes answers every DELETE with 403, as a store would to a
+// role without the permission.
+type refuseDeletes struct{ http.RoundTripper }
+
+func (r refuseDeletes) RoundTrip(req *http.Request) (*http.Response, error) {
+	if req.Method != http.MethodDelete {
+		return r.RoundTripper.RoundTrip(req)
+	}
+	return &http.Response{StatusCode: http.StatusForbidden, Header: http.Header{}, Body: io.NopCloser(strings.NewReader("<Error><Code>AccessDenied</Code></Error>")), Request: req}, nil
+}
+
+// A delete the store refuses is an error, not a deleted stream.
+func TestDeleteStreamFailsWhenTheStoreRefuses(t *testing.T) {
+	ctx := context.Background()
+	l, _ := fakeLog(t, false)
+	if err := l.Append(ctx, "a/thread", "0001", nil); err != nil {
+		t.Fatal(err)
+	}
+	l.s3 = s3.New(l.s3.Options(), func(o *s3.Options) { o.HTTPClient = &http.Client{Transport: refuseDeletes{http.DefaultTransport}} })
+	if err := l.DeleteStream(ctx, "a"); err == nil {
+		t.Fatal("delete refused by the store: got nil")
+	}
+}
+
+// A stream of more entries than one listing returns is deleted whole.
+func TestDeleteStreamPages(t *testing.T) {
+	ctx := context.Background()
+	l, fake := fakeLog(t, false)
+	const n = 1001
+	for i := range n {
+		if err := l.Append(ctx, "a/thread", storage.SeqKey(int64(i)), nil); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := l.DeleteStream(ctx, "a"); err != nil {
+		t.Fatal(err)
+	}
+	if keys := fake.Keys("probe-test"); len(keys) != 0 {
+		t.Errorf("%d objects left, e.g. %s", len(keys), keys[0])
 	}
 }

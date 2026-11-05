@@ -60,6 +60,10 @@ type Objects interface {
 	CreateTask(ctx context.Context, t *v1alpha1.Task) error
 	// UpdateTaskStatus writes status only, conditionally on the version.
 	UpdateTaskStatus(ctx context.Context, t *v1alpha1.Task) error
+	// DeleteTask deletes the Task, conditionally on the version: an empty or
+	// stale version fails with ErrConflict and the Task stays, and a Task
+	// already gone fails with ErrNotFound.
+	DeleteTask(ctx context.Context, t *v1alpha1.Task) error
 
 	GetTeam(ctx context.Context, namespace string) (*v1alpha1.Team, error)
 	// CreateTeam writes metadata and spec; status is ignored.
@@ -111,6 +115,11 @@ type Log interface {
 	// entries after after, in ascending key order. It never reads entry
 	// contents, so finding the latest entry of a stream is cheap.
 	Keys(ctx context.Context, stream, after string, limit int) ([]KeyInfo, error)
+	// DeleteStream deletes every entry of the stream and of the streams
+	// nested under it ("a/b" and "a/b/c", never "a/b2" or "a"). A stream
+	// with no entries is not an error. The stream must pass ValidateStream,
+	// or it fails with ErrInvalidName.
+	DeleteStream(ctx context.Context, stream string) error
 }
 
 // ErrInvalidName is returned by Log methods for a malformed stream or key.
@@ -206,7 +215,8 @@ type TeamIndex interface {
 // Notifier is what a Driver may also offer: it hands every Task it sees
 // change, as its index does, to fn. A notification is a hint, like the
 // index: one may be late, duplicated or dropped, so nothing may depend on
-// it but latency. fn must not block; it runs on the driver's watch.
+// it but latency. A deleted Task arrives with its DeletionTimestamp set. fn
+// must not block; it runs on the driver's watch.
 type Notifier interface {
 	NotifyTasks(fn func(*v1alpha1.Task))
 }

@@ -3,7 +3,8 @@
 // preconditions; the log is one object per entry in S3-compatible storage; the
 // index is an informer cache of Tasks, indexed in memory.
 //
-// +kubebuilder:rbac:groups=cadre.dev,resources=tasks;teams,verbs=get;list;watch;create
+// +kubebuilder:rbac:groups=cadre.dev,resources=tasks,verbs=get;list;watch;create;delete
+// +kubebuilder:rbac:groups=cadre.dev,resources=teams,verbs=get;list;watch;create
 // +kubebuilder:rbac:groups=cadre.dev,resources=tasks/status;teams/status,verbs=get;update
 package kubernetes
 
@@ -17,6 +18,7 @@ import (
 	"sync"
 
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/client-go/rest"
 	toolscache "k8s.io/client-go/tools/cache"
@@ -87,6 +89,24 @@ func (d *Driver) notify(obj any) {
 	}
 }
 
+// notifyDeleted notifies a deleted Task, from the informer's last copy when
+// the watch missed the delete, with its DeletionTimestamp set.
+func (d *Driver) notifyDeleted(obj any) {
+	if tomb, ok := obj.(toolscache.DeletedFinalStateUnknown); ok {
+		obj = tomb.Obj
+	}
+	t, ok := obj.(*v1alpha1.Task)
+	if !ok {
+		return
+	}
+	if t.DeletionTimestamp == nil {
+		t = t.DeepCopy()
+		now := metav1.Now()
+		t.DeletionTimestamp = &now
+	}
+	d.notify(t)
+}
+
 // Open connects to the cluster and object storage, and returns once the
 // index has been rebuilt from a full list of Tasks. It refuses to start on an
 // object store that does not enforce If-None-Match (see probe).
@@ -127,6 +147,7 @@ func Open(ctx context.Context, cfg Config) (*Driver, error) {
 			if d.handler, err = inf.AddEventHandler(toolscache.ResourceEventHandlerFuncs{
 				AddFunc:    func(o any) { d.notify(o) },
 				UpdateFunc: func(_, o any) { d.notify(o) },
+				DeleteFunc: d.notifyDeleted,
 			}); err != nil {
 				return nil, fmt.Errorf("watch tasks: %w", err)
 			}
@@ -203,6 +224,15 @@ func (d *Driver) UpdateTaskStatus(ctx context.Context, t *v1alpha1.Task) error {
 		return fmt.Errorf("update task %s: no resourceVersion: %w", keyOf(t), storage.ErrConflict)
 	}
 	return mapError(d.client.Status().Update(ctx, t), "update task "+keyOf(t).String())
+}
+
+// DeleteTask implements storage.Objects, with the object's resourceVersion as
+// the precondition.
+func (d *Driver) DeleteTask(ctx context.Context, t *v1alpha1.Task) error {
+	if t.ResourceVersion == "" {
+		return fmt.Errorf("delete task %s: no resourceVersion: %w", keyOf(t), storage.ErrConflict)
+	}
+	return mapError(d.client.Delete(ctx, t, client.Preconditions{ResourceVersion: &t.ResourceVersion}), "delete task "+keyOf(t).String())
 }
 
 // GetTeam implements storage.Objects.

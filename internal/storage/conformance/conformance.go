@@ -58,6 +58,10 @@ func Run(t *testing.T, f Factory) {
 		{"LogNestedStreams", testLogNestedStreams},
 		{"LogKeys", testLogKeys},
 		{"LogAlreadyExistsMeansReadable", testLogAlreadyExistsMeansReadable},
+		{"DeleteTaskIsConditional", testDeleteTaskIsConditional},
+		{"DeleteTaskLeavesOthers", testDeleteTaskLeavesOthers},
+		{"DeleteTaskNotifies", testDeleteTaskNotifies},
+		{"LogDeleteStream", testLogDeleteStream},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {

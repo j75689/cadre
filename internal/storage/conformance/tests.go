@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"slices"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -866,5 +867,133 @@ func testTeamSpecWritesLeaveStatusAlone(t *testing.T, s *suite) {
 	}
 	if got := s.team(d); got.Spec.DisplayName != "Platform" {
 		t.Errorf("display name %q after a refused write", got.Spec.DisplayName)
+	}
+}
+
+// A delete carries the version it was read at: a stale or missing one
+// conflicts and the Task stays; a Task already gone is not found.
+func testDeleteTaskIsConditional(t *testing.T, s *suite) {
+	d := s.open()
+	s.newTask(d, "t", 1, "")
+	stale := s.get(d, "t")
+	cur := stale.DeepCopy()
+	cur.Status.Thread = &v1alpha1.ThreadStatus{Revision: 1}
+	if err := d.UpdateTaskStatus(s.ctx, cur); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+
+	if err := d.DeleteTask(s.ctx, stale); !errors.Is(err, storage.ErrConflict) {
+		t.Fatalf("delete at a stale version: got %v, want ErrConflict", err)
+	}
+	s.get(d, "t")
+	unversioned := cur.DeepCopy()
+	unversioned.ResourceVersion = ""
+	if err := d.DeleteTask(s.ctx, unversioned); !errors.Is(err, storage.ErrConflict) {
+		t.Fatalf("delete with no version: got %v, want ErrConflict", err)
+	}
+	s.get(d, "t")
+
+	if err := d.DeleteTask(s.ctx, cur); err != nil {
+		t.Fatalf("delete at the current version: %v", err)
+	}
+	if _, err := d.GetTask(s.ctx, s.key("t")); !errors.Is(err, storage.ErrNotFound) {
+		t.Fatalf("get after delete: got %v, want ErrNotFound", err)
+	}
+	if err := d.DeleteTask(s.ctx, cur); !errors.Is(err, storage.ErrNotFound) {
+		t.Fatalf("delete again: got %v, want ErrNotFound", err)
+	}
+
+	// The name is free again, and the old Task's version is no use on the
+	// new one.
+	s.newTask(d, "t", 2, "")
+	if err := d.DeleteTask(s.ctx, cur); !errors.Is(err, storage.ErrConflict) {
+		t.Fatalf("delete a new Task of the name at the old one's version: got %v, want ErrConflict", err)
+	}
+	if got := s.get(d, "t"); got.Status.Number != 2 {
+		t.Fatalf("the new Task: number %d", got.Status.Number)
+	}
+}
+
+func testDeleteTaskLeavesOthers(t *testing.T, s *suite) {
+	d := s.open()
+	s.newTask(d, "a", 1, "")
+	s.newTask(d, "a2", 2, "")
+	if err := d.DeleteTask(s.ctx, s.get(d, "a")); err != nil {
+		t.Fatalf("delete a: %v", err)
+	}
+	eventually(t, "the index drops a only", func() error {
+		ts, err := d.ListTasks(s.ctx, storage.Query{Namespace: s.ns})
+		if err != nil {
+			return err
+		}
+		if len(ts) != 1 || ts[0].Name != "a2" {
+			return fmt.Errorf("listed %d tasks, want only a2", len(ts))
+		}
+		return nil
+	})
+}
+
+// Another process hears of a delete, with the DeletionTimestamp set.
+func testDeleteTaskNotifies(t *testing.T, s *suite) {
+	a, b := s.open(), s.open()
+	n, ok := b.(storage.Notifier)
+	if !ok {
+		t.Skip("the driver offers no notifications")
+	}
+	var mu sync.Mutex
+	var deleted bool
+	n.NotifyTasks(func(tk *v1alpha1.Task) {
+		mu.Lock()
+		defer mu.Unlock()
+		if tk.Name == "a" && tk.DeletionTimestamp != nil {
+			deleted = true
+		}
+	})
+	s.newTask(a, "a", 1, "")
+	if err := a.DeleteTask(s.ctx, s.get(a, "a")); err != nil {
+		t.Fatalf("delete: %v", err)
+	}
+	eventually(t, "a delete notification", func() error {
+		mu.Lock()
+		defer mu.Unlock()
+		if !deleted {
+			return errors.New("none yet")
+		}
+		return nil
+	})
+}
+
+// Deleting a stream empties it and the streams nested under it, and leaves
+// a sibling whose name it prefixes.
+func testLogDeleteStream(t *testing.T, s *suite) {
+	d := s.open()
+	a := s.ns + "/a"
+	under := []string{a + "/thread", a + "/thread/files", a + "/runs/R1/events"}
+	sibling := s.ns + "/a2/thread"
+	for _, stream := range append([]string{sibling}, under...) {
+		if err := d.Append(s.ctx, stream, storage.SeqKey(1), []byte(stream)); err != nil {
+			t.Fatalf("append to %s: %v", stream, err)
+		}
+	}
+
+	for range 2 {
+		if err := d.DeleteStream(s.ctx, a); err != nil {
+			t.Fatalf("delete %s: %v", a, err)
+		}
+		for _, stream := range under {
+			if got, err := d.Read(s.ctx, stream, "", 0); err != nil || len(got) != 0 {
+				t.Errorf("read %s after the delete: %+v, %v", stream, got, err)
+			}
+			if got, err := d.Keys(s.ctx, stream, "", 0); err != nil || len(got) != 0 {
+				t.Errorf("keys of %s after the delete: %+v, %v", stream, got, err)
+			}
+		}
+		if got, err := d.Read(s.ctx, sibling, "", 0); err != nil || len(got) != 1 || string(got[0].Data) != sibling {
+			t.Errorf("read the sibling %s: %+v, %v", sibling, got, err)
+		}
+	}
+
+	if err := d.DeleteStream(s.ctx, s.ns+"//a"); !errors.Is(err, storage.ErrInvalidName) {
+		t.Errorf("delete a malformed stream: got %v, want ErrInvalidName", err)
 	}
 }

@@ -276,6 +276,38 @@ func (l *objectLog) get(ctx context.Context, key string) ([]byte, error) {
 	return io.ReadAll(obj.Body)
 }
 
+// DeleteStream lists without a delimiter, so the objects of nested streams
+// are listed and deleted too; the trailing "/" keeps siblings out.
+func (l *objectLog) DeleteStream(ctx context.Context, stream string) error {
+	if err := storage.ValidateStream(stream); err != nil {
+		return err
+	}
+	in := &s3.ListObjectsV2Input{Bucket: &l.bucket, Prefix: aws.String(l.prefix + stream + "/")}
+	for {
+		res, err := l.s3.ListObjectsV2(ctx, in)
+		if err != nil {
+			return fmt.Errorf("list log %s: %w", stream, err)
+		}
+		g, gctx := errgroup.WithContext(ctx)
+		g.SetLimit(readParallelism)
+		for _, obj := range res.Contents {
+			g.Go(func() error {
+				if _, err := l.s3.DeleteObject(gctx, &s3.DeleteObjectInput{Bucket: &l.bucket, Key: obj.Key}); err != nil {
+					return fmt.Errorf("delete log entry %s: %w", *obj.Key, err)
+				}
+				return nil
+			})
+		}
+		if err := g.Wait(); err != nil {
+			return err
+		}
+		if !aws.ToBool(res.IsTruncated) {
+			return nil
+		}
+		in.ContinuationToken = res.NextContinuationToken
+	}
+}
+
 func errorCode(err error) string {
 	var apiErr smithy.APIError
 	if errors.As(err, &apiErr) {
