@@ -579,7 +579,15 @@ func TestFinishedAt(t *testing.T) {
 		t.Fatalf("cancel after done: finishedAt = %v, %v", later.Status.FinishedAt, err)
 	}
 
-	// A task that finished before finishedAt existed is stamped once.
+	// A task that finished before finishedAt existed is stamped once, in any
+	// finished phase.
+	for _, p := range finished {
+		tk := taskIn(p, runtime)
+		tk.Status.Outbox = nil
+		if s := apply(t, tk, StampFinished{}).Status; s.Phase != p || s.FinishedAt == nil || !s.FinishedAt.Time.Equal(now) {
+			t.Errorf("stamp %s: phase %s, finishedAt = %v, want %v", p, s.Phase, s.FinishedAt, now)
+		}
+	}
 	legacy := taskIn(v1alpha1.PhaseDone, step)
 	s := apply(t, legacy, StampFinished{}).Status
 	if s.FinishedAt == nil || !s.FinishedAt.Time.Equal(now) {
