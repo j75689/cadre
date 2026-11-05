@@ -286,6 +286,77 @@ func TestDeleteFinishedTwoManagers(t *testing.T) {
 	}
 }
 
+// A task made again under the name while a delete is half way is kept:
+// the delete of the marked version conflicts, and the re-read finds the
+// new task unmarked.
+func TestDeleteFinishedKeepsRecreated(t *testing.T) {
+	e, rec := deleteEnv(t)
+	key := e.finished(t, "a")
+	e.clock.add(time.Hour)
+	e.m = e.deleter(rec, func(ctx context.Context, marked *v1alpha1.Task) error {
+		if err := e.store.DeleteTask(ctx, marked); err != nil {
+			return err
+		}
+		again := &v1alpha1.Task{
+			ObjectMeta: metav1.ObjectMeta{Name: "a", Namespace: ns},
+			Spec:       v1alpha1.TaskSpec{Title: "again"},
+		}
+		if err := e.store.CreateTask(ctx, again); err != nil {
+			return err
+		}
+		// Finished too, so a delete of it would record an Event.
+		again.Status = marked.Status
+		again.Status.DeletingSince = nil
+		return e.store.UpdateTaskStatus(ctx, again)
+	})
+	e.deleteFinished(t)
+	if tk := e.get(t, key); tk.Spec.Title != "again" || len(rec.Events) != 0 {
+		t.Fatalf("task %q with %d Events, want the new task kept with none", tk.Spec.Title, len(rec.Events))
+	}
+}
+
+// A delete that conflicts with a write to the still marked task reads it
+// again and deletes it in the same tick.
+func TestDeleteFinishedRetriesConflict(t *testing.T) {
+	e, rec := deleteEnv(t)
+	key := e.finished(t, "a")
+	e.clock.add(time.Hour)
+	e.m = e.deleter(rec, func(ctx context.Context, marked *v1alpha1.Task) error {
+		return e.store.UpdateTaskStatus(ctx, marked.DeepCopy())
+	})
+	e.deleteFinished(t)
+	if !e.gone(t, key) || len(rec.Events) != 1 {
+		t.Fatalf("want the task deleted with 1 Event, got %d", len(rec.Events))
+	}
+}
+
+// failStreams is a store whose stream deletes fail.
+type failStreams struct{ storage.Driver }
+
+func (failStreams) DeleteStream(context.Context, string) error { return errors.New("streams down") }
+
+// A task whose logs fail to delete is kept marked, with its logs, until a
+// tick deletes both.
+func TestDeleteFinishedStreamFails(t *testing.T) {
+	e, rec := deleteEnv(t)
+	key := e.finished(t, "a")
+	e.clock.add(time.Hour)
+	failing := New(failStreams{e.store}, Config{Agents: testAgents, Events: rec}, WithClock(e.clock.now))
+	if err := failing.DeleteFinished(ctx); err == nil {
+		t.Fatal("a delete whose logs fail to delete succeeds")
+	}
+	if e.gone(t, key) || e.get(t, key).Status.DeletingSince == nil || len(rec.Events) != 0 {
+		t.Fatal("want the task marked and kept, with no Event")
+	}
+	if n := e.entries(t, ThreadStream(key)) + e.entries(t, RunsStream(key)); n != 2 {
+		t.Fatalf("%d log entries, want 2", n)
+	}
+	e.deleteFinished(t)
+	if !e.gone(t, key) || len(rec.Events) != 1 {
+		t.Fatalf("want the task deleted with 1 Event, got %d", len(rec.Events))
+	}
+}
+
 // The snapshot sees the task marked and its logs whole, once.
 func TestDeleteFinishedSnapshot(t *testing.T) {
 	e, rec := deleteEnv(t)
