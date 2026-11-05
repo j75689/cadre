@@ -56,12 +56,21 @@ spec:
             properties:
               archiveAfter:
                 description: |-
-                  ArchiveAfter is how long a finished task stays on the board before it is
-                  archived to object storage. It must be a positive Go duration such as
-                  720h.
+                  ArchiveAfter is deprecated, not acted on. It must be a positive Go
+                  duration such as 720h.
                 type: string
                 x-kubernetes-validations:
                 - message: archiveAfter must be a positive duration such as 720h
+                  rule: duration(self) > duration('0s')
+              deleteFinishedAfter:
+                description: |-
+                  DeleteFinishedAfter is how long a finished task stays on the board
+                  before it is deleted, with its thread and runs. It must be a positive
+                  Go duration such as 720h; unset, finished tasks are kept.
+                type: string
+                x-kubernetes-validations:
+                - message: deleteFinishedAfter must be a positive duration such as
+                    720h
                   rule: duration(self) > duration('0s')
               displayName:
                 description: DisplayName is the name shown on the board.

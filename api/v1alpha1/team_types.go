@@ -20,12 +20,18 @@ type TeamSpec struct {
 	// +optional
 	MaxConcurrentRuns int32 `json:"maxConcurrentRuns,omitempty"`
 
-	// ArchiveAfter is how long a finished task stays on the board before it is
-	// archived to object storage. It must be a positive Go duration such as
-	// 720h.
+	// ArchiveAfter is deprecated, not acted on. It must be a positive Go
+	// duration such as 720h.
 	// +kubebuilder:validation:XValidation:rule="duration(self) > duration('0s')",message="archiveAfter must be a positive duration such as 720h"
 	// +optional
 	ArchiveAfter *metav1.Duration `json:"archiveAfter,omitempty"`
+
+	// DeleteFinishedAfter is how long a finished task stays on the board
+	// before it is deleted, with its thread and runs. It must be a positive
+	// Go duration such as 720h; unset, finished tasks are kept.
+	// +kubebuilder:validation:XValidation:rule="duration(self) > duration('0s')",message="deleteFinishedAfter must be a positive duration such as 720h"
+	// +optional
+	DeleteFinishedAfter *metav1.Duration `json:"deleteFinishedAfter,omitempty"`
 
 	// Roles give people a role on the team's board, by user or by group.
 	// Someone matching several entries has the strongest of their roles.

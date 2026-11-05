@@ -474,6 +474,16 @@ type TaskStatus struct {
 	// +optional
 	Runs *RunsStatus `json:"runs,omitempty"`
 
+	// FinishedAt is when the task became Done, Cancelled or Failed. It is
+	// set once and never cleared.
+	// +optional
+	FinishedAt *metav1.Time `json:"finishedAt,omitempty"`
+
+	// DeletingSince is when the task's deletion began. Once set, the task
+	// is read-only.
+	// +optional
+	DeletingSince *metav1.Time `json:"deletingSince,omitempty"`
+
 	// Conditions are the standard Kubernetes conditions.
 	// +listType=map
 	// +listMapKey=type

@@ -43,6 +43,9 @@ var (
 	// ErrNotifyGone means the notification is no longer in the outbox:
 	// another server finished it.
 	ErrNotifyGone = errors.New("the notification is no longer in the outbox")
+	// ErrDeleting means the task is being deleted: it takes no event any
+	// more.
+	ErrDeleting = errors.New("the task is being deleted")
 )
 
 // Kind names an event.
@@ -68,6 +71,8 @@ const (
 	KindReserve   Kind = "ReserveItem"
 	KindDelivered Kind = "NotifyDelivered"
 	KindSending   Kind = "NotifyClaim"
+	KindDelete    Kind = "Delete"
+	KindStamp     Kind = "StampFinished"
 )
 
 // unborn is the phase of a Task object that exists but has not been numbered.
@@ -97,7 +102,16 @@ var From = map[Kind][]v1alpha1.Phase{
 	KindReserve:   allPhases,
 	KindDelivered: allPhases,
 	KindSending:   allPhases,
+	KindDelete:    finished,
+	KindStamp:     finished,
 }
+
+// finished are the phases a task ends in.
+var finished = []v1alpha1.Phase{v1alpha1.PhaseDone, v1alpha1.PhaseCancelled, v1alpha1.PhaseFailed}
+
+// Finished reports whether a task in phase p is finished: Done, Cancelled
+// or Failed.
+func Finished(p v1alpha1.Phase) bool { return slices.Contains(finished, p) }
 
 // Event is one input to the state machine.
 type Event interface{ kind() Kind }
@@ -345,6 +359,20 @@ type NotifyClaim struct {
 
 func (NotifyClaim) kind() Kind { return KindSending }
 
+// Delete marks a finished task as being deleted: from then on it takes no
+// event, so nothing is written to it while its logs and object go. It is
+// refused while the outbox holds side effects not yet applied.
+type Delete struct{}
+
+func (Delete) kind() Kind { return KindDelete }
+
+// StampFinished records when a finished task finished, for a task that
+// finished before finishedAt existed. It changes nothing on a task that has
+// it.
+type StampFinished struct{}
+
+func (StampFinished) kind() Kind { return KindStamp }
+
 func (Create) kind() Kind    { return KindCreate }
 func (Claim) kind() Kind     { return KindClaim }
 func (Heartbeat) kind() Kind { return KindHeartbeat }
@@ -389,6 +417,9 @@ func Apply(t *v1alpha1.Task, ev Event, now time.Time) (Result, error) {
 		if err := checkRun(&t.Status, f.runID(), sender); err != nil {
 			return Result{}, err
 		}
+	}
+	if t.Status.DeletingSince != nil {
+		return Result{}, ErrDeleting
 	}
 	cur := t.Status.Phase
 	if !slices.Contains(From[ev.kind()], cur) {
@@ -563,7 +594,7 @@ func Apply(t *v1alpha1.Task, ev Event, now time.Time) (Result, error) {
 			// took the step by its idle deadline.
 			s.Phase = v1alpha1.PhaseFailed
 			endRun(&res, v1alpha1.RunInterrupted, OutcomeFailed, now)
-			return res, nil
+			break
 		}
 		if !now.After(s.Run.LeaseUntil.Add(ev.Grace)) {
 			return Result{}, ErrLeaseNotExpired
@@ -664,8 +695,22 @@ func Apply(t *v1alpha1.Task, ev Event, now time.Time) (Result, error) {
 			return slices.Contains(ev.IDs, it.ID)
 		})
 
+	case Delete:
+		if len(s.Outbox) > 0 {
+			return Result{}, fmt.Errorf("delete with %d outbox items not applied: %w", len(s.Outbox), ErrInvalidTransition)
+		}
+		since := metaTime(now)
+		s.DeletingSince = &since
+
+	case StampFinished:
+		// Stamped below, if it is not.
+
 	default:
 		return Result{}, fmt.Errorf("event %T: %w", ev, ErrInvalidEvent)
+	}
+	if Finished(s.Phase) && s.FinishedAt == nil {
+		at := metaTime(now)
+		s.FinishedAt = &at
 	}
 	return res, nil
 }
