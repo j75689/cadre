@@ -179,3 +179,33 @@ func TestDeleteStreamPages(t *testing.T) {
 		t.Errorf("%d objects left, e.g. %s", len(keys), keys[0])
 	}
 }
+
+// A stream at the top of a store with no prefix is deleted, and the walk up
+// its directories ends at the store's root.
+func TestDeleteStreamWithNoPrefix(t *testing.T) {
+	fake := s3fake.New()
+	t.Cleanup(fake.Close)
+	fake.CreateBucket("b")
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	l, err := newObjectLog(ctx, S3Config{Endpoint: fake.URL, Bucket: "b", AccessKey: "fake", SecretKey: "fake", PathStyle: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := l.Append(ctx, "x", "00000001", []byte("a")); err != nil {
+		t.Fatal(err)
+	}
+	done := make(chan error, 1)
+	go func() { done <- l.DeleteStream(ctx, "x") }()
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatal(err)
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatal("DeleteStream still running 1 s after its context expired")
+	}
+	if keys := fake.Keys("b"); len(keys) != 0 {
+		t.Errorf("objects left: %v", keys)
+	}
+}

@@ -286,7 +286,7 @@ func (l *objectLog) DeleteStream(ctx context.Context, stream string) error {
 		return err
 	}
 	root := l.prefix + stream + "/"
-	dirs := map[string]bool{}
+	dirs := map[string]bool{root: true}
 	in := &s3.ListObjectsV2Input{Bucket: &l.bucket, Prefix: aws.String(root)}
 	for {
 		res, err := l.s3.ListObjectsV2(ctx, in)
@@ -296,8 +296,8 @@ func (l *objectLog) DeleteStream(ctx context.Context, stream string) error {
 		g, gctx := errgroup.WithContext(ctx)
 		g.SetLimit(readParallelism)
 		for _, obj := range res.Contents {
-			for dir := path.Dir(*obj.Key) + "/"; len(dir) >= len(root); dir = path.Dir(strings.TrimSuffix(dir, "/")) + "/" {
-				dirs[dir] = true
+			for dir := path.Dir(strings.TrimPrefix(*obj.Key, root)); dir != "." && dir != "/"; dir = path.Dir(dir) {
+				dirs[root+dir+"/"] = true
 			}
 			g.Go(func() error {
 				if _, err := l.s3.DeleteObject(gctx, &s3.DeleteObjectInput{Bucket: &l.bucket, Key: obj.Key}); err != nil {
