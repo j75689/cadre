@@ -18,6 +18,10 @@ export const runsHeading = "runs";
 // told after each read, whether it worked or not.
 export function Runs({ ns, name, current, open = "", ready, onRead }: { ns: string; name: string; current: string; open?: string; ready: boolean; onRead?: () => void }) {
   const [runs, setRuns] = useState<RunRecord[] | null>(null);
+  // first is the list the first read answered, none if it failed: a run
+  // that ended later, such as the linked one in progress, was not there
+  // when the page loaded at it.
+  const [first, setFirst] = useState<RunRecord[] | null>(null);
   const [error, setError] = useState("");
   const [retry, setRetry] = useState(0);
   useEffect(() => {
@@ -25,11 +29,13 @@ export function Runs({ ns, name, current, open = "", ready, onRead }: { ns: stri
     listRuns(ns, name, controller.signal).then(
       (r) => {
         setRuns(r.items);
+        setFirst((f) => f ?? r.items);
         setError("");
         onRead?.();
       },
       (e) => {
         if (controller.signal.aborted) return;
+        setFirst((f) => f ?? []);
         setError((e as Error).message);
         onRead?.();
       },
@@ -55,7 +61,15 @@ export function Runs({ ns, name, current, open = "", ready, onRead }: { ns: stri
       {runs && runs.length > 0 && (
         <ol className="rows">
           {runs.map((r) => (
-            <Run key={r.id} ns={ns} name={name} run={r} linked={open !== "" && r.id.toLowerCase() === open.toLowerCase()} ready={ready} />
+            <Run
+              key={r.id}
+              ns={ns}
+              name={name}
+              run={r}
+              linked={open !== "" && r.id.toLowerCase() === open.toLowerCase()}
+              ready={ready}
+              atLoad={first?.some((f) => f.id === r.id) ?? false}
+            />
           ))}
         </ol>
       )}
@@ -74,10 +88,11 @@ const outcomeTone = (outcome: string) => (phases as readonly string[]).includes(
 // Forward the browser puts the entry's scroll position back after the
 // page has rendered, in the same task, so it scrolls again in the next.
 // atLoad is whether the page loaded at it: a link clicked while the page
-// is still being read goes only as far as it takes too.
-export function useLinkScroll(el: RefObject<HTMLElement | null>, linked: boolean, ready: boolean) {
+// is still being read goes only as far as it takes too, and so does what
+// was not there at load (loaded false).
+export function useLinkScroll(el: RefObject<HTMLElement | null>, linked: boolean, ready: boolean, loaded = true) {
   const pop = useNavigationType() === "POP";
-  const atLoad = useRef(linked);
+  const atLoad = useRef(linked && loaded);
   const scrolled = useRef(false);
   useEffect(() => {
     if (!ready) return;
@@ -100,8 +115,9 @@ export function useLinkScroll(el: RefObject<HTMLElement | null>, linked: boolean
 
 // Run is one ended run. While it is linked (?run=<id>) it is open, its
 // events read, and it is scrolled into view (useLinkScroll). Its own link
-// clicked again opens it again after it was closed.
-function Run({ ns, name, run, linked, ready }: { ns: string; name: string; run: RunRecord; linked: boolean; ready: boolean }) {
+// clicked again opens it again after it was closed. atLoad is whether it
+// was in the runs first read.
+function Run({ ns, name, run, linked, ready, atLoad }: { ns: string; name: string; run: RunRecord; linked: boolean; ready: boolean; atLoad: boolean }) {
   const { key } = useLocation();
   const [events, setEvents] = useState<RunEvent[] | null>(null);
   const [open, setOpen] = useState(linked);
@@ -112,7 +128,7 @@ function Run({ ns, name, run, linked, ready }: { ns: string; name: string; run: 
   }
   const [error, setError] = useState("");
   const row = useRef<HTMLLIElement>(null);
-  useLinkScroll(row, linked, ready);
+  useLinkScroll(row, linked, ready, atLoad);
   // asked keeps the events to one read: a row closed and opened again, or
   // linked again, while or after they are read reads none. A failed read
   // can be tried again.

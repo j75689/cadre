@@ -252,23 +252,56 @@ export const auth = {
 export const sessionDropped =
   "You logged in, but this browser did not keep the session: it blocks or cleared cookies for this site. Allow them and reload.";
 
+// readTimeoutMs bounds a read (a GET), its body included, so one that never
+// answers fails as any other does: cadre-server ends a request's work after
+// 30 s, so this is above it. A write has none: approving a call may take 90 s,
+// and a write given up on may still be done. The watch stream is an
+// EventSource (live.ts), not a request.
+export const readTimeoutMs = 35_000;
+
+export const readTimedOut = `The server did not answer within ${readTimeoutMs / 1000} s.`;
+
 async function request<T>(method: string, path: string, body?: unknown, signal?: AbortSignal): Promise<T> {
   const init: RequestInit = { method, headers: { Accept: "application/json" }, signal };
   if (body !== undefined) {
     init.body = JSON.stringify(body);
     init.headers = { ...init.headers, "Content-Type": "application/json" };
   }
-  const res = await fetch("/api/v1" + path, init);
+  if (method !== "GET") return answer<T>(await fetch("/api/v1" + path, init));
+  const bounded = new AbortController();
+  const abort = () => bounded.abort(signal?.reason);
+  if (signal?.aborted) abort();
+  signal?.addEventListener("abort", abort);
+  let timedOut = false;
+  const timer = setTimeout(() => {
+    timedOut = true;
+    bounded.abort();
+  }, readTimeoutMs);
+  try {
+    return await answer<T>(await fetch("/api/v1" + path, { ...init, signal: bounded.signal }));
+  } catch (e) {
+    throw timedOut ? new Error(readTimedOut) : e;
+  } finally {
+    clearTimeout(timer);
+    signal?.removeEventListener("abort", abort);
+  }
+}
+
+// answer reads a response: its body, or the error it is.
+async function answer<T>(res: Response): Promise<T> {
   if (res.status === 401) {
     if (auth.justLoggedIn()) throw new APIError(401, sessionDropped);
     auth.toLogin();
   }
   if (!res.ok) {
-    let message = res.statusText;
+    // HTTP/2 has no status text, and a proxy's own error page is no JSON:
+    // the status then stands in, since a page tells a failed read by its
+    // message.
+    let message = res.statusText || `HTTP ${res.status}`;
     let code = "";
     try {
       const body = await res.json();
-      message = body?.error?.message ?? message;
+      message = body?.error?.message || message;
       code = body?.error?.code ?? "";
     } catch {
       // not JSON: keep the status text

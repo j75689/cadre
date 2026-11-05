@@ -2,7 +2,7 @@ import { act, cleanup, fireEvent, render, screen } from "@testing-library/react"
 import { MemoryRouter, useNavigate, type NavigateFunction } from "react-router";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { App } from "./App";
-import type { Phase, Task } from "./api";
+import { readTimedOut, readTimeoutMs, type Phase, type Task } from "./api";
 import { subtaskPage } from "./Subtasks";
 import { entry, json, task } from "./testing";
 
@@ -432,6 +432,122 @@ describe("A link to a run", () => {
     await screen.findByText(/Could not load the subtasks/);
     await vi.waitFor(() => expect(scroll).toHaveBeenCalledTimes(1));
     expect(scroll).toHaveBeenCalledWith({ block: "start" });
+  });
+
+  it("scrolls to the run in progress after a failed read of the runs", async () => {
+    const scroll = vi.fn();
+    Element.prototype.scrollIntoView = scroll;
+    runServer();
+    const serve = globalThis.fetch;
+    vi.stubGlobal("fetch", (url: string) => (url.endsWith("/runs") ? json({ error: { message: "unavailable" } }, 503) : serve(url)));
+    renderAt(current);
+    await screen.findByText(/Could not load the runs: unavailable/);
+    await vi.waitFor(() => expect(scroll).toHaveBeenCalledTimes(1));
+    expect(scroll).toHaveBeenCalledWith({ block: "start" });
+  });
+
+  it("scrolls to the run in progress after a failed read of the thread", async () => {
+    const scroll = vi.fn();
+    Element.prototype.scrollIntoView = scroll;
+    runServer();
+    const serve = globalThis.fetch;
+    vi.stubGlobal("fetch", (url: string) => (url.includes("/thread") ? Promise.reject(new TypeError("offline")) : serve(url)));
+    renderAt(current);
+    await screen.findByText(/Could not load the task: offline/);
+    await vi.waitFor(() => expect(scroll).toHaveBeenCalledTimes(1));
+    expect(scroll).toHaveBeenCalledWith({ block: "start" });
+  });
+
+  it("scrolls to the run in progress once its events are read, after a failed read of the runs", async () => {
+    const scroll = vi.fn();
+    Element.prototype.scrollIntoView = scroll;
+    const calls = runServer();
+    const serve = globalThis.fetch;
+    let answer = () => {};
+    vi.stubGlobal("fetch", (url: string) => {
+      if (url.endsWith("/runs")) return json({ error: { message: "unavailable" } }, 503);
+      if (url.includes(`/runs/${current}/events`)) return new Promise<Response>((r) => (answer = () => r(serve(url) as unknown as Response)));
+      return serve(url);
+    });
+    renderAt(current);
+    await screen.findByText(/Could not load the runs/);
+    await vi.waitFor(() => expect(calls.some((c) => c.includes("/thread")) && calls.some((c) => c.includes("parent="))).toBe(true));
+    await act(() => vi.advanceTimersByTimeAsync(10));
+    expect(scroll).not.toHaveBeenCalled();
+    await act(async () => answer());
+    await screen.findByText(/progress: working/);
+    await vi.waitFor(() => expect(scroll).toHaveBeenCalledTimes(1));
+    expect(scroll).toHaveBeenCalledWith({ block: "start" });
+  });
+
+  // A proxy's own error page is no JSON, and HTTP/2 has no status text.
+  it.each([
+    ["a proxy's error page", () => Promise.resolve(new Response("<html>Bad gateway</html>", { status: 502 })), "HTTP 502"],
+    ["an error", () => json({ error: { message: "unavailable" } }, 503), "unavailable"],
+    ["an error with an empty message", () => json({ error: { message: "" } }, 503), "HTTP 503"],
+  ])("scrolls to the run in progress after %s for its events", async (_, failed, message) => {
+    const scroll = vi.fn();
+    Element.prototype.scrollIntoView = scroll;
+    runServer();
+    const serve = globalThis.fetch;
+    vi.stubGlobal("fetch", (url: string) => (url.includes(`/runs/${current}/events`) ? failed() : serve(url)));
+    renderAt(current);
+    await screen.findByRole("region", { name: "Run in progress" });
+    await act(() => vi.advanceTimersByTimeAsync(10_000));
+    expect(scroll).toHaveBeenCalledTimes(1);
+    expect(screen.getByText(`Could not load the events: ${message}`)).toBeTruthy();
+  });
+
+  it("gives up on a read of the runs that never answers, and scrolls to the run in progress", async () => {
+    const scroll = vi.fn();
+    Element.prototype.scrollIntoView = scroll;
+    runServer();
+    const serve = globalThis.fetch;
+    vi.stubGlobal("fetch", (url: string, init?: RequestInit) =>
+      url.endsWith("/runs")
+        ? new Promise<Response>((_, reject) => init?.signal?.addEventListener("abort", () => reject(new DOMException("aborted", "AbortError"))))
+        : serve(url),
+    );
+    renderAt(current);
+    await screen.findByRole("region", { name: "Run in progress" });
+    await act(() => vi.advanceTimersByTimeAsync(readTimeoutMs - 1000));
+    expect(scroll).not.toHaveBeenCalled();
+    expect(screen.queryByText(/Could not load the runs/)).toBeNull();
+    await act(() => vi.advanceTimersByTimeAsync(1000));
+    expect(await screen.findByText(`Could not load the runs: ${readTimedOut}`)).toBeTruthy();
+    await vi.waitFor(() => expect(scroll).toHaveBeenCalledTimes(1));
+    expect(scroll).toHaveBeenCalledWith({ block: "start" });
+  });
+
+  it.each([
+    ["", 200],
+    [", also after a failed first read of the runs", 503],
+  ])("scrolls the linked run in progress, once it has ended, only as far as it takes%s", async (_, firstRuns) => {
+    const scroll = vi.fn();
+    Element.prototype.scrollIntoView = scroll;
+    let status: Record<string, unknown> = { phase: "Running", run: { id: current, mode: "runtime" }, runs: { count: 1 } };
+    let runs: unknown[] = [];
+    let runsAnswer = firstRuns;
+    vi.stubGlobal("fetch", (url: string) => {
+      if (url.endsWith("/me")) return json({ mode: "none", admin: true });
+      if (url.endsWith("/runs")) return runsAnswer === 200 ? json({ items: runs }) : json({ error: { message: "unavailable" } }, runsAnswer);
+      if (url.includes("/events")) return json({ items: [{ runId: "", seq: 1, progress: "working" }] });
+      if (url.includes("/thread") || url.includes("parent=")) return json({ items: [] });
+      return json({ metadata: { name: "x", namespace: "a" }, spec: { title: "Task x" }, status });
+    });
+    renderAt(current);
+    await screen.findByRole("region", { name: "Run in progress" });
+    await vi.waitFor(() => expect(scroll).toHaveBeenCalledTimes(1));
+    expect(scroll).toHaveBeenLastCalledWith({ block: "start" });
+    status = { phase: "Review", runs: { count: 1 } };
+    runsAnswer = 200;
+    runs = [{ id: current, mode: "runtime", runner: "r1", reason: "claimed", outcome: "Review", endedAt: "2026-10-25T10:00:00Z" }];
+    await act(() => vi.advanceTimersByTimeAsync(5000));
+    expect((await rowOf("r1")).getAttribute("aria-expanded")).toBe("true");
+    await vi.waitFor(() => expect(scroll.mock.calls.length).toBeGreaterThan(1));
+    await act(() => vi.advanceTimersByTimeAsync(10));
+    // The page is at a POP entry, so it is scrolled again in the next task.
+    expect(scroll.mock.calls.slice(1)).toEqual([[{ block: "nearest" }], [{ block: "nearest" }]]);
   });
 
   it("scrolls the run in progress only as far as it takes when its link on the page is clicked", async () => {
