@@ -80,13 +80,17 @@ export function formIndexes(msg: string): string {
 }
 
 // toSpec is the whole spec, as the PUT replaces it: an unset cap goes as
-// 0, which the server saves as 1, and no duration as none (never).
+// 0, which the server saves as 1, and no duration as none (never). The
+// fields the form does not show, such as deleteFinishedAfter, go as they
+// were, after the ones it does, so that two specs compare in one order.
 export function toSpec(d: TeamSpec): TeamSpec {
+  const { displayName, maxConcurrentRuns, archiveAfter, roles, ...rest } = d;
   return {
-    displayName: d.displayName?.trim() ?? "",
-    maxConcurrentRuns: d.maxConcurrentRuns ?? 0,
-    archiveAfter: d.archiveAfter?.trim() || undefined,
-    roles: (d.roles ?? []).map((r) => ({ role: r.role, subjects: r.subjects.map((s) => ({ kind: s.kind, name: s.name.trim() })) })),
+    displayName: displayName?.trim() ?? "",
+    maxConcurrentRuns: maxConcurrentRuns ?? 0,
+    archiveAfter: archiveAfter?.trim() || undefined,
+    roles: (roles ?? []).map((r) => ({ role: r.role, subjects: r.subjects.map((s) => ({ kind: s.kind, name: s.name.trim() })) })),
+    ...rest,
   };
 }
 
@@ -132,7 +136,8 @@ const ids = (...xs: (string | false)[]) => xs.filter(Boolean).join(" ") || undef
 // version of base, the Team the draft was last checked against: after a
 // 409 that is the Team read again, shown as "Current" above the form, and
 // each field someone else changed since the form opened is marked, unless
-// the form already holds their value. onSaved gets the Team saved and the
+// the form already holds their value. The fields the form does not show
+// are saved as base has them, unmarked. onSaved gets the Team saved and the
 // spec sent; onLost is a save refused for want of a role: the Team was
 // deleted, or the caller's admin role taken away. The form is data-dirty
 // while the draft would save something other than the Team it opened with.
@@ -233,7 +238,10 @@ export function TeamForm({
     setConfirming(false);
     setConflict(false);
     setBusy(true);
-    const spec = toSpec(draft);
+    // The fields the form does not show go as base has them, so that a
+    // save after a 409 does not put back the ones someone else changed.
+    const { displayName, maxConcurrentRuns, archiveAfter, roles: rs } = draft;
+    const spec = toSpec({ ...base.spec, displayName, maxConcurrentRuns, archiveAfter, roles: rs });
     try {
       onSaved(await putTeam(ns, spec, base.metadata.resourceVersion), spec);
       return;

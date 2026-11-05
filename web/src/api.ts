@@ -82,6 +82,8 @@ export interface TeamSpec {
   // archiveAfter is a Go duration, such as "168h0m0s".
   archiveAfter?: string;
   roles?: TeamRole[];
+  // deleteFinishedAfter is a Go duration; the form does not show it.
+  deleteFinishedAfter?: string;
 }
 
 // Slot is a run holding one of a Team's maxConcurrentRuns.
