@@ -1245,6 +1245,11 @@ func (in *TeamSpec) DeepCopyInto(out *TeamSpec) {
 		*out = new(v1.Duration)
 		**out = **in
 	}
+	if in.ArchiveRetention != nil {
+		in, out := &in.ArchiveRetention, &out.ArchiveRetention
+		*out = new(v1.Duration)
+		**out = **in
+	}
 	if in.DeleteFinishedAfter != nil {
 		in, out := &in.DeleteFinishedAfter, &out.DeleteFinishedAfter
 		*out = new(v1.Duration)

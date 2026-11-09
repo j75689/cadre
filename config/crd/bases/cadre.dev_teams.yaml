@@ -56,17 +56,33 @@ spec:
             properties:
               archiveAfter:
                 description: |-
-                  ArchiveAfter is deprecated, not acted on. It must be a positive Go
-                  duration such as 720h.
+                  ArchiveAfter is how long a finished task stays on the board before it
+                  is archived: a read-only snapshot of the task, its thread, runs, run
+                  events, files and transcripts is written to the log store, kept for
+                  ArchiveRetention, and the task is deleted. It must be a positive Go
+                  duration such as 720h; unset, no task is archived. While it is set,
+                  DeleteFinishedAfter is not used. A task whose logs are over 50 MiB is
+                  deleted without a snapshot.
                 type: string
                 x-kubernetes-validations:
                 - message: archiveAfter must be a positive duration such as 720h
+                  rule: duration(self) > duration('0s')
+              archiveRetention:
+                description: |-
+                  ArchiveRetention is how long an archived task's snapshot is kept
+                  after the archive, a positive Go duration such as 2160h; unset, 90
+                  days (2160h). Snapshots past it are removed whether or not
+                  ArchiveAfter is still set.
+                type: string
+                x-kubernetes-validations:
+                - message: archiveRetention must be a positive duration such as 2160h
                   rule: duration(self) > duration('0s')
               deleteFinishedAfter:
                 description: |-
                   DeleteFinishedAfter is how long a finished task stays on the board
                   before it is deleted, with its thread and runs. It must be a positive
-                  Go duration such as 720h; unset, finished tasks are kept.
+                  Go duration such as 720h; unset, finished tasks are kept. Not used
+                  while ArchiveAfter is set.
                 type: string
                 x-kubernetes-validations:
                 - message: deleteFinishedAfter must be a positive duration such as
