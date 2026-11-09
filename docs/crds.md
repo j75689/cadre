@@ -87,7 +87,18 @@ kubectl -n team-a patch team team --type merge -p '{"spec":{"deleteFinishedAfter
 kubectl -n team-a patch team team --type merge -p '{"spec":{"deleteFinishedAfter":null}}'
 ```
 
-A duration of `0s` or below is refused: `The Team "team" is invalid: spec.deleteFinishedAfter: Invalid value: "0s": deleteFinishedAfter must be a positive duration such as 720h`.
+The same from the CLI, for an admin of the team (`-n` or `CADRE_NAMESPACE` names the team; flags you do not give leave their fields as they are):
+
+```sh
+cadre team set -n team-a --delete-finished-after 720h
+
+# keep finished tasks again
+cadre team set -n team-a --delete-finished-after 0
+```
+
+`--archive-after` is deprecated: it is hidden from `cadre team set -h`, prints "Flag --archive-after has been deprecated, it archives nothing; use --delete-finished-after", and sets only the deprecated `archiveAfter`, never `deleteFinishedAfter`.
+
+A duration of `0s` or below is refused in the Team itself: `The Team "team" is invalid: spec.deleteFinishedAfter: Invalid value: "0s": deleteFinishedAfter must be a positive duration such as 720h`.
 
 How often cadre-server looks is its own setting:
 
