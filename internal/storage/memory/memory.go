@@ -14,6 +14,7 @@ import (
 	"sync"
 
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/util/uuid"
 
 	v1alpha1 "github.com/j75689/cadre/api/v1alpha1"
 	"github.com/j75689/cadre/internal/storage"
@@ -172,9 +173,13 @@ func (d *Driver) CreateTask(_ context.Context, t *v1alpha1.Task) error {
 	stored := t.DeepCopy()
 	stored.Status = v1alpha1.TaskStatus{}
 	stored.ResourceVersion = d.b.nextVersion()
+	if stored.UID == "" {
+		stored.UID = uuid.NewUUID() // as the API server does
+	}
 	d.b.tasks[key] = stored
 	d.b.notify(stored)
 	t.ResourceVersion = stored.ResourceVersion
+	t.UID = stored.UID
 	t.Status = v1alpha1.TaskStatus{}
 	return nil
 }
@@ -356,6 +361,17 @@ func (d *Driver) DeleteStream(_ context.Context, stream string) error {
 			delete(d.b.logs, k)
 		}
 	}
+	return nil
+}
+
+// DeleteEntry implements storage.Log.
+func (d *Driver) DeleteEntry(_ context.Context, stream, key string) error {
+	if err := errors.Join(storage.ValidateStream(stream), storage.ValidateKey(key)); err != nil {
+		return err
+	}
+	d.b.mu.Lock()
+	defer d.b.mu.Unlock()
+	delete(d.b.logs[stream], key)
 	return nil
 }
 

@@ -62,6 +62,8 @@ func Run(t *testing.T, f Factory) {
 		{"DeleteTaskLeavesOthers", testDeleteTaskLeavesOthers},
 		{"DeleteTaskNotifies", testDeleteTaskNotifies},
 		{"LogDeleteStream", testLogDeleteStream},
+		{"LogDeleteEntry", testLogDeleteEntry},
+		{"CreateTaskSetsUID", testCreateTaskSetsUID},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {

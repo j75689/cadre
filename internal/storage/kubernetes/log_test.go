@@ -167,6 +167,39 @@ func TestDeleteStreamIgnoresAMissingDirectory(t *testing.T) {
 	}
 }
 
+// A store that answers 404 to deleting a key it does not have (GCS) has
+// still deleted the entry.
+func TestDeleteEntryIgnoresAMissingObject(t *testing.T) {
+	ctx := context.Background()
+	l, _ := fakeLog(t, false)
+	l.s3 = s3.New(l.s3.Options(), func(o *s3.Options) {
+		o.HTTPClient = &http.Client{Transport: refuseDeletes{http.DefaultTransport, false, http.StatusNotFound, "NoSuchKey"}}
+	})
+	if err := l.DeleteEntry(ctx, "a/_archive", "k"); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// An entry delete the store refuses is an error, and the entry stays.
+func TestDeleteEntryFailsWhenTheStoreRefuses(t *testing.T) {
+	ctx := context.Background()
+	l, _ := fakeLog(t, false)
+	if err := l.Append(ctx, "a/_archive", "k", []byte("x")); err != nil {
+		t.Fatal(err)
+	}
+	ok := l.s3
+	l.s3 = s3.New(l.s3.Options(), func(o *s3.Options) {
+		o.HTTPClient = &http.Client{Transport: refuseDeletes{http.DefaultTransport, false, http.StatusForbidden, "AccessDenied"}}
+	})
+	if err := l.DeleteEntry(ctx, "a/_archive", "k"); err == nil {
+		t.Fatal("delete refused by the store: got nil")
+	}
+	l.s3 = ok
+	if got, err := l.Read(ctx, "a/_archive", "", 0); err != nil || len(got) != 1 {
+		t.Fatalf("read after a refused delete: %+v, %v; want the entry", got, err)
+	}
+}
+
 // A stream of more entries than one listing returns is deleted whole.
 func TestDeleteStreamPages(t *testing.T) {
 	ctx := context.Background()
