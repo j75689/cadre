@@ -286,6 +286,12 @@ Cadre is not a SaaS, not a workflow engine, not an LLM gateway and not a sandbox
   {"items":[{"time":"2026-11-01T07:27:04.101801Z","type":"Normal","reason":"TokenRotated","action":"RotateToken","note":"token rotated by ada@example.test","regarding":{"kind":"AgentAccess","name":"aav"},"reportedBy":"cadre-server","count":1},{"time":"2026-11-01T07:27:02.059502Z","type":"Normal","reason":"TokenRotated","action":"RotateToken","note":"token rotated by ada@example.test","regarding":{"kind":"AgentAccess","name":"aam"},"reportedBy":"cadre-server","count":1}],"offset":0,"limit":100}
   ```
 
+  When a Team has `spec.deleteFinishedAfter`, each finished Task it deletes adds an item like this one, `release-notes` having been cancelled and deleted 5 s later ([crds.md](crds.md#deleting-finished-tasks)); `regarding` is the Task, which `GET /tasks/release-notes` now answers 404 for:
+
+  ```json
+  {"uid":"9f40ba91-0da5-4a74-aa22-54ee0e682188","time":"2026-11-05T14:02:49.430918Z","type":"Normal","reason":"TaskDeleted","action":"Delete","note":"Task #1 release-notes finished 2026-11-05T14:02:43Z (Cancelled), deleted 5s later by Team.spec.deleteFinishedAfter","regarding":{"kind":"Task","name":"release-notes"},"reportedBy":"cadre-server","count":1}
+  ```
+
   A namespace with nothing recent answers `{"items":[],"offset":0,"limit":100}`. The failures:
 
   | Answer | When |
@@ -445,6 +451,13 @@ Runtime-mode backends differ only in who starts the runner process. For the Kube
 
   : ping
 
+  ```
+
+  A Task deleted by `deleteFinishedAfter` sends one more `task` hint, with `"deleted":true` and the phase it finished in; read the task and it is a 404:
+
+  ```
+  event: task
+  data: {"name":"release-notes","number":1,"phase":"Cancelled","deleted":true}
   ```
 
   In a namespace without a Team (here `empty`, as a bootstrap admin, or under `--auth=none`) the same request is refused before any stream starts, and a name that is not a lowercase DNS label (`Team-C`) is a `400` `invalid`:
