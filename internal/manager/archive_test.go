@@ -527,6 +527,35 @@ func TestArchiveResumedKeepsTheSnapshot(t *testing.T) {
 	}
 }
 
+// A file written twice is in the snapshot at its latest version.
+func TestArchiveLatestFileVersion(t *testing.T) {
+	e, _ := archiveEnv(t)
+	key := e.rich(t)
+	uid := string(e.get(t, key).UID)
+	for _, a := range [][3]string{
+		{filesIndexStream(key), storage.SeqKey(2), `{"path":"notes.md","version":2,"size":6}`},
+		{fileStream(key, "notes.md"), storage.SeqKey(2), `{"itemId":"i2","blob":"b2","size":6}`},
+		{blobStream(key, "b2"), blobKey, `second`},
+	} {
+		if err := e.store.Append(ctx, a[0], a[1], []byte(a[2])); err != nil {
+			t.Fatal(err)
+		}
+	}
+	e.clock.add(time.Hour)
+	e.deleteFinished(t)
+	_, bodies := e.snapshots(t)
+	if len(bodies[uid]) != 1 {
+		t.Fatalf("%d body entries, want 1", len(bodies[uid]))
+	}
+	var snap Snapshot
+	if err := json.Unmarshal(bodies[uid][0].Data, &snap); err != nil {
+		t.Fatal(err)
+	}
+	if len(snap.Files) != 1 || snap.Files[0].Version != 2 || snap.Files[0].Size != 6 || snap.Files[0].Content != "second" {
+		t.Fatalf("files %+v, want notes.md at version 2", snap.Files)
+	}
+}
+
 // The index key of a task is the same whether its deletingSince is read
 // with nanoseconds or, as a store keeps it, to the second.
 func TestArchiveKeyIsStable(t *testing.T) {
@@ -661,5 +690,39 @@ func TestExpireSnapshotsSkipsUnknownKeys(t *testing.T) {
 	index, _ := e.snapshots(t)
 	if len(index) != 1 || index[0].Key != "0-unknown" {
 		t.Fatalf("index %+v, want the unknown key alone", index)
+	}
+}
+
+// failTaskDeletes is a store whose deletes of Task objects fail.
+type failTaskDeletes struct{ storage.Driver }
+
+func (failTaskDeletes) DeleteTask(context.Context, *v1alpha1.Task) error {
+	return errors.New("api server down")
+}
+
+// A task delete that fails holds up no expiry; once it lands, its Event
+// names the Team's archiveRetention.
+func TestExpireSnapshotsWhenATaskDeleteFails(t *testing.T) {
+	e, rec := archiveEnv(t)
+	e.setTeam(t, func(s *v1alpha1.TeamSpec) { s.ArchiveRetention = &metav1.Duration{Duration: 48 * time.Hour} })
+	old, _ := e.archive(t, "old")
+	drain(rec)
+	e.clock.add(48 * time.Hour)
+	key := e.finished(t, "a")
+	e.clock.add(time.Hour)
+	failing := New(failTaskDeletes{e.store}, Config{Agents: testAgents, Events: rec}, WithClock(e.clock.now))
+	if err := failing.DeleteFinished(ctx); err == nil || !strings.Contains(err.Error(), "api server down") {
+		t.Fatalf("tick error %v, want the task delete's", err)
+	}
+	if n := e.entries(t, SnapshotStream(ns, string(old))); n != 0 {
+		t.Fatal("an expired snapshot is kept when a task delete fails")
+	}
+	e.deleteFinished(t)
+	if !e.gone(t, key) {
+		t.Fatal("a is not archived")
+	}
+	want := "Normal TaskArchived Task #2 a finished 2026-10-26T10:00:00Z (Cancelled), archived 1h later by Team.spec.archiveAfter; its snapshot is kept for 48h"
+	if evs := drain(rec); len(evs) != 1 || evs[0] != want {
+		t.Fatalf("Events %q, want %q", evs, want)
 	}
 }
