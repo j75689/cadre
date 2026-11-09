@@ -63,14 +63,14 @@ Three roles:
 | --- | --- |
 | `viewer` | read: list and get tasks, their threads, runs and events, the team's agents, and the Team |
 | `member` | what a viewer may, and create tasks, comment, reply, approve or deny tool calls, cancel tasks |
-| `admin` | what a member may, and editing the Team (its display name, run cap, archiving and roles) through the API, `cadre team set`, as well as with kubectl or GitOps; the only one who sees the Team's roles |
+| `admin` | what a member may, and editing the Team (its display name, run cap, delete-after and roles) through the API, `cadre team set`, as well as with kubectl or GitOps; the only one who sees the Team's roles |
 
 | Field | Rule |
 | --- | --- |
 | `metadata.name` | must be `team` |
 | `spec.maxConcurrentRuns` | at least 1, default 1 |
 | `spec.archiveAfter` | deprecated and not acted on; a positive duration, such as `720h`, still checked as before |
-| `spec.deleteFinishedAfter` | optional, no default; a positive duration, such as `720h`: how long a finished task stays on the board before it is deleted, with its thread and runs. `0s` and negative durations are refused by the CRD ("deleteFinishedAfter must be a positive duration such as 720h") and by `PUT /team`. Unset, finished tasks are kept. A cadre-server with the delete loop deletes them once it has passed, **for good**: see [Deleting finished tasks](#deleting-finished-tasks). The web form does not show it yet: set it with kubectl or GitOps |
+| `spec.deleteFinishedAfter` | optional, no default; a positive duration, such as `720h`: how long a finished task stays on the board before it is deleted, with its thread and runs. `0s` and negative durations are refused by the CRD ("deleteFinishedAfter must be a positive duration such as 720h") and by `PUT /team`. Unset, finished tasks are kept. A cadre-server with the delete loop deletes them once it has passed, **for good**: see [Deleting finished tasks](#deleting-finished-tasks). Set it in Settings or with `cadre team set --delete-finished-after 720h` (`0` unsets it) |
 | `status.nextNumber`, `status.slots`, `status.running` | written by the Task Manager only; `slots` is a list keyed by `runId`; `running` is `len(slots)`, written with it |
 
 ### Deleting finished tasks

@@ -83,21 +83,35 @@ func TestTaskLifeFromTheCLI(t *testing.T) {
 
 	mustContain(t, cadre(t, srv.URL, "team", "init", "--max-concurrent-runs", "2", "--role", "admin=user:lead@example.test"), "team team-a ready, 2 concurrent runs")
 	// set changes what it is told to, and its roles replace the Team's.
-	mustContain(t, cadre(t, srv.URL, "team", "set", "--display-name", "Team A", "--archive-after", "720h",
+	mustContain(t, cadre(t, srv.URL, "team", "set", "--display-name", "Team A", "--delete-finished-after", "720h",
 		"--role", "admin=user:lead@example.test", "--role", "member=group:backend,user:dev@example.test", "--role", "admin=group:platform"),
 		"team team-a updated: 2 concurrent runs, 2 roles")
 	team, err := m.LiveTeam(ctx, "team-a")
 	if err != nil {
 		t.Fatal(err)
 	}
-	if s := team.Spec; s.DisplayName != "Team A" || s.MaxConcurrentRuns != 2 || s.ArchiveAfter.Duration != 720*time.Hour ||
+	if s := team.Spec; s.DisplayName != "Team A" || s.MaxConcurrentRuns != 2 || s.DeleteFinishedAfter.Duration != 720*time.Hour || s.ArchiveAfter != nil ||
 		len(s.Roles) != 2 || s.Roles[0].Role != "admin" || len(s.Roles[0].Subjects) != 2 || len(s.Roles[1].Subjects) != 2 {
 		t.Fatalf("team spec %+v", s)
 	}
-	// 0 clears archiving; the run cap, not given, stays.
-	mustContain(t, cadre(t, srv.URL, "team", "set", "--archive-after", "0"), "team team-a updated: 2 concurrent runs, 2 roles")
-	if team, err := m.LiveTeam(ctx, "team-a"); err != nil || team.Spec.ArchiveAfter != nil || team.Spec.MaxConcurrentRuns != 2 {
-		t.Fatalf("after --archive-after 0: %+v, %v", team, err)
+	// A flag not given leaves its field as it is.
+	cadre(t, srv.URL, "team", "set", "--display-name", "Team B")
+	if team, err := m.LiveTeam(ctx, "team-a"); err != nil || team.Spec.DeleteFinishedAfter == nil || team.Spec.DeleteFinishedAfter.Duration != 720*time.Hour {
+		t.Fatalf("after --display-name: %+v, %v", team, err)
+	}
+	// 0 clears the delete-after; the run cap, not given, stays.
+	mustContain(t, cadre(t, srv.URL, "team", "set", "--delete-finished-after", "0"), "team team-a updated: 2 concurrent runs, 2 roles")
+	if team, err := m.LiveTeam(ctx, "team-a"); err != nil || team.Spec.DeleteFinishedAfter != nil || team.Spec.MaxConcurrentRuns != 2 {
+		t.Fatalf("after --delete-finished-after 0: %+v, %v", team, err)
+	}
+	// --archive-after is deprecated: still taken, never as the delete-after,
+	// and not in the help.
+	mustContain(t, cadre(t, srv.URL, "team", "set", "--archive-after", "720h"), "Flag --archive-after has been deprecated, it archives nothing; use --delete-finished-after")
+	if team, err := m.LiveTeam(ctx, "team-a"); err != nil || team.Spec.ArchiveAfter.Duration != 720*time.Hour || team.Spec.DeleteFinishedAfter != nil {
+		t.Fatalf("after --archive-after 720h: %+v, %v", team, err)
+	}
+	if help := cadre(t, srv.URL, "team", "set", "-h"); !strings.Contains(help, "--delete-finished-after") || strings.Contains(help, "archive-after") {
+		t.Fatalf("team set -h:\n%s", help)
 	}
 	if err := cadreFails(t, srv.URL, "team", "set", "--max-concurrent-runs", "0"); !strings.Contains(err.Error(), "at least 1") {
 		t.Fatalf("a run cap of 0: %v", err)

@@ -51,7 +51,9 @@ describe("Settings", () => {
     const card = within(await screen.findByRole("region", { name: "Team" }));
     expect(card.getByText("Team A")).toBeTruthy();
     expect(card.getByText("2")).toBeTruthy();
-    expect(card.getByText("168h0m0s")).toBeTruthy();
+    expect(card.getByText("Delete finished after").nextElementSibling?.textContent).toBe("never");
+    expect(card.queryByText("Archive after")).toBeNull();
+    expect(card.queryByText("168h0m0s")).toBeNull();
 
     const roles = within(screen.getByRole("table", { name: "Roles" }));
     expect(roles.getByText("user:dana")).toBeTruthy();
@@ -180,26 +182,37 @@ describe("Editing the Team", () => {
   });
 
   it("saves the whole spec from the version read, and shows the saved values", async () => {
-    const after = team({ metadata: { name: "team", namespace: "a", resourceVersion: "8" }, spec: { ...full.spec, displayName: "Team B", maxConcurrentRuns: 3, archiveAfter: "30m0s" } });
+    const after = team({ metadata: { name: "team", namespace: "a", resourceVersion: "8" }, spec: { ...full.spec, displayName: "Team B", maxConcurrentRuns: 3, deleteFinishedAfter: "720h" } });
     const { form, sent } = await edit([() => json(full)], [() => json(after)]);
     const name = form.getByLabelText("Display name");
     await waitFor(() => expect(document.activeElement).toBe(name));
     fireEvent.change(name, { target: { value: "Team B" } });
     fireEvent.change(form.getByLabelText(/^Max concurrent runs/), { target: { value: "3" } });
-    fireEvent.change(form.getByLabelText(/^Archive after/), { target: { value: "30m" } });
+    fireEvent.change(form.getByLabelText(/^Delete finished after/), { target: { value: "720h" } });
     fireEvent.click(form.getByRole("button", { name: "Save" }));
 
     const card = within(screen.getByRole("region", { name: "Team" }));
     expect(await card.findByText("Team B")).toBeTruthy();
     expect(card.getByText("3")).toBeTruthy();
-    expect(card.getByText("30m0s")).toBeTruthy();
+    expect(card.getByText("Delete finished after").nextElementSibling?.textContent).toBe("720h");
     expect(card.getByRole("status").textContent).toBe("Saved");
-    expect(sent).toEqual([{ displayName: "Team B", maxConcurrentRuns: 3, archiveAfter: "30m", roles: full.spec!.roles, resourceVersion: "7" }]);
+    expect(sent).toEqual([{ displayName: "Team B", maxConcurrentRuns: 3, deleteFinishedAfter: "720h", archiveAfter: "168h0m0s", roles: full.spec!.roles, resourceVersion: "7" }]);
     await waitFor(() => expect(document.activeElement).toBe(card.getByRole("button", { name: "Edit" })));
   });
 
+  it("does not show archiveAfter, and saves it as read", async () => {
+    const { form, sent } = await edit([() => json(full)], [() => json(full)]);
+    expect(form.queryByLabelText(/Archive after/)).toBeNull();
+    expect(form.queryByText(/Archive after/)).toBeNull();
+    fireEvent.change(form.getByLabelText("Display name"), { target: { value: "Team B" } });
+    fireEvent.click(form.getByRole("button", { name: "Save" }));
+    await screen.findByText("Saved");
+    expect(sent[0].archiveAfter).toBe("168h0m0s");
+    expect("deleteFinishedAfter" in sent[0]).toBe(false);
+  });
+
   it("keeps the spec fields the form does not show, and saves a removed role as removed", async () => {
-    const kept = { deleteFinishedAfter: "720h", futureKnob: "on" };
+    const kept = { futureKnob: "on" };
     const set = team({ spec: { ...full.spec, ...kept } as TeamSpec });
     const { form, sent } = await edit([() => json(set)], [() => json(set)]);
     fireEvent.change(form.getByLabelText("Display name"), { target: { value: "Team B" } });
@@ -211,7 +224,7 @@ describe("Editing the Team", () => {
 
   it("is not data-dirty on a Team with fields the form does not show", async () => {
     // Without roles, as only a bootstrap admin may leave a Team.
-    await edit([() => json(team({ spec: { deleteFinishedAfter: "720h" } }))], [], [{ ...admin, admin: true }]);
+    await edit([() => json(team({ spec: { archiveAfter: "168h0m0s" } }))], [], [{ ...admin, admin: true }]);
     expect(document.querySelector("[data-dirty]")).toBeNull();
   });
 
@@ -256,8 +269,8 @@ describe("Editing the Team", () => {
   });
 
   it("saves again with the fields the form does not show as the Team read after a 409 has them", async () => {
-    const mine = team({ spec: { ...full.spec, deleteFinishedAfter: "720h", futureKnob: "on" } as TeamSpec });
-    const theirs = team({ metadata: { name: "team", namespace: "a", resourceVersion: "9" }, spec: { ...full.spec, deleteFinishedAfter: "8760h" } });
+    const mine = team({ spec: { ...full.spec, futureKnob: "on" } as TeamSpec });
+    const theirs = team({ metadata: { name: "team", namespace: "a", resourceVersion: "9" }, spec: { ...full.spec, archiveAfter: "8760h" } });
     const { form, sent } = await edit([() => json(mine), () => json(theirs)], [conflict, () => json(theirs)]);
     fireEvent.change(form.getByLabelText("Display name"), { target: { value: "Team B" } });
     fireEvent.click(form.getByRole("button", { name: "Save" }));
@@ -266,18 +279,18 @@ describe("Editing the Team", () => {
 
     fireEvent.click(form.getByRole("button", { name: "Save" }));
     await screen.findByText("Saved");
-    expect(sent[0]).toMatchObject({ deleteFinishedAfter: "720h", futureKnob: "on" });
-    expect(sent[1]).toEqual({ ...full.spec, displayName: "Team B", deleteFinishedAfter: "8760h", resourceVersion: "9" }); // futureKnob removed
+    expect(sent[0]).toMatchObject({ archiveAfter: "168h0m0s", futureKnob: "on" });
+    expect(sent[1]).toEqual({ ...full.spec, displayName: "Team B", archiveAfter: "8760h", resourceVersion: "9" }); // futureKnob removed
   });
 
   it("marks the fields someone else changed, unless the form holds their value", async () => {
     const theirs = team({
       metadata: { name: "team", namespace: "a", resourceVersion: "9" },
-      spec: { displayName: "Team C", maxConcurrentRuns: 5, archiveAfter: "30m0s", roles: [full.spec!.roles![0]] },
+      spec: { displayName: "Team C", maxConcurrentRuns: 5, deleteFinishedAfter: "720h0m0s", roles: [full.spec!.roles![0]] },
     });
     const { form, sent } = await edit([() => json(full), () => json(theirs)], [conflict, () => json(theirs)]);
     fireEvent.change(form.getByLabelText("Display name"), { target: { value: "Team B" } });
-    fireEvent.change(form.getByLabelText(/^Archive after/), { target: { value: "30m" } });
+    fireEvent.change(form.getByLabelText(/^Delete finished after/), { target: { value: "720h" } });
     fireEvent.click(form.getByRole("button", { name: "Save" }));
     await form.findByRole("region", { name: "Current" });
 
@@ -287,13 +300,29 @@ describe("Editing the Team", () => {
     };
     expect(note(/^Display name/)).toBe("Changed by someone else: Team C");
     expect(note(/^Max concurrent runs/)).toBe("Changed by someone else: 5");
-    expect(note(/^Archive after/)).toBeUndefined(); // 30m is 30m0s
+    expect(note(/^Delete finished after/)).toBeUndefined(); // 720h is 720h0m0s
     const roles = form.getByRole("group", { name: "Roles" });
     expect(document.getElementById(roles.getAttribute("aria-describedby")!)?.textContent).toBe("Changed by someone else: admin: user:dana");
 
     fireEvent.click(form.getByRole("button", { name: "Save" }));
     await screen.findByText("Saved");
-    expect(sent[1]).toMatchObject({ displayName: "Team B", maxConcurrentRuns: 2, archiveAfter: "30m", roles: full.spec!.roles });
+    expect(sent[1]).toMatchObject({ displayName: "Team B", maxConcurrentRuns: 2, deleteFinishedAfter: "720h", roles: full.spec!.roles });
+  });
+
+  it("marks a delete-after someone else set, shows it as Current, and saves the form's value from their version", async () => {
+    const theirs = team({ metadata: { name: "team", namespace: "a", resourceVersion: "9" }, spec: { ...full.spec, deleteFinishedAfter: "8760h" } });
+    const { form, sent } = await edit([() => json(full), () => json(theirs)], [conflict, () => json(theirs)]);
+    const after = form.getByLabelText(/^Delete finished after/);
+    fireEvent.change(after, { target: { value: "720h" } });
+    fireEvent.click(form.getByRole("button", { name: "Save" }));
+    const current = within(await form.findByRole("region", { name: "Current" }));
+    expect(current.getByText("Delete finished after").nextElementSibling?.textContent).toBe("8760h"); // not archiveAfter's 168h0m0s
+    expect(document.getElementById("changed-deleteFinishedAfter")?.textContent).toBe("Changed by someone else: 8760h");
+    expect(after.getAttribute("aria-describedby")?.split(" ")).toContain("changed-deleteFinishedAfter");
+
+    fireEvent.click(form.getByRole("button", { name: "Save" }));
+    await screen.findByText("Saved");
+    expect(sent[1]).toMatchObject({ deleteFinishedAfter: "720h", resourceVersion: "9" });
   });
 
   it("does not mark a field only this user changed", async () => {
@@ -353,13 +382,13 @@ describe("Editing the Team", () => {
     const { form, sent } = await edit([() => json(full)]);
     const save = form.getByRole("button", { name: "Save" });
     for (const v of ["a week", "0s", "-1h"]) {
-      fireEvent.change(form.getByLabelText(/^Archive after/), { target: { value: v } });
+      fireEvent.change(form.getByLabelText(/^Delete finished after/), { target: { value: v } });
       save.focus();
       fireEvent.click(save);
-      expect(form.getByRole("alert").textContent).toMatch(/duration longer than 0, such as 168h/);
+      expect(form.getByRole("alert").textContent).toBe("Delete finished after is a duration longer than 0, such as 720h or 168h.");
       await waitFor(() => expect(document.activeElement).toBe(form.getByRole("alert"))); // the same message too
     }
-    fireEvent.change(form.getByLabelText(/^Archive after/), { target: { value: "2562048h" } });
+    fireEvent.change(form.getByLabelText(/^Delete finished after/), { target: { value: "2562048h" } });
     fireEvent.click(save);
     expect(form.getByRole("alert").textContent).toMatch(/too long: the longest the server takes is 2562047h47m16.854775807s/);
     expect(sent).toHaveLength(0);
@@ -368,7 +397,7 @@ describe("Editing the Team", () => {
   it("ties an error to the field it is about", async () => {
     const { form } = await edit([() => json(full)]);
     const max = form.getByLabelText(/^Max concurrent runs/);
-    const after = form.getByLabelText(/^Archive after/);
+    const after = form.getByLabelText(/^Delete finished after/);
     fireEvent.change(after, { target: { value: "0s" } });
     fireEvent.click(form.getByRole("button", { name: "Save" }));
     const alert = form.getByRole("alert");
@@ -382,7 +411,7 @@ describe("Editing the Team", () => {
     expect(max.getAttribute("aria-invalid")).toBe("true");
     expect(max.getAttribute("aria-describedby")?.split(" ")).toContain(form.getByRole("alert").id);
     expect(after.getAttribute("aria-invalid")).toBeNull();
-    expect(after.getAttribute("aria-describedby")).toBe("archive-after-help");
+    expect(after.getAttribute("aria-describedby")).toBe("delete-finished-after-help");
 
     fireEvent.change(max, { target: { value: "2" } });
     fireEvent.click(within(form.getByRole("group", { name: "Role 1" })).getByRole("button", { name: "Add subject" }));
@@ -394,12 +423,26 @@ describe("Editing the Team", () => {
     expect(max.getAttribute("aria-invalid")).toBeNull();
   });
 
-  it("leaves archive-after out when it is cleared", async () => {
-    const { form, sent } = await edit([() => json(full)], [() => json(full)]);
-    fireEvent.change(form.getByLabelText(/^Archive after/), { target: { value: "" } });
+  it("ties the server's refusal of a delete-after to its field", async () => {
+    const refused = () => json({ error: { code: "invalid", message: "deleteFinishedAfter 0s must be a positive duration such as 720h: invalid request" } }, 400);
+    const { form } = await edit([() => json(full)], [refused]);
+    const after = form.getByLabelText(/^Delete finished after/);
+    fireEvent.change(after, { target: { value: "720h" } });
+    fireEvent.click(form.getByRole("button", { name: "Save" }));
+    const alert = await form.findByRole("alert");
+    expect(alert.textContent).toBe("deleteFinishedAfter 0s must be a positive duration such as 720h");
+    expect(after.getAttribute("aria-invalid")).toBe("true");
+    expect(after.getAttribute("aria-describedby")?.split(" ")).toContain(alert.id);
+  });
+
+  it("leaves delete-after out when it is cleared", async () => {
+    const set = team({ spec: { ...full.spec, deleteFinishedAfter: "720h0m0s" } });
+    const { form, sent } = await edit([() => json(set)], [() => json(full)]);
+    fireEvent.change(form.getByLabelText(/^Delete finished after/), { target: { value: "" } });
     fireEvent.click(form.getByRole("button", { name: "Save" }));
     await screen.findByText("Saved");
-    expect("archiveAfter" in sent[0]).toBe(false);
+    expect("deleteFinishedAfter" in sent[0]).toBe(false);
+    expect(within(screen.getByRole("region", { name: "Team" })).getByText("Delete finished after").nextElementSibling?.textContent).toBe("never");
   });
 
   it("does not save a cap the browser could not read", async () => {
@@ -779,7 +822,7 @@ describe("Editing the Team", () => {
 
   it("announces each failed save again, as a new alert", async () => {
     const { form } = await edit([() => json(full)]);
-    fireEvent.change(form.getByLabelText(/^Archive after/), { target: { value: "0s" } });
+    fireEvent.change(form.getByLabelText(/^Delete finished after/), { target: { value: "0s" } });
     fireEvent.click(form.getByRole("button", { name: "Save" }));
     const first = form.getByRole("alert");
     fireEvent.click(form.getByRole("button", { name: "Save" }));
