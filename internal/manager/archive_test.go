@@ -9,12 +9,14 @@ import (
 	"testing"
 	"time"
 
+	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/client-go/tools/events"
 
 	v1alpha1 "github.com/j75689/cadre/api/v1alpha1"
 	"github.com/j75689/cadre/internal/storage"
+	"github.com/j75689/cadre/internal/task"
 )
 
 // archiveEnv is deleteEnv for a Team that archives finished tasks after an
@@ -371,6 +373,157 @@ func TestArchiveOverCap(t *testing.T) {
 		if evs := drain(rec); len(evs) != 1 || evs[0] != want {
 			t.Fatalf("%s: Events %q, want %q", name, evs, want)
 		}
+	}
+}
+
+// halfDelete is a store whose delete of a task's streams deletes the ones
+// under it named by parts, then fails, as a store failing part way would.
+type halfDelete struct {
+	storage.Driver
+	parts []string
+}
+
+func (h halfDelete) DeleteStream(ctx context.Context, stream string) error {
+	if strings.Contains(stream, "/_archive") {
+		return h.Driver.DeleteStream(ctx, stream)
+	}
+	for _, part := range h.parts {
+		if err := h.Driver.DeleteStream(ctx, stream+"/"+part); err != nil {
+			return err
+		}
+	}
+	return errors.New("store failed part way")
+}
+
+// overCapEvent is the SnapshotSkipped Event of rich's task over the cap.
+const overCapEvent = "Warning SnapshotSkipped Task #1 a finished 2026-10-24T09:00:00Z (Cancelled), deleted 1h later by Team.spec.archiveAfter without a snapshot: its logs are 51 MiB, over the 50 MiB cap"
+
+// A task over the cap whose delete stops part way, its transcript gone,
+// is not archived when the delete is picked up again, under the cap then:
+// its mark says it goes without a snapshot.
+func TestArchiveOverCapResumed(t *testing.T) {
+	e, rec := archiveEnv(t)
+	key := e.rich(t)
+	uid := string(e.get(t, key).UID)
+	e.clock.add(time.Hour)
+	big := bigKeys{e.store, "/transcript/" + stepRun, MaxSnapshotBytes/3 + 1}
+	m := New(halfDelete{big, []string{"transcript/" + stepRun}}, Config{Agents: testAgents, Events: rec}, WithClock(e.clock.now))
+	if err := m.DeleteFinished(ctx); err == nil {
+		t.Fatal("the delete that stopped part way reports no error")
+	}
+	c := meta.FindStatusCondition(e.get(t, key).Status.Conditions, task.ConditionSnapshot)
+	if c == nil || c.Status != metav1.ConditionFalse || !strings.Contains(c.Message, "over the 50 MiB cap") {
+		t.Fatalf("mark %+v, want Snapshot False with the cap", c)
+	}
+	if e.entries(t, TranscriptStream(key, stepRun)) != 0 {
+		t.Fatal("the transcript is not deleted part way")
+	}
+	e.deleteFinished(t)
+	if !e.gone(t, key) {
+		t.Fatal("the task is not deleted when picked up again")
+	}
+	if n, b := e.entries(t, ArchiveStream(ns)), e.entries(t, SnapshotStream(ns, uid)); n != 0 || b != 0 {
+		t.Fatalf("%d index entries and %d body entries, want none", n, b)
+	}
+	if evs := drain(rec); len(evs) != 1 || evs[0] != overCapEvent {
+		t.Fatalf("Events %q, want %q", evs, overCapEvent)
+	}
+}
+
+// A task marked by a delete that did not archive, stopped part way, is not
+// archived when the Team archives by the time it is picked up again: part
+// of its logs may be gone, and the Event says so.
+func TestArchiveResumedFromPlainDelete(t *testing.T) {
+	e, rec := deleteEnv(t)
+	key := e.rich(t)
+	uid := string(e.get(t, key).UID)
+	e.clock.add(time.Hour)
+	m := New(halfDelete{e.store, []string{"transcript/" + stepRun}}, Config{Agents: testAgents, Events: rec}, WithClock(e.clock.now))
+	if err := m.DeleteFinished(ctx); err == nil {
+		t.Fatal("the delete that stopped part way reports no error")
+	}
+	if c := e.get(t, key).Status.Conditions; len(c) != 0 {
+		t.Fatalf("a delete that does not archive marks conditions %+v", c)
+	}
+	e.setTeam(t, func(s *v1alpha1.TeamSpec) {
+		s.ArchiveAfter = &metav1.Duration{Duration: time.Hour}
+	})
+	e.deleteFinished(t)
+	if !e.gone(t, key) {
+		t.Fatal("the task is not deleted when picked up again")
+	}
+	if n, b := e.entries(t, ArchiveStream(ns)), e.entries(t, SnapshotStream(ns, uid)); n != 0 || b != 0 {
+		t.Fatalf("%d index entries and %d body entries, want none", n, b)
+	}
+	want := "Warning SnapshotSkipped Task #1 a finished 2026-10-24T09:00:00Z (Cancelled), deleted 1h later by Team.spec.archiveAfter without a snapshot: its delete began under Team.spec.deleteFinishedAfter, so part of its logs may be gone"
+	if evs := drain(rec); len(evs) != 1 || evs[0] != want {
+		t.Fatalf("Events %q, want %q", evs, want)
+	}
+}
+
+// Of two replicas, the one picking up a delete another marked over the cap
+// writes no snapshot though it measures the logs under it, and records the
+// Event when its delete lands.
+func TestArchiveOverCapTwoManagers(t *testing.T) {
+	e, _ := archiveEnv(t)
+	key := e.rich(t)
+	uid := string(e.get(t, key).UID)
+	e.clock.add(time.Hour)
+	recSlow, recOther := events.NewFakeRecorder(10), events.NewFakeRecorder(10)
+	other := e.deleter(recOther, nil)
+	big := bigKeys{e.store, "/transcript/" + stepRun, MaxSnapshotBytes/3 + 1}
+	slow := New(beforeStreams{big, func(ctx context.Context, _ *v1alpha1.Task) error {
+		return other.DeleteFinished(ctx)
+	}}, Config{Agents: testAgents, Events: recSlow}, WithClock(e.clock.now))
+	if err := slow.DeleteFinished(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if !e.gone(t, key) {
+		t.Fatal("the task is kept")
+	}
+	if n, b := e.entries(t, ArchiveStream(ns)), e.entries(t, SnapshotStream(ns, uid)); n != 0 || b != 0 {
+		t.Fatalf("%d index entries and %d body entries, want none", n, b)
+	}
+	if evs := drain(recOther); len(evs) != 1 || evs[0] != overCapEvent {
+		t.Fatalf("Events of the replica whose delete landed %q, want %q", evs, overCapEvent)
+	}
+	if evs := drain(recSlow); len(evs) != 0 {
+		t.Fatalf("Events of the other replica %q, want none", evs)
+	}
+}
+
+// An archive whose delete stops part way after its snapshot, a file's
+// blob gone, keeps the whole snapshot when picked up again, and the task
+// goes with one TaskArchived.
+func TestArchiveResumedKeepsTheSnapshot(t *testing.T) {
+	e, rec := archiveEnv(t)
+	key := e.rich(t)
+	uid := string(e.get(t, key).UID)
+	e.clock.add(time.Hour)
+	m := New(halfDelete{e.store, []string{"transcript/" + stepRun, "blobs"}}, Config{Agents: testAgents, Events: rec}, WithClock(e.clock.now))
+	if err := m.DeleteFinished(ctx); err == nil {
+		t.Fatal("the delete that stopped part way reports no error")
+	}
+	if e.entries(t, blobStream(key, "b1")) != 0 {
+		t.Fatal("the blob is not deleted part way")
+	}
+	e.deleteFinished(t)
+	if !e.gone(t, key) {
+		t.Fatal("the task is not deleted when picked up again")
+	}
+	index, bodies := e.snapshots(t)
+	if len(index) != 1 || len(bodies[uid]) != 1 {
+		t.Fatalf("%d index entries and %d bodies, want one each", len(index), len(bodies))
+	}
+	var snap Snapshot
+	if err := json.Unmarshal(bodies[uid][0].Data, &snap); err != nil {
+		t.Fatal(err)
+	}
+	if len(snap.Transcripts[stepRun]) != len(stepEntries) || len(snap.Files) != 1 || snap.Files[0].Content != "hello" {
+		t.Fatalf("snapshot transcript %s, files %+v: want the whole task's", snap.Transcripts[stepRun], snap.Files)
+	}
+	if evs := drain(rec); len(evs) != 1 || !strings.HasPrefix(evs[0], "Normal TaskArchived ") {
+		t.Fatalf("Events %q, want one TaskArchived", evs)
 	}
 }
 

@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"k8s.io/apimachinery/pkg/api/equality"
+	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
 	v1alpha1 "github.com/j75689/cadre/api/v1alpha1"
@@ -523,6 +524,23 @@ func TestDelete(t *testing.T) {
 	s := apply(t, done, Delete{}).Status
 	if s.DeletingSince == nil || !s.DeletingSince.Time.Equal(now) {
 		t.Fatalf("deletingSince = %v, want %v", s.DeletingSince, now)
+	}
+	if len(s.Conditions) != 0 {
+		t.Fatalf("a delete that archives nothing has conditions %+v", s.Conditions)
+	}
+	// An archive says on the mark whether a snapshot is written.
+	for _, ev := range []Delete{{Archive: true}, {Archive: true, Skipped: "too big"}} {
+		c := meta.FindStatusCondition(apply(t, done, ev).Status.Conditions, ConditionSnapshot)
+		switch {
+		case c == nil:
+			t.Fatalf("%+v: no %s condition", ev, ConditionSnapshot)
+		case ev.Skipped == "" && (c.Status != metav1.ConditionTrue || c.Reason != "Archive"):
+			t.Errorf("%+v: condition %+v, want True Archive", ev, c)
+		case ev.Skipped != "" && (c.Status != metav1.ConditionFalse || c.Reason != "Skipped" || c.Message != ev.Skipped):
+			t.Errorf("%+v: condition %+v, want False Skipped %q", ev, c, ev.Skipped)
+		case !c.LastTransitionTime.Equal(s.DeletingSince):
+			t.Errorf("%+v: condition at %v, want the mark's %v", ev, c.LastTransitionTime, s.DeletingSince)
+		}
 	}
 	deleting := &v1alpha1.Task{Spec: done.Spec, Status: s}
 	for _, v := range validEvents {

@@ -102,61 +102,77 @@ func archivedAt(t *v1alpha1.Task) time.Time {
 	return t.Status.DeletingSince.UTC().Truncate(time.Second)
 }
 
+// overCap measures the logs of key for a snapshot, and says why it gets
+// none if they are over MaxSnapshotBytes.
+func (m *Manager) overCap(ctx context.Context, key storage.Key) (string, error) {
+	size, err := m.measureLogs(ctx, key)
+	if err != nil || size <= MaxSnapshotBytes {
+		return "", err
+	}
+	return fmt.Sprintf("its logs are %d MiB, over the %d MiB cap", (size+1<<20-1)>>20, MaxSnapshotBytes>>20), nil
+}
+
 // snapshot writes the snapshot of t, a task marked deleting, archived
 // archiveAfter after it finished: its body, then its index entry. An entry
 // already there was written by another replica, or by an earlier try, and
-// counts as written. A task whose logs measure over MaxSnapshotBytes gets
-// none, and the reason is returned. It reads the logs without the checks
-// that refuse a task being deleted.
-func (m *Manager) snapshot(ctx context.Context, t *v1alpha1.Task, archiveAfter time.Duration) (skipped string, err error) {
-	key := storage.Key{Namespace: t.Namespace, Name: t.Name}
-	size, err := m.measureLogs(ctx, key)
+// counts as written; a body there is not made again, from logs a delete
+// since may have taken part of.
+func (m *Manager) snapshot(ctx context.Context, t *v1alpha1.Task, archiveAfter time.Duration) error {
+	sum := summarize(t, archiveAfter)
+	written, err := m.store.Keys(ctx, SnapshotStream(t.Namespace, string(t.UID)), "", 1)
 	if err != nil {
-		return "", err
+		return err
 	}
-	if size > MaxSnapshotBytes {
-		return fmt.Sprintf("its logs are %d MiB, over the %d MiB cap", (size+1<<20-1)>>20, MaxSnapshotBytes>>20), nil
+	if len(written) == 0 {
+		body, err := m.snapshotBody(ctx, t, sum)
+		if err != nil {
+			return err
+		}
+		if err := m.store.Append(ctx, SnapshotStream(t.Namespace, string(t.UID)), snapshotKey, body); err != nil && !errors.Is(err, storage.ErrAlreadyExists) {
+			return err
+		}
 	}
+	summary, err := encodeSnapshot(sum)
+	if err != nil {
+		return err
+	}
+	if err := m.store.Append(ctx, ArchiveStream(t.Namespace), archiveKey(archivedAt(t), string(t.UID)), summary); err != nil && !errors.Is(err, storage.ErrAlreadyExists) {
+		return err
+	}
+	return nil
+}
+
+// snapshotBody reads the logs of t into its snapshot's body, without the
+// checks that refuse a task being deleted.
+func (m *Manager) snapshotBody(ctx context.Context, t *v1alpha1.Task, sum SnapshotSummary) ([]byte, error) {
+	key := storage.Key{Namespace: t.Namespace, Name: t.Name}
+	var err error
 	snap := Snapshot{
-		SnapshotSummary: summarize(t, archiveAfter),
+		SnapshotSummary: sum,
 		Task:            *t,
 		Events:          map[string][]Event{},
 		Transcripts:     map[string][]json.RawMessage{},
 	}
 	if snap.Thread, err = readStream[ThreadEntry](ctx, m.store, ThreadStream(key), "", 0); err != nil {
-		return "", err
+		return nil, err
 	}
 	if snap.Runs, err = readStream[v1alpha1.RunRecord](ctx, m.store, RunsStream(key), "", 0); err != nil {
-		return "", err
+		return nil, err
 	}
 	for _, run := range snap.Runs {
 		if snap.Events[run.ID], err = readStream[Event](ctx, m.store, EventsStream(key, run.ID), "", 0); err != nil {
-			return "", err
+			return nil, err
 		}
 		if run.Mode == v1alpha1.RunModeStep {
 			if snap.Transcripts[run.ID], err = m.transcript(ctx, key, run.ID); err != nil {
-				return "", err
+				return nil, err
 			}
 		}
 	}
 	if snap.Files, err = m.archiveFiles(ctx, key); err != nil {
-		return "", err
+		return nil, err
 	}
-	body, err := encodeSnapshot(snap)
-	if err != nil {
-		return "", err
-	}
-	summary, err := encodeSnapshot(snap.SnapshotSummary)
-	if err != nil {
-		return "", err
-	}
-	if err := m.store.Append(ctx, SnapshotStream(t.Namespace, string(t.UID)), snapshotKey, body); err != nil && !errors.Is(err, storage.ErrAlreadyExists) {
-		return "", err
-	}
-	if err := m.store.Append(ctx, ArchiveStream(t.Namespace), archiveKey(archivedAt(t), string(t.UID)), summary); err != nil && !errors.Is(err, storage.ErrAlreadyExists) {
-		return "", err
-	}
-	return "", nil
+	return encodeSnapshot(snap)
 }
 
 // summarize makes t's index entry.

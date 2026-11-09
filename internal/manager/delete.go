@@ -8,6 +8,8 @@ import (
 	"time"
 
 	corev1 "k8s.io/api/core/v1"
+	"k8s.io/apimachinery/pkg/api/meta"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
 	v1alpha1 "github.com/j75689/cadre/api/v1alpha1"
 	"github.com/j75689/cadre/internal/storage"
@@ -110,14 +112,26 @@ func (m *Manager) deleteFinished(ctx context.Context, ns string, d time.Duration
 
 // deleteTask deletes a finished task and its log streams, in an order that
 // a crash or another replica can pick up at any step: mark the task
-// deleting, which no event passes after, so nothing writes to it again;
-// if archive, write its snapshot, and stop there if that fails, nothing
-// deleted; delete its streams; delete the object, at the version marked,
-// so a task made again under the name is not deleted. A task whose outbox
-// is not applied yet stays for a later tick. The task's Event is recorded
-// only by the replica whose delete landed.
+// deleting, which no event passes after, so nothing writes to it again,
+// and if archive with the mark saying whether a snapshot is written, as
+// its logs measured just before; if so, write it, and stop there if that
+// fails, nothing deleted; delete its streams; delete the object, at the
+// version marked, so a task made again under the name is not deleted. An
+// archive picked up on a mark without a snapshot writes none: the mark
+// said so, or a delete that did not archive made it, and may have deleted
+// part of the logs. A task whose outbox is not applied yet stays for a
+// later tick. The task's Event is recorded only by the replica whose
+// delete landed.
 func (m *Manager) deleteTask(ctx context.Context, key storage.Key, d time.Duration, archive bool) error {
-	t, err := m.transition(ctx, key, task.Delete{})
+	mark := task.Delete{Archive: archive}
+	if archive {
+		skipped, err := m.overCap(ctx, key)
+		if err != nil {
+			return fmt.Errorf("snapshot: %w", err)
+		}
+		mark.Skipped = skipped
+	}
+	t, err := m.transition(ctx, key, mark)
 	switch {
 	case errors.Is(err, task.ErrDeleting):
 		// Marked before: finish that delete.
@@ -131,8 +145,15 @@ func (m *Manager) deleteTask(ctx context.Context, key storage.Key, d time.Durati
 	}
 	var skipped string
 	if archive {
-		if skipped, err = m.snapshot(ctx, t, d); err != nil {
-			return fmt.Errorf("snapshot: %w", err)
+		switch c := meta.FindStatusCondition(t.Status.Conditions, task.ConditionSnapshot); {
+		case c == nil:
+			skipped = "its delete began under Team.spec.deleteFinishedAfter, so part of its logs may be gone"
+		case c.Status != metav1.ConditionTrue:
+			skipped = c.Message
+		default:
+			if err := m.snapshot(ctx, t, d); err != nil {
+				return fmt.Errorf("snapshot: %w", err)
+			}
 		}
 	}
 	if err := m.store.DeleteStream(ctx, key.Namespace+"/"+key.Name); err != nil {
