@@ -309,13 +309,14 @@ describe("Editing the Team", () => {
     expect(sent[1]).toMatchObject({ displayName: "Team B", maxConcurrentRuns: 2, deleteFinishedAfter: "720h", roles: full.spec!.roles });
   });
 
-  it("marks a delete-after someone else set, and saves the form's value from their version", async () => {
+  it("marks a delete-after someone else set, shows it as Current, and saves the form's value from their version", async () => {
     const theirs = team({ metadata: { name: "team", namespace: "a", resourceVersion: "9" }, spec: { ...full.spec, deleteFinishedAfter: "8760h" } });
     const { form, sent } = await edit([() => json(full), () => json(theirs)], [conflict, () => json(theirs)]);
     const after = form.getByLabelText(/^Delete finished after/);
     fireEvent.change(after, { target: { value: "720h" } });
     fireEvent.click(form.getByRole("button", { name: "Save" }));
-    await form.findByRole("region", { name: "Current" });
+    const current = within(await form.findByRole("region", { name: "Current" }));
+    expect(current.getByText("Delete finished after").nextElementSibling?.textContent).toBe("8760h"); // not archiveAfter's 168h0m0s
     expect(document.getElementById("changed-deleteFinishedAfter")?.textContent).toBe("Changed by someone else: 8760h");
     expect(after.getAttribute("aria-describedby")?.split(" ")).toContain("changed-deleteFinishedAfter");
 
