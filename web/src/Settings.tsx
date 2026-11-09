@@ -126,10 +126,12 @@ export function Settings() {
       if (mode === "loading") return;
       try {
         const got = await getTeam(ns, signal);
-        // A read for a lower role than /me gave takes Edit away before /me
-        // says so: its focus goes to the heading, as LiveRoles' would.
+        // A read can take away what has the focus, whatever the role it was
+        // read for: Retry, once it succeeds, or Edit, when it was read for a
+        // lower role than /me gave, before /me says so. Its focus goes to
+        // the heading then, as LiveRoles' would.
         const at = document.activeElement;
-        if (!got.spec?.roles?.length && !me?.admin && at instanceof HTMLElement) press(at, () => teamRef.current?.closest("main")?.querySelector("h1"));
+        if (at instanceof HTMLElement) press(at, () => teamRef.current?.closest("main")?.querySelector("h1"));
         setTeam(got);
         setMissing(false);
         setError("");
