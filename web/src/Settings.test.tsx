@@ -756,6 +756,34 @@ describe("Editing the Team", () => {
     expect(sent).toHaveLength(0);
   });
 
+  // A read records what has the focus, so the heading takes it only from
+  // the body: not from the field Edit opens, nor from Edit once Save closes
+  // the form.
+  it("moves the focus from Edit to the form, not the heading, after a read while Edit had it", async () => {
+    const reads = open(admin, () => json(full));
+    const button = await screen.findByRole("button", { name: "Edit" });
+    button.focus();
+    await act(async () => document.dispatchEvent(new Event("visibilitychange"))); // the page reads the Team again
+    await waitFor(() => expect(reads()).toBe(2));
+    fireEvent.click(button);
+    const form = within(screen.getByRole("form", { name: "Edit the team" }));
+    await act(async () => {});
+    expect(document.activeElement).toBe(form.getByLabelText("Display name"));
+  });
+
+  it("moves the focus from Save to Edit, not the heading, after a read while Save had it", async () => {
+    const { form, reads } = await edit([() => json(full)], [() => json(full)]);
+    const save = form.getByRole("button", { name: "Save" });
+    save.focus();
+    await act(async () => document.dispatchEvent(new Event("visibilitychange"))); // the page reads the Team again
+    await waitFor(() => expect(reads()).toBe(2));
+    fireEvent.click(save);
+    const card = within(screen.getByRole("region", { name: "Team" }));
+    await card.findByText("Saved");
+    await act(async () => {});
+    expect(document.activeElement).toBe(card.getByRole("button", { name: "Edit" }));
+  });
+
   // #79 (backlog of #134's review and QA).
 
   it("says the admin role is gone once a save removed every role, for anyone but a bootstrap admin", async () => {
