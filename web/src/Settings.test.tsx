@@ -122,6 +122,38 @@ describe("Settings", () => {
     expect(reads()).toBe(2);
   });
 
+  // Retry goes once the read it asks for succeeds, whatever the role it was
+  // read for, so its focus goes to the heading rather than the body.
+  it.each([
+    ["an admin", { mode: "oidc", name: "dana", roles: { a: "admin" } }, full],
+    ["a bootstrap admin", { mode: "oidc", name: "dana", roles: { a: "admin" }, admin: true }, team({ spec: { maxConcurrentRuns: 1 }, status: {} })],
+    ["a member", { mode: "oidc", name: "lee", roles: { a: "member" } }, stripped],
+  ] as [string, Me, Team][])("moves the focus from Retry to the heading once the read succeeds, for %s", async (_, me, got) => {
+    open(me, () => json({ error: { code: "internal", message: "the cache is not synced" } }, 500), () => json(got));
+    const retry = await screen.findByRole("button", { name: "Retry" });
+    retry.focus();
+    fireEvent.click(retry);
+    await waitFor(() => expect(screen.queryByRole("button", { name: "Retry" })).toBeNull());
+    expect(document.activeElement).toBe(screen.getByRole("heading", { name: "Settings" }));
+  });
+
+  it("leaves the focus where it was put while Retry's read was in flight", async () => {
+    let answer: (r: Response) => void = () => {};
+    open(
+      { mode: "oidc", name: "dana", roles: { a: "admin" } },
+      () => json({ error: { code: "internal", message: "the cache is not synced" } }, 500),
+      () => new Promise<Response>((resolve) => (answer = resolve)),
+    );
+    const retry = await screen.findByRole("button", { name: "Retry" });
+    retry.focus();
+    fireEvent.click(retry);
+    const board = within(screen.getByRole("navigation", { name: "Team" })).getByRole("link", { name: "Board" });
+    board.focus();
+    await act(async () => answer(new Response(JSON.stringify(full))));
+    await waitFor(() => expect(screen.queryByRole("button", { name: "Retry" })).toBeNull());
+    expect(document.activeElement).toBe(board);
+  });
+
   it("shows a 403 without Retry", async () => {
     open({ mode: "oidc", username: "kim" }, () => json({ error: { code: "no_role", message: "you have no role in a" } }, 403));
     expect(await screen.findByText(/Could not load the team: you have no role in a/)).toBeTruthy();
