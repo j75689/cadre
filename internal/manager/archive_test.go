@@ -51,11 +51,11 @@ var stepEntries = []string{
 	`{"step":1,"kind":"llm_turn","text":"x < y"}`,
 }
 
-// rich is finished with a step run whose transcript has a failed attempt,
-// a runtime run, events of both, and a file.
-func (e *env) rich(t *testing.T, name string) storage.Key {
+// rich is finished task "a" with a step run whose transcript has a failed
+// attempt, a runtime run, events of both, and a file.
+func (e *env) rich(t *testing.T) storage.Key {
 	t.Helper()
-	key := e.finished(t, name)
+	key := e.finished(t, "a")
 	appends := []struct {
 		stream, key, data string
 	}{
@@ -112,7 +112,7 @@ func drain(rec *events.FakeRecorder) []string {
 // entry, then is deleted, with one TaskArchived Event.
 func TestArchiveAfterSnapshotsThenDeletes(t *testing.T) {
 	e, rec := archiveEnv(t)
-	key := e.rich(t, "a")
+	key := e.rich(t)
 	uid := string(e.get(t, key).UID)
 	e.clock.add(time.Hour)
 	archived := e.clock.now()
@@ -147,7 +147,7 @@ func TestArchiveAfterSnapshotsThenDeletes(t *testing.T) {
 	if err := json.Unmarshal(body, &snap); err != nil {
 		t.Fatal(err)
 	}
-	if snap.SnapshotSummary.UID != uid || snap.Format != 1 || snap.Task.Name != "a" || snap.Task.Status.DeletingSince == nil {
+	if snap.UID != uid || snap.Format != 1 || snap.Task.Name != "a" || snap.Task.Status.DeletingSince == nil {
 		t.Errorf("snapshot of %s, format %d, deletingSince %v", snap.Task.Name, snap.Format, snap.Task.Status.DeletingSince)
 	}
 	if len(snap.Thread) != 2 || snap.Thread[1].Body != "hi" {
@@ -215,7 +215,7 @@ func TestArchiveEmptyTask(t *testing.T) {
 // A Team with only deleteFinishedAfter deletes as before: no snapshot.
 func TestDeleteFinishedAfterUnchanged(t *testing.T) {
 	e, rec := deleteEnv(t)
-	key := e.rich(t, "a")
+	key := e.rich(t)
 	e.clock.add(time.Hour)
 	e.deleteFinished(t)
 	if !e.gone(t, key) {
@@ -274,7 +274,7 @@ func TestArchiveSnapshotFails(t *testing.T) {
 		"index": func(stream string) bool { return strings.HasSuffix(stream, "/_archive") },
 	} {
 		e, rec := archiveEnv(t)
-		key := e.rich(t, "a")
+		key := e.rich(t)
 		e.clock.add(time.Hour)
 		store := &failAppends{Driver: e.store, fail: fail}
 		e.m = New(store, Config{Agents: testAgents, Events: rec}, WithClock(e.clock.now))
@@ -284,6 +284,9 @@ func TestArchiveSnapshotFails(t *testing.T) {
 		}
 		if e.gone(t, key) || e.get(t, key).Status.DeletingSince == nil || e.entries(t, TranscriptStream(key, stepRun)) != 3 || len(rec.Events) != 0 {
 			t.Fatalf("%s: want the task marked and kept with its logs, no Event", name)
+		}
+		if name == "body" && e.entries(t, ArchiveStream(ns)) != 0 {
+			t.Fatal("an index entry is written before its body")
 		}
 		store.fail = nil
 		e.deleteFinished(t)
@@ -298,7 +301,7 @@ func TestArchiveSnapshotFails(t *testing.T) {
 // there once, and the one whose delete lands records the Event.
 func TestArchiveTwoManagers(t *testing.T) {
 	e, rec := archiveEnv(t)
-	key := e.rich(t, "a")
+	key := e.rich(t)
 	e.clock.add(time.Hour)
 	other := e.deleter(rec, nil)
 	// The other replica archives it after this one's snapshot, before its
@@ -340,7 +343,7 @@ func (b bigKeys) Keys(ctx context.Context, stream, after string, limit int) ([]s
 // alone, is deleted without a snapshot, with one SnapshotSkipped Event.
 func TestArchiveOverCap(t *testing.T) {
 	for name, over := range map[string]func(*env, storage.Key) storage.Driver{
-		"transcript": func(e *env, key storage.Key) storage.Driver {
+		"transcript": func(e *env, _ storage.Key) storage.Driver {
 			// Over the cap with its attempt entry alone.
 			return bigKeys{e.store, "/transcript/" + stepRun, MaxSnapshotBytes/3 + 1}
 		},
@@ -352,7 +355,7 @@ func TestArchiveOverCap(t *testing.T) {
 		},
 	} {
 		e, rec := archiveEnv(t)
-		key := e.rich(t, "a")
+		key := e.rich(t)
 		e.clock.add(time.Hour)
 		m := New(over(e, key), Config{Agents: testAgents, Events: rec}, WithClock(e.clock.now))
 		if err := m.DeleteFinished(ctx); err != nil {
