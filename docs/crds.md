@@ -35,8 +35,9 @@ metadata: { name: team, namespace: team-a }
 spec:
   displayName: Backend
   maxConcurrentRuns: 5
-  archiveAfter: 720h          # deprecated, not acted on
-  deleteFinishedAfter: 720h   # finished tasks are deleted after this, see below
+  archiveAfter: 720h          # finished tasks are archived after this, see below
+  archiveRetention: 2160h     # archived snapshots are kept this long (90 days unset)
+  deleteFinishedAfter: 720h   # finished tasks are deleted after this; not used while archiveAfter is set
   roles:
     - role: admin
       subjects: [{ kind: user, name: lead@example.test }]
@@ -63,15 +64,36 @@ Three roles:
 | --- | --- |
 | `viewer` | read: list and get tasks, their threads, runs and events, the team's agents, and the Team |
 | `member` | what a viewer may, and create tasks, comment, reply, approve or deny tool calls, cancel tasks |
-| `admin` | what a member may, and editing the Team (its display name, run cap, delete-after and roles) through the API, `cadre team set`, as well as with kubectl or GitOps; the only one who sees the Team's roles |
+| `admin` | what a member may, and editing the Team (its display name, run cap, archive, delete-after and roles) through the API, `cadre team set`, as well as with kubectl or GitOps; the only one who sees the Team's roles |
 
 | Field | Rule |
 | --- | --- |
 | `metadata.name` | must be `team` |
 | `spec.maxConcurrentRuns` | at least 1, default 1 |
-| `spec.archiveAfter` | deprecated and not acted on; a positive duration, such as `720h`, still checked as before |
-| `spec.deleteFinishedAfter` | optional, no default; a positive duration, such as `720h`: how long a finished task stays on the board before it is deleted, with its thread and runs. `0s` and negative durations are refused by the CRD ("deleteFinishedAfter must be a positive duration such as 720h") and by `PUT /team`. Unset, finished tasks are kept. A cadre-server with the delete loop deletes them once it has passed, **for good**: see [Deleting finished tasks](#deleting-finished-tasks). Set it in Settings or with `cadre team set --delete-finished-after 720h` (`0` unsets it) |
+| `spec.archiveAfter` | optional, no default; a positive duration, such as `720h`: how long a finished task stays on the board before it is archived, a read-only snapshot kept and the task deleted. `0s` and negative durations are refused by the CRD ("archiveAfter must be a positive duration such as 720h") and by `PUT /team`. Unset, no task is archived. While it is set, `deleteFinishedAfter` is not used. See [Archiving finished tasks](#archiving-finished-tasks). Set it with `cadre team set --archive-after 720h` (`0` unsets it) |
+| `spec.archiveRetention` | optional; a positive duration, such as `2160h`: how long an archived task's snapshot is kept. Unset, 90 days (`2160h`), applied by cadre-server, not written into the Team. Refused like `archiveAfter` ("archiveRetention must be a positive duration such as 2160h"). Snapshots past it are removed whether or not `archiveAfter` is still set. Set it with `cadre team set --archive-retention 2160h` (`0` unsets it) |
+| `spec.deleteFinishedAfter` | optional, no default; a positive duration, such as `720h`: how long a finished task stays on the board before it is deleted, with its thread and runs. `0s` and negative durations are refused by the CRD ("deleteFinishedAfter must be a positive duration such as 720h") and by `PUT /team`. Unset, finished tasks are kept. **Not used while `archiveAfter` is set.** A cadre-server with the delete loop deletes them once it has passed, **for good**: see [Deleting finished tasks](#deleting-finished-tasks). Set it in Settings or with `cadre team set --delete-finished-after 720h` (`0` unsets it) |
 | `status.nextNumber`, `status.slots`, `status.running` | written by the Task Manager only; `slots` is a list keyed by `runId`; `running` is `len(slots)`, written with it |
+
+### Archiving finished tasks
+
+A Task that is `Done`, `Cancelled` or `Failed` is archived `archiveAfter` after `status.finishedAt`: cadre-server marks it deleting, writes a read-only snapshot of it to the log store, then deletes it with its logs, as [below](#deleting-finished-tasks). The snapshot holds the Task with its status, its thread, runs, each run's events, the committed transcript steps of each step-mode run, and the latest version of each file with its content. It is one object, `<ns>/_archive/<uid>`, listed in the `<ns>/_archive` index (see [storage.md](storage.md)), and kept for `archiveRetention` (90 days unset) after the archive; then it is removed. While `archiveAfter` is set, `deleteFinishedAfter` is not used.
+
+- **Order.** Mark, snapshot, logs, object. A snapshot that cannot be written stops that task's delete before anything is deleted; the next look tries again (cadre-server logs `delete finished tasks … snapshot: …`). For a Team that archives, a log store that refuses writes therefore pauses its deletes.
+- **Cap.** A task whose logs add up to more than 50 MiB (thread, runs, run events, transcripts with their failed attempts, files) is deleted **without** a snapshot.
+- **Events.** The replica whose delete lands records one Event on the Task: Normal `TaskArchived` ("Task #12 fix-login finished 2026-10-01T09:00:00Z (Done), archived 720h later by Team.spec.archiveAfter; its snapshot is kept for 2160h"), or Warning `SnapshotSkipped` over the cap ("… deleted 720h later by Team.spec.archiveAfter without a snapshot: its logs are 63 MiB, over the 50 MiB cap"). A Team with only `deleteFinishedAfter` records `TaskDeleted` as before.
+- **Expiry.** Each look removes, for every Team, up to 100 snapshots past its `archiveRetention`, oldest first, whether the Team still archives or not.
+
+```sh
+# archive finished tasks 30 days (720h) after they finished, keep the snapshots 180 days
+kubectl -n team-a patch team team --type merge -p '{"spec":{"archiveAfter":"720h","archiveRetention":"4320h"}}'
+cadre team set -n team-a --archive-after 720h --archive-retention 4320h
+
+# stop archiving; snapshots already written stay until their retention
+cadre team set -n team-a --archive-after 0
+```
+
+**Upgrading.** `archiveAfter`, accepted but never acted on until this version, now archives: a Team with it set starts archiving its finished tasks older than it at the first look after the upgrade, 20 per look; each archived task leaves the board and is readable under Archive for `archiveRetention` (90 days unless set). Clear it before upgrading if that is not wanted: `cadre team set --archive-after 0` or `kubectl -n <ns> patch team team --type merge -p '{"spec":{"archiveAfter":null}}'`. Apply the CRDs first (`kubectl apply -f charts/cadre/crds`); against old CRDs `archiveRetention` is pruned and the default 90 days applies.
 
 ### Deleting finished tasks
 
@@ -96,15 +118,13 @@ cadre team set -n team-a --delete-finished-after 720h
 cadre team set -n team-a --delete-finished-after 0
 ```
 
-`--archive-after` is deprecated: it is hidden from `cadre team set -h`, prints "Flag --archive-after has been deprecated, it archives nothing; use --delete-finished-after", and sets only the deprecated `archiveAfter`, never `deleteFinishedAfter`.
-
 A duration of `0s` or below is refused in the Team itself: `The Team "team" is invalid: spec.deleteFinishedAfter: Invalid value: "0s": deleteFinishedAfter must be a positive duration such as 720h`.
 
 How often cadre-server looks is its own setting:
 
 | Setting | Default | |
 | --- | --- | --- |
-| `--delete-finished-interval` (cadre-server) | `1m` | how often finished tasks past their Team's `deleteFinishedAfter` are deleted, with their logs |
+| `--delete-finished-interval` (cadre-server) | `1m` | how often finished tasks past their Team's `archiveAfter` or `deleteFinishedAfter` are archived or deleted, with their logs, and expired snapshots removed |
 | `server.timings.deleteFinishedInterval` (chart) | unset, so the flag's `1m` | passed as `--delete-finished-interval` only when set, as `5m` |
 
 Each look deletes at most 20 tasks per Team, oldest first, so a Team that turns this on with a long history drains over several looks. A parent goes after its subtasks, and a task whose outbox is not applied yet goes after it is. A Task that finished before `finishedAt` existed is stamped at the first look, so it goes one full `deleteFinishedAfter` after the upgrade, not at once. How a delete is made safe against a crash, a second replica or a finalizer is in [the Task Manager](architecture.md#task-manager).
