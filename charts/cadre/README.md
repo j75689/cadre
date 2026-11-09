@@ -52,6 +52,7 @@ chart in the repository has `appVersion` `main`, the images built from main.
 | `runner.serverURL` | `server.publicURL` | where the chart's runner reaches cadre-server |
 | `server.publicURL` | the Service | where runners, the chart's included, reach cadre-server |
 | `server.watchMaxStreams` | 2000 | live-update streams each replica serves at once; one more is answered 503, and that board polls |
+| `server.timings.deleteFinishedInterval` | cadre-server's default, `1m`, when unset | how often cadre-server deletes finished tasks past their Team's `spec.deleteFinishedAfter`, as `5m`; passed as `--delete-finished-interval` only when set |
 | `workloads.clusterWide` | `false` | bind the workloads ClusterRole everywhere |
 
 ## The session key
