@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -458,6 +459,77 @@ func TestArchiveResumedFromPlainDelete(t *testing.T) {
 	want := "Warning SnapshotSkipped Task #1 a finished 2026-10-24T09:00:00Z (Cancelled), deleted 1h later by Team.spec.archiveAfter without a snapshot: its delete began under Team.spec.deleteFinishedAfter, so part of its logs may be gone"
 	if evs := drain(rec); len(evs) != 1 || evs[0] != want {
 		t.Fatalf("Events %q, want %q", evs, want)
+	}
+}
+
+// onFirstRead is a store that runs fn on the first Read of a stream ending
+// in suffix, before reading it.
+type onFirstRead struct {
+	storage.Driver
+	suffix string
+	once   *sync.Once
+	fn     func(context.Context)
+}
+
+func (o onFirstRead) Read(ctx context.Context, stream, after string, limit int) ([]storage.Entry, error) {
+	if strings.HasSuffix(stream, o.suffix) {
+		o.once.Do(func() { o.fn(ctx) })
+	}
+	return o.Driver.Read(ctx, stream, after, limit)
+}
+
+// A replica deleting under deleteFinishedAfter that picks up a task another
+// replica marked to archive, and is writing the snapshot of, writes the
+// whole snapshot before it deletes the logs, under the archiveAfter marked,
+// so the other replica's, made from what is left, is not stored.
+func TestArchiveMarkResumedByPlainDelete(t *testing.T) {
+	e, _ := archiveEnv(t)
+	key := e.rich(t)
+	uid := string(e.get(t, key).UID)
+	e.clock.add(time.Hour)
+	recArchive, recPlain := events.NewFakeRecorder(10), events.NewFakeRecorder(10)
+	plain := e.deleter(recPlain, nil)
+	// Once it read the thread, the Team stops archiving and the other
+	// replica deletes.
+	archive := New(onFirstRead{e.store, "/runs", &sync.Once{}, func(ctx context.Context) {
+		e.setTeam(t, func(s *v1alpha1.TeamSpec) {
+			s.ArchiveAfter = nil
+			s.DeleteFinishedAfter = &metav1.Duration{Duration: 3 * time.Hour}
+		})
+		if err := plain.DeleteFinished(ctx); err != nil {
+			t.Errorf("the plain delete: %v", err)
+		}
+	}}, Config{Agents: testAgents, Events: recArchive}, WithClock(e.clock.now))
+	if err := archive.DeleteFinished(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if !e.gone(t, key) {
+		t.Fatal("the task is kept")
+	}
+	index, bodies := e.snapshots(t)
+	if len(index) != 1 || len(bodies[uid]) != 1 {
+		t.Fatalf("%d index entries and %d bodies, want one each", len(index), len(bodies))
+	}
+	var snap Snapshot
+	if err := json.Unmarshal(bodies[uid][0].Data, &snap); err != nil {
+		t.Fatal(err)
+	}
+	if len(snap.Runs) != 3 || len(snap.Transcripts[stepRun]) != len(stepEntries) || len(snap.Files) != 1 {
+		t.Fatalf("snapshot runs %+v, transcript %s, files %+v: want the whole task's", snap.Runs, snap.Transcripts[stepRun], snap.Files)
+	}
+	var sum SnapshotSummary
+	if err := json.Unmarshal(index[0].Data, &sum); err != nil {
+		t.Fatal(err)
+	}
+	if sum.ArchiveAfter.Duration != time.Hour || snap.ArchiveAfter.Duration != time.Hour {
+		t.Fatalf("archiveAfter %v in the index, %v in the body, want the 1h marked", sum.ArchiveAfter, snap.ArchiveAfter)
+	}
+	want := "Normal TaskArchived Task #1 a finished 2026-10-24T09:00:00Z (Cancelled), archived 1h later by Team.spec.archiveAfter; its snapshot is kept for 2160h"
+	if evs := drain(recPlain); len(evs) != 1 || evs[0] != want {
+		t.Fatalf("Events of the replica whose delete landed %q, want %q", evs, want)
+	}
+	if evs := drain(recArchive); len(evs) != 0 {
+		t.Fatalf("Events of the other replica %q, want none", evs)
 	}
 }
 

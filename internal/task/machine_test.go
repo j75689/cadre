@@ -529,7 +529,7 @@ func TestDelete(t *testing.T) {
 		t.Fatalf("a delete that archives nothing has conditions %+v", s.Conditions)
 	}
 	// An archive says on the mark whether a snapshot is written.
-	for _, ev := range []Delete{{Archive: true}, {Archive: true, Skipped: "too big"}} {
+	for _, ev := range []Delete{{Archive: true, ArchiveAfter: 90 * time.Minute}, {Archive: true, Skipped: "too big"}} {
 		c := meta.FindStatusCondition(apply(t, done, ev).Status.Conditions, ConditionSnapshot)
 		switch {
 		case c == nil:
@@ -540,6 +540,11 @@ func TestDelete(t *testing.T) {
 			t.Errorf("%+v: condition %+v, want False Skipped %q", ev, c, ev.Skipped)
 		case !c.LastTransitionTime.Equal(s.DeletingSince):
 			t.Errorf("%+v: condition at %v, want the mark's %v", ev, c.LastTransitionTime, s.DeletingSince)
+		}
+		if ev.Skipped == "" {
+			if d, err := MarkedArchiveAfter(c); err != nil || d != ev.ArchiveAfter {
+				t.Errorf("%+v: archiveAfter read back from %q: %v, %v", ev, c.Message, d, err)
+			}
 		}
 	}
 	deleting := &v1alpha1.Task{Spec: done.Spec, Status: s}

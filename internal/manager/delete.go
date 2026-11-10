@@ -116,14 +116,15 @@ func (m *Manager) deleteFinished(ctx context.Context, ns string, d time.Duration
 // and if archive with the mark saying whether a snapshot is written, as
 // its logs measured just before; if so, write it, and stop there if that
 // fails, nothing deleted; delete its streams; delete the object, at the
-// version marked, so a task made again under the name is not deleted. An
-// archive picked up on a mark without a snapshot writes none: the mark
-// said so, or a delete that did not archive made it, and may have deleted
-// part of the logs. A task whose outbox is not applied yet stays for a
+// version marked, so a task made again under the name is not deleted. A
+// delete picked up on a mark with a snapshot writes it, archived as
+// marked, even if it does not archive itself. An archive picked up on a
+// mark without a snapshot writes none: the mark said so, or a delete that
+// did not archive made it, and may have deleted part of the logs. A task whose outbox is not applied yet stays for a
 // later tick. The task's Event is recorded only by the replica whose
 // delete landed.
 func (m *Manager) deleteTask(ctx context.Context, key storage.Key, d time.Duration, archive bool) error {
-	mark := task.Delete{Archive: archive}
+	mark := task.Delete{Archive: archive, ArchiveAfter: d}
 	if archive {
 		skipped, err := m.overCap(ctx, key)
 		if err != nil {
@@ -144,17 +145,22 @@ func (m *Manager) deleteTask(ctx context.Context, key storage.Key, d time.Durati
 		return nil // a delete landed, read before the list saw it
 	}
 	var skipped string
-	if archive {
-		switch c := meta.FindStatusCondition(t.Status.Conditions, task.ConditionSnapshot); {
-		case c == nil:
-			skipped = "its delete began under Team.spec.deleteFinishedAfter, so part of its logs may be gone"
-		case c.Status != metav1.ConditionTrue:
-			skipped = c.Message
-		default:
-			if err := m.snapshot(ctx, t, d); err != nil {
-				return fmt.Errorf("snapshot: %w", err)
-			}
+	switch c := meta.FindStatusCondition(t.Status.Conditions, task.ConditionSnapshot); {
+	case c != nil && c.Status == metav1.ConditionTrue:
+		// Even a delete that does not archive: another replica may be
+		// writing the snapshot, from the logs this one would delete.
+		if d, err = task.MarkedArchiveAfter(c); err != nil {
+			return fmt.Errorf("snapshot: %w", err)
 		}
+		archive = true
+		if err := m.snapshot(ctx, t, d); err != nil {
+			return fmt.Errorf("snapshot: %w", err)
+		}
+	case !archive:
+	case c == nil:
+		skipped = "its delete began under Team.spec.deleteFinishedAfter, so part of its logs may be gone"
+	default:
+		skipped = c.Message
 	}
 	if err := m.store.DeleteStream(ctx, key.Namespace+"/"+key.Name); err != nil {
 		return err
