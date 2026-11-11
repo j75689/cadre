@@ -219,18 +219,21 @@ describe("ArchivePage", () => {
     open(() =>
       json({
         ...snapshot,
+        title: html,
         task: { ...snapshot.task, spec: { ...snapshot.task.spec, description: html } },
         thread: [entry(1, "Comment", { body: html })],
         transcripts: { [stepRun]: [step] },
         files: [{ path: "notes/x.html", version: 1, size: html.length, content: html }],
       }),
     );
-    const main = (await screen.findByRole("heading", { level: 1 })).closest("main")!;
+    const heading = await screen.findByRole("heading", { level: 1 });
+    const main = heading.closest("main")!;
     const details = within(main).getByText("Transcript (1 step)").closest("details")!;
     details.open = true;
     fireEvent(details, new Event("toggle"));
     const transcript = await waitFor(() => details.querySelector<HTMLElement>("ol.transcript")!);
 
+    expect(heading.textContent).toBe(`#7 ${html}`);
     expect(within(main).getByRole("region", { name: "Description" }).querySelector("pre")?.textContent).toBe(html);
     expect(within(within(main).getByRole("region", { name: "Thread" })).getByText(html)).toBeTruthy();
     expect(within(transcript).getByText(html)).toBeTruthy();
