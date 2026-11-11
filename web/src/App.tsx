@@ -2,6 +2,8 @@ import { useEffect, useState } from "react";
 import { Link, Outlet, Route, Routes, useParams } from "react-router";
 import { AccessDetail, AccessList } from "./Access";
 import { Activity } from "./Activity";
+import { Archive } from "./Archive";
+import { ArchivePage } from "./ArchivePage";
 import { AgentDetail } from "./AgentDetail";
 import { Agents } from "./Agents";
 import { ModelProviderDetail, ModelProviders } from "./ModelProviders";
@@ -107,6 +109,18 @@ function TeamRunners() {
 function OneRunner() {
   const { ns = "", name = "" } = useParams();
   return <RunnerDetail key={`${ns}/${name}`} />;
+}
+
+// the archive,
+function TeamArchive() {
+  const { ns = "" } = useParams();
+  return <Archive key={ns} />;
+}
+
+// an archived task's page to one archived task,
+function OneArchived() {
+  const { ns = "", uid = "" } = useParams();
+  return <ArchivePage key={`${ns}/${uid}`} />;
 }
 
 // the settings,
@@ -279,6 +293,8 @@ export function App() {
             <Route index element={<Teams />} />
             <Route path="t/:ns" element={<TeamLayout />}>
               <Route index element={<TeamBoard />} />
+              <Route path="archive" element={<TeamArchive />} />
+              <Route path="archive/:uid" element={<OneArchived />} />
               <Route path="agents" element={<TeamAgents />} />
               <Route path="agents/:name" element={<OneAgent />} />
               <Route path="modelproviders" element={<TeamModelProviders />} />

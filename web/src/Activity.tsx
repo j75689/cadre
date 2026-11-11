@@ -198,11 +198,15 @@ function TypeBadge({ type }: { type: string }) {
   );
 }
 
+// gone are the reasons of the Events that say a Task was deleted: archived,
+// or deleted with or without a snapshot.
+const gone = ["TaskDeleted", "TaskArchived", "SnapshotSkipped"];
+
 // Regarding is the object an Event is about, a link to its page where its
 // kind has one, except a Task the Event says was deleted. A narrow column
 // breaks it after the kind.
 function Regarding({ ns, reason, kind, name }: { ns: string; reason: string; kind: string; name: string }) {
-  const page = kind === "Task" && reason === "TaskDeleted" ? undefined : pages[kind];
+  const page = kind === "Task" && gone.includes(reason) ? undefined : pages[kind];
   return (
     <span className="mono">
       <span className="muted">{kind}/</span>
