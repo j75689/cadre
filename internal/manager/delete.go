@@ -146,6 +146,10 @@ func (m *Manager) deleteTask(ctx context.Context, key storage.Key, d time.Durati
 		return nil // a delete landed, read before the list saw it
 	}
 	var skipped string
+	by := "deleteFinishedAfter" // the Team field d came from
+	if archive {
+		by = "archiveAfter"
+	}
 	switch c := meta.FindStatusCondition(t.Status.Conditions, task.ConditionSnapshot); {
 	case c != nil && c.Status == metav1.ConditionTrue:
 		// Even a delete that does not archive: another replica may be
@@ -155,7 +159,7 @@ func (m *Manager) deleteTask(ctx context.Context, key storage.Key, d time.Durati
 		if marked, err := task.MarkedArchiveAfter(c); err != nil {
 			m.log.Warn("cannot read the archiveAfter of a Snapshot mark: the snapshot is written under this delete's", "task", key.String(), "archiveAfter", shortDuration(d), "err", err)
 		} else {
-			d = marked
+			d, by = marked, "archiveAfter"
 		}
 		archive = true
 		if err := m.snapshot(ctx, t, d); err != nil {
@@ -174,7 +178,7 @@ func (m *Manager) deleteTask(ctx context.Context, key storage.Key, d time.Durati
 		err := m.store.DeleteTask(ctx, t)
 		switch {
 		case err == nil:
-			m.recordDeleted(t, d, archive, skipped, m.retention(ctx, key.Namespace, archive && skipped == ""))
+			m.recordDeleted(t, d, by, archive, skipped, m.retention(ctx, key.Namespace, archive && skipped == ""))
 			return nil
 		case errors.Is(err, storage.ErrNotFound):
 			return nil // another replica's delete landed
@@ -221,10 +225,11 @@ func (m *Manager) retention(ctx context.Context, ns string, needed bool) time.Du
 }
 
 // recordDeleted records the Event of t, as read before its delete:
-// TaskDeleted, or if archive TaskArchived, with the snapshot's retention,
-// or SnapshotSkipped when the snapshot was skipped for the reason skipped.
+// TaskDeleted, or if archive TaskArchived, naming by, the Team field d
+// came from, with the snapshot's retention, or SnapshotSkipped when the
+// snapshot was skipped for the reason skipped.
 // The recorder queues it, so a refused Event fails no delete.
-func (m *Manager) recordDeleted(t *v1alpha1.Task, d time.Duration, archive bool, skipped string, retention time.Duration) {
+func (m *Manager) recordDeleted(t *v1alpha1.Task, d time.Duration, by string, archive bool, skipped string, retention time.Duration) {
 	if m.cfg.Events == nil {
 		return
 	}
@@ -240,7 +245,7 @@ func (m *Manager) recordDeleted(t *v1alpha1.Task, d time.Duration, archive bool,
 			t.Status.Number, t.Name, finished, t.Status.Phase, shortDuration(d), skipped)
 	default:
 		m.cfg.Events.Eventf(t, nil, corev1.EventTypeNormal, "TaskArchived", "Archive",
-			"Task #%d %s finished %s (%s), archived %s later by Team.spec.archiveAfter; its snapshot is kept for %s",
-			t.Status.Number, t.Name, finished, t.Status.Phase, shortDuration(d), shortDuration(retention))
+			"Task #%d %s finished %s (%s), archived %s later by Team.spec.%s; its snapshot is kept for %s",
+			t.Status.Number, t.Name, finished, t.Status.Phase, shortDuration(d), by, shortDuration(retention))
 	}
 }

@@ -364,6 +364,40 @@ func TestArchiveUnreadableMark(t *testing.T) {
 	}
 }
 
+// A delete under deleteFinishedAfter that picks up a Snapshot mark it
+// cannot read archives under deleteFinishedAfter, and its Event says so.
+func TestArchiveUnreadableMarkByPlainDelete(t *testing.T) {
+	e, rec := archiveEnv(t)
+	key := e.rich(t)
+	e.clock.add(2 * time.Hour)
+	failing := New(&failAppends{Driver: e.store, fail: func(stream string) bool { return strings.Contains(stream, "/_archive/") }},
+		Config{Agents: testAgents, Events: rec}, WithClock(e.clock.now))
+	if err := failing.DeleteFinished(ctx); err == nil {
+		t.Fatal("the first tick archived with the body's write failing")
+	}
+	tk := e.get(t, key)
+	c := meta.FindStatusCondition(tk.Status.Conditions, task.ConditionSnapshot)
+	if c == nil || c.Status != metav1.ConditionTrue {
+		t.Fatalf("conditions %+v, want a True Snapshot mark", tk.Status.Conditions)
+	}
+	c.Message = ""
+	if err := e.store.UpdateTaskStatus(ctx, tk); err != nil {
+		t.Fatal(err)
+	}
+	e.setTeam(t, func(s *v1alpha1.TeamSpec) {
+		s.ArchiveAfter = nil
+		s.DeleteFinishedAfter = &metav1.Duration{Duration: 2 * time.Hour}
+	})
+	e.deleteFinished(t)
+	if !e.gone(t, key) {
+		t.Fatal("the task is kept")
+	}
+	want := "Normal TaskArchived Task #1 a finished 2026-10-24T09:00:00Z (Cancelled), archived 2h later by Team.spec.deleteFinishedAfter; its snapshot is kept for 2160h"
+	if evs := drain(rec); len(evs) != 1 || evs[0] != want {
+		t.Fatalf("Events %q, want %q", evs, want)
+	}
+}
+
 // Of two replicas archiving one task, both write the snapshot, which is
 // there once, and the one whose delete lands records the Event.
 func TestArchiveTwoManagers(t *testing.T) {
