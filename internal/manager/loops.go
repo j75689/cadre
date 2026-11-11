@@ -554,7 +554,8 @@ type LoopConfig struct {
 	Reclaim  time.Duration // how often expired leases are reclaimed
 	Dispatch time.Duration // how often the outbox is applied, new tasks numbered and Team counts reconciled
 	// DeleteFinished is how often finished tasks past their Team's
-	// deleteFinishedAfter are deleted.
+	// archiveAfter or deleteFinishedAfter are archived or deleted, and
+	// expired snapshots removed.
 	DeleteFinished time.Duration
 }
 

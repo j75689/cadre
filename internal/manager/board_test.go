@@ -332,6 +332,8 @@ func TestValidateTeamSpec(t *testing.T) {
 	for name, spec := range map[string]v1alpha1.TeamSpec{
 		"archiveAfter 0s":         {ArchiveAfter: &metav1.Duration{}},
 		"archiveAfter -1h":        {ArchiveAfter: &metav1.Duration{Duration: -time.Hour}},
+		"archiveRetention 0s":     {ArchiveRetention: &metav1.Duration{}},
+		"archiveRetention -1h":    {ArchiveRetention: &metav1.Duration{Duration: -time.Hour}},
 		"deleteFinishedAfter 0s":  {DeleteFinishedAfter: &metav1.Duration{}},
 		"deleteFinishedAfter -1h": {DeleteFinishedAfter: &metav1.Duration{Duration: -time.Hour}},
 	} {
@@ -339,9 +341,17 @@ func TestValidateTeamSpec(t *testing.T) {
 			t.Errorf("%s: %v, want ErrInvalid", name, err)
 		}
 	}
-	spec := v1alpha1.TeamSpec{ArchiveAfter: &metav1.Duration{Duration: time.Hour}, DeleteFinishedAfter: &metav1.Duration{Duration: 720 * time.Hour}}
+	spec := v1alpha1.TeamSpec{ArchiveAfter: &metav1.Duration{Duration: time.Hour}, ArchiveRetention: &metav1.Duration{Duration: 48 * time.Hour}, DeleteFinishedAfter: &metav1.Duration{Duration: 720 * time.Hour}}
 	if err := ValidateTeamSpec(&spec); err != nil {
 		t.Errorf("positive durations: %v", err)
+	}
+	if spec.ArchiveRetention.Duration != 48*time.Hour {
+		t.Errorf("archiveRetention %s, want 48h as given", spec.ArchiveRetention.Duration)
+	}
+	// Unset, the retention stays unset: its default is applied where used.
+	spec = v1alpha1.TeamSpec{ArchiveAfter: &metav1.Duration{Duration: time.Hour}}
+	if err := ValidateTeamSpec(&spec); err != nil || spec.ArchiveRetention != nil {
+		t.Errorf("archiveAfter alone: retention %v, %v; want unset, nil", spec.ArchiveRetention, err)
 	}
 }
 

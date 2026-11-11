@@ -30,10 +30,39 @@ func deleteEnv(t *testing.T) (*env, *events.FakeRecorder) {
 	return e, rec
 }
 
-// deleter returns another Task Manager on e's store with rec and snapshot.
-func (e *env) deleter(rec events.EventRecorder, snapshot func(context.Context, *v1alpha1.Task) error) *Manager {
-	return New(e.store, Config{Agents: testAgents, Events: rec, Snapshot: snapshot}, WithClock(e.clock.now))
+// deleter returns another Task Manager on e's store with rec. A delete
+// of it calls before, if not nil, with the task as marked, just before it
+// deletes the task's streams: after the mark and the snapshot.
+func (e *env) deleter(rec events.EventRecorder, before func(context.Context, *v1alpha1.Task) error) *Manager {
+	store := e.store
+	if before != nil {
+		store = beforeStreams{e.store, before}
+	}
+	return New(store, Config{Agents: testAgents, Events: rec}, WithClock(e.clock.now))
 }
+
+// beforeStreams is a store that calls before with a task, read again,
+// just before it deletes the task's streams.
+type beforeStreams struct {
+	storage.Driver
+	before func(context.Context, *v1alpha1.Task) error
+}
+
+func (b beforeStreams) DeleteStream(ctx context.Context, stream string) error {
+	if namespace, name, _ := strings.Cut(stream, "/"); !strings.Contains(name, "/") {
+		tk, err := b.GetTask(ctx, storage.Key{Namespace: namespace, Name: name})
+		if err != nil {
+			return err
+		}
+		if err := b.before(ctx, tk); err != nil {
+			return err
+		}
+	}
+	return b.Driver.DeleteStream(ctx, stream)
+}
+
+// finishedRun is the run of finished's run record.
+const finishedRun = "01JB0000000000000000000001"
 
 // finished adds a task, cancels it now, and gives it a thread entry and a
 // run record.
@@ -43,10 +72,11 @@ func (e *env) finished(t *testing.T, name string) storage.Key {
 	if _, err := e.m.Cancel(ctx, key); err != nil {
 		t.Fatal(err)
 	}
-	for _, stream := range []string{ThreadStream(key), RunsStream(key)} {
-		if err := e.store.Append(ctx, stream, storage.SeqKey(1), []byte(`{}`)); err != nil {
-			t.Fatal(err)
-		}
+	if err := e.store.Append(ctx, ThreadStream(key), storage.SeqKey(1), []byte(`{}`)); err != nil {
+		t.Fatal(err)
+	}
+	if err := e.store.Append(ctx, RunsStream(key), finishedRun, []byte(`{"id":"`+finishedRun+`","mode":"runtime"}`)); err != nil {
+		t.Fatal(err)
 	}
 	return key
 }
@@ -281,8 +311,8 @@ func TestDeleteFinishedResumes(t *testing.T) {
 	e, rec := deleteEnv(t)
 	key := e.finished(t, "a")
 	failing := e.deleter(rec, func(context.Context, *v1alpha1.Task) error { return errors.New("stopped") })
-	if err := failing.deleteTask(ctx, key, time.Hour); err == nil {
-		t.Fatal("a delete whose snapshot fails succeeds")
+	if err := failing.deleteTask(ctx, key, time.Hour, false); err == nil {
+		t.Fatal("a delete whose streams fail to delete succeeds")
 	}
 	if e.gone(t, key) || e.get(t, key).Status.DeletingSince == nil {
 		t.Fatal("want the task marked and kept")
@@ -383,28 +413,6 @@ func TestDeleteFinishedStreamFails(t *testing.T) {
 	}
 }
 
-// The snapshot sees the task marked and its logs whole, once.
-func TestDeleteFinishedSnapshot(t *testing.T) {
-	e, rec := deleteEnv(t)
-	key := e.finished(t, "a")
-	e.clock.add(time.Hour)
-	calls := 0
-	e.m = e.deleter(rec, func(_ context.Context, tk *v1alpha1.Task) error {
-		calls++
-		if tk.Name != "a" || tk.Status.DeletingSince == nil {
-			t.Errorf("snapshot of %s, deletingSince %v: want a, marked", tk.Name, tk.Status.DeletingSince)
-		}
-		if n := e.entries(t, ThreadStream(key)) + e.entries(t, RunsStream(key)); n != 2 {
-			t.Errorf("%d log entries at the snapshot, want 2", n)
-		}
-		return nil
-	})
-	e.deleteFinished(t)
-	if !e.gone(t, key) || calls != 1 {
-		t.Fatalf("gone %v after %d snapshots, want gone after 1", e.gone(t, key), calls)
-	}
-}
-
 // Run deletes finished tasks on its own ticker.
 func TestRunDeletesFinished(t *testing.T) {
 	e, _ := deleteEnv(t)
@@ -471,17 +479,22 @@ func (f *finalizers) DeleteTask(ctx context.Context, t *v1alpha1.Task) error {
 }
 
 // heldEnv is deleteEnv on a store where a finalizer holds task "held",
-// with snapshots counted by task name.
+// with the stream deletes counted by task name.
 func heldEnv(t *testing.T) (*env, *events.FakeRecorder, map[string]int) {
 	t.Helper()
 	e, rec := deleteEnv(t)
 	e.store = &finalizers{Driver: e.store, held: map[string]bool{"held": true}, deleted: map[string]bool{}}
-	snapshots := map[string]int{}
-	e.m = e.deleter(rec, func(_ context.Context, tk *v1alpha1.Task) error {
-		snapshots[tk.Name]++
+	streams := map[string]int{}
+	e.m = e.deleter(rec, count(streams))
+	return e, rec, streams
+}
+
+// count counts the tasks it is called with in n, by name.
+func count(n map[string]int) func(context.Context, *v1alpha1.Task) error {
+	return func(_ context.Context, tk *v1alpha1.Task) error {
+		n[tk.Name]++
 		return nil
-	})
-	return e, rec, snapshots
+	}
 }
 
 // deletedEvents counts rec's TaskDeleted Events by task name.
@@ -498,15 +511,15 @@ func deletedEvents(rec *events.FakeRecorder) map[string]int {
 	return n
 }
 
-// A task held by a finalizer is deleted once, at one snapshot and one
+// A task held by a finalizer is deleted once, at one stream delete and one
 // Event, and left alone at the ticks of either replica after; a task
 // without one goes as before.
 func TestDeleteFinishedHeldByFinalizer(t *testing.T) {
-	e, rec, snapshots := heldEnv(t)
+	e, rec, streams := heldEnv(t)
 	held := e.finished(t, "held")
 	free := e.finished(t, "free")
 	e.clock.add(time.Hour)
-	other := e.deleter(rec, e.m.cfg.Snapshot)
+	other := e.deleter(rec, count(streams))
 	for range 3 {
 		for _, m := range []*Manager{e.m, other} {
 			if err := m.DeleteFinished(ctx); err != nil {
@@ -524,14 +537,14 @@ func TestDeleteFinishedHeldByFinalizer(t *testing.T) {
 	if n := deletedEvents(rec); n["held"] != 1 || n["free"] != 1 {
 		t.Fatalf("TaskDeleted Events %v, want 1 each", n)
 	}
-	if snapshots["held"] != 1 || snapshots["free"] != 1 {
-		t.Fatalf("snapshots %v, want 1 each", snapshots)
+	if streams["held"] != 1 || streams["free"] != 1 {
+		t.Fatalf("stream deletes %v, want 1 each", streams)
 	}
 }
 
 // Of two replicas deleting a task held by a finalizer, only the one whose
 // delete lands records the Event: the other's delete conflicts and reads
-// the task terminating, or reads it so before its snapshot.
+// the task terminating, or reads it so before its stream delete.
 func TestDeleteFinishedHeldTwoManagers(t *testing.T) {
 	e, rec, _ := heldEnv(t)
 	key := e.finished(t, "held")
@@ -543,7 +556,7 @@ func TestDeleteFinishedHeldTwoManagers(t *testing.T) {
 	if err := slow.DeleteFinished(ctx); err != nil {
 		t.Fatal(err)
 	}
-	if err := slow.deleteTask(ctx, key, time.Hour); err != nil {
+	if err := slow.deleteTask(ctx, key, time.Hour, false); err != nil {
 		t.Fatal(err)
 	}
 	if n := deletedEvents(rec); n["held"] != 1 {
@@ -555,7 +568,7 @@ func TestDeleteFinishedHeldTwoManagers(t *testing.T) {
 // uses none of the batch and takes no write: the tick deletes the 20 due
 // tasks after it.
 func TestDeleteFinishedHeldSkipped(t *testing.T) {
-	e, rec, snapshots := heldEnv(t)
+	e, rec, streams := heldEnv(t)
 	held := e.finished(t, "held")
 	e.store.(*finalizers).deleted["held"] = true
 	var keys []storage.Key
@@ -570,8 +583,8 @@ func TestDeleteFinishedHeldSkipped(t *testing.T) {
 			t.Errorf("%s is kept", key.Name)
 		}
 	}
-	if e.get(t, held).Status.DeletingSince != nil || snapshots["held"] != 0 || len(rec.Events) != deleteBatch {
-		t.Fatalf("held task marked %v, %d snapshots, %d Events: want unmarked, 0, %d",
-			e.get(t, held).Status.DeletingSince != nil, snapshots["held"], len(rec.Events), deleteBatch)
+	if e.get(t, held).Status.DeletingSince != nil || streams["held"] != 0 || len(rec.Events) != deleteBatch {
+		t.Fatalf("held task marked %v, %d stream deletes, %d Events: want unmarked, 0, %d",
+			e.get(t, held).Status.DeletingSince != nil, streams["held"], len(rec.Events), deleteBatch)
 	}
 }

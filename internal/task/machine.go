@@ -11,6 +11,7 @@ import (
 	"strings"
 	"time"
 
+	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/util/validation"
 
@@ -361,8 +362,36 @@ func (NotifyClaim) kind() Kind { return KindSending }
 
 // Delete marks a finished task as being deleted: from then on it takes no
 // event, so nothing is written to it while its logs and object go. It is
-// refused while the outbox holds side effects not yet applied.
-type Delete struct{}
+// refused while the outbox holds side effects not yet applied. An archive
+// records on the mark, as the ConditionSnapshot condition, whether a
+// snapshot is written before the logs go, so a delete picked up later, here
+// or on another replica, decides the same.
+type Delete struct {
+	// Archive marks the task archived ArchiveAfter after it finished: with
+	// a snapshot, or without one if Skipped says why.
+	Archive      bool
+	ArchiveAfter time.Duration
+	Skipped      string
+}
+
+// ConditionSnapshot is the condition of a task marked deleting by an
+// archive: True, a snapshot of it is written before its logs are deleted,
+// with the archiveAfter it was marked under in its message; False, it is
+// deleted without one, for the reason in its message.
+const ConditionSnapshot = "Snapshot"
+
+// snapshotMessage is the message of a True ConditionSnapshot.
+const snapshotMessage = "archived %s after it finished: a snapshot is written before the logs are deleted"
+
+// MarkedArchiveAfter is the archiveAfter a True ConditionSnapshot c was
+// marked under.
+func MarkedArchiveAfter(c *metav1.Condition) (time.Duration, error) {
+	var d string
+	if _, err := fmt.Sscanf(c.Message, "archived %s after", &d); err != nil {
+		return 0, fmt.Errorf("%s condition %q: %w", ConditionSnapshot, c.Message, err)
+	}
+	return time.ParseDuration(d)
+}
 
 func (Delete) kind() Kind { return KindDelete }
 
@@ -701,6 +730,14 @@ func Apply(t *v1alpha1.Task, ev Event, now time.Time) (Result, error) {
 		}
 		since := metaTime(now)
 		s.DeletingSince = &since
+		if ev.Archive {
+			c := metav1.Condition{Type: ConditionSnapshot, Status: metav1.ConditionTrue, Reason: "Archive",
+				Message: fmt.Sprintf(snapshotMessage, ev.ArchiveAfter), LastTransitionTime: since}
+			if ev.Skipped != "" {
+				c.Status, c.Reason, c.Message = metav1.ConditionFalse, "Skipped", ev.Skipped
+			}
+			meta.SetStatusCondition(&s.Conditions, c)
+		}
 
 	case StampFinished:
 		// Stamped below, if it is not.

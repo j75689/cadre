@@ -430,6 +430,9 @@ func ValidateTeamSpec(spec *v1alpha1.TeamSpec) error {
 	if a := spec.ArchiveAfter; a != nil && a.Duration <= 0 {
 		return fmt.Errorf("archiveAfter %s must be a positive duration such as 720h: %w", a.Duration, ErrInvalid)
 	}
+	if r := spec.ArchiveRetention; r != nil && r.Duration <= 0 {
+		return fmt.Errorf("archiveRetention %s must be a positive duration such as 2160h: %w", r.Duration, ErrInvalid)
+	}
 	if d := spec.DeleteFinishedAfter; d != nil && d.Duration <= 0 {
 		return fmt.Errorf("deleteFinishedAfter %s must be a positive duration such as 720h: %w", d.Duration, ErrInvalid)
 	}

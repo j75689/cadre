@@ -104,13 +104,21 @@ func TestTaskLifeFromTheCLI(t *testing.T) {
 	if team, err := m.LiveTeam(ctx, "team-a"); err != nil || team.Spec.DeleteFinishedAfter != nil || team.Spec.MaxConcurrentRuns != 2 {
 		t.Fatalf("after --delete-finished-after 0: %+v, %v", team, err)
 	}
-	// --archive-after is deprecated: still taken, never as the delete-after,
-	// and not in the help.
-	mustContain(t, cadre(t, srv.URL, "team", "set", "--archive-after", "720h"), "Flag --archive-after has been deprecated, it archives nothing; use --delete-finished-after")
+	// --archive-after sets the archive-after, never the delete-after, and
+	// --archive-retention its retention; 0 clears it.
+	cadre(t, srv.URL, "team", "set", "--archive-after", "720h")
 	if team, err := m.LiveTeam(ctx, "team-a"); err != nil || team.Spec.ArchiveAfter.Duration != 720*time.Hour || team.Spec.DeleteFinishedAfter != nil {
 		t.Fatalf("after --archive-after 720h: %+v, %v", team, err)
 	}
-	if help := cadre(t, srv.URL, "team", "set", "-h"); !strings.Contains(help, "--delete-finished-after") || strings.Contains(help, "archive-after") {
+	cadre(t, srv.URL, "team", "set", "--archive-retention", "48h")
+	if team, err := m.LiveTeam(ctx, "team-a"); err != nil || team.Spec.ArchiveRetention.Duration != 48*time.Hour || team.Spec.ArchiveAfter.Duration != 720*time.Hour {
+		t.Fatalf("after --archive-retention 48h: %+v, %v", team, err)
+	}
+	cadre(t, srv.URL, "team", "set", "--archive-retention", "0")
+	if team, err := m.LiveTeam(ctx, "team-a"); err != nil || team.Spec.ArchiveRetention != nil || team.Spec.ArchiveAfter == nil {
+		t.Fatalf("after --archive-retention 0: %+v, %v", team, err)
+	}
+	if help := cadre(t, srv.URL, "team", "set", "-h"); !strings.Contains(help, "--delete-finished-after") || !strings.Contains(help, "--archive-after") || !strings.Contains(help, "--archive-retention") {
 		t.Fatalf("team set -h:\n%s", help)
 	}
 	if err := cadreFails(t, srv.URL, "team", "set", "--max-concurrent-runs", "0"); !strings.Contains(err.Error(), "at least 1") {

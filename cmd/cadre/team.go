@@ -53,12 +53,13 @@ func newTeamSet(g *globals) *cobra.Command {
 		displayName  string
 		maxRuns      int32
 		archiveAfter time.Duration
+		retention    time.Duration
 		delAfter     time.Duration
 		roles        []string
 	)
 	cmd := &cobra.Command{
 		Use:   "set",
-		Short: "Edit the team: its display name, run cap, delete-after and roles",
+		Short: "Edit the team: its display name, run cap, archive, delete-after and roles",
 		Args:  cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			c := g.client()
@@ -82,6 +83,13 @@ func newTeamSet(g *globals) *cobra.Command {
 				s.ArchiveAfter = nil
 				if archiveAfter != 0 {
 					s.ArchiveAfter = &metav1.Duration{Duration: archiveAfter}
+				}
+			}
+			if f.Changed("archive-retention") {
+				// 0 is the default: 90 days.
+				s.ArchiveRetention = nil
+				if retention != 0 {
+					s.ArchiveRetention = &metav1.Duration{Duration: retention}
 				}
 			}
 			if f.Changed("delete-finished-after") {
@@ -108,10 +116,10 @@ func newTeamSet(g *globals) *cobra.Command {
 	f := cmd.Flags()
 	f.StringVar(&displayName, "display-name", "", "name shown on the board")
 	f.Int32Var(&maxRuns, "max-concurrent-runs", 0, "how many of the team's tasks may run at once; unchanged when not given")
-	f.DurationVar(&archiveAfter, "archive-after", 0, "how long a finished task stays on the board, as 720h; 0 for never")
+	f.DurationVar(&archiveAfter, "archive-after", 0, "how long a finished task stays on the board before it is archived (a read-only snapshot kept for --archive-retention) and deleted, as 720h; 0 for never")
+	f.DurationVar(&retention, "archive-retention", 0, "how long an archived task's snapshot is kept, as 2160h; 0 for the default 90 days")
 	f.DurationVar(&delAfter, "delete-finished-after", 0, "how long a finished task stays before it is deleted for good, with its thread, runs and files, as 720h; 0 keeps finished tasks")
 	f.StringArrayVar(&roles, "role", nil, roleUsage+"; replaces all the team's roles (to remove them all, use the API or kubectl)")
-	_ = f.MarkDeprecated("archive-after", "it archives nothing; use --delete-finished-after")
 	return cmd
 }
 

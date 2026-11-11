@@ -1001,3 +1001,44 @@ func testLogDeleteStream(t *testing.T, s *suite) {
 		t.Errorf("delete a malformed stream: got %v, want ErrInvalidName", err)
 	}
 }
+
+// Deleting an entry leaves the stream's others; deleting it again, or one
+// never written, is not an error.
+func testLogDeleteEntry(t *testing.T, s *suite) {
+	d := s.open()
+	stream := s.ns + "/_archive"
+	for _, key := range []string{"a", "b"} {
+		if err := d.Append(s.ctx, stream, key, []byte(key)); err != nil {
+			t.Fatalf("append %s: %v", key, err)
+		}
+	}
+	for range 2 {
+		if err := d.DeleteEntry(s.ctx, stream, "a"); err != nil {
+			t.Fatalf("delete a: %v", err)
+		}
+		if got, err := d.Read(s.ctx, stream, "", 0); err != nil || len(got) != 1 || got[0].Key != "b" || string(got[0].Data) != "b" {
+			t.Fatalf("read after deleting a: %+v, %v; want b alone", got, err)
+		}
+	}
+	if err := d.DeleteEntry(s.ctx, s.ns+"/missing", "a"); err != nil {
+		t.Errorf("delete in a missing stream: %v", err)
+	}
+	if err := d.DeleteEntry(s.ctx, s.ns+"//a", "a"); !errors.Is(err, storage.ErrInvalidName) {
+		t.Errorf("delete in a malformed stream: got %v, want ErrInvalidName", err)
+	}
+	if err := d.DeleteEntry(s.ctx, stream, "a/b"); !errors.Is(err, storage.ErrInvalidName) {
+		t.Errorf("delete a malformed key: got %v, want ErrInvalidName", err)
+	}
+}
+
+// A created Task has a UID, on the Task passed in and read back.
+func testCreateTaskSetsUID(t *testing.T, s *suite) {
+	d := s.open()
+	tk := &v1alpha1.Task{ObjectMeta: metav1.ObjectMeta{Name: "a", Namespace: s.ns}, Spec: v1alpha1.TaskSpec{Title: "a"}}
+	if err := d.CreateTask(s.ctx, tk); err != nil {
+		t.Fatal(err)
+	}
+	if got := s.get(d, "a"); got.UID == "" || got.UID != tk.UID {
+		t.Fatalf("UID read back %q, on the created Task %q: want the same, not empty", got.UID, tk.UID)
+	}
+}

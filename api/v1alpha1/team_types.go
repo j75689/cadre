@@ -20,15 +20,29 @@ type TeamSpec struct {
 	// +optional
 	MaxConcurrentRuns int32 `json:"maxConcurrentRuns,omitempty"`
 
-	// ArchiveAfter is deprecated, not acted on. It must be a positive Go
-	// duration such as 720h.
+	// ArchiveAfter is how long a finished task stays on the board before it
+	// is archived: a read-only snapshot of the task, its thread, runs, run
+	// events, files and transcripts is written to the log store, kept for
+	// ArchiveRetention, and the task is deleted. It must be a positive Go
+	// duration such as 720h; unset, no task is archived. While it is set,
+	// DeleteFinishedAfter is not used. A task whose logs are over 50 MiB is
+	// deleted without a snapshot.
 	// +kubebuilder:validation:XValidation:rule="duration(self) > duration('0s')",message="archiveAfter must be a positive duration such as 720h"
 	// +optional
 	ArchiveAfter *metav1.Duration `json:"archiveAfter,omitempty"`
 
+	// ArchiveRetention is how long an archived task's snapshot is kept
+	// after the archive, a positive Go duration such as 2160h; unset, 90
+	// days (2160h). Snapshots past it are removed whether or not
+	// ArchiveAfter is still set.
+	// +kubebuilder:validation:XValidation:rule="duration(self) > duration('0s')",message="archiveRetention must be a positive duration such as 2160h"
+	// +optional
+	ArchiveRetention *metav1.Duration `json:"archiveRetention,omitempty"`
+
 	// DeleteFinishedAfter is how long a finished task stays on the board
 	// before it is deleted, with its thread and runs. It must be a positive
-	// Go duration such as 720h; unset, finished tasks are kept.
+	// Go duration such as 720h; unset, finished tasks are kept. Not used
+	// while ArchiveAfter is set.
 	// +kubebuilder:validation:XValidation:rule="duration(self) > duration('0s')",message="deleteFinishedAfter must be a positive duration such as 720h"
 	// +optional
 	DeleteFinishedAfter *metav1.Duration `json:"deleteFinishedAfter,omitempty"`

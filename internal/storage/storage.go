@@ -123,6 +123,10 @@ type Log interface {
 	// with no entries is not an error. The stream must pass ValidateStream,
 	// or it fails with ErrInvalidName.
 	DeleteStream(ctx context.Context, stream string) error
+	// DeleteEntry deletes one entry of the stream. An entry that does not
+	// exist is not an error. The stream must pass ValidateStream and the
+	// key ValidateKey, or it fails with ErrInvalidName.
+	DeleteEntry(ctx context.Context, stream, key string) error
 }
 
 // ErrInvalidName is returned by Log methods for a malformed stream or key.

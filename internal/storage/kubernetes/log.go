@@ -324,6 +324,19 @@ func (l *objectLog) DeleteStream(ctx context.Context, stream string) error {
 	return l.deleteDirs(ctx, dirs)
 }
 
+// DeleteEntry deletes the entry's object. A store that answers 404 to
+// deleting a key it does not have (GCS) has still deleted it.
+func (l *objectLog) DeleteEntry(ctx context.Context, stream, key string) error {
+	if err := errors.Join(storage.ValidateStream(stream), storage.ValidateKey(key)); err != nil {
+		return err
+	}
+	_, err := l.s3.DeleteObject(ctx, &s3.DeleteObjectInput{Bucket: &l.bucket, Key: aws.String(l.streamPrefix(stream) + key)})
+	if code := errorCode(err); err != nil && code != "NoSuchKey" && code != "NotFound" {
+		return fmt.Errorf("delete log %s entry %s: %w", stream, key, err)
+	}
+	return nil
+}
+
 // listDirs adds to dirs the directories below dir. A filesystem-backed
 // store (SeaweedFS) lists an empty directory only as a common prefix of a
 // listing with a delimiter; elsewhere there are none once the objects are
