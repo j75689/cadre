@@ -40,8 +40,11 @@ export function ArchivePage() {
       },
       (e) => {
         if (controller.signal.aborted) return;
-        if (e instanceof APIError && e.status === 404) setMissing(true);
-        else setError(e as Error);
+        // A 400 is a uid no snapshot can have: it never existed either.
+        if (e instanceof APIError && (e.status === 404 || e.status === 400)) {
+          setMissing(true);
+          setError(null);
+        } else setError(e as Error);
       },
     );
     getTeam(ns, controller.signal).then(

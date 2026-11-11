@@ -184,6 +184,27 @@ describe("ArchivePage", () => {
     expect(screen.queryByRole("button", { name: "Retry" })).toBeNull();
   });
 
+  it("says an archived task with a uid the server refuses is gone, without Retry", async () => {
+    open(() => json({ error: { code: "invalid", message: 'uid "a/b" must be 1 to 64 letters, digits and dashes' } }, 400));
+    expect(await screen.findByText("This archived task is gone or never existed.")).toBeTruthy();
+    expect(screen.queryByText(/Could not load/)).toBeNull();
+    expect(screen.queryByRole("button", { name: "Retry" })).toBeNull();
+  });
+
+  it("says an archived task is gone when Retry finds it gone, and drops the error", async () => {
+    let n = 0;
+    const reads = open(() =>
+      n++ === 0 ? json({ error: { code: "internal", message: "boom" } }, 500) : json({ error: { code: "not_found", message: "snapshot u1: not found" } }, 404),
+    );
+    expect(await screen.findByText("Could not load the archived task: boom")).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: "Retry" }));
+    expect(await screen.findByText("This archived task is gone or never existed.")).toBeTruthy();
+    expect(screen.getByRole("link", { name: "All archived tasks" }).getAttribute("href")).toBe("/t/a/archive");
+    expect(screen.queryByText(/Could not load/)).toBeNull();
+    expect(screen.queryByRole("button", { name: "Retry" })).toBeNull();
+    expect(reads).toHaveLength(2);
+  });
+
   it("shows stored HTML as text, never as elements", async () => {
     const html = '<img src=x onerror="alert(1)"><script>alert(2)</script>';
     const step = { step: 0, kind: "llm_turn", text: html, request: { system: html }, at: "2026-10-01T08:00:00Z" };
