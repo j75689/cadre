@@ -118,7 +118,8 @@ func (m *Manager) deleteFinished(ctx context.Context, ns string, d time.Duration
 // fails, nothing deleted; delete its streams; delete the object, at the
 // version marked, so a task made again under the name is not deleted. A
 // delete picked up on a mark with a snapshot writes it, archived as
-// marked, even if it does not archive itself. An archive picked up on a
+// marked, even if it does not archive itself, or d after it finished if
+// the mark's message does not say how long. An archive picked up on a
 // mark without a snapshot writes none: the mark said so, or a delete that
 // did not archive made it, and may have deleted part of the logs. A task whose outbox is not applied yet stays for a
 // later tick. The task's Event is recorded only by the replica whose
@@ -149,8 +150,12 @@ func (m *Manager) deleteTask(ctx context.Context, key storage.Key, d time.Durati
 	case c != nil && c.Status == metav1.ConditionTrue:
 		// Even a delete that does not archive: another replica may be
 		// writing the snapshot, from the logs this one would delete.
-		if d, err = task.MarkedArchiveAfter(c); err != nil {
-			return fmt.Errorf("snapshot: %w", err)
+		// A mark it cannot read still gets its snapshot, under the d of
+		// this delete, which only the archiveAfter recorded gets wrong.
+		if marked, err := task.MarkedArchiveAfter(c); err != nil {
+			m.log.Warn("cannot read the archiveAfter of a Snapshot mark: the snapshot is written under this delete's", "task", key.String(), "archiveAfter", shortDuration(d), "err", err)
+		} else {
+			d = marked
 		}
 		archive = true
 		if err := m.snapshot(ctx, t, d); err != nil {

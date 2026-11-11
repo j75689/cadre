@@ -1,10 +1,12 @@
 package manager
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
 	"strings"
 	"sync"
 	"testing"
@@ -296,6 +298,68 @@ func TestArchiveSnapshotFails(t *testing.T) {
 		index, bodies := e.snapshots(t)
 		if !e.gone(t, key) || len(index) != 1 || len(bodies) != 1 || len(rec.Events) != 1 {
 			t.Fatalf("%s: gone %v, %d index entries, %d bodies, %d Events: want gone, 1, 1, 1", name, e.gone(t, key), len(index), len(bodies), len(rec.Events))
+		}
+	}
+}
+
+// A task marked to archive under a Snapshot condition whose message does
+// not say the archiveAfter, as an older or hand-edited mark may, is still
+// archived, its whole snapshot written before its logs go, under the
+// archiveAfter of the delete that picks it up, with a warning, instead of
+// stalling marked forever.
+func TestArchiveUnreadableMark(t *testing.T) {
+	for _, msg := range []string{
+		"a snapshot is written before the logs are deleted",
+		"",
+		"archived forever after it finished",
+	} {
+		e, rec := archiveEnv(t)
+		key := e.rich(t)
+		uid := string(e.get(t, key).UID)
+		e.clock.add(time.Hour)
+		failing := New(&failAppends{Driver: e.store, fail: func(stream string) bool { return strings.Contains(stream, "/_archive/") }},
+			Config{Agents: testAgents, Events: rec}, WithClock(e.clock.now))
+		if err := failing.DeleteFinished(ctx); err == nil {
+			t.Fatalf("%q: the first tick archived with the body's write failing", msg)
+		}
+		tk := e.get(t, key)
+		c := meta.FindStatusCondition(tk.Status.Conditions, task.ConditionSnapshot)
+		if c == nil || c.Status != metav1.ConditionTrue {
+			t.Fatalf("%q: conditions %+v, want a True Snapshot mark", msg, tk.Status.Conditions)
+		}
+		c.Message = msg
+		if err := e.store.UpdateTaskStatus(ctx, tk); err != nil {
+			t.Fatal(err)
+		}
+		// Each tick's snapshot reads all of the logs, before any is deleted.
+		var logs bytes.Buffer
+		e.m.log = slog.New(slog.NewTextHandler(&logs, nil))
+		e.m.store = beforeStreams{e.store, func(_ context.Context, tk *v1alpha1.Task) error {
+			if _, bodies := e.snapshots(t); len(bodies[uid]) != 1 {
+				t.Errorf("%q: the logs of %s are deleted before its snapshot is written", msg, tk.Name)
+			}
+			return nil
+		}}
+		e.deleteFinished(t)
+		if !e.gone(t, key) {
+			t.Fatalf("%q: the task is kept", msg)
+		}
+		if !strings.Contains(logs.String(), "cannot read the archiveAfter of a Snapshot mark") || !strings.Contains(logs.String(), "archiveAfter=1h") {
+			t.Errorf("%q: logged %q, want a warning naming the 1h used", msg, logs.String())
+		}
+		index, bodies := e.snapshots(t)
+		if len(index) != 1 || len(bodies[uid]) != 1 {
+			t.Fatalf("%q: %d index entries and %d bodies, want one each", msg, len(index), len(bodies[uid]))
+		}
+		var snap Snapshot
+		if err := json.Unmarshal(bodies[uid][0].Data, &snap); err != nil {
+			t.Fatal(err)
+		}
+		if snap.ArchiveAfter.Duration != time.Hour || len(snap.Runs) != 3 || len(snap.Transcripts[stepRun]) != len(stepEntries) || len(snap.Files) != 1 {
+			t.Errorf("%q: snapshot archiveAfter %v, runs %d, transcript %d, files %d: want 1h and the whole task", msg, snap.ArchiveAfter, len(snap.Runs), len(snap.Transcripts[stepRun]), len(snap.Files))
+		}
+		if evs := drain(rec); len(evs) != 1 || !strings.HasPrefix(evs[0], "Normal TaskArchived Task #1 a finished 2026-10-24T09:00:00Z (Cancelled), archived 1h later") {
+			t.Errorf("%q: Events %q, want one TaskArchived", msg, evs)
 		}
 	}
 }
