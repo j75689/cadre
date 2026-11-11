@@ -43,6 +43,16 @@ type TaskList struct {
 	Total  int             `json:"total"`
 }
 
+// ArchiveList is a page of a namespace's archived tasks, newest first.
+// Offset and Limit are the values that applied; Total is how many there
+// are.
+type ArchiveList struct {
+	Items  []manager.SnapshotSummary `json:"items"`
+	Offset int                       `json:"offset"`
+	Limit  int                       `json:"limit"`
+	Total  int                       `json:"total"`
+}
+
 // ActivityList is a page of a namespace's recent activity, newest first.
 // Offset and Limit are the values that applied.
 type ActivityList struct {

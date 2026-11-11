@@ -93,6 +93,8 @@ func (s *Server) Register(mux *http.ServeMux) {
 		{"GET " + Base + "/namespaces/{ns}/team", authz.Read, s.getTeam},
 		{"PUT " + Base + "/namespaces/{ns}/team", authz.ManageTeam, s.putTeam},
 		{"GET " + Base + "/namespaces/{ns}/agents", authz.Read, s.listAgents},
+		{"GET " + Base + "/namespaces/{ns}/archive", authz.Read, s.listArchive},
+		{"GET " + Base + "/namespaces/{ns}/archive/{uid}", authz.Read, s.getArchive},
 	} {
 		mux.HandleFunc(route.pattern, s.guard(route.action, route.h))
 	}

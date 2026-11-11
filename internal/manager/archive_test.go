@@ -862,3 +862,103 @@ func TestExpireSnapshotsWhenATaskDeleteFails(t *testing.T) {
 		t.Fatalf("Events %q, want %q", evs, want)
 	}
 }
+
+// Snapshots list newest first, in pages, with how many there are.
+func TestListSnapshots(t *testing.T) {
+	e, _ := archiveEnv(t)
+	var uids []types.UID
+	for _, name := range []string{"a", "b", "c", "d"} {
+		uid, _ := e.archive(t, name)
+		uids = append(uids, uid)
+	}
+	for _, c := range []struct {
+		offset, limit int
+		want          []types.UID
+	}{
+		{0, 10, []types.UID{uids[3], uids[2], uids[1], uids[0]}},
+		{0, 2, []types.UID{uids[3], uids[2]}},
+		{1, 2, []types.UID{uids[2], uids[1]}},
+		{3, 2, []types.UID{uids[0]}},
+		{4, 2, []types.UID{}},
+		{9, 2, []types.UID{}},
+	} {
+		items, total, err := e.m.ListSnapshots(ctx, ns, c.offset, c.limit)
+		if err != nil {
+			t.Fatal(err)
+		}
+		got := []types.UID{}
+		for _, it := range items {
+			got = append(got, types.UID(it.UID))
+		}
+		if fmt.Sprint(got) != fmt.Sprint(c.want) || total != 4 || items == nil {
+			t.Errorf("offset %d limit %d: %v of %d, want %v of 4", c.offset, c.limit, got, total, c.want)
+		}
+	}
+	if items, _, _ := e.m.ListSnapshots(ctx, ns, 0, 1); items[0].Name != "d" || items[0].Number != 4 || items[0].ArchiveAfter.Duration != time.Hour {
+		t.Errorf("the newest %+v, want d's summary", items[0])
+	}
+}
+
+// onRead is a store that runs fn before its first Read of stream.
+type onRead struct {
+	storage.Driver
+	stream string
+	once   *sync.Once
+	fn     func(context.Context)
+}
+
+func (o onRead) Read(ctx context.Context, stream, after string, limit int) ([]storage.Entry, error) {
+	if stream == o.stream {
+		o.once.Do(func() { o.fn(ctx) })
+	}
+	return o.Driver.Read(ctx, stream, after, limit)
+}
+
+// A snapshot expired between the list's look at the index's keys and its
+// read of the page is left out, and the page of c and b does not take d,
+// the next key the read finds, in its place.
+func TestListSnapshotsDropsExpired(t *testing.T) {
+	e, _ := archiveEnv(t)
+	var uids []types.UID
+	for _, name := range []string{"a", "b", "c", "d"} {
+		uid, _ := e.archive(t, name)
+		uids = append(uids, uid)
+	}
+	keys, err := e.store.Keys(ctx, ArchiveStream(ns), "", 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	m := New(onRead{e.store, ArchiveStream(ns), &sync.Once{}, func(ctx context.Context) {
+		if err := e.store.DeleteEntry(ctx, ArchiveStream(ns), keys[1].Key); err != nil {
+			t.Error(err)
+		}
+	}}, Config{Agents: testAgents}, WithClock(e.clock.now))
+	items, total, err := m.ListSnapshots(ctx, ns, 1, 2)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var got []types.UID
+	for _, it := range items {
+		got = append(got, types.UID(it.UID))
+	}
+	if want := []types.UID{uids[2]}; fmt.Sprint(got) != fmt.Sprint(want) || total != 4 {
+		t.Errorf("%v of %d, want %v of 4 (b dropped, d not shifted in)", got, total, want)
+	}
+}
+
+// A snapshot's body is the bytes stored; a uid without one is not found.
+func TestGetSnapshot(t *testing.T) {
+	e, _ := archiveEnv(t)
+	key := e.rich(t)
+	uid := string(e.get(t, key).UID)
+	e.clock.add(time.Hour)
+	e.deleteFinished(t)
+	_, bodies := e.snapshots(t)
+	got, err := e.m.GetSnapshot(ctx, ns, uid)
+	if err != nil || !bytes.Equal(got, bodies[uid][0].Data) {
+		t.Fatalf("%s, %v: want the stored body", got, err)
+	}
+	if _, err := e.m.GetSnapshot(ctx, ns, "nope"); !errors.Is(err, storage.ErrNotFound) {
+		t.Fatalf("an unknown uid: %v, want ErrNotFound", err)
+	}
+}
