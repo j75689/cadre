@@ -191,6 +191,14 @@ describe("ArchivePage", () => {
     expect(screen.queryByRole("button", { name: "Retry" })).toBeNull();
   });
 
+  it("offers Retry after a 400 that is not the server's, such as a proxy's", async () => {
+    const page = "<html><title>400 Request Header Or Cookie Too Large</title></html>";
+    open(() => Promise.resolve(new Response(page, { status: 400, headers: { "Content-Type": "text/html" } })));
+    expect(await screen.findByText("Could not load the archived task: HTTP 400")).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Retry" })).toBeTruthy();
+    expect(screen.queryByText("This archived task is gone or never existed.")).toBeNull();
+  });
+
   it("says an archived task is gone when Retry finds it gone, and drops the error", async () => {
     let n = 0;
     const reads = open(() =>

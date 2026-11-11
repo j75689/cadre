@@ -40,8 +40,9 @@ export function ArchivePage() {
       },
       (e) => {
         if (controller.signal.aborted) return;
-        // A 400 is a uid no snapshot can have: it never existed either.
-        if (e instanceof APIError && (e.status === 404 || e.status === 400)) {
+        // The server's 400 "invalid" is a uid no snapshot can have: it never
+        // existed either. Any other 400, such as a proxy's, is a failed read.
+        if (e instanceof APIError && (e.status === 404 || (e.status === 400 && e.code === "invalid"))) {
           setMissing(true);
           setError(null);
         } else setError(e as Error);
