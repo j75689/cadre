@@ -1,10 +1,12 @@
 package manager
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
 	"strings"
 	"sync"
 	"testing"
@@ -297,6 +299,102 @@ func TestArchiveSnapshotFails(t *testing.T) {
 		if !e.gone(t, key) || len(index) != 1 || len(bodies) != 1 || len(rec.Events) != 1 {
 			t.Fatalf("%s: gone %v, %d index entries, %d bodies, %d Events: want gone, 1, 1, 1", name, e.gone(t, key), len(index), len(bodies), len(rec.Events))
 		}
+	}
+}
+
+// A task marked to archive under a Snapshot condition whose message does
+// not say the archiveAfter, as an older or hand-edited mark may, is still
+// archived, its whole snapshot written before its logs go, under the
+// archiveAfter of the delete that picks it up, with a warning, instead of
+// stalling marked forever.
+func TestArchiveUnreadableMark(t *testing.T) {
+	for _, msg := range []string{
+		"a snapshot is written before the logs are deleted",
+		"",
+		"archived forever after it finished",
+	} {
+		e, rec := archiveEnv(t)
+		key := e.rich(t)
+		uid := string(e.get(t, key).UID)
+		e.clock.add(time.Hour)
+		failing := New(&failAppends{Driver: e.store, fail: func(stream string) bool { return strings.Contains(stream, "/_archive/") }},
+			Config{Agents: testAgents, Events: rec}, WithClock(e.clock.now))
+		if err := failing.DeleteFinished(ctx); err == nil {
+			t.Fatalf("%q: the first tick archived with the body's write failing", msg)
+		}
+		tk := e.get(t, key)
+		c := meta.FindStatusCondition(tk.Status.Conditions, task.ConditionSnapshot)
+		if c == nil || c.Status != metav1.ConditionTrue {
+			t.Fatalf("%q: conditions %+v, want a True Snapshot mark", msg, tk.Status.Conditions)
+		}
+		c.Message = msg
+		if err := e.store.UpdateTaskStatus(ctx, tk); err != nil {
+			t.Fatal(err)
+		}
+		// Each tick's snapshot reads all of the logs, before any is deleted.
+		var logs bytes.Buffer
+		e.m.log = slog.New(slog.NewTextHandler(&logs, nil))
+		e.m.store = beforeStreams{e.store, func(_ context.Context, tk *v1alpha1.Task) error {
+			if _, bodies := e.snapshots(t); len(bodies[uid]) != 1 {
+				t.Errorf("%q: the logs of %s are deleted before its snapshot is written", msg, tk.Name)
+			}
+			return nil
+		}}
+		e.deleteFinished(t)
+		if !e.gone(t, key) {
+			t.Fatalf("%q: the task is kept", msg)
+		}
+		if !strings.Contains(logs.String(), "cannot read the archiveAfter of a Snapshot mark") || !strings.Contains(logs.String(), "archiveAfter=1h") {
+			t.Errorf("%q: logged %q, want a warning naming the 1h used", msg, logs.String())
+		}
+		index, bodies := e.snapshots(t)
+		if len(index) != 1 || len(bodies[uid]) != 1 {
+			t.Fatalf("%q: %d index entries and %d bodies, want one each", msg, len(index), len(bodies[uid]))
+		}
+		var snap Snapshot
+		if err := json.Unmarshal(bodies[uid][0].Data, &snap); err != nil {
+			t.Fatal(err)
+		}
+		if snap.ArchiveAfter.Duration != time.Hour || len(snap.Runs) != 3 || len(snap.Transcripts[stepRun]) != len(stepEntries) || len(snap.Files) != 1 {
+			t.Errorf("%q: snapshot archiveAfter %v, runs %d, transcript %d, files %d: want 1h and the whole task", msg, snap.ArchiveAfter, len(snap.Runs), len(snap.Transcripts[stepRun]), len(snap.Files))
+		}
+		if evs := drain(rec); len(evs) != 1 || !strings.HasPrefix(evs[0], "Normal TaskArchived Task #1 a finished 2026-10-24T09:00:00Z (Cancelled), archived 1h later") {
+			t.Errorf("%q: Events %q, want one TaskArchived", msg, evs)
+		}
+	}
+}
+
+// A delete under deleteFinishedAfter that picks up a Snapshot mark it
+// cannot read archives under deleteFinishedAfter, and its Event says so.
+func TestArchiveUnreadableMarkByPlainDelete(t *testing.T) {
+	e, rec := archiveEnv(t)
+	key := e.rich(t)
+	e.clock.add(2 * time.Hour)
+	failing := New(&failAppends{Driver: e.store, fail: func(stream string) bool { return strings.Contains(stream, "/_archive/") }},
+		Config{Agents: testAgents, Events: rec}, WithClock(e.clock.now))
+	if err := failing.DeleteFinished(ctx); err == nil {
+		t.Fatal("the first tick archived with the body's write failing")
+	}
+	tk := e.get(t, key)
+	c := meta.FindStatusCondition(tk.Status.Conditions, task.ConditionSnapshot)
+	if c == nil || c.Status != metav1.ConditionTrue {
+		t.Fatalf("conditions %+v, want a True Snapshot mark", tk.Status.Conditions)
+	}
+	c.Message = ""
+	if err := e.store.UpdateTaskStatus(ctx, tk); err != nil {
+		t.Fatal(err)
+	}
+	e.setTeam(t, func(s *v1alpha1.TeamSpec) {
+		s.ArchiveAfter = nil
+		s.DeleteFinishedAfter = &metav1.Duration{Duration: 2 * time.Hour}
+	})
+	e.deleteFinished(t)
+	if !e.gone(t, key) {
+		t.Fatal("the task is kept")
+	}
+	want := "Normal TaskArchived Task #1 a finished 2026-10-24T09:00:00Z (Cancelled), archived 2h later by Team.spec.deleteFinishedAfter; its snapshot is kept for 2160h"
+	if evs := drain(rec); len(evs) != 1 || evs[0] != want {
+		t.Fatalf("Events %q, want %q", evs, want)
 	}
 }
 
@@ -796,5 +894,173 @@ func TestExpireSnapshotsWhenATaskDeleteFails(t *testing.T) {
 	want := "Normal TaskArchived Task #2 a finished 2026-10-26T10:00:00Z (Cancelled), archived 1h later by Team.spec.archiveAfter; its snapshot is kept for 48h"
 	if evs := drain(rec); len(evs) != 1 || evs[0] != want {
 		t.Fatalf("Events %q, want %q", evs, want)
+	}
+}
+
+// Snapshots list newest first, in pages, with how many there are.
+func TestListSnapshots(t *testing.T) {
+	e, _ := archiveEnv(t)
+	var uids []types.UID
+	for _, name := range []string{"a", "b", "c", "d"} {
+		uid, _ := e.archive(t, name)
+		uids = append(uids, uid)
+	}
+	for _, c := range []struct {
+		offset, limit int
+		want          []types.UID
+	}{
+		{0, 10, []types.UID{uids[3], uids[2], uids[1], uids[0]}},
+		{0, 2, []types.UID{uids[3], uids[2]}},
+		{1, 2, []types.UID{uids[2], uids[1]}},
+		{3, 2, []types.UID{uids[0]}},
+		{4, 2, []types.UID{}},
+		{9, 2, []types.UID{}},
+	} {
+		items, total, err := e.m.ListSnapshots(ctx, ns, c.offset, c.limit)
+		if err != nil {
+			t.Fatal(err)
+		}
+		got := []types.UID{}
+		for _, it := range items {
+			got = append(got, types.UID(it.UID))
+		}
+		if fmt.Sprint(got) != fmt.Sprint(c.want) || total != 4 || items == nil {
+			t.Errorf("offset %d limit %d: %v of %d, want %v of 4", c.offset, c.limit, got, total, c.want)
+		}
+	}
+	if items, _, _ := e.m.ListSnapshots(ctx, ns, 0, 1); items[0].Name != "d" || items[0].Number != 4 || items[0].ArchiveAfter.Duration != time.Hour {
+		t.Errorf("the newest %+v, want d's summary", items[0])
+	}
+}
+
+// onRead is a store that runs fn before its first Read of stream.
+type onRead struct {
+	storage.Driver
+	stream string
+	once   *sync.Once
+	fn     func(context.Context)
+}
+
+func (o onRead) Read(ctx context.Context, stream, after string, limit int) ([]storage.Entry, error) {
+	if stream == o.stream {
+		o.once.Do(func() { o.fn(ctx) })
+	}
+	return o.Driver.Read(ctx, stream, after, limit)
+}
+
+// A snapshot expired between the list's look at the index's keys and its
+// read of the page is left out, and the page of c and b does not take d,
+// the next key the read finds, in its place.
+func TestListSnapshotsDropsExpired(t *testing.T) {
+	e, _ := archiveEnv(t)
+	var uids []types.UID
+	for _, name := range []string{"a", "b", "c", "d"} {
+		uid, _ := e.archive(t, name)
+		uids = append(uids, uid)
+	}
+	keys, err := e.store.Keys(ctx, ArchiveStream(ns), "", 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	m := New(onRead{e.store, ArchiveStream(ns), &sync.Once{}, func(ctx context.Context) {
+		if err := e.store.DeleteEntry(ctx, ArchiveStream(ns), keys[1].Key); err != nil {
+			t.Error(err)
+		}
+	}}, Config{Agents: testAgents}, WithClock(e.clock.now))
+	items, total, err := m.ListSnapshots(ctx, ns, 1, 2)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var got []types.UID
+	for _, it := range items {
+		got = append(got, types.UID(it.UID))
+	}
+	if want := []types.UID{uids[2]}; fmt.Sprint(got) != fmt.Sprint(want) || total != 4 {
+		t.Errorf("%v of %d, want %v of 4 (b dropped, d not shifted in)", got, total, want)
+	}
+}
+
+// The newest snapshot expired between the list's look at the index's keys
+// and its read of the first page leaves the rest of the page.
+func TestListSnapshotsDropsExpiredNewest(t *testing.T) {
+	e, _ := archiveEnv(t)
+	var uids []types.UID
+	for _, name := range []string{"a", "b", "c"} {
+		uid, _ := e.archive(t, name)
+		uids = append(uids, uid)
+	}
+	keys, err := e.store.Keys(ctx, ArchiveStream(ns), "", 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	m := New(onRead{e.store, ArchiveStream(ns), &sync.Once{}, func(ctx context.Context) {
+		if err := e.store.DeleteEntry(ctx, ArchiveStream(ns), keys[2].Key); err != nil {
+			t.Error(err)
+		}
+	}}, Config{Agents: testAgents}, WithClock(e.clock.now))
+	items, total, err := m.ListSnapshots(ctx, ns, 0, 2)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var got []types.UID
+	for _, it := range items {
+		got = append(got, types.UID(it.UID))
+	}
+	if want := []types.UID{uids[1]}; fmt.Sprint(got) != fmt.Sprint(want) || total != 3 {
+		t.Errorf("%v of %d, want %v of 3 (c dropped)", got, total, want)
+	}
+}
+
+// A snapshot archived inside the page between the list's look at the
+// index's keys and its read of the page, as one retried under its old
+// mark's second is, is not in the page, and does not push c, the page's
+// newest, out of it.
+func TestListSnapshotsInsertDuringList(t *testing.T) {
+	e, _ := archiveEnv(t)
+	var uids []types.UID
+	for _, name := range []string{"a", "b", "c", "d"} {
+		uid, _ := e.archive(t, name)
+		uids = append(uids, uid)
+	}
+	keys, err := e.store.Keys(ctx, ArchiveStream(ns), "", 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	at, _, ok := parseArchiveKey(keys[1].Key)
+	if !ok {
+		t.Fatalf("b's key %s", keys[1].Key)
+	}
+	m := New(onRead{e.store, ArchiveStream(ns), &sync.Once{}, func(ctx context.Context) {
+		if err := e.store.Append(ctx, ArchiveStream(ns), archiveKey(at.Add(time.Second), "late"), []byte(`{"format":1,"uid":"late"}`)); err != nil {
+			t.Error(err)
+		}
+	}}, Config{Agents: testAgents}, WithClock(e.clock.now))
+	items, total, err := m.ListSnapshots(ctx, ns, 1, 2)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var got []types.UID
+	for _, it := range items {
+		got = append(got, types.UID(it.UID))
+	}
+	if want := []types.UID{uids[2], uids[1]}; fmt.Sprint(got) != fmt.Sprint(want) || total != 4 {
+		t.Errorf("%v of %d, want %v of 4 (c and b)", got, total, want)
+	}
+}
+
+// A snapshot's body is the bytes stored; a uid without one is not found.
+func TestGetSnapshot(t *testing.T) {
+	e, _ := archiveEnv(t)
+	key := e.rich(t)
+	uid := string(e.get(t, key).UID)
+	e.clock.add(time.Hour)
+	e.deleteFinished(t)
+	_, bodies := e.snapshots(t)
+	got, err := e.m.GetSnapshot(ctx, ns, uid)
+	if err != nil || !bytes.Equal(got, bodies[uid][0].Data) {
+		t.Fatalf("%s, %v: want the stored body", got, err)
+	}
+	if _, err := e.m.GetSnapshot(ctx, ns, "nope"); !errors.Is(err, storage.ErrNotFound) {
+		t.Fatalf("an unknown uid: %v, want ErrNotFound", err)
 	}
 }

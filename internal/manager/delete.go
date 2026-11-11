@@ -118,7 +118,8 @@ func (m *Manager) deleteFinished(ctx context.Context, ns string, d time.Duration
 // fails, nothing deleted; delete its streams; delete the object, at the
 // version marked, so a task made again under the name is not deleted. A
 // delete picked up on a mark with a snapshot writes it, archived as
-// marked, even if it does not archive itself. An archive picked up on a
+// marked, even if it does not archive itself, or d after it finished if
+// the mark's message does not say how long. An archive picked up on a
 // mark without a snapshot writes none: the mark said so, or a delete that
 // did not archive made it, and may have deleted part of the logs. A task whose outbox is not applied yet stays for a
 // later tick. The task's Event is recorded only by the replica whose
@@ -145,12 +146,20 @@ func (m *Manager) deleteTask(ctx context.Context, key storage.Key, d time.Durati
 		return nil // a delete landed, read before the list saw it
 	}
 	var skipped string
+	by := "deleteFinishedAfter" // the Team field d came from
+	if archive {
+		by = "archiveAfter"
+	}
 	switch c := meta.FindStatusCondition(t.Status.Conditions, task.ConditionSnapshot); {
 	case c != nil && c.Status == metav1.ConditionTrue:
 		// Even a delete that does not archive: another replica may be
 		// writing the snapshot, from the logs this one would delete.
-		if d, err = task.MarkedArchiveAfter(c); err != nil {
-			return fmt.Errorf("snapshot: %w", err)
+		// A mark it cannot read still gets its snapshot, under the d of
+		// this delete, which only the archiveAfter recorded gets wrong.
+		if marked, err := task.MarkedArchiveAfter(c); err != nil {
+			m.log.Warn("cannot read the archiveAfter of a Snapshot mark: the snapshot is written under this delete's", "task", key.String(), "archiveAfter", shortDuration(d), "err", err)
+		} else {
+			d, by = marked, "archiveAfter"
 		}
 		archive = true
 		if err := m.snapshot(ctx, t, d); err != nil {
@@ -169,7 +178,7 @@ func (m *Manager) deleteTask(ctx context.Context, key storage.Key, d time.Durati
 		err := m.store.DeleteTask(ctx, t)
 		switch {
 		case err == nil:
-			m.recordDeleted(t, d, archive, skipped, m.retention(ctx, key.Namespace, archive && skipped == ""))
+			m.recordDeleted(t, d, by, archive, skipped, m.retention(ctx, key.Namespace, archive && skipped == ""))
 			return nil
 		case errors.Is(err, storage.ErrNotFound):
 			return nil // another replica's delete landed
@@ -216,10 +225,11 @@ func (m *Manager) retention(ctx context.Context, ns string, needed bool) time.Du
 }
 
 // recordDeleted records the Event of t, as read before its delete:
-// TaskDeleted, or if archive TaskArchived, with the snapshot's retention,
-// or SnapshotSkipped when the snapshot was skipped for the reason skipped.
+// TaskDeleted, or if archive TaskArchived, naming by, the Team field d
+// came from, with the snapshot's retention, or SnapshotSkipped when the
+// snapshot was skipped for the reason skipped.
 // The recorder queues it, so a refused Event fails no delete.
-func (m *Manager) recordDeleted(t *v1alpha1.Task, d time.Duration, archive bool, skipped string, retention time.Duration) {
+func (m *Manager) recordDeleted(t *v1alpha1.Task, d time.Duration, by string, archive bool, skipped string, retention time.Duration) {
 	if m.cfg.Events == nil {
 		return
 	}
@@ -235,7 +245,7 @@ func (m *Manager) recordDeleted(t *v1alpha1.Task, d time.Duration, archive bool,
 			t.Status.Number, t.Name, finished, t.Status.Phase, shortDuration(d), skipped)
 	default:
 		m.cfg.Events.Eventf(t, nil, corev1.EventTypeNormal, "TaskArchived", "Archive",
-			"Task #%d %s finished %s (%s), archived %s later by Team.spec.archiveAfter; its snapshot is kept for %s",
-			t.Status.Number, t.Name, finished, t.Status.Phase, shortDuration(d), shortDuration(retention))
+			"Task #%d %s finished %s (%s), archived %s later by Team.spec.%s; its snapshot is kept for %s",
+			t.Status.Number, t.Name, finished, t.Status.Phase, shortDuration(d), by, shortDuration(retention))
 	}
 }
