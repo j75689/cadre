@@ -946,6 +946,74 @@ func TestListSnapshotsDropsExpired(t *testing.T) {
 	}
 }
 
+// The newest snapshot expired between the list's look at the index's keys
+// and its read of the first page leaves the rest of the page.
+func TestListSnapshotsDropsExpiredNewest(t *testing.T) {
+	e, _ := archiveEnv(t)
+	var uids []types.UID
+	for _, name := range []string{"a", "b", "c"} {
+		uid, _ := e.archive(t, name)
+		uids = append(uids, uid)
+	}
+	keys, err := e.store.Keys(ctx, ArchiveStream(ns), "", 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	m := New(onRead{e.store, ArchiveStream(ns), &sync.Once{}, func(ctx context.Context) {
+		if err := e.store.DeleteEntry(ctx, ArchiveStream(ns), keys[2].Key); err != nil {
+			t.Error(err)
+		}
+	}}, Config{Agents: testAgents}, WithClock(e.clock.now))
+	items, total, err := m.ListSnapshots(ctx, ns, 0, 2)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var got []types.UID
+	for _, it := range items {
+		got = append(got, types.UID(it.UID))
+	}
+	if want := []types.UID{uids[1]}; fmt.Sprint(got) != fmt.Sprint(want) || total != 3 {
+		t.Errorf("%v of %d, want %v of 3 (c dropped)", got, total, want)
+	}
+}
+
+// A snapshot archived inside the page between the list's look at the
+// index's keys and its read of the page, as one retried under its old
+// mark's second is, is not in the page, and does not push c, the page's
+// newest, out of it.
+func TestListSnapshotsInsertDuringList(t *testing.T) {
+	e, _ := archiveEnv(t)
+	var uids []types.UID
+	for _, name := range []string{"a", "b", "c", "d"} {
+		uid, _ := e.archive(t, name)
+		uids = append(uids, uid)
+	}
+	keys, err := e.store.Keys(ctx, ArchiveStream(ns), "", 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	at, _, ok := parseArchiveKey(keys[1].Key)
+	if !ok {
+		t.Fatalf("b's key %s", keys[1].Key)
+	}
+	m := New(onRead{e.store, ArchiveStream(ns), &sync.Once{}, func(ctx context.Context) {
+		if err := e.store.Append(ctx, ArchiveStream(ns), archiveKey(at.Add(time.Second), "late"), []byte(`{"format":1,"uid":"late"}`)); err != nil {
+			t.Error(err)
+		}
+	}}, Config{Agents: testAgents}, WithClock(e.clock.now))
+	items, total, err := m.ListSnapshots(ctx, ns, 1, 2)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var got []types.UID
+	for _, it := range items {
+		got = append(got, types.UID(it.UID))
+	}
+	if want := []types.UID{uids[2], uids[1]}; fmt.Sprint(got) != fmt.Sprint(want) || total != 4 {
+		t.Errorf("%v of %d, want %v of 4 (c and b)", got, total, want)
+	}
+}
+
 // A snapshot's body is the bytes stored; a uid without one is not found.
 func TestGetSnapshot(t *testing.T) {
 	e, _ := archiveEnv(t)

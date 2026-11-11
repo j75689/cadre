@@ -305,9 +305,11 @@ func (m *Manager) expireSnapshots(ctx context.Context, ns string, retention time
 }
 
 // ListSnapshots answers a page of the snapshots of ns, newest first, and
-// how many there are: the index's keys say which, then one read gets the
+// how many there are: the index's keys say which, then a read gets the
 // page's entries, which are next to each other in the index. An entry
-// expired between the two is left out, not replaced by its neighbour.
+// expired between the two is left out, not replaced by its neighbour; one
+// inserted inside the page between the two is not in it, and the read goes
+// on past it to the page's newest key.
 func (m *Manager) ListSnapshots(ctx context.Context, ns string, offset, limit int) ([]SnapshotSummary, int, error) {
 	keys, err := m.store.Keys(ctx, ArchiveStream(ns), "", 0)
 	if err != nil {
@@ -323,13 +325,19 @@ func (m *Manager) ListSnapshots(ctx context.Context, ns string, offset, limit in
 	if lo > 0 {
 		after = keys[lo-1].Key
 	}
-	entries, err := m.store.Read(ctx, ArchiveStream(ns), after, hi-lo)
-	if err != nil {
-		return nil, 0, err
-	}
-	data := make(map[string][]byte, len(entries))
-	for _, en := range entries {
-		data[en.Key] = en.Data
+	data := make(map[string][]byte, hi-lo)
+	for {
+		entries, err := m.store.Read(ctx, ArchiveStream(ns), after, hi-lo)
+		if err != nil {
+			return nil, 0, err
+		}
+		for _, en := range entries {
+			data[en.Key] = en.Data
+		}
+		if len(entries) < hi-lo || entries[len(entries)-1].Key >= keys[hi-1].Key {
+			break
+		}
+		after = entries[len(entries)-1].Key
 	}
 	items := make([]SnapshotSummary, 0, hi-lo)
 	for i := hi - 1; i >= lo; i-- {
