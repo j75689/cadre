@@ -35,8 +35,8 @@ export function durationOf(v: string): number | undefined {
 const maxInt32 = 2147483647;
 
 // A Problem is why a save cannot go through, and the field it is about, if
-// any: maxConcurrentRuns, deleteFinishedAfter, role-<i> or subject-<i>-<j>,
-// numbered from 0.
+// any: maxConcurrentRuns, archiveAfter, archiveRetention,
+// deleteFinishedAfter, role-<i> or subject-<i>-<j>, numbered from 0.
 export interface Problem {
   message: string;
   at?: string;
@@ -49,12 +49,11 @@ export function validate(d: TeamSpec): Problem | undefined {
   const max = d.maxConcurrentRuns;
   if (max !== undefined && (!Number.isInteger(max) || max < 0 || max > maxInt32))
     return { message: `Max concurrent runs is a whole number, from 0 to ${maxInt32}.`, at: "maxConcurrentRuns" };
-  const after = d.deleteFinishedAfter?.trim();
-  if (after) {
-    const n = nanosOf(after);
-    if (n !== undefined && n > maxDuration) return { message: "Delete finished after is too long: the longest the server takes is 2562047h47m16.854775807s.", at: "deleteFinishedAfter" };
-    if (!(n !== undefined && n > 0n)) return { message: "Delete finished after is a duration longer than 0, such as 720h or 168h.", at: "deleteFinishedAfter" };
-  }
+  const problem =
+    durationProblem(d.archiveAfter, "Archive after", "720h", "archiveAfter") ??
+    durationProblem(d.archiveRetention, "Keep archived for", "2160h", "archiveRetention") ??
+    durationProblem(d.deleteFinishedAfter, "Delete finished after", "720h or 168h", "deleteFinishedAfter");
+  if (problem) return problem;
   for (const [i, r] of (d.roles ?? []).entries()) {
     if (r.subjects.length === 0) return { message: `Role ${i + 1} needs at least one subject.`, at: `role-${i}` };
     const j = r.subjects.findIndex((s) => !s.name.trim());
@@ -63,12 +62,23 @@ export function validate(d: TeamSpec): Problem | undefined {
   return undefined;
 }
 
+// durationProblem is what is wrong with the duration field at, labelled
+// label, if anything: set, it is longer than 0 and no longer than Go takes.
+function durationProblem(v: string | undefined, label: string, example: string, at: string): Problem | undefined {
+  v = v?.trim();
+  if (!v) return undefined;
+  const n = nanosOf(v);
+  if (n !== undefined && n > maxDuration) return { message: `${label} is too long: the longest the server takes is 2562047h47m16.854775807s.`, at };
+  if (!(n !== undefined && n > 0n)) return { message: `${label} is a duration longer than 0, such as ${example}.`, at };
+  return undefined;
+}
+
 // refusal is a server message as a Problem: its roles and subjects
 // numbered as the form does, the field its prefix names, and without the
 // ": invalid request" the server ends a 400's message with.
 export function refusal(msg: string): Problem {
   msg = msg.replace(/: invalid request$/, "");
-  const m = /^(maxConcurrentRuns|deleteFinishedAfter)\b|^roles\[(\d+)\](?:\.subjects\[(\d+)\])?/.exec(msg);
+  const m = /^(maxConcurrentRuns|archiveAfter|archiveRetention|deleteFinishedAfter)\b|^roles\[(\d+)\](?:\.subjects\[(\d+)\])?/.exec(msg);
   const at = !m ? undefined : (m[1] ?? (m[3] !== undefined ? `subject-${m[2]}-${m[3]}` : `role-${m[2]}`));
   return { message: formIndexes(msg), at };
 }
@@ -80,14 +90,16 @@ export function formIndexes(msg: string): string {
 }
 
 // toSpec is the whole spec, as the PUT replaces it: an unset cap goes as
-// 0, which the server saves as 1, and no duration as none (never). The
-// fields the form does not show, such as archiveAfter, go as they
-// were, after the ones it does, so that two specs compare in one order.
+// 0, which the server saves as 1, and no duration as none (never, or the
+// default). The fields the form does not show go as they were, after the
+// ones it does, so that two specs compare in one order.
 export function toSpec(d: TeamSpec): TeamSpec {
-  const { displayName, maxConcurrentRuns, deleteFinishedAfter, roles, ...rest } = d;
+  const { displayName, maxConcurrentRuns, archiveAfter, archiveRetention, deleteFinishedAfter, roles, ...rest } = d;
   return {
     displayName: displayName?.trim() ?? "",
     maxConcurrentRuns: maxConcurrentRuns ?? 0,
+    archiveAfter: archiveAfter?.trim() || undefined,
+    archiveRetention: archiveRetention?.trim() || undefined,
     deleteFinishedAfter: deleteFinishedAfter?.trim() || undefined,
     roles: (roles ?? []).map((r) => ({ role: r.role, subjects: r.subjects.map((s) => ({ kind: s.kind, name: s.name.trim() })) })),
     ...rest,
@@ -100,17 +112,22 @@ function draftOf(t: Team): TeamSpec {
   return { ...s, roles: (s.roles ?? []).map((r) => ({ role: r.role, subjects: r.subjects.map((x) => ({ ...x })) })) };
 }
 
-type Field = "displayName" | "maxConcurrentRuns" | "deleteFinishedAfter" | "roles";
+type Field = "displayName" | "maxConcurrentRuns" | "archiveAfter" | "archiveRetention" | "deleteFinishedAfter" | "roles";
+
+// sameDuration is a duration as the server would save it.
+const sameDuration = (v: string | undefined) => {
+  const a = v?.trim() ?? "";
+  return String(durationOf(a) ?? a);
+};
 
 // same says, per field, what a spec would save, so that 720h and 720h0m0s
 // or an empty cap and 1 compare equal.
 const same: Record<Field, (s: TeamSpec) => string> = {
   displayName: (s) => s.displayName?.trim() ?? "",
   maxConcurrentRuns: (s) => String(s.maxConcurrentRuns || 1),
-  deleteFinishedAfter: (s) => {
-    const a = s.deleteFinishedAfter?.trim() ?? "";
-    return String(durationOf(a) ?? a);
-  },
+  archiveAfter: (s) => sameDuration(s.archiveAfter),
+  archiveRetention: (s) => sameDuration(s.archiveRetention),
+  deleteFinishedAfter: (s) => sameDuration(s.deleteFinishedAfter),
   roles: (s) => JSON.stringify(toSpec(s).roles),
 };
 
@@ -121,6 +138,10 @@ function shown(s: TeamSpec, f: Field): string {
       return s.displayName || "none";
     case "maxConcurrentRuns":
       return String(s.maxConcurrentRuns || 1);
+    case "archiveAfter":
+      return s.archiveAfter || "never";
+    case "archiveRetention":
+      return s.archiveRetention || "2160h (default)";
     case "deleteFinishedAfter":
       return s.deleteFinishedAfter || "never";
     case "roles":
@@ -240,8 +261,8 @@ export function TeamForm({
     setBusy(true);
     // The fields the form does not show go as base has them, so that a
     // save after a 409 does not put back the ones someone else changed.
-    const { displayName, maxConcurrentRuns, deleteFinishedAfter, roles: rs } = draft;
-    const spec = toSpec({ ...base.spec, displayName, maxConcurrentRuns, deleteFinishedAfter, roles: rs });
+    const { displayName, maxConcurrentRuns, archiveAfter, archiveRetention, deleteFinishedAfter, roles: rs } = draft;
+    const spec = toSpec({ ...base.spec, displayName, maxConcurrentRuns, archiveAfter, archiveRetention, deleteFinishedAfter, roles: rs });
     try {
       onSaved(await putTeam(ns, spec, base.metadata.resourceVersion), spec);
       return;
@@ -319,6 +340,34 @@ export function TeamForm({
           How many of the team's tasks run at once. Empty or 0 is saved as 1.
         </span>
         {changed("maxConcurrentRuns") && <Changed field="maxConcurrentRuns" spec={base.spec ?? {}} />}
+      </label>
+      <label className="field">
+        Archive after
+        <input
+          className="mono"
+          value={draft.archiveAfter ?? ""}
+          onChange={(e) => setDraft((d) => ({ ...d, archiveAfter: e.target.value }))}
+          aria-invalid={invalid("archiveAfter") || undefined}
+          aria-describedby={ids("archive-after-help", note("archiveAfter"), invalid("archiveAfter") && "team-error")}
+        />
+        <span id="archive-after-help" className="help">
+          A finished task is archived this long after it finished: a read-only snapshot is kept for Keep archived for, and the task leaves the board. While set, Delete finished after is not used.
+        </span>
+        {changed("archiveAfter") && <Changed field="archiveAfter" spec={base.spec ?? {}} />}
+      </label>
+      <label className="field">
+        Keep archived for
+        <input
+          className="mono"
+          value={draft.archiveRetention ?? ""}
+          onChange={(e) => setDraft((d) => ({ ...d, archiveRetention: e.target.value }))}
+          aria-invalid={invalid("archiveRetention") || undefined}
+          aria-describedby={ids("archive-retention-help", note("archiveRetention"), invalid("archiveRetention") && "team-error")}
+        />
+        <span id="archive-retention-help" className="help">
+          A duration such as 2160h. An archived task&apos;s snapshot is removed that long after the archive. Empty: 2160h (90 days).
+        </span>
+        {changed("archiveRetention") && <Changed field="archiveRetention" spec={base.spec ?? {}} />}
       </label>
       <label className="field">
         Delete finished after
@@ -475,6 +524,10 @@ function Current({ team }: { team: Team }) {
         <dd>{s.displayName || <span className="muted">none</span>}</dd>
         <dt>Max concurrent runs</dt>
         <dd>{s.maxConcurrentRuns || 1}</dd>
+        <dt>Archive after</dt>
+        <dd>{s.archiveAfter ? <span className="mono">{s.archiveAfter}</span> : <span className="muted">never</span>}</dd>
+        <dt>Keep archived for</dt>
+        <dd>{s.archiveRetention ? <span className="mono">{s.archiveRetention}</span> : <span className="muted">2160h (default)</span>}</dd>
         <dt>Delete finished after</dt>
         <dd>{s.deleteFinishedAfter ? <span className="mono">{s.deleteFinishedAfter}</span> : <span className="muted">never</span>}</dd>
         <dt>Roles</dt>

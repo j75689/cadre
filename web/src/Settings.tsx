@@ -255,8 +255,15 @@ export function Settings() {
                   <>
                     <dt>Max concurrent runs</dt>
                     <dd>{team.spec?.maxConcurrentRuns || <>{defaultMaxRuns} <span className="muted">(default)</span></>}</dd>
+                    <dt>Archive after</dt>
+                    <dd>{team.spec?.archiveAfter ? <span className="mono">{team.spec.archiveAfter}</span> : <span className="muted">never</span>}</dd>
+                    <dt>Keep archived for</dt>
+                    <dd>{team.spec?.archiveRetention ? <span className="mono">{team.spec.archiveRetention}</span> : <span className="muted">2160h (default)</span>}</dd>
                     <dt>Delete finished after</dt>
-                    <dd>{team.spec?.deleteFinishedAfter ? <span className="mono">{team.spec.deleteFinishedAfter}</span> : <span className="muted">never</span>}</dd>
+                    <dd>
+                      {team.spec?.deleteFinishedAfter ? <span className="mono">{team.spec.deleteFinishedAfter}</span> : <span className="muted">never</span>}
+                      {team.spec?.deleteFinishedAfter && team.spec.archiveAfter && <span className="sub">not used while Archive after is set</span>}
+                    </dd>
                   </>
                 )}
               </dl>
