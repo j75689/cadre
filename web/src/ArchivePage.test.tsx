@@ -184,6 +184,32 @@ describe("ArchivePage", () => {
     expect(screen.queryByRole("button", { name: "Retry" })).toBeNull();
   });
 
+  it("shows stored HTML as text, never as elements", async () => {
+    const html = '<img src=x onerror="alert(1)"><script>alert(2)</script>';
+    const step = { step: 0, kind: "llm_turn", text: html, request: { system: html }, at: "2026-10-01T08:00:00Z" };
+    open(() =>
+      json({
+        ...snapshot,
+        task: { ...snapshot.task, spec: { ...snapshot.task.spec, description: html } },
+        thread: [entry(1, "Comment", { body: html })],
+        transcripts: { [stepRun]: [step] },
+        files: [{ path: "notes/x.html", version: 1, size: html.length, content: html }],
+      }),
+    );
+    const main = (await screen.findByRole("heading", { level: 1 })).closest("main")!;
+    const details = within(main).getByText("Transcript (1 step)").closest("details")!;
+    details.open = true;
+    fireEvent(details, new Event("toggle"));
+    const transcript = await waitFor(() => details.querySelector<HTMLElement>("ol.transcript")!);
+
+    expect(within(main).getByRole("region", { name: "Description" }).querySelector("pre")?.textContent).toBe(html);
+    expect(within(within(main).getByRole("region", { name: "Thread" })).getByText(html)).toBeTruthy();
+    expect(within(transcript).getByText(html)).toBeTruthy();
+    expect(JSON.parse(transcript.querySelector("pre")!.textContent!)).toEqual(step);
+    expect(within(main).getByRole("region", { name: "Files" }).querySelector("pre")?.textContent).toBe(html);
+    expect(main.querySelectorAll("img, script")).toHaveLength(0);
+  });
+
   it("offers Retry after a failed read, and reads again on it", async () => {
     let n = 0;
     const reads = open(() => (n++ === 0 ? json({ error: { code: "unavailable", message: "try later" } }, 503) : json(snapshot)));
