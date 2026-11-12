@@ -133,8 +133,8 @@ describe("Settings", () => {
 
   // Retry goes once the read it asks for succeeds, whatever the role it was
   // read for, so its focus goes to the heading rather than the body. The
-  // focus moves in an effect after the commit that takes Retry away, so it is
-  // waited for too.
+  // focus moves in the commit that takes Retry away; it is waited for too,
+  // so the test does not lean on that.
   it.each([
     ["an admin", { mode: "oidc", name: "dana", roles: { a: "admin" } }, full],
     ["a bootstrap admin", { mode: "oidc", name: "dana", roles: { a: "admin" }, admin: true }, team({ spec: { maxConcurrentRuns: 1 }, status: {} })],
