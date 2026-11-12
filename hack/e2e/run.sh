@@ -217,6 +217,11 @@ listed() {
 }
 wait_for "task $name listed with a number" listed
 
+# A reassign writes the Task's spec: cadre-server's ClusterRole needs update
+# on tasks, which envtest, running as an admin, does not check.
+assigned=$(api -X POST $server/api/v1/namespaces/team-a/tasks/$name/assign -d '{"assignee":{"kind":"User","name":"e2e"}}')
+jq -e '.spec.assignee.name == "e2e"' <<<"$assigned" >/dev/null || fail "POST /tasks/$name/assign: $assigned"
+
 for path in / /t/team-a; do
   type=$(curl -fsS -o /dev/null -w '%{content_type}' "$server$path")
   [[ $type == text/html* ]] || fail "GET $path: $type"
