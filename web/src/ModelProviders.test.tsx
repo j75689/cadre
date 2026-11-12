@@ -191,3 +191,57 @@ describe("ModelProviderDetail", () => {
     expect(await screen.findByText("ModelProvider")).toBeTruthy();
   });
 });
+
+describe("A ModelProvider's Used by", () => {
+  const agents = "/namespaces/a/agents";
+  const usedBy = async () => within((await screen.findByRole("heading", { name: "Used by" })).closest("section")!);
+
+  it("links the Agents whose modelRef is the provider, and only those", async () => {
+    at("/t/a/modelproviders/claude", {
+      [one]: [() => json(member)],
+      [agents]: [
+        () =>
+          json({
+            items: [
+              { name: "bot", ready: true, modelRef: "claude" },
+              { name: "other", ready: true, modelRef: "gpt", toolRefs: ["claude"] },
+              { name: "writer", ready: false, reason: "Pending", modelRef: "claude" },
+            ],
+          }),
+      ],
+      "/namespaces/a/agents/bot": [() => json({ ...member, name: "bot", kind: "Agent", spec: { modelRef: "claude" } })],
+    });
+    const card = await usedBy();
+    await waitFor(() =>
+      expect(card.getAllByRole("link").map((l) => [l.textContent, l.getAttribute("href")])).toEqual([
+        ["bot", "/t/a/agents/bot"],
+        ["writer", "/t/a/agents/writer"],
+      ]),
+    );
+    expect(card.getByText("Agents")).toBeTruthy();
+    fireEvent.click(card.getByRole("link", { name: "bot" }));
+    expect(await screen.findByRole("heading", { level: 1, name: "bot" })).toBeTruthy();
+  });
+
+  it("says None when no Agent uses it", async () => {
+    at("/t/a/modelproviders/claude", { [one]: [() => json(member)], [agents]: [() => json({ items: [{ name: "bot", ready: true, modelRef: "gpt" }] })] });
+    expect(await (await usedBy()).findByText("None")).toBeTruthy();
+  });
+
+  it("shows a failed read with Retry, which reads again", async () => {
+    at("/t/a/modelproviders/claude", {
+      [one]: [() => json(member)],
+      [agents]: [() => json({ error: { code: "Unavailable", message: "not synced" } }, 503), () => json({ items: [{ name: "bot", ready: true, modelRef: "claude" }] })],
+    });
+    expect(await screen.findByText("Could not load the agents: not synced")).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: "Retry" }));
+    expect(await (await usedBy()).findByRole("link", { name: "bot" })).toBeTruthy();
+    expect(screen.queryByText(/Could not load the agents/)).toBeNull();
+  });
+
+  it("is not shown to a viewer", async () => {
+    at("/t/a/modelproviders/claude", { [one]: [() => json(viewer)], [agents]: [() => json({ items: [] })] });
+    expect(await screen.findByText("The spec and status are shown to the team's members and admins.")).toBeTruthy();
+    expect(screen.queryByRole("heading", { name: "Used by" })).toBeNull();
+  });
+});

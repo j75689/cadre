@@ -64,6 +64,7 @@ var configKinds = []configKind{{
 		maskContainers(pod.Containers)
 		return *spec, a.Status
 	},
+	summary: agentRefs,
 }, {
 	plural: "modelproviders", kind: "ModelProvider",
 	newObj:  func() client.Object { return &v1alpha1.ModelProvider{} },
@@ -297,6 +298,15 @@ func (s *Server) configTeam(ctx context.Context, ns string) (*v1alpha1.Team, err
 		return nil, fmt.Errorf("namespace %s has no Team: %w", ns, err)
 	}
 	return team, err
+}
+
+// agentRefs adds to an Agent's list item, out, the ModelProvider and the
+// ToolServers it uses, for a member and up: what a ModelProvider's or a
+// ToolServer's page lists as using it.
+func agentRefs(o client.Object, role authz.Role, out *ConfigSummary) {
+	if a := o.(*v1alpha1.Agent); role >= authz.Member {
+		out.ModelRef, out.ToolRefs = a.Spec.ModelRef, a.Spec.ToolRefs
+	}
 }
 
 // listConfig lists a namespace's resources of kind k, by name, with
