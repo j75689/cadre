@@ -147,6 +147,10 @@ type ConfigSummary struct {
 	// Assignee is whom a Schedule's Tasks go to, in its list item, for a
 	// member and up.
 	Assignee *v1alpha1.Assignee `json:"assignee,omitempty"`
+	// ModelRef and ToolRefs are the ModelProvider and the ToolServers an
+	// Agent uses, in its list item, for a member and up.
+	ModelRef string   `json:"modelRef,omitempty"`
+	ToolRefs []string `json:"toolRefs,omitempty"`
 }
 
 // ConfigList is a namespace's resources of one configuration kind, by name.

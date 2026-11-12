@@ -576,14 +576,23 @@ func (s *Server) project(ctx context.Context, t *v1alpha1.Team) *v1alpha1.Team {
 }
 
 func (s *Server) listAgents(w http.ResponseWriter, r *http.Request) {
-	agents, err := s.m.ListAgents(r.Context(), r.PathValue("ns"))
+	ns := r.PathValue("ns")
+	agents, err := s.m.ListAgents(r.Context(), ns)
 	if err != nil {
 		httpjson.Fail(w, s.log, err)
 		return
 	}
+	team, err := s.configTeam(r.Context(), ns)
+	if err != nil {
+		httpjson.Fail(w, s.log, err)
+		return
+	}
+	role := s.configRole(r.Context(), team)
 	items := make([]AgentSummary, 0, len(agents))
 	for _, a := range agents {
-		items = append(items, summarize(&a))
+		item := summarize(&a)
+		agentRefs(&a, role, &item)
+		items = append(items, item)
 	}
 	httpjson.Write(w, http.StatusOK, AgentList{Items: items})
 }
