@@ -1,7 +1,9 @@
-import { getToolServer, listToolServers } from "./api";
+import { useParams } from "react-router";
+import { getToolServer, listAgents, listToolServers } from "./api";
 import { ConfigDetail } from "./ConfigDetail";
 import { ConfigList } from "./ConfigList";
-import { toolServerLink } from "./links";
+import { agentLink, toolServerLink } from "./links";
+import { UsedByCard } from "./ui/UsedBy";
 
 // ToolServers is the team's tool servers: whether each is ready, and why
 // not.
@@ -20,8 +22,27 @@ export function ToolServers() {
 
 // ToolServerDetail is one ToolServer: its health, conditions, metadata and
 // YAML, as the caller's role is shown it; its spec, and its status.url, are
-// in the YAML. The Agents that use it (spec.toolRefs) are not shown, as on
-// a ModelProvider's page. TODO(used-by): a Used by card here.
+// in the YAML. A member and an admin also see the Agents that use it: those
+// whose list item names it in toolRefs.
 export function ToolServerDetail() {
-  return <ConfigDetail kind="ToolServer" noun="tool server" title="Tool servers" section="toolservers" load={getToolServer} />;
+  const { name = "" } = useParams();
+  return (
+    <ConfigDetail
+      kind="ToolServer"
+      noun="tool server"
+      title="Tool servers"
+      section="toolservers"
+      load={getToolServer}
+      spec={() => (
+        <UsedByCard
+          label="Agents"
+          what="the agents"
+          kind="Agent"
+          load={listAgents}
+          pick={(items) => items.filter((a) => a.toolRefs?.includes(name)).map((a) => a.name)}
+          link={agentLink}
+        />
+      )}
+    />
+  );
 }
