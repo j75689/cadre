@@ -7,7 +7,7 @@ import (
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
-	"slices"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -282,7 +282,7 @@ func TestGetAgent(t *testing.T) {
 		t.Fatalf("reviewer: %d %s", code, body)
 	}
 	want := api.ConfigSummary{Name: "reviewer", Reason: "Pending", Message: "its current spec has not been checked yet"}
-	if got.ConfigSummary != want || got.Kind != "Agent" || got.Generation != 2 || got.ObservedGeneration != 1 || len(got.Conditions) != 1 {
+	if !reflect.DeepEqual(got.ConfigSummary, want) || got.Kind != "Agent" || got.Generation != 2 || got.ObservedGeneration != 1 || len(got.Conditions) != 1 {
 		t.Errorf("an Agent edited since it was checked: %s", body)
 	}
 }
@@ -376,7 +376,7 @@ func TestListModelProviders(t *testing.T) {
 		{Name: "gpt", Reason: "Pending", Message: "its current spec has not been checked yet"},
 		{Name: "nohost", Ready: true},
 	}
-	if !slices.Equal(got.Items, want) {
+	if !reflect.DeepEqual(got.Items, want) {
 		t.Errorf("got %+v, want %+v", got.Items, want)
 	}
 	if code, body := get("", "", "/namespaces/team-c/modelproviders"); code != 404 {
@@ -410,7 +410,7 @@ func TestGetModelProvider(t *testing.T) {
 		t.Fatalf("gpt: %d %s", code, body)
 	}
 	want := api.ConfigSummary{Name: "gpt", Reason: "Pending", Message: "its current spec has not been checked yet"}
-	if got.ConfigSummary != want || got.Kind != "ModelProvider" || got.Generation != 2 || got.ObservedGeneration != 1 || len(got.Conditions) != 1 {
+	if !reflect.DeepEqual(got.ConfigSummary, want) || got.Kind != "ModelProvider" || got.Generation != 2 || got.ObservedGeneration != 1 || len(got.Conditions) != 1 {
 		t.Errorf("a ModelProvider edited since it was checked: %s", body)
 	}
 }
@@ -517,7 +517,7 @@ func TestListToolServers(t *testing.T) {
 		{Name: "remote", Ready: true},
 		{Name: "slashy", Ready: true},
 	}
-	if !slices.Equal(got.Items, want) {
+	if !reflect.DeepEqual(got.Items, want) {
 		t.Errorf("got %+v, want %+v", got.Items, want)
 	}
 	if code, body := get("", "", "/namespaces/team-c/toolservers"); code != 404 {
@@ -555,7 +555,7 @@ func TestGetToolServer(t *testing.T) {
 		t.Fatalf("execer: %d %s", code, body)
 	}
 	want := api.ConfigSummary{Name: "execer", Reason: "Pending", Message: "its current spec has not been checked yet"}
-	if got.ConfigSummary != want || got.Kind != "ToolServer" || got.Generation != 2 || got.ObservedGeneration != 1 || len(got.Conditions) != 1 {
+	if !reflect.DeepEqual(got.ConfigSummary, want) || got.Kind != "ToolServer" || got.Generation != 2 || got.ObservedGeneration != 1 || len(got.Conditions) != 1 {
 		t.Errorf("a ToolServer edited since it was checked: %s", body)
 	}
 }
@@ -747,7 +747,7 @@ func TestGetSchedule(t *testing.T) {
 		t.Fatalf("nightly: %d %s", code, body)
 	}
 	want := api.ConfigSummary{Name: "nightly", Reason: "Pending", Message: "its current spec has not been checked yet"}
-	if got.ConfigSummary != want || got.Kind != "Schedule" || got.Generation != 2 || got.ObservedGeneration != 1 || len(got.Conditions) != 1 {
+	if !reflect.DeepEqual(got.ConfigSummary, want) || got.Kind != "Schedule" || got.Generation != 2 || got.ObservedGeneration != 1 || len(got.Conditions) != 1 {
 		t.Errorf("a Schedule edited since it was checked: %s", body)
 	}
 	// Its conditions say it is suspended, and its spec whom its Tasks go to.
@@ -756,7 +756,7 @@ func TestGetSchedule(t *testing.T) {
 	if err := json.Unmarshal([]byte(body), &got); err != nil || code != 200 {
 		t.Fatalf("paused: %d %s", code, body)
 	}
-	if want := (api.ConfigSummary{Name: "paused", Ready: true}); got.ConfigSummary != want || got.Conditions[0].Reason != "Suspended" {
+	if want := (api.ConfigSummary{Name: "paused", Ready: true}); !reflect.DeepEqual(got.ConfigSummary, want) || got.Conditions[0].Reason != "Suspended" {
 		t.Errorf("a suspended Schedule: %s", body)
 	}
 }
@@ -852,7 +852,7 @@ func TestListNotifiers(t *testing.T) {
 		{Name: "caller", Reason: "Pending", Message: "its current spec has not been checked yet"},
 		{Name: "hook", Ready: true},
 	}
-	if !slices.Equal(got.Items, want) {
+	if !reflect.DeepEqual(got.Items, want) {
 		t.Errorf("got %+v, want %+v", got.Items, want)
 	}
 	if code, body := get("", "", "/namespaces/team-c/notifiers"); code != 404 {
@@ -907,7 +907,7 @@ func TestGetNotifier(t *testing.T) {
 		t.Fatalf("caller: %d %s", code, body)
 	}
 	want := api.ConfigSummary{Name: "caller", Reason: "Pending", Message: "its current spec has not been checked yet"}
-	if got.ConfigSummary != want || got.Kind != "Notifier" || got.Generation != 2 || got.ObservedGeneration != 1 || len(got.Conditions) != 1 {
+	if !reflect.DeepEqual(got.ConfigSummary, want) || got.Kind != "Notifier" || got.Generation != 2 || got.ObservedGeneration != 1 || len(got.Conditions) != 1 {
 		t.Errorf("a Notifier edited since it was checked: %s", body)
 	}
 	withRoles := startConfig(t, api.WithAccess(auth.ModeOIDC, &authz.Policy{FoldUsernames: true}), configCluster(t))
@@ -1094,7 +1094,7 @@ func TestListRunners(t *testing.T) {
 		{Name: "ci", Reason: "Pending", Message: "its current spec has not been checked yet"},
 		{Name: "pool", Ready: true},
 	}
-	if !slices.Equal(got.Items, want) {
+	if !reflect.DeepEqual(got.Items, want) {
 		t.Errorf("got %+v, want %+v", got.Items, want)
 	}
 	if code, body := get("", "", "/namespaces/team-c/runners"); code != 404 {
@@ -1149,7 +1149,7 @@ func TestGetRunner(t *testing.T) {
 		t.Fatalf("ci: %d %s", code, body)
 	}
 	want := api.ConfigSummary{Name: "ci", Reason: "Pending", Message: "its current spec has not been checked yet"}
-	if got.ConfigSummary != want || got.Kind != "Runner" || got.Generation != 2 || got.ObservedGeneration != 1 || len(got.Conditions) != 1 {
+	if !reflect.DeepEqual(got.ConfigSummary, want) || got.Kind != "Runner" || got.Generation != 2 || got.ObservedGeneration != 1 || len(got.Conditions) != 1 {
 		t.Errorf("a Runner edited since it was checked: %s", body)
 	}
 	withRoles := startConfig(t, api.WithAccess(auth.ModeOIDC, &authz.Policy{FoldUsernames: true}), configCluster(t))

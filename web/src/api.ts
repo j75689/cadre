@@ -184,6 +184,10 @@ export interface AgentSummary {
   // assignee is whom a Schedule's tasks go to, in GET /schedules, for a
   // member and up.
   assignee?: { kind: string; name: string };
+  // modelRef and toolRefs are what an Agent uses, in GET /agents, for a
+  // member and up.
+  modelRef?: string;
+  toolRefs?: string[];
 }
 
 // ConfigResource is a configuration resource, such as an Agent, as the
