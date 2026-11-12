@@ -96,6 +96,21 @@ cadre team set -n team-a --archive-after 720h --archive-retention 4320h
 cadre team set -n team-a --archive-after 0
 ```
 
+Read what was archived (the routes are in [architecture.md](architecture.md#web-ui-and-api); a viewer may, as for `GET /tasks`):
+
+```sh
+# the newest archived tasks, one summary each, with `total`
+curl -s -H "Authorization: Bearer $(cadre auth token)" \
+  "$CADRE_SERVER/api/v1/namespaces/team-a/archive?limit=20"
+# one snapshot, by the uid in a summary (the Task's metadata.uid)
+curl -s -H "Authorization: Bearer $(cadre auth token)" \
+  "$CADRE_SERVER/api/v1/namespaces/team-a/archive/a43e4e4f-a9cf-490a-9c07-0afab24b2465"
+```
+
+Under `--auth=none` leave out the header. The answers are described, with a sample, in [architecture.md](architecture.md#web-ui-and-api); an unknown uid is 404 `not_found`, a malformed one 400 `invalid`.
+
+The same snapshots are on the web Archive page ([web-ui.md](web-ui.md)).
+
 **Upgrading.** `archiveAfter`, accepted but never acted on until this version, now archives: a Team with it set starts archiving its finished tasks older than it at the first look after the upgrade, 20 per look; each archived task leaves the board, and its snapshot is kept for `archiveRetention` (90 days unless set). Snapshots are read with `GET /api/v1/namespaces/<ns>/archive` and `GET /api/v1/namespaces/<ns>/archive/<uid>` ([architecture.md](architecture.md#web-ui-and-api)), by whoever may read the board, and in the web UI under the team's **Archive** tab ([web-ui.md](web-ui.md)), with each step-mode run's transcript. Clear it before upgrading if that is not wanted: `cadre team set --archive-after 0` or `kubectl -n <ns> patch team team --type merge -p '{"spec":{"archiveAfter":null}}'`. Apply the CRDs first (`kubectl apply -f charts/cadre/crds`); against old CRDs `archiveRetention` is pruned and the default 90 days applies. During a rolling upgrade, a replica of the older version deletes the logs of any task marked deleting without writing a snapshot first. If a Team sets both `archiveAfter` and `deleteFinishedAfter`, a snapshot that a new replica is writing can then be stored with part of the logs missing. For such Teams, run cadre-server as one replica for the upgrade (or use a `Recreate` rollout), or clear `deleteFinishedAfter` before upgrading.
 
 ### Deleting finished tasks
