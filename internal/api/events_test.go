@@ -136,6 +136,30 @@ func TestTeamEvents(t *testing.T) {
 	}
 }
 
+// Reassigning a task is told with an Event on the Task naming the assignee
+// before and after, and who did it; reassigning it to whom it has is not.
+func TestAssignEvents(t *testing.T) {
+	rec := newRecorder(t)
+	e := startRolesWith(t, memory.NewBackend().Open(), nil, &authz.Policy{}, api.WithEvents(rec))
+	member := e.as("dev@example.test", "backend")
+	task := "cadre.dev/v1alpha1 Task team-a/x"
+	for _, c := range []struct {
+		name, body string
+		code       int
+		want       []recorded
+	}{
+		{"to an agent", `{"assignee":{"kind":"Agent","name":"writer"}}`, 200, []recorded{{task, "Normal", "TaskReassigned", "AssignTask", "Task x reassigned from nobody to Agent writer by dev@example.test"}}},
+		{"to the same", `{"assignee":{"kind":"Agent","name":"writer"}}`, 200, nil},
+		{"to nobody", `{"assignee":null}`, 200, []recorded{{task, "Normal", "TaskReassigned", "AssignTask", "Task x reassigned from Agent writer to nobody by dev@example.test"}}},
+		{"to a Robot", `{"assignee":{"kind":"Robot","name":"r"}}`, 400, nil},
+	} {
+		code, _ := e.do(member, "POST", "/namespaces/team-a/tasks/x/assign", c.body)
+		if got := rec.take(); code != c.code || fmt.Sprint(got) != fmt.Sprint(c.want) {
+			t.Errorf("%s: %d %v, want %d %v", c.name, code, got, c.code, c.want)
+		}
+	}
+}
+
 // Making, editing and deleting an AgentAccess is each told with an Event
 // on it naming who did it: never with its token, nor its hash.
 func TestAgentAccessEvents(t *testing.T) {

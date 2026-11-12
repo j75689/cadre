@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/oklog/ulid/v2"
+	"k8s.io/apimachinery/pkg/api/equality"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/util/validation"
 
@@ -330,6 +331,43 @@ func (m *Manager) Answer(ctx context.Context, key storage.Key, author Author, bo
 		return nil, entry, err
 	}
 	return t, entry, nil
+}
+
+// Reassign gives a task to assignee, or to nobody when it is nil: its spec
+// is written, its status left as it is. It is decided on a fresh read, and
+// refused (ErrInvalidTransition) while a run holds the task, once it has
+// ended, and while it is being deleted: a task is reassigned in Todo,
+// Waiting or Review only. A write that another got ahead of is tried again
+// on a fresh read, as a transition is.
+func (m *Manager) Reassign(ctx context.Context, key storage.Key, assignee *v1alpha1.Assignee) (*v1alpha1.Task, error) {
+	for range maxConflicts {
+		t, err := m.store.GetTask(ctx, key)
+		if err != nil {
+			return nil, err
+		}
+		switch p := t.Status.Phase; {
+		case t.Status.DeletingSince != nil:
+			return nil, fmt.Errorf("reassign a task being deleted: %w", task.ErrInvalidTransition)
+		case p != v1alpha1.PhaseTodo && p != v1alpha1.PhaseWaiting && p != v1alpha1.PhaseReview:
+			return nil, fmt.Errorf("reassign a %s task: %w", p, task.ErrInvalidTransition)
+		}
+		if equality.Semantic.DeepEqual(t.Spec.Assignee, assignee) {
+			return t, nil
+		}
+		t.Spec.Assignee = assignee.DeepCopy()
+		if err := task.ValidateSpec(&t.Spec); err != nil {
+			return nil, fmt.Errorf("%w: %w", ErrInvalid, err)
+		}
+		err = m.store.UpdateTaskSpec(ctx, t)
+		if errors.Is(err, storage.ErrConflict) {
+			continue
+		}
+		if err != nil {
+			return nil, err
+		}
+		return t, nil
+	}
+	return nil, fmt.Errorf("reassign %s: %w", key, ErrBusy)
 }
 
 // Runs returns the task's run history, oldest first, including runs whose

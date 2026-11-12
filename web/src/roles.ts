@@ -8,7 +8,7 @@ const rank: Record<Role, number> = { viewer: 1, member: 2, admin: 3 };
 export type Action = "read" | "work" | "manage";
 
 // needs is the weakest role allowed each action: work is creating tasks,
-// commenting, replying, approving and cancelling.
+// commenting, replying, approving, cancelling and assigning.
 const needs: Record<Action, Role> = { read: "viewer", work: "member", manage: "admin" };
 
 export function can(role: Role | undefined, action: Action): boolean {

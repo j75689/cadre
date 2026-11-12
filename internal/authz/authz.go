@@ -62,6 +62,7 @@ const (
 	Reply      Action = "reply"
 	Approve    Action = "approve or deny tool calls"
 	Cancel     Action = "cancel tasks"
+	Assign     Action = "assign tasks"
 	// ManageTeam is initialising or editing the Team.
 	ManageTeam Action = "manage the team"
 	// ManageAccess is listing, making, editing and deleting the Team's
@@ -77,6 +78,7 @@ var needs = map[Action]Role{
 	Reply:        Member,
 	Approve:      Member,
 	Cancel:       Member,
+	Assign:       Member,
 	ManageTeam:   Admin,
 	ManageAccess: Admin,
 }

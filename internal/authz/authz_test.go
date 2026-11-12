@@ -15,9 +15,9 @@ func TestMatrix(t *testing.T) {
 		deny  []authz.Action
 	}{
 		{authz.NoRole, nil, []authz.Action{authz.Read, authz.Comment, authz.ManageTeam}},
-		{authz.Viewer, []authz.Action{authz.Read}, []authz.Action{authz.CreateTask, authz.Comment, authz.Reply, authz.Approve, authz.Cancel, authz.ManageTeam}},
-		{authz.Member, []authz.Action{authz.Read, authz.CreateTask, authz.Comment, authz.Reply, authz.Approve, authz.Cancel}, []authz.Action{authz.ManageTeam}},
-		{authz.Admin, []authz.Action{authz.Read, authz.CreateTask, authz.Comment, authz.Reply, authz.Approve, authz.Cancel, authz.ManageTeam}, nil},
+		{authz.Viewer, []authz.Action{authz.Read}, []authz.Action{authz.CreateTask, authz.Comment, authz.Reply, authz.Approve, authz.Cancel, authz.Assign, authz.ManageTeam}},
+		{authz.Member, []authz.Action{authz.Read, authz.CreateTask, authz.Comment, authz.Reply, authz.Approve, authz.Cancel, authz.Assign}, []authz.Action{authz.ManageTeam}},
+		{authz.Admin, []authz.Action{authz.Read, authz.CreateTask, authz.Comment, authz.Reply, authz.Approve, authz.Cancel, authz.Assign, authz.ManageTeam}, nil},
 	} {
 		for _, a := range c.allow {
 			if !authz.Allowed(c.role, a) {

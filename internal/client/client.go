@@ -164,6 +164,14 @@ func (c *Client) CancelTask(ctx context.Context, ns, name string) (*v1alpha1.Tas
 	return &t, err
 }
 
+// Assign gives a task to assignee, or to nobody when it is nil, and returns
+// it.
+func (c *Client) Assign(ctx context.Context, ns, name string, assignee *v1alpha1.Assignee) (*v1alpha1.Task, error) {
+	var t v1alpha1.Task
+	_, err := c.do(ctx, http.MethodPost, taskPath(ns, name)+"/assign", api.AssignRequest{Assignee: assignee}, &t)
+	return &t, err
+}
+
 // Comment writes to a task's thread and returns the entry.
 func (c *Client) Comment(ctx context.Context, ns, name, author, body string) (*manager.ThreadEntry, error) {
 	var entry manager.ThreadEntry
