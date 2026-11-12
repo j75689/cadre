@@ -661,7 +661,8 @@ describe("Board", () => {
     renderPage();
     press(await within(await screen.findByRole("region", { name: "Todo" })).findByRole("button", { name: "Load more" }));
     await vi.waitFor(() => expect(screen.queryByRole("button", { name: "Load more" })).toBeNull());
-    // The focus moves in an effect, which may run after the button is gone.
+    // The focus moves in the commit that takes the button away; it is
+    // waited for too, so the test does not lean on that.
     await vi.waitFor(() => expect(document.activeElement).toBe(screen.getByRole("link", { name: "Title of Todo-50" })));
     cleanup();
 

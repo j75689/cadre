@@ -1,12 +1,14 @@
-import { useEffect, useRef } from "react";
+import { useLayoutEffect, useRef } from "react";
 
 // useFocusWhenGone is for a button that may go away once pressed, such as
 // the last "Load more": press(button, then) records it, and once it has gone
 // while it held the focus, the focus goes to what then() returns rather
-// than to the body. A button that stays keeps the focus.
+// than to the body. A button that stays keeps the focus. A layout effect
+// moves it in the commit that takes the button away, with what then()
+// finds already rendered.
 export function useFocusWhenGone() {
   const pressed = useRef<{ button: HTMLElement; then: () => HTMLElement | null | undefined } | undefined>(undefined);
-  useEffect(() => {
+  useLayoutEffect(() => {
     if (!pressed.current) return;
     const { button, then } = pressed.current;
     if (button.isConnected && document.activeElement === button) return;

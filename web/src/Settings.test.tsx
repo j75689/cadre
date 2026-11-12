@@ -132,7 +132,9 @@ describe("Settings", () => {
   });
 
   // Retry goes once the read it asks for succeeds, whatever the role it was
-  // read for, so its focus goes to the heading rather than the body.
+  // read for, so its focus goes to the heading rather than the body. The
+  // focus moves in the commit that takes Retry away; it is waited for too,
+  // so the test does not lean on that.
   it.each([
     ["an admin", { mode: "oidc", name: "dana", roles: { a: "admin" } }, full],
     ["a bootstrap admin", { mode: "oidc", name: "dana", roles: { a: "admin" }, admin: true }, team({ spec: { maxConcurrentRuns: 1 }, status: {} })],
@@ -143,7 +145,7 @@ describe("Settings", () => {
     retry.focus();
     fireEvent.click(retry);
     await waitFor(() => expect(screen.queryByRole("button", { name: "Retry" })).toBeNull());
-    expect(document.activeElement).toBe(screen.getByRole("heading", { name: "Settings" }));
+    await waitFor(() => expect(document.activeElement).toBe(screen.getByRole("heading", { name: "Settings" })));
   });
 
   it("leaves the focus where it was put while Retry's read was in flight", async () => {
