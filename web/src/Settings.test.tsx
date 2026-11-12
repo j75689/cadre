@@ -51,9 +51,9 @@ describe("Settings", () => {
     const card = within(await screen.findByRole("region", { name: "Team" }));
     expect(card.getByText("Team A")).toBeTruthy();
     expect(card.getByText("2")).toBeTruthy();
+    expect(card.getByText("Archive after").nextElementSibling?.textContent).toBe("168h0m0s");
+    expect(card.getByText("Keep archived for").nextElementSibling?.textContent).toBe("2160h (default)");
     expect(card.getByText("Delete finished after").nextElementSibling?.textContent).toBe("never");
-    expect(card.queryByText("Archive after")).toBeNull();
-    expect(card.queryByText("168h0m0s")).toBeNull();
 
     const roles = within(screen.getByRole("table", { name: "Roles" }));
     expect(roles.getByText("user:dana")).toBeTruthy();
@@ -81,8 +81,17 @@ describe("Settings", () => {
     open({ mode: "oidc", name: "dana", roles: { a: "admin" } }, () => json(team({ spec: { roles: full.spec?.roles }, status: { running: 1 } })));
     const card = within(await screen.findByRole("region", { name: "Team" }));
     expect(card.getByText("(default)").parentElement?.textContent).toBe("1 (default)");
-    expect(card.getByText("never")).toBeTruthy();
+    expect(card.getByText("Archive after").nextElementSibling?.textContent).toBe("never");
+    expect(card.getByText("Keep archived for").nextElementSibling?.textContent).toBe("2160h (default)");
+    expect(card.getByText("Delete finished after").nextElementSibling?.textContent).toBe("never");
     expect(screen.getByText("1 of 1 in use")).toBeTruthy();
+  });
+
+  it("says delete-after is not used only while Archive after is set too", async () => {
+    open({ mode: "oidc", name: "dana", roles: { a: "admin" } }, () => json(team({ spec: { roles: full.spec?.roles, deleteFinishedAfter: "720h0m0s" } })));
+    const card = within(await screen.findByRole("region", { name: "Team" }));
+    expect(card.getByText("Delete finished after").nextElementSibling?.textContent).toBe("720h0m0s");
+    expect(card.queryByText(/not used while/)).toBeNull();
   });
 
   it("shows an admin the limits under --auth=none", async () => {
@@ -226,21 +235,95 @@ describe("Editing the Team", () => {
     const card = within(screen.getByRole("region", { name: "Team" }));
     expect(await card.findByText("Team B")).toBeTruthy();
     expect(card.getByText("3")).toBeTruthy();
-    expect(card.getByText("Delete finished after").nextElementSibling?.textContent).toBe("720h");
+    // Both set: archiveAfter decides.
+    expect(card.getByText("Delete finished after").nextElementSibling?.textContent).toBe("720hnot used while Archive after is set");
     expect(card.getByRole("status").textContent).toBe("Saved");
     expect(sent).toEqual([{ displayName: "Team B", maxConcurrentRuns: 3, deleteFinishedAfter: "720h", archiveAfter: "168h0m0s", roles: full.spec!.roles, resourceVersion: "7" }]);
     await waitFor(() => expect(document.activeElement).toBe(card.getByRole("button", { name: "Edit" })));
   });
 
-  it("does not show archiveAfter, and saves it as read", async () => {
-    const { form, sent } = await edit([() => json(full)], [() => json(full)]);
-    expect(form.queryByLabelText(/Archive after/)).toBeNull();
-    expect(form.queryByText(/Archive after/)).toBeNull();
-    fireEvent.change(form.getByLabelText("Display name"), { target: { value: "Team B" } });
+  it("edits archiveAfter and archiveRetention, and shows them saved", async () => {
+    const after = team({ metadata: { name: "team", namespace: "a", resourceVersion: "8" }, spec: { ...full.spec, archiveAfter: "720h", archiveRetention: "2160h" } });
+    const { form, sent } = await edit([() => json(full)], [() => json(after)]);
+    const archive = form.getByLabelText(/^Archive after/) as HTMLInputElement;
+    expect(archive.value).toBe("168h0m0s");
+    expect(document.getElementById(archive.getAttribute("aria-describedby")!)?.textContent).toBe(
+      "A finished task is archived this long after it finished: a read-only snapshot is kept for Keep archived for, and the task leaves the board. While set, Delete finished after is not used.",
+    );
+    const keep = form.getByLabelText(/^Keep archived for/) as HTMLInputElement;
+    expect(keep.value).toBe("");
+    fireEvent.change(archive, { target: { value: " 720h " } });
+    fireEvent.change(keep, { target: { value: "2160h" } });
     fireEvent.click(form.getByRole("button", { name: "Save" }));
     await screen.findByText("Saved");
-    expect(sent[0].archiveAfter).toBe("168h0m0s");
+    expect(sent).toEqual([{ ...full.spec, archiveAfter: "720h", archiveRetention: "2160h", resourceVersion: "7" }]);
     expect("deleteFinishedAfter" in sent[0]).toBe(false);
+    const card = within(screen.getByRole("region", { name: "Team" }));
+    expect(card.getByText("Archive after").nextElementSibling?.textContent).toBe("720h");
+    expect(card.getByText("Keep archived for").nextElementSibling?.textContent).toBe("2160h");
+  });
+
+  it("leaves archiveAfter and archiveRetention out when they are cleared", async () => {
+    const set = team({ spec: { ...full.spec, archiveRetention: "48h0m0s" } });
+    const cleared = team({ spec: { ...full.spec, archiveAfter: undefined } });
+    const { form, sent } = await edit([() => json(set)], [() => json(cleared)]);
+    fireEvent.change(form.getByLabelText(/^Archive after/), { target: { value: "" } });
+    fireEvent.change(form.getByLabelText(/^Keep archived for/), { target: { value: " " } });
+    fireEvent.click(form.getByRole("button", { name: "Save" }));
+    await screen.findByText("Saved");
+    expect("archiveAfter" in sent[0]).toBe(false);
+    expect("archiveRetention" in sent[0]).toBe(false);
+    const card = within(screen.getByRole("region", { name: "Team" }));
+    expect(card.getByText("Archive after").nextElementSibling?.textContent).toBe("never");
+    expect(card.getByText("Keep archived for").nextElementSibling?.textContent).toBe("2160h (default)");
+  });
+
+  it.each([
+    ["Archive after", "0s", "Archive after is a duration longer than 0, such as 720h."],
+    ["Keep archived for", "a month", "Keep archived for is a duration longer than 0, such as 2160h."],
+    ["Keep archived for", "2562048h", "Keep archived for is too long: the longest the server takes is 2562047h47m16.854775807s."],
+  ])("does not save a bad %s (%s), and says why at the field", async (label, value, message) => {
+    const { form, sent } = await edit([() => json(full)]);
+    const input = form.getByLabelText(new RegExp(`^${label}`));
+    fireEvent.change(input, { target: { value } });
+    fireEvent.click(form.getByRole("button", { name: "Save" }));
+    const alert = form.getByRole("alert");
+    expect(alert.textContent).toBe(message);
+    expect(input.getAttribute("aria-invalid")).toBe("true");
+    expect(input.getAttribute("aria-describedby")?.split(" ")).toContain(alert.id);
+    expect(sent).toHaveLength(0);
+  });
+
+  it("ties the server's refusal of a retention to its field", async () => {
+    const refused = () => json({ error: { code: "invalid", message: "archiveRetention 0s must be a positive duration such as 2160h: invalid request" } }, 400);
+    const { form } = await edit([() => json(full)], [refused]);
+    const keep = form.getByLabelText(/^Keep archived for/);
+    fireEvent.change(keep, { target: { value: "2160h" } });
+    fireEvent.click(form.getByRole("button", { name: "Save" }));
+    const alert = await form.findByRole("alert");
+    expect(alert.textContent).toBe("archiveRetention 0s must be a positive duration such as 2160h");
+    expect(keep.getAttribute("aria-invalid")).toBe("true");
+    expect(keep.getAttribute("aria-describedby")?.split(" ")).toContain(alert.id);
+    expect(form.getByLabelText(/^Archive after/).getAttribute("aria-invalid")).toBeNull();
+  });
+
+  it("marks the archive fields someone else changed, and shows them as Current", async () => {
+    const theirs = team({ metadata: { name: "team", namespace: "a", resourceVersion: "9" }, spec: { ...full.spec, archiveAfter: "8760h", archiveRetention: "48h" } });
+    const { form, sent } = await edit([() => json(full), () => json(theirs)], [conflict, () => json(theirs)]);
+    fireEvent.change(form.getByLabelText("Display name"), { target: { value: "Team B" } });
+    fireEvent.click(form.getByRole("button", { name: "Save" }));
+    const current = within(await form.findByRole("region", { name: "Current" }));
+    expect(current.getByText("Archive after").nextElementSibling?.textContent).toBe("8760h");
+    expect(current.getByText("Keep archived for").nextElementSibling?.textContent).toBe("48h");
+    expect(document.getElementById("changed-archiveAfter")?.textContent).toBe("Changed by someone else: 8760h");
+    expect(document.getElementById("changed-archiveRetention")?.textContent).toBe("Changed by someone else: 48h");
+    expect(form.getByLabelText(/^Archive after/).getAttribute("aria-describedby")?.split(" ")).toContain("changed-archiveAfter");
+    expect(form.getByLabelText(/^Keep archived for/).getAttribute("aria-describedby")?.split(" ")).toContain("changed-archiveRetention");
+
+    // The form's values are saved, from their version.
+    fireEvent.click(form.getByRole("button", { name: "Save" }));
+    await screen.findByText("Saved");
+    expect(sent[1]).toEqual({ ...full.spec, displayName: "Team B", archiveAfter: "168h0m0s", resourceVersion: "9" });
   });
 
   it("keeps the spec fields the form does not show, and saves a removed role as removed", async () => {
@@ -256,7 +339,7 @@ describe("Editing the Team", () => {
 
   it("is not data-dirty on a Team with fields the form does not show", async () => {
     // Without roles, as only a bootstrap admin may leave a Team.
-    await edit([() => json(team({ spec: { archiveAfter: "168h0m0s" } }))], [], [{ ...admin, admin: true }]);
+    await edit([() => json(team({ spec: { archiveAfter: "168h0m0s", futureKnob: "on" } as TeamSpec }))], [], [{ ...admin, admin: true }]);
     expect(document.querySelector("[data-dirty]")).toBeNull();
   });
 
@@ -302,7 +385,7 @@ describe("Editing the Team", () => {
 
   it("saves again with the fields the form does not show as the Team read after a 409 has them", async () => {
     const mine = team({ spec: { ...full.spec, futureKnob: "on" } as TeamSpec });
-    const theirs = team({ metadata: { name: "team", namespace: "a", resourceVersion: "9" }, spec: { ...full.spec, archiveAfter: "8760h" } });
+    const theirs = team({ metadata: { name: "team", namespace: "a", resourceVersion: "9" }, spec: { ...full.spec, otherKnob: "x" } as TeamSpec });
     const { form, sent } = await edit([() => json(mine), () => json(theirs)], [conflict, () => json(theirs)]);
     fireEvent.change(form.getByLabelText("Display name"), { target: { value: "Team B" } });
     fireEvent.click(form.getByRole("button", { name: "Save" }));
@@ -311,8 +394,8 @@ describe("Editing the Team", () => {
 
     fireEvent.click(form.getByRole("button", { name: "Save" }));
     await screen.findByText("Saved");
-    expect(sent[0]).toMatchObject({ archiveAfter: "168h0m0s", futureKnob: "on" });
-    expect(sent[1]).toEqual({ ...full.spec, displayName: "Team B", archiveAfter: "8760h", resourceVersion: "9" }); // futureKnob removed
+    expect(sent[0]).toMatchObject({ futureKnob: "on" });
+    expect(sent[1]).toEqual({ ...full.spec, displayName: "Team B", otherKnob: "x", resourceVersion: "9" }); // futureKnob removed
   });
 
   it("marks the fields someone else changed, unless the form holds their value", async () => {

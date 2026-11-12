@@ -49,6 +49,9 @@ export function taskLink(ns: string, name: string, run?: string): string {
   return withQuery(`${teamPath(ns)}/tasks/${encodeURIComponent(name)}`, [[params.run, run]]);
 }
 
+// archiveLink is an archived task's page, by its uid.
+export const archiveLink = (ns: string, uid: string) => `${teamPath(ns)}/archive/${encodeURIComponent(uid)}`;
+
 // pending is what the sets of the current event made of the query:
 // react-router hands setSearchParams the params of the last render, so a
 // second set in one event would drop the first.

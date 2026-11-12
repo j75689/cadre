@@ -2,7 +2,7 @@ import { act, cleanup, fireEvent, render, renderHook, screen } from "@testing-li
 import { createElement, useEffect, type ReactNode } from "react";
 import { Link, MemoryRouter, useLocation, useNavigationType } from "react-router";
 import { afterEach, describe, expect, it } from "vitest";
-import { agentLink, boardLink, taskLink, teamPath, useParam } from "./links";
+import { agentLink, archiveLink, boardLink, taskLink, teamPath, useParam } from "./links";
 
 describe("links", () => {
   it("encodes the team's name", () => {
@@ -22,6 +22,10 @@ describe("links", () => {
   it("builds a task's link, at a run when one is given", () => {
     expect(taskLink("a b", "x/y")).toBe("/t/a%20b/tasks/x%2Fy");
     expect(taskLink("a", "x", "run 1")).toBe("/t/a/tasks/x?run=run+1");
+  });
+
+  it("builds an archived task's link by its uid", () => {
+    expect(archiveLink("a b", "u/1")).toBe("/t/a%20b/archive/u%2F1");
   });
 });
 

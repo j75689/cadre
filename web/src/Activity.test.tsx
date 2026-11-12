@@ -104,8 +104,8 @@ describe("Activity", () => {
     expect(reads).toEqual([`/api/v1/namespaces/a/activity?offset=0&limit=${activityPage}`]);
   });
 
-  it("does not link a Task the Event says was deleted", async () => {
-    open("/t/a/settings/activity", admin, page([item("TaskDeleted", "Task", "01jgone"), item("Noted", "Task", "01jtask")]));
+  it.each(["TaskDeleted", "TaskArchived", "SnapshotSkipped"])("does not link a Task the Event says was deleted (%s)", async (reason) => {
+    open("/t/a/settings/activity", admin, page([item(reason, "Task", "01jgone"), item("Noted", "Task", "01jtask")]));
     const table = within(await screen.findByRole("table"));
     const rows = table.getAllByRole("row").slice(1);
     expect(within(rows[0]).getAllByRole("cell")[4].textContent).toBe("Task/01jgone");
