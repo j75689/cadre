@@ -38,6 +38,17 @@ describe("TeamNav", () => {
     expect(nav.getByRole("link", { name: "Board" }).getAttribute("aria-current")).toBeNull();
   });
 
+  it("marks Archive current on the archive and on an archived task's page", () => {
+    for (const path of ["/t/a/archive", "/t/a/archive/u1"]) {
+      const nav = at(path);
+      const archive = nav.getByRole("link", { name: "Archive" });
+      expect(archive.getAttribute("aria-current"), path).toBe("page");
+      expect(archive.getAttribute("href")).toBe("/t/a/archive");
+      expect(nav.getByRole("link", { name: "Board" }).getAttribute("aria-current"), path).toBeNull();
+      cleanup();
+    }
+  });
+
   it("links to the team by its encoded name", () => {
     const nav = at("/t/a%20b/new");
     expect(nav.getByRole("link", { name: "Board" }).getAttribute("href")).toBe("/t/a%20b");
@@ -54,7 +65,7 @@ describe("TeamNav", () => {
   });
 
   // Every tab's show is true today: no role or mode hides one.
-  const tabs = ["Board", "Agents", "Model providers", "Tool servers", "Schedules", "Notifiers", "Runners", "Settings"];
+  const tabs = ["Board", "Archive", "Agents", "Model providers", "Tool servers", "Schedules", "Notifiers", "Runners", "Settings"];
   it.each<[string, Me | null]>([
     ["a viewer", { mode: "oidc", name: "lee", roles: { a: "viewer" } }],
     ["a member", { mode: "oidc", name: "lee", roles: { a: "member" } }],
@@ -62,7 +73,7 @@ describe("TeamNav", () => {
     ["an oidc user with no role in the team", { mode: "oidc", name: "lee", roles: {} }],
     ["--auth=none", { mode: "none", admin: true }],
     ["no /me yet (bootstrap)", null],
-  ])("shows exactly the 8 tabs to %s", async (_, me) => {
+  ])("shows exactly the 9 tabs to %s", async (_, me) => {
     vi.stubGlobal("fetch", (url: string) => {
       if (url.endsWith("/me")) return Promise.resolve(me ? new Response(JSON.stringify(me), { status: 200, headers: { "Content-Type": "application/json" } }) : new Response("{}", { status: 503 }));
       return new Promise(() => {});

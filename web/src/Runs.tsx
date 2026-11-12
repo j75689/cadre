@@ -79,7 +79,7 @@ export function Runs({ ns, name, current, open = "", ready, onRead }: { ns: stri
 
 // outcomeTone is the hue of how a run ended: an outcome is the phase it
 // sent the task to (Done, Review, Waiting or Failed).
-const outcomeTone = (outcome: string) => (phases as readonly string[]).includes(outcome) ? phaseTone(outcome as Phase) : undefined;
+export const outcomeTone = (outcome: string) => (phases as readonly string[]).includes(outcome) ? phaseTone(outcome as Phase) : undefined;
 
 // useLinkScroll scrolls el into view once each time it is linked
 // (?run=<id>), once ready: once what is above it has rendered. It goes to

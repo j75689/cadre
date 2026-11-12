@@ -79,8 +79,12 @@ export interface TeamRole {
 export interface TeamSpec {
   displayName?: string;
   maxConcurrentRuns?: number;
-  // archiveAfter is deprecated and not acted on; the form does not show it.
+  // archiveAfter is a Go duration: a finished task is archived that long
+  // after it finished. While it is set, deleteFinishedAfter is not used.
   archiveAfter?: string;
+  // archiveRetention is how long an archived task's snapshot is kept;
+  // unset, 2160h (90 days).
+  archiveRetention?: string;
   roles?: TeamRole[];
   // deleteFinishedAfter is a Go duration, such as "720h0m0s"; the form shows it.
   deleteFinishedAfter?: string;
@@ -216,6 +220,43 @@ export interface Activity {
   regarding: { kind: string; name: string };
   reportedBy: string;
   count: number;
+}
+
+// SnapshotSummary is an archived task, as the archive lists it.
+export interface SnapshotSummary {
+  format: number;
+  uid: string;
+  namespace: string;
+  name: string;
+  number: number;
+  title: string;
+  phase: Phase;
+  priority?: string;
+  assignee?: Assignee;
+  labels?: string[];
+  finishedAt?: string;
+  archivedAt: string;
+  archiveAfter: string;
+}
+
+// Snapshot is the read-only copy of an archived task and its logs. events
+// and transcripts are by run id; a transcript, a step-mode run's only, is
+// its committed steps as stored.
+export interface Snapshot extends SnapshotSummary {
+  task: Task;
+  thread: ThreadEntry[];
+  runs: RunRecord[];
+  events: Record<string, RunEvent[]>;
+  transcripts: Record<string, unknown[]>;
+  files: { path: string; version: number; size: number; content: string }[];
+}
+
+export interface ArchiveList {
+  items: SnapshotSummary[];
+  offset: number;
+  // limit is the one applied: the server caps what was asked for.
+  limit: number;
+  total: number;
 }
 
 export interface ActivityList {
@@ -442,6 +483,16 @@ export function listActivity(ns: string, page: { offset: number; limit: number }
   const q = new URLSearchParams({ offset: String(page.offset), limit: String(page.limit) });
   return get<ActivityList>(`/namespaces/${encodeURIComponent(ns)}/activity?${q}`, signal);
 }
+
+// listArchive reads a page of the namespace's archived tasks, newest
+// first.
+export function listArchive(ns: string, page: { offset: number; limit: number }, signal?: AbortSignal) {
+  const q = new URLSearchParams({ offset: String(page.offset), limit: String(page.limit) });
+  return get<ArchiveList>(`/namespaces/${encodeURIComponent(ns)}/archive?${q}`, signal);
+}
+
+export const getSnapshot = (ns: string, uid: string, signal?: AbortSignal) =>
+  get<Snapshot>(`/namespaces/${encodeURIComponent(ns)}/archive/${encodeURIComponent(uid)}`, signal);
 
 const accessPath = (ns: string, name: string) =>
   `/namespaces/${encodeURIComponent(ns)}/agentaccesses/${encodeURIComponent(name)}`;

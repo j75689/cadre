@@ -2005,6 +2005,65 @@ main.board {
   padding-top: calc(var(--space-3) + 1.5 * var(--text-sm) + var(--space-1));
 }
 
+/* An archived task's run: no button, as its events are in the page. */
+.archive-run {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  gap: var(--space-1);
+  padding: var(--space-3) var(--space-4) 0;
+  font-size: var(--text-sm);
+}
+
+.archive-run > code {
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.archive-run .line {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: var(--space-1) var(--space-2);
+}
+
+.archive-run .events {
+  padding: 0 0 var(--space-3);
+}
+
+.archive-run .run-times {
+  grid-column: auto;
+}
+
+.archive-banner {
+  margin-bottom: var(--space-4);
+}
+
+/* A step-mode run's transcript, a step a row: not the events' list. */
+.events .transcript {
+  display: grid;
+  gap: var(--space-2);
+  margin: 0;
+  padding: var(--space-2) var(--space-3);
+  list-style: none;
+  border-top: 1px solid var(--line);
+  border-radius: 0;
+  background: none;
+  font-family: var(--font);
+  font-size: var(--text-sm);
+}
+
+.transcript .sub {
+  display: block;
+  color: var(--fg-muted);
+  font-size: var(--text-xs);
+}
+
+.transcript-text {
+  margin: 0;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
 /* The run in progress scrolled to from a link clears the sticky top bar. */
 .live-run {
   scroll-margin-top: calc(var(--topbar) + var(--space-3));

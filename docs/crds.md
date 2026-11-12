@@ -85,6 +85,8 @@ A Task that is `Done`, `Cancelled` or `Failed` is archived `archiveAfter` after 
 - **Events.** The replica whose delete lands records one Event on the Task: Normal `TaskArchived` ("Task #12 fix-login finished 2026-10-01T09:00:00Z (Done), archived 720h later by Team.spec.archiveAfter; its snapshot is kept for 2160h"), or Warning `SnapshotSkipped` over the cap ("… deleted 720h later by Team.spec.archiveAfter without a snapshot: its logs are 63 MiB, over the 50 MiB cap") or for a delete begun without archiving ("… without a snapshot: its delete began under Team.spec.deleteFinishedAfter, so part of its logs may be gone"). A Team with only `deleteFinishedAfter` records `TaskDeleted` as before.
 - **Expiry.** Each look removes, for every Team, up to 100 snapshots past its `archiveRetention`, oldest first, whether the Team still archives or not.
 
+In the web UI a team admin sets both in **Settings**, the Team card's Edit: "Archive after" and "Keep archived for"; the card shows them, "2160h (default)" for an unset retention, and marks "Delete finished after" "not used while Archive after is set" when both are set.
+
 ```sh
 # archive finished tasks 30 days (720h) after they finished, keep the snapshots 180 days
 kubectl -n team-a patch team team --type merge -p '{"spec":{"archiveAfter":"720h","archiveRetention":"4320h"}}'
@@ -107,7 +109,9 @@ curl -s -H "Authorization: Bearer $(cadre auth token)" \
 
 Under `--auth=none` leave out the header. The answers are described, with a sample, in [architecture.md](architecture.md#web-ui-and-api); an unknown uid is 404 `not_found`, a malformed one 400 `invalid`.
 
-**Upgrading.** `archiveAfter`, accepted but never acted on until this version, now archives: a Team with it set starts archiving its finished tasks older than it at the first look after the upgrade, 20 per look; each archived task leaves the board, and its snapshot is kept for `archiveRetention` (90 days unless set). Snapshots are read with `GET /api/v1/namespaces/<ns>/archive` and `GET /api/v1/namespaces/<ns>/archive/<uid>` ([architecture.md](architecture.md#web-ui-and-api)), by whoever may read the board; the web pages that show them come in a later version. Clear it before upgrading if that is not wanted: `cadre team set --archive-after 0` or `kubectl -n <ns> patch team team --type merge -p '{"spec":{"archiveAfter":null}}'`. Apply the CRDs first (`kubectl apply -f charts/cadre/crds`); against old CRDs `archiveRetention` is pruned and the default 90 days applies. During a rolling upgrade, a replica of the older version deletes the logs of any task marked deleting without writing a snapshot first. If a Team sets both `archiveAfter` and `deleteFinishedAfter`, a snapshot that a new replica is writing can then be stored with part of the logs missing. For such Teams, run cadre-server as one replica for the upgrade (or use a `Recreate` rollout), or clear `deleteFinishedAfter` before upgrading.
+The same snapshots are on the web Archive page ([web-ui.md](web-ui.md)).
+
+**Upgrading.** `archiveAfter`, accepted but never acted on until this version, now archives: a Team with it set starts archiving its finished tasks older than it at the first look after the upgrade, 20 per look; each archived task leaves the board, and its snapshot is kept for `archiveRetention` (90 days unless set). Snapshots are read with `GET /api/v1/namespaces/<ns>/archive` and `GET /api/v1/namespaces/<ns>/archive/<uid>` ([architecture.md](architecture.md#web-ui-and-api)), by whoever may read the board, and in the web UI under the team's **Archive** tab ([web-ui.md](web-ui.md)), with each step-mode run's transcript. Clear it before upgrading if that is not wanted: `cadre team set --archive-after 0` or `kubectl -n <ns> patch team team --type merge -p '{"spec":{"archiveAfter":null}}'`. Apply the CRDs first (`kubectl apply -f charts/cadre/crds`); against old CRDs `archiveRetention` is pruned and the default 90 days applies. During a rolling upgrade, a replica of the older version deletes the logs of any task marked deleting without writing a snapshot first. If a Team sets both `archiveAfter` and `deleteFinishedAfter`, a snapshot that a new replica is writing can then be stored with part of the logs missing. For such Teams, run cadre-server as one replica for the upgrade (or use a `Recreate` rollout), or clear `deleteFinishedAfter` before upgrading.
 
 ### Deleting finished tasks
 
@@ -142,6 +146,8 @@ How often cadre-server looks is its own setting:
 | `server.timings.deleteFinishedInterval` (chart) | unset, so the flag's `1m` | passed as `--delete-finished-interval` only when set, as `5m` |
 
 Each look deletes at most 20 tasks per Team, oldest first, so a Team that turns this on with a long history drains over several looks. A parent goes after its subtasks, and a task whose outbox is not applied yet goes after it is. A Task that finished before `finishedAt` existed is stamped at the first look, so it goes one full `deleteFinishedAfter` after the upgrade, not at once. How a delete is made safe against a crash, a second replica or a finalizer is in [the Task Manager](architecture.md#task-manager).
+
+In the web UI a team admin sets it in **Settings**, the Team card's Edit, as "Delete finished after".
 
 Each delete leaves a Normal Event `TaskDeleted` (action `Delete`) on the Task, shown to the team's admins in Settings › Activity, and a `task` hint with `"deleted":true` on the watch stream; both are shown in [architecture.md](architecture.md#web-ui-and-api). The API server keeps the Event for its `--event-ttl`, one hour by default, so it is not a log.
 
