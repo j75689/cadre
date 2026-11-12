@@ -6,10 +6,11 @@ import { useLocation } from "react-router";
 // visit keeps the browser's focus, and so does a change of the query only
 // (a run linked): the page is the same.
 
-// useTitle sets document.title: the parts, then "Cadre".
+// useTitle sets document.title: the parts, then "Cadre". A layout effect
+// sets it in the commit that renders the page, not after it.
 export function useTitle(...parts: (string | undefined)[]) {
   const title = [...parts.filter((p): p is string => !!p), "Cadre"].join(" · ");
-  useEffect(() => {
+  useLayoutEffect(() => {
     document.title = title;
   }, [title]);
 }
