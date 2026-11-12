@@ -12,6 +12,7 @@ import (
 	"strings"
 	"unicode/utf8"
 
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/meta"
 	"k8s.io/apimachinery/pkg/util/validation"
 	"k8s.io/client-go/tools/events"
@@ -394,7 +395,8 @@ func (s *Server) cancel(w http.ResponseWriter, r *http.Request) {
 // assign gives a task to another assignee, or to nobody: its spec, never
 // its status. A Running or ended task, or one being deleted, is refused
 // with 409. A Normal Event on the Task names the assignee before and after,
-// and the caller.
+// and the caller. cadre-server's ClusterRole from before the route lacks
+// update on tasks: a mistake in its install, answered as one.
 func (s *Server) assign(w http.ResponseWriter, r *http.Request) {
 	var req AssignRequest
 	if !httpjson.Decode(w, r, &req) {
@@ -407,7 +409,12 @@ func (s *Server) assign(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	t, err := s.m.Reassign(r.Context(), key, req.Assignee)
-	if err != nil {
+	switch {
+	case apierrors.IsForbidden(err):
+		s.log.Error("cadre-server's ClusterRole lacks update on tasks: upgrade its RBAC", "err", err)
+		httpjson.WriteError(w, http.StatusInternalServerError, httpjson.CodeServerForbidden, "cadre-server may not reassign tasks: its ClusterRole predates the assign route; upgrade it, and see its log")
+		return
+	case err != nil:
 		httpjson.Fail(w, s.log, err)
 		return
 	}

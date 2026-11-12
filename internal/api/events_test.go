@@ -3,6 +3,7 @@ package api_test
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"strings"
 	"sync"
@@ -11,14 +12,17 @@ import (
 	"time"
 
 	eventsv1 "k8s.io/api/events/v1"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/client-go/tools/events"
 	"k8s.io/client-go/tools/reference"
 
 	v1alpha1 "github.com/j75689/cadre/api/v1alpha1"
 	"github.com/j75689/cadre/internal/api"
 	"github.com/j75689/cadre/internal/authz"
+	"github.com/j75689/cadre/internal/storage"
 	"github.com/j75689/cadre/internal/storage/memory"
 )
 
@@ -157,6 +161,33 @@ func TestAssignEvents(t *testing.T) {
 		if got := rec.take(); code != c.code || fmt.Sprint(got) != fmt.Sprint(c.want) {
 			t.Errorf("%s: %d %v, want %d %v", c.name, code, got, c.code, c.want)
 		}
+	}
+}
+
+// noTaskUpdate is a store under cadre-server's ClusterRole from before the
+// assign route: it may write a Task's status, not its spec.
+type noTaskUpdate struct{ storage.Driver }
+
+func (noTaskUpdate) UpdateTaskSpec(_ context.Context, t *v1alpha1.Task) error {
+	return fmt.Errorf("update task spec %s/%s: %w", t.Namespace, t.Name,
+		apierrors.NewForbidden(schema.GroupResource{Group: "cadre.dev", Resource: "tasks"}, t.Name, errors.New("RBAC: update not allowed")))
+}
+
+// With that ClusterRole a reassign is a mistake in the install, answered
+// as one, not a 503 to retry; nothing is written, and no Event is told.
+func TestAssignServerForbidden(t *testing.T) {
+	rec := newRecorder(t)
+	store := memory.NewBackend().Open()
+	e := startRolesWith(t, store, func(d storage.Driver) storage.Driver { return noTaskUpdate{d} }, &authz.Policy{}, api.WithEvents(rec))
+	code, out := e.do(e.as("dev@example.test", "backend"), "POST", "/namespaces/team-a/tasks/x/assign", `{"assignee":{"kind":"Agent","name":"writer"}}`)
+	if code != 500 || !strings.Contains(out, `"code":"server_forbidden"`) || strings.Contains(out, "RBAC") {
+		t.Errorf("%d %s, want 500 server_forbidden without the API server's text", code, out)
+	}
+	if got := rec.take(); len(got) != 0 {
+		t.Errorf("Events %v, want none", got)
+	}
+	if tk, err := store.GetTask(ctx, storage.Key{Namespace: "team-a", Name: "x"}); err != nil || tk.Spec.Assignee != nil {
+		t.Errorf("assignee %+v, %v, want none", tk.Spec.Assignee, err)
 	}
 }
 
