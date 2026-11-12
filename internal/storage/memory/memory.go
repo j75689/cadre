@@ -205,6 +205,28 @@ func (d *Driver) UpdateTaskStatus(_ context.Context, t *v1alpha1.Task) error {
 	return nil
 }
 
+// UpdateTaskSpec implements storage.Objects.
+func (d *Driver) UpdateTaskSpec(_ context.Context, t *v1alpha1.Task) error {
+	key := storage.Key{Namespace: t.Namespace, Name: t.Name}
+	d.b.mu.Lock()
+	defer d.b.mu.Unlock()
+	cur, ok := d.b.tasks[key]
+	if !ok {
+		return notFound("task", key)
+	}
+	if cur.ResourceVersion != t.ResourceVersion {
+		return fmt.Errorf("task %s: %w", key, storage.ErrConflict)
+	}
+	stored := cur.DeepCopy()
+	t.Spec.DeepCopyInto(&stored.Spec)
+	stored.ResourceVersion = d.b.nextVersion()
+	d.b.tasks[key] = stored
+	d.b.notify(stored)
+	t.ResourceVersion = stored.ResourceVersion
+	t.Status = *stored.Status.DeepCopy()
+	return nil
+}
+
 // DeleteTask implements storage.Objects.
 func (d *Driver) DeleteTask(_ context.Context, t *v1alpha1.Task) error {
 	key := storage.Key{Namespace: t.Namespace, Name: t.Name}

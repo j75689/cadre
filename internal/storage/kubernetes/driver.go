@@ -3,7 +3,7 @@
 // preconditions; the log is one object per entry in S3-compatible storage; the
 // index is an informer cache of Tasks, indexed in memory.
 //
-// +kubebuilder:rbac:groups=cadre.dev,resources=tasks,verbs=get;list;watch;create;delete
+// +kubebuilder:rbac:groups=cadre.dev,resources=tasks,verbs=get;list;watch;create;update;delete
 // +kubebuilder:rbac:groups=cadre.dev,resources=teams,verbs=get;list;watch;create
 // +kubebuilder:rbac:groups=cadre.dev,resources=tasks/status;teams/status,verbs=get;update
 package kubernetes
@@ -224,6 +224,15 @@ func (d *Driver) UpdateTaskStatus(ctx context.Context, t *v1alpha1.Task) error {
 		return fmt.Errorf("update task %s: no resourceVersion: %w", keyOf(t), storage.ErrConflict)
 	}
 	return mapError(d.client.Status().Update(ctx, t), "update task "+keyOf(t).String())
+}
+
+// UpdateTaskSpec implements storage.Objects: the main resource, whose
+// status the API server keeps, since status is a subresource.
+func (d *Driver) UpdateTaskSpec(ctx context.Context, t *v1alpha1.Task) error {
+	if t.ResourceVersion == "" {
+		return fmt.Errorf("update task %s: no resourceVersion: %w", keyOf(t), storage.ErrConflict)
+	}
+	return mapError(d.client.Update(ctx, t), "update task "+keyOf(t).String())
 }
 
 // DeleteTask implements storage.Objects, with the object's resourceVersion as

@@ -60,6 +60,9 @@ type Objects interface {
 	CreateTask(ctx context.Context, t *v1alpha1.Task) error
 	// UpdateTaskStatus writes status only, conditionally on the version.
 	UpdateTaskStatus(ctx context.Context, t *v1alpha1.Task) error
+	// UpdateTaskSpec writes spec only, conditionally on the version: status
+	// is left as it is, and a stale version fails with ErrConflict.
+	UpdateTaskSpec(ctx context.Context, t *v1alpha1.Task) error
 	// DeleteTask deletes the Task, conditionally on the version: an empty or
 	// stale version fails with ErrConflict and the Task stays, and a Task
 	// already gone fails with ErrNotFound. An empty version is ErrConflict
