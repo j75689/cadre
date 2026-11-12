@@ -1507,7 +1507,8 @@ main.board {
 /* Composer */
 
 .composer form,
-.composer .approval {
+.composer .approval,
+.composer .review {
   display: grid;
   gap: var(--space-3);
 }

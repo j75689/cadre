@@ -1,5 +1,5 @@
 import { useId, useRef, useState } from "react";
-import { APIError, approve, cancel, comment, reply, terminalPhases, type Task } from "./api";
+import { accept, APIError, approve, cancel, comment, reply, rerun, terminalPhases, type Task } from "./api";
 import { useIdentity, useRole } from "./Identity";
 import { can as canDo } from "./roles";
 import { Button } from "./ui/Button";
@@ -7,15 +7,19 @@ import { Icon } from "./ui/Icon";
 
 // What a task in this state lets a human do, as the API decides it: reply
 // while it waits on a human (a question or a review), approve or deny while
-// it waits on a tool approval, comment and cancel until it ends.
+// it waits on a tool approval, accept or, if an Agent has it, run again
+// while it is in Review, comment and cancel until it ends.
 export function allowed(task: Task, mayWork = true) {
   const phase = task.status?.phase ?? "Todo";
   const waiting = phase === "Waiting" ? task.status?.waiting : undefined;
   const open = mayWork && !terminalPhases.includes(phase);
+  const review = open && phase === "Review";
   return {
     comment: open,
     reply: open && waiting !== undefined && waiting.reason !== "ToolApproval",
     approve: open && waiting?.reason === "ToolApproval",
+    accept: review,
+    rerun: review && task.spec.assignee?.kind === "Agent",
     cancel: open,
   };
 }
@@ -107,8 +111,9 @@ export function carryOver(from: string, to: string, last: Carried): Carried {
 
 // Composer is the one card at the end of the thread: a Reply form while the
 // task waits on a question or a review, an approval card while it waits on
-// a tool approval, a Comment form otherwise. "Comment instead" turns a
-// reply or an approval into a comment, which the API takes in every phase
+// a tool approval, a review card while it is in Review, a Comment form
+// otherwise. "Comment instead" turns a reply, an approval or a review into
+// a comment, which the API takes in every phase
 // until the task ends, and back. Drafts holds what is typed for one wait.
 export function Composer(props: Props) {
   const actions = useActions(props);
@@ -118,7 +123,7 @@ export function Composer(props: Props) {
   // its start into it as it mounts, and its changes after. A Drafts whose
   // wait is gone (a form clearing after the task moved on) writes nothing.
   const carriedRef = useRef<{ wait: string; last: Carried }>({ wait, last: { body: "", commenting: false } });
-  const open = can.comment || can.reply || can.approve;
+  const open = can.comment || can.reply || can.approve || can.accept;
   // The card stays while it has a refusal to show, its alert in the same
   // place whether the forms are there or not.
   if (!open && !refused) return null;
@@ -177,7 +182,7 @@ function Drafts(
   };
   const { namespace: ns, name } = task.metadata;
   const waitingFor = task.status?.phase === "Waiting" ? task.status.waiting?.reason : undefined;
-  const primary = can.reply ? "reply" : can.approve ? "approve" : "comment";
+  const primary = can.reply ? "reply" : can.approve ? "approve" : can.accept ? "review" : "comment";
   const showing = commenting && can.comment ? "comment" : primary;
   return (
     <>
@@ -222,6 +227,23 @@ function Drafts(
             run(
               () => approve(ns, name, author, ok, note),
               (r) => onTask(r.task),
+            )
+          }
+        />
+      )}
+      {showing === "review" && (
+        <ReviewAction
+          canRerun={can.rerun}
+          disabled={!ready}
+          body={body}
+          onBody={setBody}
+          onDecide={(ok) =>
+            run(
+              () => (ok ? accept : rerun)(ns, name, author, body),
+              (r) => {
+                onDrafts({ body: "", commenting: false });
+                onTask(r.task);
+              },
             )
           }
         />
@@ -323,6 +345,61 @@ function Approval(props: { tool?: string; disabled: boolean; note: string; onNot
           Reject
         </Button>
       </div>
+      <Alert message={error} />
+    </div>
+  );
+}
+
+// ReviewAction is the way out of Review, data-dirty while its note holds
+// text: Accept, and the task is Done, or Run again, and it goes back to its
+// Agent. The note, optional, is written first as a comment. A task no Agent
+// has cannot run again: the button is left out, with how to.
+function ReviewAction(props: {
+  canRerun: boolean;
+  disabled: boolean;
+  body: string;
+  onBody: (body: string) => void;
+  onDecide: (accept: boolean) => Promise<Outcome>;
+}) {
+  const { body, onBody } = props;
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState("");
+  const id = useId();
+  const decide = async (ok: boolean) => {
+    setBusy(true);
+    const err = await props.onDecide(ok);
+    setBusy(false);
+    setError(err ?? "");
+    if (err === "") onBody("");
+  };
+  return (
+    <div className="review" data-dirty={body !== "" || undefined}>
+      <div className="field">
+        <label htmlFor={`${id}-text`}>Review note</label>
+        <p className="hint" id={`${id}-hint`}>
+          The run handed its work to you: accept it, or run it again. A note is added to the thread first.
+        </p>
+        <textarea
+          id={`${id}-text`}
+          aria-describedby={`${id}-hint`}
+          value={body}
+          onChange={(e) => onBody(e.target.value)}
+          placeholder="Optional"
+          rows={3}
+          disabled={props.disabled}
+        />
+      </div>
+      <div className="buttons">
+        <Button variant="success" icon="check" disabled={props.disabled || busy} onClick={() => decide(true)}>
+          Accept
+        </Button>
+        {props.canRerun && (
+          <Button variant="primary" icon="refresh" disabled={props.disabled || busy} onClick={() => decide(false)}>
+            Run again
+          </Button>
+        )}
+      </div>
+      {!props.canRerun && <p className="hint">Assign an Agent to run it again.</p>}
       <Alert message={error} />
     </div>
   );
