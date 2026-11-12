@@ -426,6 +426,9 @@ export const reply = (ns: string, name: string, author: string, body: string) =>
 export const approve = (ns: string, name: string, author: string, ok: boolean, note: string) =>
   post<{ task: Task; decision: ThreadEntry; result?: ThreadEntry }>(`${taskPath(ns, name)}/approve`, { author: author || undefined, approve: ok, note: note || undefined });
 
+// assign gives a task to assignee, or to nobody when it is null.
+export const assign = (ns: string, name: string, assignee: Assignee | null) => post<Task>(`${taskPath(ns, name)}/assign`, { assignee });
+
 export const cancel = (ns: string, name: string) => post<Task>(`${taskPath(ns, name)}/cancel`, {});
 
 export const listRuns = (ns: string, name: string, signal?: AbortSignal) => get<{ items: RunRecord[] }>(`${taskPath(ns, name)}/runs`, signal);

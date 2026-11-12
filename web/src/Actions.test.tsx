@@ -27,15 +27,16 @@ function renderActions(t: ReturnType<typeof task>, name = "dana") {
 describe("allowed", () => {
   it("mirrors what the API accepts in each state", () => {
     const cases: [ReturnType<typeof task>, ReturnType<typeof allowed>][] = [
-      [task("Todo"), { comment: true, reply: false, approve: false, cancel: true }],
-      [task("Running"), { comment: true, reply: false, approve: false, cancel: true }],
-      [task("Waiting", { waiting: { reason: "Question" } }), { comment: true, reply: true, approve: false, cancel: true }],
-      [task("Waiting", { waiting: { reason: "Review" } }), { comment: true, reply: true, approve: false, cancel: true }],
-      [task("Waiting", { waiting: { reason: "ToolApproval" } }), { comment: true, reply: false, approve: true, cancel: true }],
-      [task("Review"), { comment: true, reply: false, approve: false, cancel: true }],
-      [task("Done"), { comment: false, reply: false, approve: false, cancel: false }],
-      [task("Cancelled"), { comment: false, reply: false, approve: false, cancel: false }],
-      [task("Failed"), { comment: false, reply: false, approve: false, cancel: false }],
+      [task("Todo"), { comment: true, reply: false, approve: false, cancel: true, assign: true }],
+      [task("Running"), { comment: true, reply: false, approve: false, cancel: true, assign: false }],
+      [task("Waiting", { waiting: { reason: "Question" } }), { comment: true, reply: true, approve: false, cancel: true, assign: true }],
+      [task("Waiting", { waiting: { reason: "Review" } }), { comment: true, reply: true, approve: false, cancel: true, assign: true }],
+      [task("Waiting", { waiting: { reason: "ToolApproval" } }), { comment: true, reply: false, approve: true, cancel: true, assign: true }],
+      [task("Review"), { comment: true, reply: false, approve: false, cancel: true, assign: true }],
+      [task("Todo", { deletingSince: "2026-11-12T09:00:00Z" }), { comment: true, reply: false, approve: false, cancel: true, assign: false }],
+      [task("Done"), { comment: false, reply: false, approve: false, cancel: false, assign: false }],
+      [task("Cancelled"), { comment: false, reply: false, approve: false, cancel: false, assign: false }],
+      [task("Failed"), { comment: false, reply: false, approve: false, cancel: false, assign: false }],
     ];
     for (const [t, want] of cases) expect(allowed(t), `${t.status?.phase} ${t.status?.waiting?.reason ?? ""}`).toEqual(want);
   });

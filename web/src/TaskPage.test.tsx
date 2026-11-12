@@ -1,4 +1,4 @@
-import { act, cleanup, fireEvent, render, screen } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen, within } from "@testing-library/react";
 import { MemoryRouter, useNavigate, type NavigateFunction } from "react-router";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { App } from "./App";
@@ -144,6 +144,93 @@ function subtask(n: number, phase: Phase = "Todo"): Task {
     status: { phase, number: 100 + n },
   };
 }
+
+describe("Assign", () => {
+  // assignServer answers the task page as current is, the agents list, and
+  // each POST /assign with answer; it records the POSTs.
+  // An answer that is a task is the task from then on.
+  function assignServer(current: Task, answer: (body: { assignee: unknown }) => Promise<Response>, me: unknown = { mode: "none", admin: true }) {
+    const posts: { path: string; body: { assignee: unknown } }[] = [];
+    vi.stubGlobal("fetch", async (url: string, init?: RequestInit) => {
+      if (url.endsWith("/me")) return json(me);
+      const path = new URL(url, "http://cadre.test").pathname;
+      if (init?.method === "POST") {
+        const body = JSON.parse(String(init.body));
+        posts.push({ path, body });
+        const res = await answer(body);
+        if (res.ok) current = await res.clone().json();
+        return res;
+      }
+      if (path.endsWith("/agents")) return json({ items: [{ name: "coder", ready: true }, { name: "writer", ready: true }] });
+      if (path.endsWith("/thread") || path.endsWith("/runs") || path.endsWith("/tasks")) return json({ items: [] });
+      return json(current);
+    });
+    return posts;
+  }
+  const details = () => screen.getByRole("region", { name: "Details" });
+
+  it("gives a task to another agent from the Details row", async () => {
+    const current = task("Todo", {}, { assignee: { kind: "User", name: "dana" } });
+    const posts = assignServer(current, (body) => json({ ...current, spec: { ...current.spec, assignee: body.assignee } }));
+    renderTask();
+    const open = await screen.findByRole("button", { name: "Assign" });
+    await vi.waitFor(() => expect((open as HTMLButtonElement).disabled).toBe(false));
+    fireEvent.click(open);
+    const group = screen.getByRole("group", { name: "Assign the task" });
+    expect((screen.getByLabelText("User to assign") as HTMLInputElement).value).toBe("dana");
+    expect(group.hasAttribute("data-dirty")).toBe(false);
+    fireEvent.click(screen.getByLabelText("Agent"));
+    fireEvent.change(await screen.findByLabelText("Agent to assign"), { target: { value: "writer" } });
+    expect(group.hasAttribute("data-dirty")).toBe(true);
+    fireEvent.click(screen.getByRole("button", { name: "Save" }));
+    await vi.waitFor(() => expect(posts).toEqual([{ path: "/api/v1/namespaces/a/tasks/x/assign", body: { assignee: { kind: "Agent", name: "writer" } } }]));
+    await vi.waitFor(() => expect(screen.queryByRole("group", { name: "Assign the task" })).toBeNull());
+    expect(details().textContent).toContain("writer");
+  });
+
+  it("gives it to nobody, and keeps the picker open on an empty name", async () => {
+    const current = task("Review", {}, { assignee: { kind: "Agent", name: "coder" } });
+    const posts = assignServer(current, () => json({ ...current, spec: { title: current.spec.title } }));
+    renderTask();
+    const open = await screen.findByRole("button", { name: "Assign" });
+    await vi.waitFor(() => expect((open as HTMLButtonElement).disabled).toBe(false));
+    fireEvent.click(open);
+    fireEvent.click(screen.getByLabelText("User"));
+    fireEvent.click(screen.getByRole("button", { name: "Save" }));
+    expect((await screen.findByRole("alert")).textContent).toBe("Name the user to assign it to.");
+    expect(posts).toEqual([]);
+    fireEvent.click(screen.getByLabelText("Unassigned"));
+    fireEvent.click(screen.getByRole("button", { name: "Save" }));
+    await vi.waitFor(() => expect(posts.map((p) => p.body)).toEqual([{ assignee: null }]));
+    expect(await within(details()).findByText("unassigned")).toBeTruthy();
+  });
+
+  it("shows the server's refusal and reads the task again on a conflict", async () => {
+    const current = task("Todo", {}, { assignee: { kind: "Agent", name: "coder" } });
+    assignServer(current, () => json({ error: { code: "invalid_transition", message: "transition not allowed in this phase" } }, 409));
+    renderTask();
+    const open = await screen.findByRole("button", { name: "Assign" });
+    await vi.waitFor(() => expect((open as HTMLButtonElement).disabled).toBe(false));
+    fireEvent.click(open);
+    fireEvent.click(screen.getByLabelText("Unassigned"));
+    fireEvent.click(screen.getByRole("button", { name: "Save" }));
+    expect((await screen.findByRole("alert")).textContent).toBe("transition not allowed in this phase");
+    expect(screen.getByRole("group", { name: "Assign the task" })).toBeTruthy();
+  });
+
+  it("is not offered while the task runs, nor to a viewer", async () => {
+    assignServer(task("Running", {}, { assignee: { kind: "Agent", name: "coder" } }), () => json({}));
+    renderTask();
+    await screen.findByText("Task x");
+    expect(screen.queryByRole("button", { name: "Assign" })).toBeNull();
+    cleanup();
+    assignServer(task("Todo"), () => json({}), { mode: "oidc", username: "eve@example.test", roles: { a: "viewer" } });
+    renderTask();
+    await screen.findByText("Task x");
+    await act(() => vi.advanceTimersByTimeAsync(100));
+    expect(screen.queryByRole("button", { name: "Assign" })).toBeNull();
+  });
+});
 
 describe("Subtasks", () => {
   it("lists a task's subtasks with their number, phase and assignee", async () => {
