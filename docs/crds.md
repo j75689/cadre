@@ -63,7 +63,7 @@ Three roles:
 | Role | May |
 | --- | --- |
 | `viewer` | read: list and get tasks, their threads, runs and events, the team's agents, and the Team |
-| `member` | what a viewer may, and create tasks, comment, reply, approve or deny tool calls, cancel tasks |
+| `member` | what a viewer may, and create tasks, comment, reply, approve or deny tool calls, accept tasks and run tasks again (out of Review), cancel tasks |
 | `admin` | what a member may, and editing the Team (its display name, run cap, archive, delete-after and roles) through the API, `cadre team set`, as well as with kubectl or GitOps; the only one who sees the Team's roles |
 
 | Field | Rule |
@@ -430,7 +430,7 @@ status:
 
 | Field | |
 |---|---|
-| `on` | required, at least one, each once: `Question` and `ToolApproval` (a task starting to wait, for that reason), `Review` (a run handing its work to a human: the `Review` phase, or a wait for a review), `Done`, `Failed` and `Cancelled` (a task ending) |
+| `on` | required, at least one, each once: `Question` and `ToolApproval` (a task starting to wait, for that reason), `Review` (a run handing its work to a human: the `Review` phase, or a wait for a review), `Done`, `Failed` and `Cancelled` (a task ending; `Done` too when a member accepts a task in Review, and nothing when they run it again) |
 | `webhook.url` | required, http or https, without credentials (`user:password@`), which would travel as an `Authorization` header; every notification is POSTed there |
 | `webhook.secretRef` | a Secret key holding a signing secret: every delivery then carries `X-Cadre-Signature: sha256=<hex HMAC-SHA256 of the body>` |
 | `webhook.headers` | static headers sent with each delivery. An `Authorization` header is refused: headers are readable by anyone who can read the Notifier, so a credential does not belong there; the receiver checks the signature instead |

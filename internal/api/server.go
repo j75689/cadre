@@ -82,6 +82,8 @@ func (s *Server) Register(mux *http.ServeMux) {
 		{"GET " + tasks, authz.Read, s.listTasks},
 		{"GET " + one, authz.Read, s.getTask},
 		{"POST " + one + "/cancel", authz.Cancel, s.cancel},
+		{"POST " + one + "/accept", authz.Accept, s.accept},
+		{"POST " + one + "/rerun", authz.Rerun, s.rerun},
 		{"POST " + one + "/comments", authz.Comment, s.comment},
 		{"GET " + one + "/thread", authz.Read, s.thread},
 		{"POST " + one + "/reply", authz.Reply, s.reply},
@@ -434,6 +436,36 @@ func (s *Server) reply(w http.ResponseWriter, r *http.Request) {
 		httpjson.Fail(w, s.log, err)
 		return
 	}
+	httpjson.Write(w, http.StatusOK, ReplyResponse{Task: t, Entry: entry})
+}
+
+// accept accepts the work of a task in Review: it is Done. A non-empty body
+// is written first as a comment; a task not in Review is refused with 409
+// before anything is written, and see manager.Accept for the narrow race in
+// which the comment stays.
+func (s *Server) accept(w http.ResponseWriter, r *http.Request) {
+	s.review(w, r, s.m.Accept, "TaskAccepted", "AcceptTask", "Task %s accepted by %s")
+}
+
+// rerun sends a task in Review back to Todo, for its Agent to run again, as
+// accept does; one not assigned to an Agent is refused with 409 too.
+func (s *Server) rerun(w http.ResponseWriter, r *http.Request) {
+	s.review(w, r, s.m.Rerun, "TaskRerun", "RerunTask", "Task %s sent to run again by %s")
+}
+
+// review is accept's and rerun's: act on the task, then a Normal Event on it
+// naming the caller.
+func (s *Server) review(w http.ResponseWriter, r *http.Request, act func(context.Context, storage.Key, manager.Author, string) (*v1alpha1.Task, *manager.ThreadEntry, error), reason, action, note string) {
+	var req CommentRequest
+	if !httpjson.Decode(w, r, &req) {
+		return
+	}
+	t, entry, err := act(r.Context(), taskKey(r), manager.Author{Kind: manager.AuthorUser, Name: auth.Author(r, req.Author)}, req.Body)
+	if err != nil {
+		httpjson.Fail(w, s.log, err)
+		return
+	}
+	s.emit(t, reason, action, note, t.Name, caller(r.Context()))
 	httpjson.Write(w, http.StatusOK, ReplyResponse{Task: t, Entry: entry})
 }
 

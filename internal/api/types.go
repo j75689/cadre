@@ -82,7 +82,9 @@ type ActivityObject struct {
 	Name string `json:"name"`
 }
 
-// CommentRequest writes to a task's thread, or answers a waiting task.
+// CommentRequest writes to a task's thread, or answers a waiting task, or
+// goes with accepting or running again a task in Review, where Body may be
+// empty.
 // Author is used only by a server run with --auth=none: with a login, the
 // author is the caller's username, whatever the request says.
 type CommentRequest struct {
@@ -95,10 +97,12 @@ type Thread struct {
 	Items []manager.ThreadEntry `json:"items"`
 }
 
-// ReplyResponse is the task after a reply, and the answer it recorded.
+// ReplyResponse is the task after a reply, and the answer it recorded; or
+// after an accept or a run again, and the comment it recorded, if the
+// request had a body.
 type ReplyResponse struct {
 	Task  *v1alpha1.Task       `json:"task"`
-	Entry *manager.ThreadEntry `json:"entry"`
+	Entry *manager.ThreadEntry `json:"entry,omitempty"`
 }
 
 // ApproveRequest approves or denies the tool call a task waits on. Approve

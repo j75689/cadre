@@ -78,6 +78,14 @@ func check(t *testing.T, admin ctrlclient.Client, cfg kubernetes.Config, rec *re
 		numbers[n] = key
 	}
 
+	// A Done task holds no run: a human accepting a task in Review ends no
+	// run, as the run that handed it over had ended.
+	for key, tk := range tasks {
+		if tk.Status.Phase == v1alpha1.PhaseDone && tk.Status.Run != nil {
+			t.Errorf("%s is Done and holds run %s", key, tk.Status.Run.ID)
+		}
+	}
+
 	// Run history per task, read through the Task Manager.
 	history := map[string]v1alpha1.RunRecord{} // by run id
 	historyTask := map[string]string{}

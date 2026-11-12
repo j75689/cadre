@@ -45,6 +45,7 @@ func Run(t *testing.T, f Factory) {
 		{"TeamSpecWritesLeaveStatusAlone", testTeamSpecWritesLeaveStatusAlone},
 		{"CloseIsIdempotent", testCloseIsIdempotent},
 		{"ClaimExactlyOnce", testClaimExactlyOnce},
+		{"ReviewExitHappensOnce", testReviewExitHappensOnce},
 		{"RedeliveredStepAdvancesOnce", testRedeliveredStepAdvancesOnce},
 		{"OutboxAppliedOnceAfterDispatcherDies", testOutboxAppliedOnce},
 		{"NotifyItemRoundTrips", testNotifyItemRoundTrips},
@@ -203,10 +204,10 @@ func transitionAfter(ctx context.Context, d storage.Driver, key storage.Key, ev 
 	}
 }
 
-// readBarrier is a barrier for n parties calling transitionAfter.
-func readBarrier(n int) *sync.WaitGroup {
+// readBarrier is a barrier for the parties calling transitionAfter.
+func readBarrier() *sync.WaitGroup {
 	var wg sync.WaitGroup
-	wg.Add(n)
+	wg.Add(parties)
 	return &wg
 }
 
