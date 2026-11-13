@@ -158,7 +158,11 @@ func Fail(w http.ResponseWriter, log *slog.Logger, err error) {
 	case CodeStepExhausted:
 		WriteError(w, http.StatusConflict, code, task.ErrStepExhausted.Error())
 	case CodeInvalidTransition:
-		WriteError(w, http.StatusConflict, code, task.ErrInvalidTransition.Error())
+		msg := task.ErrInvalidTransition.Error()
+		if errors.Is(err, task.ErrNeedsAgent) {
+			msg = "assign an Agent first" // what to do about it, which the caller may
+		}
+		WriteError(w, http.StatusConflict, code, msg)
 	case CodeInvalid:
 		WriteError(w, http.StatusBadRequest, code, err.Error())
 	case CodeEntryPending:

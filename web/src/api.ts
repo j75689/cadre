@@ -430,6 +430,14 @@ export const reply = (ns: string, name: string, author: string, body: string) =>
 export const approve = (ns: string, name: string, author: string, ok: boolean, note: string) =>
   post<{ task: Task; decision: ThreadEntry; result?: ThreadEntry }>(`${taskPath(ns, name)}/approve`, { author: author || undefined, approve: ok, note: note || undefined });
 
+// accept and rerun take a task out of Review: Done, or back to its Agent.
+// A non-empty body is written first as a comment, the entry answered.
+export const accept = (ns: string, name: string, author: string, body: string) =>
+  post<{ task: Task; entry?: ThreadEntry }>(`${taskPath(ns, name)}/accept`, { author: author || undefined, body: body || undefined });
+
+export const rerun = (ns: string, name: string, author: string, body: string) =>
+  post<{ task: Task; entry?: ThreadEntry }>(`${taskPath(ns, name)}/rerun`, { author: author || undefined, body: body || undefined });
+
 export const cancel = (ns: string, name: string) => post<Task>(`${taskPath(ns, name)}/cancel`, {});
 
 export const listRuns = (ns: string, name: string, signal?: AbortSignal) => get<{ items: RunRecord[] }>(`${taskPath(ns, name)}/runs`, signal);

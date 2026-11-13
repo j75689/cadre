@@ -72,6 +72,8 @@ var validEvents = []struct {
 	{Reply{}, step},
 	{Reclaim{}, step},
 	{Cancel{}, step},
+	{Accept{}, step},
+	{Rerun{}, step},
 	{AckOutbox{}, step},
 	{ThreadAdvanced{Seq: 1}, step},
 	{WaitingAt{ItemID: "01JB0000000000000000000001", Seq: 1}, step},
@@ -514,6 +516,54 @@ func TestCancel(t *testing.T) {
 	s := apply(t, &v1alpha1.Task{Status: finished.Status}, Cancel{}).Status
 	if rec := runEnded(s); rec == nil || rec.Reason != v1alpha1.RunFinished {
 		t.Fatalf("cancel dropped the run record: %+v", s.Outbox)
+	}
+}
+
+func TestAcceptEndsReview(t *testing.T) {
+	finished := apply(t, taskIn(v1alpha1.PhaseRunning, runtime), Finish{RunID: runA, Outcome: OutcomeReview})
+	review := &v1alpha1.Task{Spec: taskIn(unborn, runtime).Spec, Status: finished.Status}
+	res := apply(t, review, Accept{})
+	s := res.Status
+	if s.Phase != v1alpha1.PhaseDone || s.FinishedAt == nil || !s.FinishedAt.Time.Equal(now) || s.Run != nil {
+		t.Fatalf("accept: %+v", s)
+	}
+	if res.ReleasesSlot {
+		t.Error("accept releases a slot: a task in Review holds none")
+	}
+	// No run ends: the finish's record is the only one, and the outbox is
+	// as it was.
+	if !equality.Semantic.DeepEqual(s.Outbox, finished.Status.Outbox) || !equality.Semantic.DeepEqual(s.Runs, finished.Status.Runs) {
+		t.Errorf("accept changed the outbox or the runs: %+v, %+v", s.Outbox, s.Runs)
+	}
+}
+
+func TestRerunReturnsToTodo(t *testing.T) {
+	finished := apply(t, taskIn(v1alpha1.PhaseRunning, runtime), Finish{RunID: runA, Outcome: OutcomeReview})
+	review := &v1alpha1.Task{Spec: taskIn(unborn, runtime).Spec, Status: finished.Status}
+	review.Status.Runs = &v1alpha1.RunsStatus{Count: 1, LastID: runA}
+	res := apply(t, review, Rerun{})
+	s := res.Status
+	if s.Phase != v1alpha1.PhaseTodo || s.Run != nil || s.Waiting != nil || s.FinishedAt != nil || res.ReleasesSlot {
+		t.Fatalf("rerun: %+v", s)
+	}
+	if !equality.Semantic.DeepEqual(s.Outbox, review.Status.Outbox) || !equality.Semantic.DeepEqual(s.Runs, review.Status.Runs) {
+		t.Errorf("rerun changed the outbox or the runs: %+v, %+v", s.Outbox, s.Runs)
+	}
+	// The next claim starts a new run, counted.
+	claimed := apply(t, &v1alpha1.Task{Spec: review.Spec, Status: s}, Claim{RunID: runB, Mode: runtime, Lease: time.Minute})
+	if claimed.Status.Phase != v1alpha1.PhaseRunning || claimed.Status.Run.ID != runB || claimed.Status.Runs.Count != 2 {
+		t.Errorf("claim after rerun: %+v", claimed.Status)
+	}
+}
+
+func TestRerunNeedsAnAgent(t *testing.T) {
+	for _, a := range []*v1alpha1.Assignee{nil, {Kind: v1alpha1.AssigneeUser, Name: "dana"}} {
+		tk := taskIn(v1alpha1.PhaseReview, runtime)
+		tk.Spec.Assignee = a
+		_, err := Apply(tk, Rerun{}, now)
+		if !errors.Is(err, ErrInvalidTransition) || !strings.Contains(err.Error(), "assign an Agent first") {
+			t.Errorf("rerun assigned to %+v: %v", a, err)
+		}
 	}
 }
 

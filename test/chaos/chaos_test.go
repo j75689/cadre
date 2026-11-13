@@ -342,10 +342,11 @@ func plan(rnd *lockedRand, task runner.ClaimedTask) fakerunner.Plan {
 	return p
 }
 
-// human answers waiting tasks and cancels a few tasks. It pages through
+// human answers waiting tasks, accepts or runs again the tasks in Review,
+// one or the other at random, and cancels a few tasks. It pages through
 // every live task, so the board outgrowing one page changes nothing.
 func human(chaos context.Context, cl *client.Client, rnd *lockedRand, rec *recorder) {
-	live := []v1alpha1.Phase{v1alpha1.PhaseWaiting, v1alpha1.PhaseTodo, v1alpha1.PhaseRunning}
+	live := []v1alpha1.Phase{v1alpha1.PhaseWaiting, v1alpha1.PhaseReview, v1alpha1.PhaseTodo, v1alpha1.PhaseRunning}
 	for chaos.Err() == nil {
 		for ns := range teams {
 			var tasks []v1alpha1.Task
@@ -364,6 +365,10 @@ func human(chaos context.Context, cl *client.Client, rnd *lockedRand, rec *recor
 				switch {
 				case t.Status.Phase == v1alpha1.PhaseWaiting:
 					_, _ = cl.Reply(chaos, ns, t.Name, "human", "carry on")
+				case t.Status.Phase == v1alpha1.PhaseReview && rnd.Float64() < 0.5:
+					_, _ = cl.Accept(chaos, ns, t.Name, "human", "")
+				case t.Status.Phase == v1alpha1.PhaseReview:
+					_, _ = cl.Rerun(chaos, ns, t.Name, "human", "once more")
 				case isLive(t.Status.Phase) && rnd.Float64() < 0.01:
 					// Recorded before sending: a cancel whose response is cut
 					// by a server kill may still have landed.

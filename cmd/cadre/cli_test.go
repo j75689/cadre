@@ -169,6 +169,51 @@ func TestTaskLifeFromTheCLI(t *testing.T) {
 	}
 }
 
+// A task the fake runner hands to a human is run again, then accepted, from
+// the CLI; one assigned to a user cannot run again.
+func TestReviewExitFromTheCLI(t *testing.T) {
+	b := memory.NewBackend()
+	m := manager.New(b.Open(), manager.Config{Agents: manager.ReadyBuiltin("team-a", "coder", "claude")})
+	log := slog.New(slog.NewTextHandler(io.Discard, nil))
+	mux := http.NewServeMux()
+	api.NewServer(m, log).Register(mux)
+	runner.NewServer(m, log, "http://cadre.test").Register(mux)
+	srv := httptest.NewServer(mux)
+	defer srv.Close()
+	review := func() {
+		t.Helper()
+		cadre(t, srv.URL, "runner", "fake", "--once", "--work", "10ms", "--outcome", "Review", "-l", "cadre.dev/runtime=builtin")
+		if err := m.Dispatch(context.Background()); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	cadre(t, srv.URL, "team", "init")
+	mustContain(t, cadre(t, srv.URL, "task", "create", "Fix login", "--name", "fix-login", "--agent", "coder"), "created #1 fix-login")
+	if err := cadreFails(t, srv.URL, "task", "accept", "#1"); !strings.Contains(err.Error(), "fix-login is not in Review") {
+		t.Fatalf("accept a Todo task: %v", err)
+	}
+	review()
+	mustContain(t, cadre(t, srv.URL, "task", "rerun", "#1", "-m", "cover the CLI too"), "#1 is Todo")
+	review()
+	mustContain(t, cadre(t, srv.URL, "task", "accept", "fix-login"), "#1 is Done")
+	mustContain(t, cadre(t, srv.URL, "task", "get", "#1"), "Phase:     Done", "alice (Comment): cover the CLI too")
+
+	mustContain(t, cadre(t, srv.URL, "task", "create", "Review it", "--name", "by-hand", "--user", "dana"), "created #2 by-hand")
+	if err := cadreFails(t, srv.URL, "task", "rerun", "#2"); !strings.Contains(err.Error(), "by-hand is not in Review") {
+		t.Fatalf("rerun a Todo task: %v", err)
+	}
+	// In Review, then given to a user (as kubectl edit would).
+	mustContain(t, cadre(t, srv.URL, "task", "create", "Then hand it over", "--name", "handed", "--agent", "coder"), "created #3 handed")
+	review()
+	b.EditSpec(storage.Key{Namespace: "team-a", Name: "handed"}, func(spec *v1alpha1.TaskSpec) {
+		spec.Assignee = &v1alpha1.Assignee{Kind: v1alpha1.AssigneeUser, Name: "dana"}
+	})
+	if err := cadreFails(t, srv.URL, "task", "rerun", "#3"); !strings.Contains(err.Error(), "assign an Agent first") {
+		t.Fatalf("rerun a task assigned to a user: %v", err)
+	}
+}
+
 // task list in a namespace without a Team says how to make it one.
 func TestTaskListWithoutTeam(t *testing.T) {
 	mux := http.NewServeMux()

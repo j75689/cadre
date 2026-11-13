@@ -32,6 +32,7 @@ func TestFail(t *testing.T) {
 		task.ErrStepTaken:          {409, httpjson.CodeStepTaken},
 		task.ErrStepExhausted:      {409, httpjson.CodeStepExhausted},
 		task.ErrInvalidTransition:  {409, httpjson.CodeInvalidTransition},
+		task.ErrNeedsAgent:         {409, httpjson.CodeInvalidTransition},
 		storage.ErrAlreadyExists:   {409, httpjson.CodeAlreadyExists},
 		storage.ErrNotFound:        {404, httpjson.CodeNotFound},
 		storage.ErrInvalid:         {400, httpjson.CodeInvalid},
@@ -50,6 +51,9 @@ func TestFail(t *testing.T) {
 		_ = json.NewDecoder(rec.Body).Decode(&er)
 		if rec.Code != want.status || er.Error.Code != want.code {
 			t.Errorf("%v: %d %s, want %d %s", err, rec.Code, er.Error.Code, want.status, want.code)
+		}
+		if errors.Is(err, task.ErrNeedsAgent) && er.Error.Message != "assign an Agent first" {
+			t.Errorf("%v: message %q, want what to do", err, er.Error.Message)
 		}
 		if a := (*manager.AmbiguousNumber)(nil); errors.As(err, &a) && er.Error.Message != a.Error() {
 			t.Errorf("%v: message %q, want the tasks named", err, er.Error.Message)

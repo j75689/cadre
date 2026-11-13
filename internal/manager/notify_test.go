@@ -277,6 +277,29 @@ func TestNotifyReview(t *testing.T) {
 	}
 }
 
+// A human accepting a task in Review tells Done, as a run finishing it
+// does; running it again tells nothing.
+func TestNotifyAccept(t *testing.T) {
+	rec := newReceiver(t)
+	e, _ := notifyEnv(t, notifier("ends", rec.URL, nil, v1alpha1.NotifyDone))
+	key := e.addTask(t, "x", v1alpha1.AssigneeAgent)
+	e.review(t, key)
+	if _, _, err := e.m.Rerun(ctx, key, alice, ""); err != nil {
+		t.Fatal(err)
+	}
+	if items := notifyItems(e.get(t, key)); len(items) != 0 {
+		t.Fatalf("a rerun wrote %+v", items)
+	}
+	e.review(t, key)
+	if _, _, err := e.m.Accept(ctx, key, alice, ""); err != nil {
+		t.Fatal(err)
+	}
+	items := notifyItems(e.get(t, key))
+	if len(items) != 1 || items[0].Notify.Event != v1alpha1.NotifyDone {
+		t.Fatalf("an accept wrote %+v", items)
+	}
+}
+
 // waitOn puts a task in Waiting on an entry not in the thread yet, its
 // notification written with it, as a thread_ask's Finish does.
 func (e *env) waitOn(t *testing.T, key storage.Key, item string) {

@@ -124,6 +124,78 @@ func TestBoardThroughTheAPI(t *testing.T) {
 	}
 }
 
+// A task a run hands to a human (Review) is accepted, Done, or run again:
+// back in Todo, claimed by a new run.
+func TestReviewExitThroughTheAPI(t *testing.T) {
+	store := memory.NewBackend().Open()
+	m := manager.New(store, manager.Config{Agents: manager.ReadyBuiltin(ns, "coder", "claude")})
+	log := slog.New(slog.NewTextHandler(io.Discard, nil))
+	mux := http.NewServeMux()
+	api.NewServer(m, log).Register(mux)
+	runner.NewServer(m, log, "http://cadre.test").Register(mux)
+	srv := httptest.NewServer(mux)
+	t.Cleanup(srv.Close)
+	c := client.New(srv.URL, nil)
+	if _, err := c.InitTeam(ctx, ns, api.TeamRequest{}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := c.CreateTask(ctx, ns, "x", v1alpha1.TaskSpec{Title: "x", Assignee: agent()}); err != nil {
+		t.Fatal(err)
+	}
+	review := func() string {
+		t.Helper()
+		claim, err := c.Claim(ctx, runner.ClaimRequest{Runner: "r", Labels: map[string]string{v1alpha1.LabelRuntime: string(v1alpha1.RuntimeBuiltin)}})
+		if err != nil || claim == nil {
+			t.Fatalf("claim: %+v, %v", claim, err)
+		}
+		if _, err := c.Finish(ctx, runner.FinishRequest{Task: runner.TaskRef{Namespace: ns, Name: "x"}, RunID: claim.RunID, Outcome: v1alpha1.RunOutcomeReview}); err != nil {
+			t.Fatal(err)
+		}
+		return claim.RunID
+	}
+	if _, err := c.Accept(ctx, ns, "x", "alice", ""); !client.IsCode(err, httpjson.CodeInvalidTransition) {
+		t.Fatalf("accept a Todo task: %v", err)
+	}
+	first := review()
+	out, err := c.Rerun(ctx, ns, "x", "alice", "")
+	if err != nil || out.Task.Status.Phase != v1alpha1.PhaseTodo || out.Entry != nil {
+		t.Fatalf("rerun: %+v, %v", out, err)
+	}
+	if second := review(); second == first {
+		t.Fatalf("the rerun was claimed as run %s again", first)
+	}
+	out, err = c.Accept(ctx, ns, "x", "alice", "looks good")
+	if err != nil || out.Task.Status.Phase != v1alpha1.PhaseDone || out.Task.Status.FinishedAt == nil || out.Task.Status.Runs.Count != 2 || out.Entry == nil || out.Entry.Body != "looks good" {
+		t.Fatalf("accept: %+v, %v", out, err)
+	}
+	if _, err := c.Rerun(ctx, ns, "x", "alice", ""); !client.IsCode(err, httpjson.CodeInvalidTransition) {
+		t.Fatalf("rerun a Done task: %v", err)
+	}
+
+	// A task assigned to a user is not run again: out of Review, nor in it,
+	// which says what to do, before anything is written.
+	if _, err := c.CreateTask(ctx, ns, "y", v1alpha1.TaskSpec{Title: "y", Assignee: &v1alpha1.Assignee{Kind: v1alpha1.AssigneeUser, Name: "dana"}}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := c.Rerun(ctx, ns, "y", "alice", ""); !client.IsCode(err, httpjson.CodeInvalidTransition) {
+		t.Fatalf("rerun a Todo task assigned to a user: %v", err)
+	}
+	tk, err := m.GetTask(ctx, storage.Key{Namespace: ns, Name: "y"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	tk.Status.Phase = v1alpha1.PhaseReview
+	if err := store.UpdateTaskStatus(ctx, tk); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := c.Rerun(ctx, ns, "y", "alice", "again"); !client.IsCode(err, httpjson.CodeInvalidTransition) || !strings.Contains(err.Error(), "assign an Agent first") {
+		t.Fatalf("rerun a task in Review assigned to a user: %v", err)
+	}
+	if thread, _ := c.Thread(ctx, ns, "y", 0, 0); len(thread.Items) != 0 {
+		t.Fatalf("a refused rerun wrote %+v", thread.Items)
+	}
+}
+
 // A run's events are served while it is still in progress, not only from
 // history once it ends: the live run viewer relies on it.
 func TestEventsOfARunInProgress(t *testing.T) {
