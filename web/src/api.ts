@@ -430,6 +430,9 @@ export const reply = (ns: string, name: string, author: string, body: string) =>
 export const approve = (ns: string, name: string, author: string, ok: boolean, note: string) =>
   post<{ task: Task; decision: ThreadEntry; result?: ThreadEntry }>(`${taskPath(ns, name)}/approve`, { author: author || undefined, approve: ok, note: note || undefined });
 
+// assign gives a task to assignee, or to nobody when it is null.
+export const assign = (ns: string, name: string, assignee: Assignee | null) => post<Task>(`${taskPath(ns, name)}/assign`, { assignee });
+
 // accept and rerun take a task out of Review: Done, or back to its Agent.
 // A non-empty body is written first as a comment, the entry answered.
 export const accept = (ns: string, name: string, author: string, body: string) =>

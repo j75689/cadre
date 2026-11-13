@@ -1,14 +1,16 @@
 import { useId, useRef, useState } from "react";
-import { accept, APIError, approve, cancel, comment, reply, rerun, terminalPhases, type Task } from "./api";
+import { accept, APIError, approve, assign, cancel, comment, reply, rerun, terminalPhases, type Task } from "./api";
 import { useIdentity, useRole } from "./Identity";
 import { can as canDo } from "./roles";
 import { Button } from "./ui/Button";
+import { AssigneePicker, type AssigneeKind } from "./ui/AssigneePicker";
 import { Icon } from "./ui/Icon";
 
 // What a task in this state lets a human do, as the API decides it: reply
 // while it waits on a human (a question or a review), approve or deny while
 // it waits on a tool approval, accept or, if an Agent has it, run again
-// while it is in Review, comment and cancel until it ends.
+// while it is in Review, comment and cancel until it ends, and reassign it
+// while no run holds it and it is not being deleted.
 export function allowed(task: Task, mayWork = true) {
   const phase = task.status?.phase ?? "Todo";
   const waiting = phase === "Waiting" ? task.status?.waiting : undefined;
@@ -21,6 +23,7 @@ export function allowed(task: Task, mayWork = true) {
     accept: review,
     rerun: review && task.spec.assignee?.kind === "Agent",
     cancel: open,
+    assign: open && phase !== "Running" && !task.status?.deletingSince,
   };
 }
 
@@ -346,6 +349,65 @@ function Approval(props: { tool?: string; disabled: boolean; note: string; onNot
         </Button>
       </div>
       <Alert message={error} />
+    </div>
+  );
+}
+
+// AssignTask is the Details "Assignee" row's Assign: the picker, inline,
+// from whom the task has, with Save and Cancel. It is data-dirty while the
+// pick differs from that. A conflict (the task moved on, to Running say)
+// reads the task again and shows the server's message.
+export function AssignTask(props: Props) {
+  const { task, onTask } = props;
+  const { can, run, refused, ready } = useActions(props);
+  const current = { kind: (task.spec.assignee?.kind ?? "") as AssigneeKind, assignee: task.spec.assignee?.name ?? "" };
+  const [pick, setPick] = useState<typeof current | null>(null);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState("");
+  const { namespace: ns, name } = task.metadata;
+  if (!can.assign && !error && !refused) return null;
+  const save = async () => {
+    if (!pick) return;
+    if (pick.kind !== "" && pick.assignee.trim() === "") {
+      setError(`Name the ${pick.kind === "Agent" ? "agent" : "user"} to assign it to.`);
+      return;
+    }
+    setBusy(true);
+    const to = pick.kind === "" ? null : { kind: pick.kind, name: pick.assignee.trim() };
+    const err = await run(() => assign(ns, name, to), onTask);
+    setBusy(false);
+    setError(err ?? "");
+    if (err === "") setPick(null);
+  };
+  return (
+    <div className="assign">
+      {can.assign && pick === null && (
+        <Button
+          small
+          disabled={!ready}
+          onClick={() => {
+            setError("");
+            setPick(current);
+          }}
+        >
+          Assign
+        </Button>
+      )}
+      {can.assign && pick !== null && (
+        <div className="stack" role="group" aria-label="Assign the task" data-dirty={JSON.stringify(pick) !== JSON.stringify(current) || undefined}>
+          <AssigneePicker ns={ns} kind={pick.kind} assignee={pick.assignee} group="assign-kind" onChange={(patch) => setPick({ ...pick, ...patch })} />
+          <div className="buttons">
+            <Button variant="primary" small disabled={busy} onClick={save}>
+              Save
+            </Button>
+            <Button small onClick={() => setPick(null)}>
+              Cancel
+            </Button>
+          </div>
+        </div>
+      )}
+      <Alert message={error} />
+      <Alert message={refused} />
     </div>
   );
 }

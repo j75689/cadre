@@ -1,10 +1,10 @@
-import { useEffect, useState, type FormEvent } from "react";
+import { useState, type FormEvent } from "react";
 import { Link, useNavigate, useParams } from "react-router";
-import { createTask, listAgents, type AgentSummary, type TaskSpec } from "./api";
+import { createTask, type TaskSpec } from "./api";
 import { RoleLine, useRole } from "./Identity";
 import { can } from "./roles";
 import { useTeamName } from "./teamList";
-import { Banner } from "./ui/Banner";
+import { AssigneePicker, type AssigneeKind } from "./ui/AssigneePicker";
 import { Button } from "./ui/Button";
 import { Icon } from "./ui/Icon";
 import { Heading, useTitle } from "./ui/Page";
@@ -15,7 +15,7 @@ const priorities = ["low", "medium", "high", "urgent"];
 export interface Draft {
   title: string;
   description: string;
-  kind: "" | "Agent" | "User";
+  kind: AssigneeKind;
   assignee: string;
   priority: string;
   labels: string;
@@ -48,27 +48,9 @@ export function NewTask() {
   const team = useTeamName(ns);
   const navigate = useNavigate();
   const [draft, setDraft] = useState(blank);
-  const [agents, setAgents] = useState<AgentSummary[] | null>(null);
-  const [agentsError, setAgentsError] = useState("");
-  // retry reads the agents again after a failed read.
-  const [retry, setRetry] = useState(0);
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
   useTitle("New task", team);
-  // The agents are read once: picking one is not live data.
-  useEffect(() => {
-    const controller = new AbortController();
-    listAgents(ns, controller.signal).then(
-      (r) => {
-        setAgents(r.items);
-        setAgentsError("");
-      },
-      (e) => {
-        if (!controller.signal.aborted) setAgentsError((e as Error).message);
-      },
-    );
-    return () => controller.abort();
-  }, [ns, retry]);
   const set = (patch: Partial<Draft>) => setDraft((d) => ({ ...d, ...patch }));
   const submit = async (e: FormEvent) => {
     e.preventDefault();
@@ -85,7 +67,6 @@ export function NewTask() {
     }
   };
   const board = `/t/${encodeURIComponent(ns)}`;
-  const chosen = agents?.find((a) => a.name === draft.assignee);
   const back = (
     <nav className="breadcrumb" aria-label="Breadcrumb">
       <ol>
@@ -121,45 +102,7 @@ export function NewTask() {
         <label className="field">
           Description <textarea value={draft.description} onChange={(e) => set({ description: e.target.value })} rows={6} />
         </label>
-        <Segmented
-          legend="Assignee"
-          name="kind"
-          value={draft.kind}
-          options={[
-            { value: "", label: "Unassigned" },
-            { value: "Agent", label: "Agent" },
-            { value: "User", label: "User" },
-          ]}
-          onChange={(kind) => set({ kind, assignee: "" })}
-        >
-          {draft.kind === "Agent" && (
-            <label className="field">
-              <span className="sr-only">Agent to assign</span>
-              <select value={draft.assignee} onChange={(e) => set({ assignee: e.target.value })}>
-                <option value="">Choose an agent…</option>
-                {agents?.map((a) => (
-                  <option key={a.name} value={a.name}>
-                    {a.name}
-                    {a.ready ? "" : ` (not ready: ${a.reason ?? "unknown"})`}
-                  </option>
-                ))}
-              </select>
-            </label>
-          )}
-          {draft.kind === "Agent" && chosen && !chosen.ready && (
-            <p className="help">
-              {chosen.name} is not ready{chosen.message ? `: ${chosen.message}` : ""}. Its tasks wait until it is.
-            </p>
-          )}
-          {draft.kind === "Agent" && agentsError && <Banner onRetry={() => setRetry((n) => n + 1)}>Could not load the agents: {agentsError}</Banner>}
-          {draft.kind === "Agent" && !agentsError && agents?.length === 0 && <p className="help">This team has no agents.</p>}
-          {draft.kind === "User" && (
-            <label className="field">
-              <span className="sr-only">User to assign</span>
-              <input value={draft.assignee} onChange={(e) => set({ assignee: e.target.value })} placeholder="Their user name" />
-            </label>
-          )}
-        </Segmented>
+        <AssigneePicker ns={ns} kind={draft.kind} assignee={draft.assignee} onChange={set} />
         <Segmented legend="Priority" name="priority" value={draft.priority} options={priorities.map((p) => ({ value: p, label: p }))} onChange={(priority) => set({ priority })} />
         <label className="field">
           Labels

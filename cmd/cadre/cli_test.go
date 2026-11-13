@@ -169,6 +169,36 @@ func TestTaskLifeFromTheCLI(t *testing.T) {
 	}
 }
 
+// A task is reassigned from the CLI, to an agent, a user or nobody, and not
+// while it runs.
+func TestAssignFromTheCLI(t *testing.T) {
+	m := manager.New(memory.NewBackend().Open(), manager.Config{Agents: manager.ReadyBuiltin("team-a", "coder", "claude")})
+	log := slog.New(slog.NewTextHandler(io.Discard, nil))
+	mux := http.NewServeMux()
+	api.NewServer(m, log).Register(mux)
+	runner.NewServer(m, log, "http://cadre.test").Register(mux)
+	srv := httptest.NewServer(mux)
+	defer srv.Close()
+
+	cadre(t, srv.URL, "team", "init")
+	mustContain(t, cadre(t, srv.URL, "task", "create", "Fix login", "--name", "fix-login", "--user", "dana"), "created #1 fix-login")
+	mustContain(t, cadre(t, srv.URL, "task", "assign", "#1", "--agent", "coder"), "#1 is assigned to agent/coder")
+	mustContain(t, cadre(t, srv.URL, "task", "assign", "fix-login", "--user", "eve"), "#1 is assigned to user/eve")
+	mustContain(t, cadre(t, srv.URL, "task", "assign", "#1", "--none"), "#1 is assigned to nobody")
+	for _, flags := range [][]string{nil, {"--agent", "coder", "--user", "eve"}, {"--agent", "coder", "--none"}} {
+		if err := cadreFails(t, srv.URL, append([]string{"task", "assign", "#1"}, flags...)...); !strings.Contains(err.Error(), "give one of --agent, --user and --none") {
+			t.Fatalf("assign %v: %v", flags, err)
+		}
+	}
+	mustContain(t, cadre(t, srv.URL, "task", "assign", "#1", "--agent", "coder"), "#1 is assigned to agent/coder")
+	if c, err := m.Claim(context.Background(), manager.ClaimRequest{Runner: "r", Labels: map[string]string{v1alpha1.LabelRuntime: string(v1alpha1.RuntimeBuiltin)}}); err != nil || c == nil {
+		t.Fatalf("claim: %+v, %v", c, err)
+	}
+	if err := cadreFails(t, srv.URL, "task", "assign", "#1", "--none"); !strings.Contains(err.Error(), "fix-login cannot be reassigned while it runs") {
+		t.Fatalf("assign a Running task: %v", err)
+	}
+}
+
 // A task the fake runner hands to a human is run again, then accepted, from
 // the CLI; one assigned to a user cannot run again.
 func TestReviewExitFromTheCLI(t *testing.T) {

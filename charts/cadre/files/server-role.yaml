@@ -39,6 +39,7 @@ rules:
   - cadre.dev
   resources:
   - agentaccesses
+  - tasks
   verbs:
   - create
   - delete
@@ -89,16 +90,6 @@ rules:
   - get
   - patch
   - update
-- apiGroups:
-  - cadre.dev
-  resources:
-  - tasks
-  verbs:
-  - create
-  - delete
-  - get
-  - list
-  - watch
 - apiGroups:
   - cadre.dev
   resources:

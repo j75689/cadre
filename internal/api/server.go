@@ -12,6 +12,7 @@ import (
 	"strings"
 	"unicode/utf8"
 
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/meta"
 	"k8s.io/apimachinery/pkg/util/validation"
 	"k8s.io/client-go/tools/events"
@@ -82,6 +83,7 @@ func (s *Server) Register(mux *http.ServeMux) {
 		{"GET " + tasks, authz.Read, s.listTasks},
 		{"GET " + one, authz.Read, s.getTask},
 		{"POST " + one + "/cancel", authz.Cancel, s.cancel},
+		{"POST " + one + "/assign", authz.Assign, s.assign},
 		{"POST " + one + "/accept", authz.Accept, s.accept},
 		{"POST " + one + "/rerun", authz.Rerun, s.rerun},
 		{"POST " + one + "/comments", authz.Comment, s.comment},
@@ -390,6 +392,46 @@ func (s *Server) cancel(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	httpjson.Write(w, http.StatusOK, t)
+}
+
+// assign gives a task to another assignee, or to nobody: its spec, never
+// its status. A Running or ended task, or one being deleted, is refused
+// with 409. A Normal Event on the Task names the assignee before and after,
+// and the caller. cadre-server's ClusterRole from before the route lacks
+// update on tasks: a mistake in its install, answered as one.
+func (s *Server) assign(w http.ResponseWriter, r *http.Request) {
+	var req AssignRequest
+	if !httpjson.Decode(w, r, &req) {
+		return
+	}
+	key := taskKey(r)
+	before, err := s.m.GetTask(r.Context(), key)
+	if err != nil {
+		httpjson.Fail(w, s.log, err)
+		return
+	}
+	t, err := s.m.Reassign(r.Context(), key, req.Assignee)
+	switch {
+	case apierrors.IsForbidden(err):
+		s.log.Error("cadre-server's ClusterRole lacks update on tasks: upgrade its RBAC", "err", err)
+		httpjson.WriteError(w, http.StatusInternalServerError, httpjson.CodeServerForbidden, "cadre-server may not reassign tasks: its ClusterRole predates the assign route; upgrade it, and see its log")
+		return
+	case err != nil:
+		httpjson.Fail(w, s.log, err)
+		return
+	}
+	if from, to := assigneeName(before.Spec.Assignee), assigneeName(t.Spec.Assignee); from != to {
+		s.emit(t, "TaskReassigned", "AssignTask", "Task %s reassigned from %s to %s by %s", t.Name, from, to, caller(r.Context()))
+	}
+	httpjson.Write(w, http.StatusOK, t)
+}
+
+// assigneeName is a, for an Event's note: its kind and name, or nobody.
+func assigneeName(a *v1alpha1.Assignee) string {
+	if a == nil {
+		return "nobody"
+	}
+	return string(a.Kind) + " " + a.Name
 }
 
 func (s *Server) comment(w http.ResponseWriter, r *http.Request) {

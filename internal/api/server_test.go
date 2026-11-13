@@ -124,6 +124,41 @@ func TestBoardThroughTheAPI(t *testing.T) {
 	}
 }
 
+// A task is reassigned through the API, its status untouched, given to
+// nobody with a null assignee, and refused while it is Running.
+func TestAssignThroughTheAPI(t *testing.T) {
+	c, _ := start(t)
+	if _, err := c.InitTeam(ctx, ns, api.TeamRequest{}); err != nil {
+		t.Fatal(err)
+	}
+	created, err := c.CreateTask(ctx, ns, "x", v1alpha1.TaskSpec{Title: "x", Assignee: &v1alpha1.Assignee{Kind: v1alpha1.AssigneeUser, Name: "dana"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, err := c.Assign(ctx, ns, "x", agent())
+	if err != nil || got.Spec.Assignee == nil || *got.Spec.Assignee != *agent() || got.Status.Phase != v1alpha1.PhaseTodo || got.Status.Number != created.Status.Number {
+		t.Fatalf("assign to an agent: %+v, %v", got, err)
+	}
+	if got, err := c.Assign(ctx, ns, "x", nil); err != nil || got.Spec.Assignee != nil {
+		t.Fatalf("unassign: %+v, %v", got, err)
+	}
+	if _, err := c.Assign(ctx, ns, "x", &v1alpha1.Assignee{Kind: "Robot", Name: "r"}); !client.IsCode(err, httpjson.CodeInvalid) {
+		t.Fatalf("assign to a Robot: %v", err)
+	}
+	if _, err := c.Assign(ctx, ns, "missing", agent()); !client.IsCode(err, httpjson.CodeNotFound) {
+		t.Fatalf("assign a missing task: %v", err)
+	}
+	if _, err := c.Assign(ctx, ns, "x", agent()); err != nil {
+		t.Fatal(err)
+	}
+	if claim, err := c.Claim(ctx, runner.ClaimRequest{Runner: "r", Labels: map[string]string{v1alpha1.LabelRuntime: string(v1alpha1.RuntimeBuiltin)}}); err != nil || claim == nil {
+		t.Fatalf("claim: %+v, %v", claim, err)
+	}
+	if _, err := c.Assign(ctx, ns, "x", nil); !client.IsCode(err, httpjson.CodeInvalidTransition) {
+		t.Fatalf("assign a Running task: %v", err)
+	}
+}
+
 // A task a run hands to a human (Review) is accepted, Done, or run again:
 // back in Todo, claimed by a new run.
 func TestReviewExitThroughTheAPI(t *testing.T) {

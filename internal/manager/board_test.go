@@ -10,6 +10,7 @@ import (
 	"testing"
 	"time"
 
+	"k8s.io/apimachinery/pkg/api/equality"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
 	v1alpha1 "github.com/j75689/cadre/api/v1alpha1"
@@ -135,6 +136,87 @@ func TestAnswer(t *testing.T) {
 	tk, entry, err := e.m.Answer(ctx, key, alice, "use the staging database")
 	if err != nil || tk.Status.Phase != v1alpha1.PhaseTodo || entry.Kind != EntryAnswer || entry.Seq != 1 {
 		t.Fatalf("answer: %+v %+v %v", tk, entry, err)
+	}
+}
+
+// A task is reassigned in Todo, Waiting and Review, its status untouched,
+// and refused while a run holds it, once it ended and while it is deleted.
+// A claim for the Agent it had is refused after (see
+// TestClaimRefusesATaskReassignedToAnotherAgent).
+func TestReassign(t *testing.T) {
+	e := newEnv(t, 1)
+	key := e.addTask(t, "t", v1alpha1.AssigneeAgent)
+	reviewer := &v1alpha1.Assignee{Kind: v1alpha1.AssigneeAgent, Name: "reviewer"}
+
+	before := e.get(t, key)
+	tk, err := e.m.Reassign(ctx, key, reviewer)
+	if err != nil || *tk.Spec.Assignee != *reviewer || !equality.Semantic.DeepEqual(tk.Status, before.Status) || tk.ResourceVersion == before.ResourceVersion {
+		t.Fatalf("reassign a Todo task: %+v, %v", tk, err)
+	}
+	if got := e.get(t, key); *got.Spec.Assignee != *reviewer || !equality.Semantic.DeepEqual(got.Status, before.Status) {
+		t.Fatalf("stored: %+v", got)
+	}
+	// The same assignee again writes nothing.
+	if again, err := e.m.Reassign(ctx, key, reviewer); err != nil || again.ResourceVersion != tk.ResourceVersion {
+		t.Fatalf("reassign to the same: %+v, %v", again, err)
+	}
+	if _, err := e.m.Reassign(ctx, key, &v1alpha1.Assignee{Kind: "Robot", Name: "r"}); !errors.Is(err, ErrInvalid) {
+		t.Fatalf("reassign to a Robot: %v", err)
+	}
+	if _, err := e.m.Reassign(ctx, storage.Key{Namespace: ns, Name: "missing"}, reviewer); !errors.Is(err, storage.ErrNotFound) {
+		t.Fatalf("reassign a missing task: %v", err)
+	}
+
+	// Running: refused; Waiting and Review: reassigned; ended: refused.
+	if _, err := e.m.Reassign(ctx, key, nil); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := e.m.Reassign(ctx, key, &v1alpha1.Assignee{Kind: v1alpha1.AssigneeAgent, Name: "coder"}); err != nil {
+		t.Fatal(err)
+	}
+	c := e.claim(t)
+	if _, err := e.m.Reassign(ctx, key, reviewer); !errors.Is(err, task.ErrInvalidTransition) {
+		t.Fatalf("reassign a Running task: %v", err)
+	}
+	for _, outcome := range []task.Outcome{task.OutcomeWaiting, task.OutcomeReview} {
+		req := FinishRequest{RunID: c.RunID, Outcome: outcome}
+		if outcome == task.OutcomeWaiting {
+			req.Reason = v1alpha1.WaitingQuestion
+		}
+		if _, _, err := e.m.Finish(ctx, key, req); err != nil {
+			t.Fatal(err)
+		}
+		tk, err := e.m.Reassign(ctx, key, nil)
+		if err != nil || tk.Spec.Assignee != nil || tk.Status.Phase == v1alpha1.PhaseTodo {
+			t.Fatalf("unassign after %s: %+v, %v", outcome, tk, err)
+		}
+		if _, err := e.m.Reassign(ctx, key, &v1alpha1.Assignee{Kind: v1alpha1.AssigneeAgent, Name: "coder"}); err != nil {
+			t.Fatal(err)
+		}
+		if outcome == task.OutcomeWaiting {
+			if err := e.m.Reply(ctx, key); err != nil {
+				t.Fatal(err)
+			}
+			c = e.claim(t)
+		}
+	}
+	if _, err := e.m.Cancel(ctx, key); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := e.m.Reassign(ctx, key, reviewer); !errors.Is(err, task.ErrInvalidTransition) {
+		t.Fatalf("reassign a Cancelled task: %v", err)
+	}
+
+	// Being deleted: refused, whatever its phase.
+	other := e.addTask(t, "other", v1alpha1.AssigneeAgent)
+	tk = e.get(t, other)
+	since := metav1.NewTime(e.clock.now())
+	tk.Status.DeletingSince = &since
+	if err := e.store.UpdateTaskStatus(ctx, tk); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := e.m.Reassign(ctx, other, reviewer); !errors.Is(err, task.ErrInvalidTransition) {
+		t.Fatalf("reassign a task being deleted: %v", err)
 	}
 }
 

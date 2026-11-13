@@ -62,6 +62,10 @@ func testStaleVersionConflicts(t *testing.T, s *suite) {
 	if err := d.UpdateTaskStatus(s.ctx, stale); !errors.Is(err, storage.ErrConflict) {
 		t.Fatalf("stale write: got %v, want ErrConflict", err)
 	}
+	stale.Spec.Title = "lost"
+	if err := d.UpdateTaskSpec(s.ctx, stale); !errors.Is(err, storage.ErrConflict) {
+		t.Fatalf("stale spec write: got %v, want ErrConflict", err)
+	}
 
 	team := &v1alpha1.Team{ObjectMeta: metav1.ObjectMeta{Name: v1alpha1.TeamName, Namespace: s.ns}, Spec: v1alpha1.TeamSpec{MaxConcurrentRuns: 1}}
 	if err := d.CreateTeam(s.ctx, team); err != nil {
@@ -925,6 +929,45 @@ func testTeamSpecWritesLeaveStatusAlone(t *testing.T, s *suite) {
 	}
 	if got := s.team(d); got.Spec.DisplayName != "Platform" {
 		t.Errorf("display name %q after a refused write", got.Spec.DisplayName)
+	}
+}
+
+// A Task's spec is written conditionally on the version, and leaves its
+// status alone, so a reassign never overwrites a concurrent transition;
+// another driver reads both back.
+func testTaskSpecWritesLeaveStatusAlone(t *testing.T, s *suite) {
+	d := s.open()
+	s.newTask(d, "t", 1, "")
+	if err := transition(s.ctx, d, s.key("t"), task.ThreadAdvanced{Seq: 3}); err != nil {
+		t.Fatalf("status write: %v", err)
+	}
+	stale := s.get(d, "t")
+	edit := stale.DeepCopy()
+	edit.Spec.Assignee = &v1alpha1.Assignee{Kind: v1alpha1.AssigneeUser, Name: "dana"}
+	edit.Status.Phase = v1alpha1.PhaseDone // not written by a spec write
+	edit.Status.Thread = nil
+	if err := d.UpdateTaskSpec(s.ctx, edit); err != nil {
+		t.Fatalf("task spec write: %v", err)
+	}
+	if edit.ResourceVersion == stale.ResourceVersion {
+		t.Fatal("a successful spec write did not update the version in place")
+	}
+	got := s.get(s.open(), "t")
+	if a := got.Spec.Assignee; a == nil || a.Kind != v1alpha1.AssigneeUser || a.Name != "dana" || got.Status.Phase != v1alpha1.PhaseTodo ||
+		got.Status.Number != 1 || got.Status.Thread == nil || got.Status.Thread.Revision != 3 {
+		t.Errorf("task: spec %+v, status %+v; want the spec written and the status untouched", got.Spec, got.Status)
+	}
+	// The status written meanwhile conflicts with a spec write from the
+	// version before it.
+	if err := transition(s.ctx, d, s.key("t"), task.ThreadAdvanced{Seq: 4}); err != nil {
+		t.Fatalf("status write: %v", err)
+	}
+	edit.Spec.Assignee = nil
+	if err := d.UpdateTaskSpec(s.ctx, edit); !errors.Is(err, storage.ErrConflict) {
+		t.Errorf("a spec write from before a status write: %v, want ErrConflict", err)
+	}
+	if got := s.get(d, "t"); got.Spec.Assignee == nil {
+		t.Error("the assignee went with a refused write")
 	}
 }
 

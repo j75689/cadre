@@ -105,6 +105,12 @@ type ReplyResponse struct {
 	Entry *manager.ThreadEntry `json:"entry,omitempty"`
 }
 
+// AssignRequest gives a task to Assignee: an Agent or a user, or nobody
+// when it is null or absent.
+type AssignRequest struct {
+	Assignee *v1alpha1.Assignee `json:"assignee"`
+}
+
 // ApproveRequest approves or denies the tool call a task waits on. Approve
 // is required, so a request cannot deny by leaving it out. Author, as in
 // CommentRequest, counts only with --auth=none.

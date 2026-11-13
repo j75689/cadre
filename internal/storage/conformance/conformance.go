@@ -43,6 +43,7 @@ func Run(t *testing.T, f Factory) {
 		{"NotFound", testNotFound},
 		{"StatusWritesLeaveSpecAlone", testStatusWritesLeaveSpecAlone},
 		{"TeamSpecWritesLeaveStatusAlone", testTeamSpecWritesLeaveStatusAlone},
+		{"TaskSpecWritesLeaveStatusAlone", testTaskSpecWritesLeaveStatusAlone},
 		{"CloseIsIdempotent", testCloseIsIdempotent},
 		{"ClaimExactlyOnce", testClaimExactlyOnce},
 		{"ReviewExitHappensOnce", testReviewExitHappensOnce},

@@ -19,7 +19,7 @@ import (
 
 func newTaskCmd(g *globals) *cobra.Command {
 	cmd := &cobra.Command{Use: "task", Short: "Create, inspect and steer tasks"}
-	cmd.AddCommand(newTaskCreate(g), newTaskList(g), newTaskGet(g), newTaskComment(g), newTaskReply(g), newTaskDecide(g, true), newTaskDecide(g, false), newTaskReview(g, true), newTaskReview(g, false), newTaskCancel(g))
+	cmd.AddCommand(newTaskCreate(g), newTaskList(g), newTaskGet(g), newTaskComment(g), newTaskReply(g), newTaskDecide(g, true), newTaskDecide(g, false), newTaskReview(g, true), newTaskReview(g, false), newTaskAssign(g), newTaskCancel(g))
 	return cmd
 }
 
@@ -317,6 +317,58 @@ func newTaskDecide(g *globals, approve bool) *cobra.Command {
 		},
 	}
 	cmd.Flags().StringVarP(&note, "message", "m", "", "a note for the agent")
+	return cmd
+}
+
+func newTaskAssign(g *globals) *cobra.Command {
+	var (
+		agent, human string
+		none         bool
+	)
+	cmd := &cobra.Command{
+		Use:   "assign NAME|#NUMBER",
+		Short: "Give a task to an agent, a user, or nobody",
+		Args:  cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			given := 0
+			for _, set := range []bool{agent != "", human != "", none} {
+				if set {
+					given++
+				}
+			}
+			var to *v1alpha1.Assignee
+			switch {
+			case given != 1:
+				return fmt.Errorf("give one of --agent, --user and --none")
+			case agent != "":
+				to = &v1alpha1.Assignee{Kind: v1alpha1.AssigneeAgent, Name: agent}
+			case human != "":
+				to = &v1alpha1.Assignee{Kind: v1alpha1.AssigneeUser, Name: human}
+			}
+			c := g.client()
+			name, err := resolve(cmd.Context(), c, g.namespace, args[0])
+			if err != nil {
+				return err
+			}
+			t, err := c.Assign(cmd.Context(), g.namespace, name, to)
+			if client.IsCode(err, httpjson.CodeInvalidTransition) {
+				return fmt.Errorf("%s cannot be reassigned while it runs, nor once it has ended", name)
+			}
+			if err != nil {
+				return err
+			}
+			who := "nobody"
+			if t.Spec.Assignee != nil {
+				who = assignee(t)
+			}
+			outf(cmd.OutOrStdout(), "#%d is assigned to %s\n", t.Status.Number, who)
+			return nil
+		},
+	}
+	f := cmd.Flags()
+	f.StringVar(&agent, "agent", "", "assign to this Agent")
+	f.StringVar(&human, "user", "", "assign to this user")
+	f.BoolVar(&none, "none", false, "assign to nobody")
 	return cmd
 }
 

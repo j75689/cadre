@@ -1,7 +1,7 @@
 import { useRef, useState } from "react";
 import { Link, useParams } from "react-router";
 import { APIError, getTask, readThread, type Task, type ThreadEntry } from "./api";
-import { CancelTask, Composer } from "./Actions";
+import { AssignTask, CancelTask, Composer } from "./Actions";
 import { RoleLine } from "./Identity";
 import { params, useParam } from "./links";
 import { LiveRun, RunEnded } from "./LiveRun";
@@ -146,7 +146,7 @@ export function TaskPage() {
               <Subtasks ns={ns} name={name} onRead={() => setSubtasksRead(true)} />
             </div>
             <aside className="stack" aria-label="About the task">
-              <Details task={task} />
+              <Details task={task} onTask={setTask} onRefresh={onRefresh} />
               <RunEnded run={liveRun?.id} />
               {liveRun && (
                 <LiveRun key={liveRun.id} ns={ns} name={name} run={liveRun} linked={liveRun.id.toLowerCase() === linkedRun.toLowerCase()} ready={ready} />
@@ -188,7 +188,7 @@ function TaskSkeleton() {
   );
 }
 
-function Details({ task }: { task: Task }) {
+function Details({ task, onTask, onRefresh }: { task: Task; onTask: (task: Task) => void; onRefresh: () => void }) {
   const { spec, status = {} } = task;
   const run = status.phase === "Running" ? status.run : undefined;
   return (
@@ -232,6 +232,7 @@ function Details({ task }: { task: Task }) {
           ) : (
             <span className="muted">unassigned</span>
           )}
+          <AssignTask task={task} onTask={onTask} onRefresh={onRefresh} />
         </dd>
         <dt>Priority</dt>
         <dd>

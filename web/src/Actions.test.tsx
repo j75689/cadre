@@ -29,21 +29,22 @@ describe("allowed", () => {
     const none = { accept: false, rerun: false };
     const agent = { assignee: { kind: "Agent" as const, name: "coder" } };
     const cases: [ReturnType<typeof task>, ReturnType<typeof allowed>][] = [
-      [task("Todo"), { comment: true, reply: false, approve: false, ...none, cancel: true }],
-      [task("Running"), { comment: true, reply: false, approve: false, ...none, cancel: true }],
-      [task("Waiting", { waiting: { reason: "Question" } }), { comment: true, reply: true, approve: false, ...none, cancel: true }],
-      [task("Waiting", { waiting: { reason: "Review" } }), { comment: true, reply: true, approve: false, ...none, cancel: true }],
-      [task("Waiting", { waiting: { reason: "ToolApproval" } }), { comment: true, reply: false, approve: true, ...none, cancel: true }],
-      [task("Review", {}, agent), { comment: true, reply: false, approve: false, accept: true, rerun: true, cancel: true }],
-      [task("Review", {}, { assignee: { kind: "User", name: "dana" } }), { comment: true, reply: false, approve: false, accept: true, rerun: false, cancel: true }],
-      [task("Review"), { comment: true, reply: false, approve: false, accept: true, rerun: false, cancel: true }],
-      [task("Done", {}, agent), { comment: false, reply: false, approve: false, ...none, cancel: false }],
-      [task("Cancelled"), { comment: false, reply: false, approve: false, ...none, cancel: false }],
-      [task("Failed"), { comment: false, reply: false, approve: false, ...none, cancel: false }],
+      [task("Todo"), { comment: true, reply: false, approve: false, ...none, cancel: true, assign: true }],
+      [task("Running"), { comment: true, reply: false, approve: false, ...none, cancel: true, assign: false }],
+      [task("Waiting", { waiting: { reason: "Question" } }), { comment: true, reply: true, approve: false, ...none, cancel: true, assign: true }],
+      [task("Waiting", { waiting: { reason: "Review" } }), { comment: true, reply: true, approve: false, ...none, cancel: true, assign: true }],
+      [task("Waiting", { waiting: { reason: "ToolApproval" } }), { comment: true, reply: false, approve: true, ...none, cancel: true, assign: true }],
+      [task("Review", {}, agent), { comment: true, reply: false, approve: false, accept: true, rerun: true, cancel: true, assign: true }],
+      [task("Review", {}, { assignee: { kind: "User", name: "dana" } }), { comment: true, reply: false, approve: false, accept: true, rerun: false, cancel: true, assign: true }],
+      [task("Review"), { comment: true, reply: false, approve: false, accept: true, rerun: false, cancel: true, assign: true }],
+      [task("Todo", { deletingSince: "2026-11-12T09:00:00Z" }), { comment: true, reply: false, approve: false, ...none, cancel: true, assign: false }],
+      [task("Done", {}, agent), { comment: false, reply: false, approve: false, ...none, cancel: false, assign: false }],
+      [task("Cancelled"), { comment: false, reply: false, approve: false, ...none, cancel: false, assign: false }],
+      [task("Failed"), { comment: false, reply: false, approve: false, ...none, cancel: false, assign: false }],
     ];
     for (const [t, want] of cases) expect(allowed(t), `${t.status?.phase} ${t.status?.waiting?.reason ?? ""} ${t.spec.assignee?.kind ?? ""}`).toEqual(want);
     // A viewer may do none of it.
-    expect(allowed(task("Review", {}, agent), false)).toEqual({ comment: false, reply: false, approve: false, ...none, cancel: false });
+    expect(allowed(task("Review", {}, agent), false)).toEqual({ comment: false, reply: false, approve: false, ...none, cancel: false, assign: false });
   });
 });
 

@@ -165,6 +165,8 @@ func TestRoles(t *testing.T) {
 		{"a viewer may not comment", viewer, "POST", "/namespaces/team-a/tasks/x/comments", comment, 403, "you are a viewer"},
 		{"a viewer may not create", viewer, "POST", "/namespaces/team-a/tasks", `{"spec":{"title":"y"}}`, 403, "needs the member role"},
 		{"a viewer may not cancel", viewer, "POST", "/namespaces/team-a/tasks/x/cancel", "{}", 403, ""},
+		{"a viewer may not assign", viewer, "POST", "/namespaces/team-a/tasks/x/assign", `{"assignee":{"kind":"User","name":"eve"}}`, 403, "needs the member role"},
+		{"a member assigns", member, "POST", "/namespaces/team-a/tasks/x/assign", `{"assignee":{"kind":"Agent","name":"writer"}}`, 200, `"assignee":{"kind":"Agent","name":"writer"}`},
 		{"a viewer may not accept", viewer, "POST", "/namespaces/team-a/tasks/done/accept", "{}", 403, "needs the member role"},
 		{"a viewer may not run again", viewer, "POST", "/namespaces/team-a/tasks/again/rerun", "{}", 403, "needs the member role"},
 		{"a member accepts", member, "POST", "/namespaces/team-a/tasks/done/accept", "{}", 200, `"phase":"Done"`},

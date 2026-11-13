@@ -114,6 +114,7 @@ Every driver must pass the same suite, or one of them will silently misbehave:
 - Two parties conditionally write the same object at once; exactly one succeeds.
 - Re-delivering the same step advances state exactly once.
 - Two parties claim the same work item; exactly one gets it.
+- A Task's spec write (a reassign) leaves its status alone, and one from a version a status write has moved past conflicts.
 - A task in Review leaves it exactly once, accepted or run again; after a run again, exactly one claim starts its next run.
 - The process is killed and restarted; the index rebuilds completely.
 - Outbox items are reprocessed after the dispatcher dies, and take effect exactly once.

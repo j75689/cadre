@@ -393,7 +393,7 @@ Buttons are disabled while a call is in flight, and the server's error shows und
 - **Details:** a key/value list:
   - the phase badge;
   - while waiting: the reason as an amber chip, with its since-time;
-  - the assignee with its icon;
+  - the assignee with its icon, and, for a member and an admin while no run holds the task and it has not ended (Todo, Waiting or Review) or is being deleted, an **Assign** button (`AssignTask` in `Actions.tsx`). It opens, in the row, the picker New task has (`AssigneePicker` in `ui/AssigneePicker.tsx`: Unassigned, an Agent from `GET /agents`, or a user by name) set to whom the task has, with Save and Cancel, data-dirty while the pick differs. Save sends `POST /assign` (`null` for Unassigned) and the row shows the answer; an empty name is refused before sending ("Name the user to assign it to."). The server's error shows under it in a `role="alert"`, and a 409 (the task moved on, to Running say) reads the task again; a `no_role` refusal is shown as the composer's is;
   - the priority chip;
   - labels;
   - the run in progress (mode, runner, step, attempt, lease);

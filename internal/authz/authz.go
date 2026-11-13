@@ -62,6 +62,7 @@ const (
 	Reply      Action = "reply"
 	Approve    Action = "approve or deny tool calls"
 	Cancel     Action = "cancel tasks"
+	Assign     Action = "assign tasks"
 	Accept     Action = "accept tasks"
 	Rerun      Action = "run tasks again"
 	// ManageTeam is initialising or editing the Team.
@@ -79,6 +80,7 @@ var needs = map[Action]Role{
 	Reply:        Member,
 	Approve:      Member,
 	Cancel:       Member,
+	Assign:       Member,
 	Accept:       Member,
 	Rerun:        Member,
 	ManageTeam:   Admin,
