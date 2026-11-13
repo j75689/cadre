@@ -217,6 +217,44 @@ func TestArchiveEmptyTask(t *testing.T) {
 	}
 }
 
+// A task accepted in Review is archived like any Done task, archiveAfter
+// after it was accepted.
+func TestAcceptedTaskIsArchived(t *testing.T) {
+	e, _ := archiveEnv(t)
+	key := e.addTask(t, "acc", v1alpha1.AssigneeAgent)
+	e.review(t, key)
+	tk, _, err := e.m.Accept(ctx, key, alice, "ship it")
+	if err != nil {
+		t.Fatal(err)
+	}
+	accepted := tk.Status.FinishedAt
+	// The run's outbox, or the delete loop skips the task.
+	if err := e.m.Dispatch(ctx); err != nil {
+		t.Fatal(err)
+	}
+	e.clock.add(time.Hour - time.Second)
+	e.deleteFinished(t)
+	if e.gone(t, key) {
+		t.Fatal("an accepted task is archived before archiveAfter")
+	}
+	e.clock.add(time.Second)
+	e.deleteFinished(t)
+	if !e.gone(t, key) {
+		t.Fatal("an accepted task is not archived archiveAfter after it was accepted")
+	}
+	index, _ := e.snapshots(t)
+	if len(index) != 1 {
+		t.Fatalf("index %+v, want one entry", index)
+	}
+	var sum SnapshotSummary
+	if err := json.Unmarshal(index[0].Data, &sum); err != nil {
+		t.Fatal(err)
+	}
+	if sum.Name != "acc" || sum.Phase != v1alpha1.PhaseDone || accepted == nil || sum.FinishedAt == nil || !sum.FinishedAt.Time.Equal(accepted.Time) {
+		t.Fatalf("summary %+v, accepted at %v", sum, accepted)
+	}
+}
+
 // A Team with only deleteFinishedAfter deletes as before: no snapshot.
 func TestDeleteFinishedAfterUnchanged(t *testing.T) {
 	e, rec := deleteEnv(t)

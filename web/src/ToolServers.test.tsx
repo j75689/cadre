@@ -212,3 +212,43 @@ describe("ToolServerDetail", () => {
     expect(await screen.findByText("ToolServer")).toBeTruthy();
   });
 });
+
+describe("A ToolServer's Used by", () => {
+  const agents = "/namespaces/a/agents";
+  const usedBy = async () => within((await screen.findByRole("heading", { name: "Used by" })).closest("section")!);
+
+  it("links the Agents whose toolRefs name the server, and only those", async () => {
+    at("/t/a/toolservers/github", {
+      [one]: [() => json(member)],
+      [agents]: [
+        () =>
+          json({
+            items: [
+              { name: "bot", ready: true, modelRef: "claude", toolRefs: ["search", "github"] },
+              { name: "other", ready: true, modelRef: "github", toolRefs: ["search"] },
+              { name: "plain", ready: true, modelRef: "claude" },
+              { name: "writer", ready: true, modelRef: "claude", toolRefs: ["github"] },
+            ],
+          }),
+      ],
+    });
+    const card = await usedBy();
+    await waitFor(() =>
+      expect(card.getAllByRole("link").map((l) => [l.textContent, l.getAttribute("href")])).toEqual([
+        ["bot", "/t/a/agents/bot"],
+        ["writer", "/t/a/agents/writer"],
+      ]),
+    );
+  });
+
+  it("says None when no Agent uses it", async () => {
+    at("/t/a/toolservers/github", { [one]: [() => json(member)], [agents]: [() => json({ items: [{ name: "bot", ready: true, modelRef: "claude" }] })] });
+    expect(await (await usedBy()).findByText("None")).toBeTruthy();
+  });
+
+  it("is not shown to a viewer", async () => {
+    at("/t/a/toolservers/github", { [one]: [() => json(viewer)], [agents]: [() => json({ items: [] })] });
+    expect(await screen.findByText("The spec and status are shown to the team's members and admins.")).toBeTruthy();
+    expect(screen.queryByRole("heading", { name: "Used by" })).toBeNull();
+  });
+});

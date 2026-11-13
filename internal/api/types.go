@@ -82,7 +82,9 @@ type ActivityObject struct {
 	Name string `json:"name"`
 }
 
-// CommentRequest writes to a task's thread, or answers a waiting task.
+// CommentRequest writes to a task's thread, or answers a waiting task, or
+// goes with accepting or running again a task in Review, where Body may be
+// empty.
 // Author is used only by a server run with --auth=none: with a login, the
 // author is the caller's username, whatever the request says.
 type CommentRequest struct {
@@ -95,10 +97,12 @@ type Thread struct {
 	Items []manager.ThreadEntry `json:"items"`
 }
 
-// ReplyResponse is the task after a reply, and the answer it recorded.
+// ReplyResponse is the task after a reply, and the answer it recorded; or
+// after an accept or a run again, and the comment it recorded, if the
+// request had a body.
 type ReplyResponse struct {
 	Task  *v1alpha1.Task       `json:"task"`
-	Entry *manager.ThreadEntry `json:"entry"`
+	Entry *manager.ThreadEntry `json:"entry,omitempty"`
 }
 
 // AssignRequest gives a task to Assignee: an Agent or a user, or nobody
@@ -153,6 +157,10 @@ type ConfigSummary struct {
 	// Assignee is whom a Schedule's Tasks go to, in its list item, for a
 	// member and up.
 	Assignee *v1alpha1.Assignee `json:"assignee,omitempty"`
+	// ModelRef and ToolRefs are the ModelProvider and the ToolServers an
+	// Agent uses, in its list item, for a member and up.
+	ModelRef string   `json:"modelRef,omitempty"`
+	ToolRefs []string `json:"toolRefs,omitempty"`
 }
 
 // ConfigList is a namespace's resources of one configuration kind, by name.

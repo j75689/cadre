@@ -132,7 +132,19 @@ func (e *rolesEnv) do(token, method, path, body string) (int, string) {
 }
 
 func TestRoles(t *testing.T) {
-	e := startRolesWith(t, memory.NewBackend().Open(), nil, &authz.Policy{AdminUsers: []string{"Root@Example.test"}, FoldUsernames: true}, configCluster(t))
+	store := memory.NewBackend().Open()
+	e := startRolesWith(t, store, nil, &authz.Policy{AdminUsers: []string{"Root@Example.test"}, FoldUsernames: true}, configCluster(t))
+	// Two tasks a run handed to a human, to accept and to run again.
+	for _, name := range []string{"done", "again"} {
+		tk, err := manager.New(store, manager.Config{}).CreateTask(context.Background(), "team-a", name, v1alpha1.TaskSpec{Title: name, Assignee: &v1alpha1.Assignee{Kind: v1alpha1.AssigneeAgent, Name: "writer"}})
+		if err != nil {
+			t.Fatal(err)
+		}
+		tk.Status.Phase = v1alpha1.PhaseReview
+		if err := store.UpdateTaskStatus(context.Background(), tk); err != nil {
+			t.Fatal(err)
+		}
+	}
 	viewer := e.as("eve@example.test", "readers")
 	member := e.as("dana@example.test", "backend", "readers")
 	admin := e.as("lead@example.test")
@@ -155,6 +167,11 @@ func TestRoles(t *testing.T) {
 		{"a viewer may not cancel", viewer, "POST", "/namespaces/team-a/tasks/x/cancel", "{}", 403, ""},
 		{"a viewer may not assign", viewer, "POST", "/namespaces/team-a/tasks/x/assign", `{"assignee":{"kind":"User","name":"eve"}}`, 403, "needs the member role"},
 		{"a member assigns", member, "POST", "/namespaces/team-a/tasks/x/assign", `{"assignee":{"kind":"Agent","name":"writer"}}`, 200, `"assignee":{"kind":"Agent","name":"writer"}`},
+		{"a viewer may not accept", viewer, "POST", "/namespaces/team-a/tasks/done/accept", "{}", 403, "needs the member role"},
+		{"a viewer may not run again", viewer, "POST", "/namespaces/team-a/tasks/again/rerun", "{}", 403, "needs the member role"},
+		{"a member accepts", member, "POST", "/namespaces/team-a/tasks/done/accept", "{}", 200, `"phase":"Done"`},
+		{"a member runs again", member, "POST", "/namespaces/team-a/tasks/again/rerun", "{}", 200, `"phase":"Todo"`},
+		{"accept out of Review", member, "POST", "/namespaces/team-a/tasks/x/accept", "{}", 409, "not allowed in this phase"},
 		{"a member comments", member, "POST", "/namespaces/team-a/tasks/x/comments", comment, 201, ""},
 		{"a member creates", member, "POST", "/namespaces/team-a/tasks", `{"spec":{"title":"y"}}`, 201, ""},
 		{"a member may not manage the team", member, "PUT", "/namespaces/team-a/team", "{}", 403, "needs the admin role"},

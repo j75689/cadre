@@ -6,6 +6,8 @@ import (
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"reflect"
+	"strings"
 	"testing"
 
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -13,6 +15,7 @@ import (
 	v1alpha1 "github.com/j75689/cadre/api/v1alpha1"
 	"github.com/j75689/cadre/internal/api"
 	"github.com/j75689/cadre/internal/auth"
+	"github.com/j75689/cadre/internal/authz"
 	"github.com/j75689/cadre/internal/client"
 	"github.com/j75689/cadre/internal/manager"
 	"github.com/j75689/cadre/internal/storage/memory"
@@ -64,15 +67,15 @@ func TestListAgents(t *testing.T) {
 	}
 	_, got := list(ns)
 	want := []api.AgentSummary{
-		{Name: "coder", Reason: "ModelProviderNotFound", Message: "ModelProvider claude does not exist"},
-		{Name: "reviewer", Reason: "Pending", Message: "its current spec has not been checked yet"},
-		{Name: "writer", Ready: true},
+		{Name: "coder", Reason: "ModelProviderNotFound", Message: "ModelProvider claude does not exist", ModelRef: "claude"},
+		{Name: "reviewer", Reason: "Pending", Message: "its current spec has not been checked yet", ModelRef: "claude"},
+		{Name: "writer", Ready: true, ModelRef: "claude"},
 	}
 	if len(got.Items) != len(want) {
 		t.Fatalf("agents %+v, want %+v", got.Items, want)
 	}
 	for i := range want {
-		if got.Items[i] != want[i] {
+		if !reflect.DeepEqual(got.Items[i], want[i]) {
 			t.Errorf("agent %d: %+v, want %+v", i, got.Items[i], want[i])
 		}
 	}
@@ -82,9 +85,52 @@ func TestListAgents(t *testing.T) {
 	}
 	defer func() { _ = res.Body.Close() }()
 	body, _ := io.ReadAll(res.Body)
-	const exact = `{"items":[{"name":"coder","ready":false,"reason":"ModelProviderNotFound","message":"ModelProvider claude does not exist"},{"name":"reviewer","ready":false,"reason":"Pending","message":"its current spec has not been checked yet"},{"name":"writer","ready":true}]}` + "\n"
+	const exact = `{"items":[{"name":"coder","ready":false,"reason":"ModelProviderNotFound","message":"ModelProvider claude does not exist","modelRef":"claude"},{"name":"reviewer","ready":false,"reason":"Pending","message":"its current spec has not been checked yet","modelRef":"claude"},{"name":"writer","ready":true,"modelRef":"claude"}]}` + "\n"
 	if string(body) != exact {
 		t.Errorf("the body: %s, want %s", body, exact)
+	}
+}
+
+// An Agent's ModelProvider and ToolServers are a member's to see in the
+// list, as its spec is on its own page; a viewer gets its health only.
+func TestListAgentsRefsByRole(t *testing.T) {
+	writer := manager.ReadyAgent(ns, "writer", "claude", v1alpha1.AgentRuntime{Type: v1alpha1.RuntimeBuiltin})
+	writer.Spec.ToolRefs = []string{"github", "search"}
+	store := memory.NewBackend().Open()
+	roles := []v1alpha1.TeamRole{
+		{Role: v1alpha1.RoleViewer, Subjects: []v1alpha1.RoleSubject{{Kind: v1alpha1.SubjectUser, Name: "eve@example.test"}}},
+		{Role: v1alpha1.RoleMember, Subjects: []v1alpha1.RoleSubject{{Kind: v1alpha1.SubjectUser, Name: "dana@example.test"}}},
+	}
+	if err := store.CreateTeam(ctx, &v1alpha1.Team{ObjectMeta: metav1.ObjectMeta{Namespace: ns, Name: v1alpha1.TeamName}, Spec: v1alpha1.TeamSpec{Roles: roles}}); err != nil {
+		t.Fatal(err)
+	}
+	m := manager.New(store, manager.Config{Agents: manager.StaticAgents{Agents: map[string]*v1alpha1.Agent{ns + "/writer": writer}}})
+	mux := http.NewServeMux()
+	api.NewServer(m, slog.New(slog.NewTextHandler(io.Discard, nil)), api.WithAccess(auth.ModeOIDC, &authz.Policy{})).Register(mux)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		mux.ServeHTTP(w, r.WithContext(auth.WithIdentity(r.Context(), &auth.Identity{Username: r.Header.Get("X-User")})))
+	}))
+	t.Cleanup(srv.Close)
+	list := func(user string) string {
+		t.Helper()
+		req, _ := http.NewRequest("GET", srv.URL+api.Base+"/namespaces/"+ns+"/agents", nil)
+		req.Header.Set("X-User", user)
+		res, err := http.DefaultClient.Do(req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer func() { _ = res.Body.Close() }()
+		body, _ := io.ReadAll(res.Body)
+		if res.StatusCode != http.StatusOK {
+			t.Fatalf("%s lists agents: %d %s", user, res.StatusCode, body)
+		}
+		return string(body)
+	}
+	if got := list("dana@example.test"); !strings.Contains(got, `"modelRef":"claude","toolRefs":["github","search"]`) {
+		t.Errorf("a member's list: %s, want the refs", got)
+	}
+	if got := list("eve@example.test"); strings.Contains(got, "modelRef") || strings.Contains(got, "toolRefs") {
+		t.Errorf("a viewer's list: %s, want no refs", got)
 	}
 }
 

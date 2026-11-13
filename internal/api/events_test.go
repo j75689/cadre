@@ -22,6 +22,7 @@ import (
 	v1alpha1 "github.com/j75689/cadre/api/v1alpha1"
 	"github.com/j75689/cadre/internal/api"
 	"github.com/j75689/cadre/internal/authz"
+	"github.com/j75689/cadre/internal/manager"
 	"github.com/j75689/cadre/internal/storage"
 	"github.com/j75689/cadre/internal/storage/memory"
 )
@@ -188,6 +189,48 @@ func TestAssignServerForbidden(t *testing.T) {
 	}
 	if tk, err := store.GetTask(ctx, storage.Key{Namespace: "team-a", Name: "x"}); err != nil || tk.Spec.Assignee != nil {
 		t.Errorf("assignee %+v, %v, want none", tk.Spec.Assignee, err)
+	}
+}
+
+// Accepting a task in Review, and running it again, is told with an Event
+// on the Task naming who did it; a refused one is not.
+func TestReviewEvents(t *testing.T) {
+	rec := newRecorder(t)
+	store := memory.NewBackend().Open()
+	e := startRolesWith(t, store, nil, &authz.Policy{}, api.WithEvents(rec))
+	member := e.as("dev@example.test", "backend")
+	if _, err := manager.New(store, manager.Config{}).CreateTask(context.Background(), "team-a", "r", v1alpha1.TaskSpec{Title: "r", Assignee: &v1alpha1.Assignee{Kind: v1alpha1.AssigneeAgent, Name: "writer"}}); err != nil {
+		t.Fatal(err)
+	}
+	toReview := func() {
+		t.Helper()
+		tk, err := store.GetTask(context.Background(), storage.Key{Namespace: "team-a", Name: "r"})
+		if err != nil {
+			t.Fatal(err)
+		}
+		tk.Status.Phase = v1alpha1.PhaseReview
+		if err := store.UpdateTaskStatus(context.Background(), tk); err != nil {
+			t.Fatal(err)
+		}
+	}
+	task := "cadre.dev/v1alpha1 Task team-a/r"
+	for _, c := range []struct {
+		name, path string
+		review     bool
+		code       int
+		want       []recorded
+	}{
+		{"accept out of Review", "/accept", false, 409, nil},
+		{"run again", "/rerun", true, 200, []recorded{{task, "Normal", "TaskRerun", "RerunTask", "Task r sent to run again by dev@example.test"}}},
+		{"accept", "/accept", true, 200, []recorded{{task, "Normal", "TaskAccepted", "AcceptTask", "Task r accepted by dev@example.test"}}},
+	} {
+		if c.review {
+			toReview()
+		}
+		code, _ := e.do(member, "POST", "/namespaces/team-a/tasks/r"+c.path, "{}")
+		if got := rec.take(); code != c.code || fmt.Sprint(got) != fmt.Sprint(c.want) {
+			t.Errorf("%s: %d %v, want %d %v", c.name, code, got, c.code, c.want)
+		}
 	}
 }
 

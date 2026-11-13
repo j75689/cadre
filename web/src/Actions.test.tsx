@@ -26,19 +26,25 @@ function renderActions(t: ReturnType<typeof task>, name = "dana") {
 
 describe("allowed", () => {
   it("mirrors what the API accepts in each state", () => {
+    const none = { accept: false, rerun: false };
+    const agent = { assignee: { kind: "Agent" as const, name: "coder" } };
     const cases: [ReturnType<typeof task>, ReturnType<typeof allowed>][] = [
-      [task("Todo"), { comment: true, reply: false, approve: false, cancel: true, assign: true }],
-      [task("Running"), { comment: true, reply: false, approve: false, cancel: true, assign: false }],
-      [task("Waiting", { waiting: { reason: "Question" } }), { comment: true, reply: true, approve: false, cancel: true, assign: true }],
-      [task("Waiting", { waiting: { reason: "Review" } }), { comment: true, reply: true, approve: false, cancel: true, assign: true }],
-      [task("Waiting", { waiting: { reason: "ToolApproval" } }), { comment: true, reply: false, approve: true, cancel: true, assign: true }],
-      [task("Review"), { comment: true, reply: false, approve: false, cancel: true, assign: true }],
-      [task("Todo", { deletingSince: "2026-11-12T09:00:00Z" }), { comment: true, reply: false, approve: false, cancel: true, assign: false }],
-      [task("Done"), { comment: false, reply: false, approve: false, cancel: false, assign: false }],
-      [task("Cancelled"), { comment: false, reply: false, approve: false, cancel: false, assign: false }],
-      [task("Failed"), { comment: false, reply: false, approve: false, cancel: false, assign: false }],
+      [task("Todo"), { comment: true, reply: false, approve: false, ...none, cancel: true, assign: true }],
+      [task("Running"), { comment: true, reply: false, approve: false, ...none, cancel: true, assign: false }],
+      [task("Waiting", { waiting: { reason: "Question" } }), { comment: true, reply: true, approve: false, ...none, cancel: true, assign: true }],
+      [task("Waiting", { waiting: { reason: "Review" } }), { comment: true, reply: true, approve: false, ...none, cancel: true, assign: true }],
+      [task("Waiting", { waiting: { reason: "ToolApproval" } }), { comment: true, reply: false, approve: true, ...none, cancel: true, assign: true }],
+      [task("Review", {}, agent), { comment: true, reply: false, approve: false, accept: true, rerun: true, cancel: true, assign: true }],
+      [task("Review", {}, { assignee: { kind: "User", name: "dana" } }), { comment: true, reply: false, approve: false, accept: true, rerun: false, cancel: true, assign: true }],
+      [task("Review"), { comment: true, reply: false, approve: false, accept: true, rerun: false, cancel: true, assign: true }],
+      [task("Todo", { deletingSince: "2026-11-12T09:00:00Z" }), { comment: true, reply: false, approve: false, ...none, cancel: true, assign: false }],
+      [task("Done", {}, agent), { comment: false, reply: false, approve: false, ...none, cancel: false, assign: false }],
+      [task("Cancelled"), { comment: false, reply: false, approve: false, ...none, cancel: false, assign: false }],
+      [task("Failed"), { comment: false, reply: false, approve: false, ...none, cancel: false, assign: false }],
     ];
-    for (const [t, want] of cases) expect(allowed(t), `${t.status?.phase} ${t.status?.waiting?.reason ?? ""}`).toEqual(want);
+    for (const [t, want] of cases) expect(allowed(t), `${t.status?.phase} ${t.status?.waiting?.reason ?? ""} ${t.spec.assignee?.kind ?? ""}`).toEqual(want);
+    // A viewer may do none of it.
+    expect(allowed(task("Review", {}, agent), false)).toEqual({ comment: false, reply: false, approve: false, ...none, cancel: false, assign: false });
   });
 });
 
@@ -121,6 +127,74 @@ describe("Tool call note", () => {
   });
 });
 
+describe("Review", () => {
+  const agent = { assignee: { kind: "Agent" as const, name: "coder" } };
+
+  // sent records each call the composer makes, answering it with the task
+  // in phase.
+  function sent(phase: string) {
+    const posts: { url: string; body: unknown }[] = [];
+    vi.stubGlobal("fetch", (url: string, init?: RequestInit) => {
+      if (url.endsWith("/me")) return json({ mode: "none", admin: true });
+      posts.push({ url, body: JSON.parse(String(init?.body)) });
+      return json({ task: task(phase as "Done", {}, agent) });
+    });
+    return posts;
+  }
+
+  it("accepts with a note, which the server writes first", async () => {
+    const posts = sent("Done");
+    renderActions(task("Review", {}, agent));
+    const note = await screen.findByLabelText("Review note");
+    await vi.waitFor(() => expect((note as HTMLTextAreaElement).disabled).toBe(false));
+    expect(screen.getByText(/accept it, or run it again/)).toBeTruthy();
+    fireEvent.change(note, { target: { value: "looks good" } });
+    expect(document.querySelector(".review")!.hasAttribute("data-dirty")).toBe(true);
+    fireEvent.click(screen.getByRole("button", { name: "Accept" }));
+    await vi.waitFor(() => expect(posts).toEqual([{ url: "/api/v1/namespaces/a/tasks/x/accept", body: { author: "dana", body: "looks good" } }]));
+    await vi.waitFor(() => expect((screen.getByLabelText("Review note") as HTMLTextAreaElement).value).toBe(""));
+  });
+
+  it("runs it again, with no note", async () => {
+    const posts = sent("Todo");
+    renderActions(task("Review", {}, agent));
+    const again = await screen.findByRole("button", { name: "Run again" });
+    await vi.waitFor(() => expect((again as HTMLButtonElement).disabled).toBe(false));
+    fireEvent.click(again);
+    await vi.waitFor(() => expect(posts).toEqual([{ url: "/api/v1/namespaces/a/tasks/x/rerun", body: { author: "dana" } }]));
+  });
+
+  it("leaves out Run again for a task no Agent has, and says how", async () => {
+    renderActions(task("Review", {}, { assignee: { kind: "User", name: "dana" } }));
+    expect(await screen.findByRole("button", { name: "Accept" })).toBeTruthy();
+    expect(screen.queryByRole("button", { name: "Run again" })).toBeNull();
+    expect(screen.getByText("Assign an Agent to run it again.")).toBeTruthy();
+  });
+
+  it("shows the server's refusal under the card", async () => {
+    vi.stubGlobal("fetch", (url: string) => {
+      if (url.endsWith("/me")) return json({ mode: "none", admin: true });
+      return json({ error: { code: "invalid_transition", message: "assign an Agent first" } }, 409);
+    });
+    renderActions(task("Review", {}, agent));
+    const again = await screen.findByRole("button", { name: "Run again" });
+    await vi.waitFor(() => expect((again as HTMLButtonElement).disabled).toBe(false));
+    fireEvent.click(again);
+    expect((await screen.findByRole("alert")).textContent).toBe("assign an Agent first");
+  });
+
+  it("turns into a comment and back", async () => {
+    renderActions(task("Review", {}, agent));
+    const toggle = await screen.findByRole("button", { name: "Comment instead" });
+    fireEvent.change(screen.getByLabelText("Review note"), { target: { value: "draft" } });
+    fireEvent.click(toggle);
+    expect((screen.getByLabelText("Comment") as HTMLTextAreaElement).value).toBe("draft");
+    expect(screen.queryByRole("button", { name: "Accept" })).toBeNull();
+    fireEvent.click(toggle);
+    expect(screen.getByRole("button", { name: "Accept" })).toBeTruthy();
+  });
+});
+
 describe("Composer", () => {
   it("picks its mode from what the task waits for", async () => {
     const modes: [ReturnType<typeof task>, string, string[]][] = [
@@ -129,6 +203,7 @@ describe("Composer", () => {
       [task("Waiting", { waiting: { reason: "Question" } }), "Reply", ["Comment", "Approve"]],
       [task("Waiting", { waiting: { reason: "Review" } }), "Reply", ["Comment", "Approve"]],
       [task("Waiting", { waiting: { reason: "ToolApproval" } }), "Approve", ["Comment", "Reply"]],
+      [task("Review", {}, { assignee: { kind: "Agent", name: "coder" } }), "Accept", ["Comment", "Reply", "Approve"]],
     ];
     for (const [t, shown, hidden] of modes) {
       renderActions(t);

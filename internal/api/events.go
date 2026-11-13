@@ -14,7 +14,7 @@ import (
 )
 
 // WithEvents tells each Team and AgentAccess write made through the API,
-// and each Task reassigned, with a Normal Event on its object, through recorder, naming who made
+// and each Task reassigned, accepted or run again, with a Normal Event on its object, through recorder, naming who made
 // it. Without it no Event is emitted.
 func WithEvents(recorder events.EventRecorder) Option {
 	return func(s *Server) { s.recorder = recorder }

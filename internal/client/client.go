@@ -186,6 +186,22 @@ func (c *Client) Reply(ctx context.Context, ns, name, author, body string) (*api
 	return &out, err
 }
 
+// Accept accepts the work of a task in Review: it is Done. A non-empty body
+// is written first as a comment.
+func (c *Client) Accept(ctx context.Context, ns, name, author, body string) (*api.ReplyResponse, error) {
+	var out api.ReplyResponse
+	_, err := c.do(ctx, http.MethodPost, taskPath(ns, name)+"/accept", api.CommentRequest{Author: author, Body: body}, &out)
+	return &out, err
+}
+
+// Rerun sends a task in Review back to Todo, for its Agent to run again. A
+// non-empty body is written first as a comment.
+func (c *Client) Rerun(ctx context.Context, ns, name, author, body string) (*api.ReplyResponse, error) {
+	var out api.ReplyResponse
+	_, err := c.do(ctx, http.MethodPost, taskPath(ns, name)+"/rerun", api.CommentRequest{Author: author, Body: body}, &out)
+	return &out, err
+}
+
 // Approve approves (approve true) or denies the tool call a task waits on.
 func (c *Client) Approve(ctx context.Context, ns, name, author string, approve bool, note string) (*api.ApproveResponse, error) {
 	var out api.ApproveResponse

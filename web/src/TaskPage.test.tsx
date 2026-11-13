@@ -232,6 +232,31 @@ describe("Assign", () => {
   });
 });
 
+describe("A task in Review", () => {
+  it("is accepted from its composer, and ends with no actions left", async () => {
+    let current = task("Review", {}, { assignee: { kind: "Agent", name: "coder" } });
+    const posts: string[] = [];
+    vi.stubGlobal("fetch", (url: string, init?: RequestInit) => {
+      if (url.endsWith("/me")) return json({ mode: "none", admin: true });
+      const path = new URL(url, "http://cadre.test").pathname;
+      if (init?.method === "POST") {
+        posts.push(path);
+        current = { ...current, status: { phase: "Done" } };
+        return json({ task: current });
+      }
+      if (path.endsWith("/thread") || path.endsWith("/runs") || path.endsWith("/tasks")) return json({ items: [] });
+      return json(current);
+    });
+    renderTask();
+    const accept = await screen.findByRole("button", { name: "Accept" });
+    expect(screen.getByRole("button", { name: "Run again" })).toBeTruthy();
+    await vi.waitFor(() => expect((accept as HTMLButtonElement).disabled).toBe(false));
+    fireEvent.click(accept);
+    await vi.waitFor(() => expect(screen.queryByRole("region", { name: "Actions" })).toBeNull());
+    expect(posts).toEqual(["/api/v1/namespaces/a/tasks/x/accept"]);
+  });
+});
+
 describe("Subtasks", () => {
   it("lists a task's subtasks with their number, phase and assignee", async () => {
     server([], undefined, [subtask(1, "Done"), subtask(2)]);

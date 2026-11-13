@@ -220,6 +220,71 @@ func TestReassign(t *testing.T) {
 	}
 }
 
+// review claims key's task and finishes its run for review.
+func (e *env) review(t *testing.T, key storage.Key) {
+	t.Helper()
+	c := e.claim(t)
+	if _, _, err := e.m.Finish(ctx, key, FinishRequest{RunID: c.RunID, Outcome: task.OutcomeReview}); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestAcceptAndRerun(t *testing.T) {
+	e := newEnv(t, 1)
+	key := e.addTask(t, "t", v1alpha1.AssigneeAgent)
+
+	// Not in Review: refused before anything is written.
+	for name, act := range map[string]func(context.Context, storage.Key, Author, string) (*v1alpha1.Task, *ThreadEntry, error){"accept": e.m.Accept, "rerun": e.m.Rerun} {
+		if _, _, err := act(ctx, key, alice, "too early"); !errors.Is(err, task.ErrInvalidTransition) {
+			t.Fatalf("%s a Todo task: %v", name, err)
+		}
+	}
+	if entries, _ := e.m.ReadThread(ctx, key, 0, 0); len(entries) != 0 {
+		t.Fatalf("a refused review wrote %d entries", len(entries))
+	}
+
+	// Run again, with a note: a Comment, then Todo, and the Agent claims a
+	// second run.
+	e.review(t, key)
+	tk, entry, err := e.m.Rerun(ctx, key, alice, "also cover the CLI")
+	if err != nil || tk.Status.Phase != v1alpha1.PhaseTodo || entry == nil || entry.Kind != EntryComment || entry.Body != "also cover the CLI" {
+		t.Fatalf("rerun: %+v %+v %v", tk, entry, err)
+	}
+	e.review(t, key)
+	if runs := e.get(t, key).Status.Runs; runs == nil || runs.Count != 2 {
+		t.Fatalf("runs after a rerun: %+v", runs)
+	}
+
+	// Accept, without a note: no entry, Done.
+	tk, entry, err = e.m.Accept(ctx, key, alice, "  ")
+	if err != nil || tk.Status.Phase != v1alpha1.PhaseDone || tk.Status.FinishedAt == nil || entry != nil {
+		t.Fatalf("accept: %+v %+v %v", tk, entry, err)
+	}
+	if entries, _ := e.m.ReadThread(ctx, key, 0, 0); len(entries) != 1 {
+		t.Fatalf("thread after accept: %+v", entries)
+	}
+}
+
+// A task in Review that is not assigned to an Agent cannot run again, and
+// the refusal writes nothing.
+func TestRerunNeedsAnAgent(t *testing.T) {
+	e := newEnv(t, 1)
+	key := e.addTask(t, "t", v1alpha1.AssigneeAgent)
+	e.review(t, key)
+	e.backend.EditSpec(key, func(spec *v1alpha1.TaskSpec) {
+		spec.Assignee = &v1alpha1.Assignee{Kind: v1alpha1.AssigneeUser, Name: "dana"}
+	})
+	if _, _, err := e.m.Rerun(ctx, key, alice, "again"); !errors.Is(err, task.ErrInvalidTransition) || !strings.Contains(err.Error(), "assign an Agent first") {
+		t.Fatalf("rerun a task assigned to a user: %v", err)
+	}
+	if entries, _ := e.m.ReadThread(ctx, key, 0, 0); len(entries) != 0 {
+		t.Fatalf("a refused rerun wrote %d entries", len(entries))
+	}
+	if p := e.get(t, key).Status.Phase; p != v1alpha1.PhaseReview {
+		t.Fatalf("phase %s, want Review", p)
+	}
+}
+
 func TestRunsAndEvents(t *testing.T) {
 	e := newEnv(t, 1)
 	key := e.addTask(t, "t", v1alpha1.AssigneeAgent)

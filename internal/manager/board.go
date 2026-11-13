@@ -370,6 +370,49 @@ func (m *Manager) Reassign(ctx context.Context, key storage.Key, assignee *v1alp
 	return nil, fmt.Errorf("reassign %s: %w", key, ErrBusy)
 }
 
+// Accept is a human accepting the work of a task in Review: a Comment
+// entry with body, if it is not empty, then the task is Done.
+//
+// It refuses before writing anything when a fresh read shows the task is not
+// in Review. If the phase changes between that read and the transition, the
+// entry stands and the call still fails with ErrInvalidTransition, as for
+// Answer.
+func (m *Manager) Accept(ctx context.Context, key storage.Key, author Author, body string) (*v1alpha1.Task, *ThreadEntry, error) {
+	return m.review(ctx, key, author, body, task.Accept{})
+}
+
+// Rerun is a human sending a task in Review back to Todo, for its Agent to
+// run again: a Comment entry with body, if it is not empty, then the
+// transition. A task not assigned to an Agent is refused, before anything
+// is written, as one not in Review is. The entry and a late refusal are as
+// for Accept.
+func (m *Manager) Rerun(ctx context.Context, key storage.Key, author Author, body string) (*v1alpha1.Task, *ThreadEntry, error) {
+	return m.review(ctx, key, author, body, task.Rerun{})
+}
+
+// review is Accept's and Rerun's: ev, refused on a fresh read before the
+// comment is written, then applied.
+func (m *Manager) review(ctx context.Context, key storage.Key, author Author, body string, ev task.Event) (*v1alpha1.Task, *ThreadEntry, error) {
+	t, err := m.store.GetTask(ctx, key)
+	if err != nil {
+		return nil, nil, err
+	}
+	if _, err := task.Apply(t, ev, m.now()); err != nil {
+		return nil, nil, err
+	}
+	var entry *ThreadEntry
+	if strings.TrimSpace(body) != "" {
+		if entry, err = m.AppendThread(ctx, key, author, EntryComment, body); err != nil {
+			return nil, nil, err
+		}
+	}
+	t, err = m.transition(ctx, key, ev)
+	if err != nil {
+		return nil, entry, err
+	}
+	return t, entry, nil
+}
+
 // Runs returns the task's run history, oldest first, including runs whose
 // end the dispatcher has not yet moved out of the outbox.
 func (m *Manager) Runs(ctx context.Context, key storage.Key) ([]v1alpha1.RunRecord, error) {

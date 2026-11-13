@@ -19,7 +19,7 @@ import (
 
 func newTaskCmd(g *globals) *cobra.Command {
 	cmd := &cobra.Command{Use: "task", Short: "Create, inspect and steer tasks"}
-	cmd.AddCommand(newTaskCreate(g), newTaskList(g), newTaskGet(g), newTaskComment(g), newTaskReply(g), newTaskDecide(g, true), newTaskDecide(g, false), newTaskAssign(g), newTaskCancel(g))
+	cmd.AddCommand(newTaskCreate(g), newTaskList(g), newTaskGet(g), newTaskComment(g), newTaskReply(g), newTaskDecide(g, true), newTaskDecide(g, false), newTaskReview(g, true), newTaskReview(g, false), newTaskAssign(g), newTaskCancel(g))
 	return cmd
 }
 
@@ -369,6 +369,46 @@ func newTaskAssign(g *globals) *cobra.Command {
 	f.StringVar(&agent, "agent", "", "assign to this Agent")
 	f.StringVar(&human, "user", "", "assign to this user")
 	f.BoolVar(&none, "none", false, "assign to nobody")
+	return cmd
+}
+
+// newTaskReview is "task accept" or, with accept false, "task rerun": the
+// way out of Review.
+func newTaskReview(g *globals, accept bool) *cobra.Command {
+	use, short := "accept", "Accept the work of a task in Review: it is Done"
+	if !accept {
+		use, short = "rerun", "Send a task in Review back to its agent to run again"
+	}
+	var msg string
+	cmd := &cobra.Command{
+		Use:   use + " NAME|#NUMBER",
+		Short: short,
+		Args:  cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			c := g.client()
+			name, err := resolve(cmd.Context(), c, g.namespace, args[0])
+			if err != nil {
+				return err
+			}
+			act := c.Accept
+			if !accept {
+				act = c.Rerun
+			}
+			res, err := act(cmd.Context(), g.namespace, name, g.as, msg)
+			if client.IsCode(err, httpjson.CodeInvalidTransition) {
+				if t, gerr := c.GetTask(cmd.Context(), g.namespace, name); gerr == nil && t.Status.Phase == v1alpha1.PhaseReview && !accept {
+					return fmt.Errorf("%s is not assigned to an agent: assign an Agent first", name)
+				}
+				return fmt.Errorf("%s is not in Review", name)
+			}
+			if err != nil {
+				return err
+			}
+			outf(cmd.OutOrStdout(), "#%d is %s\n", res.Task.Status.Number, res.Task.Status.Phase)
+			return nil
+		},
+	}
+	cmd.Flags().StringVarP(&msg, "message", "m", "", "a comment written first")
 	return cmd
 }
 

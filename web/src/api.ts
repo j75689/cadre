@@ -184,6 +184,10 @@ export interface AgentSummary {
   // assignee is whom a Schedule's tasks go to, in GET /schedules, for a
   // member and up.
   assignee?: { kind: string; name: string };
+  // modelRef and toolRefs are what an Agent uses, in GET /agents, for a
+  // member and up.
+  modelRef?: string;
+  toolRefs?: string[];
 }
 
 // ConfigResource is a configuration resource, such as an Agent, as the
@@ -428,6 +432,14 @@ export const approve = (ns: string, name: string, author: string, ok: boolean, n
 
 // assign gives a task to assignee, or to nobody when it is null.
 export const assign = (ns: string, name: string, assignee: Assignee | null) => post<Task>(`${taskPath(ns, name)}/assign`, { assignee });
+
+// accept and rerun take a task out of Review: Done, or back to its Agent.
+// A non-empty body is written first as a comment, the entry answered.
+export const accept = (ns: string, name: string, author: string, body: string) =>
+  post<{ task: Task; entry?: ThreadEntry }>(`${taskPath(ns, name)}/accept`, { author: author || undefined, body: body || undefined });
+
+export const rerun = (ns: string, name: string, author: string, body: string) =>
+  post<{ task: Task; entry?: ThreadEntry }>(`${taskPath(ns, name)}/rerun`, { author: author || undefined, body: body || undefined });
 
 export const cancel = (ns: string, name: string) => post<Task>(`${taskPath(ns, name)}/cancel`, {});
 

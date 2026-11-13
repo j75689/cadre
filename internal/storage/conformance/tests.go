@@ -131,7 +131,7 @@ func testNotFound(t *testing.T, s *suite) {
 func testClaimExactlyOnce(t *testing.T, s *suite) {
 	a, b := s.open(), s.open()
 	s.newTask(a, "work", 1, "")
-	readers := readBarrier(parties)
+	readers := readBarrier()
 	wins, errs := race(parties, []storage.Driver{a, b}, func(i int, d storage.Driver) error {
 		return transitionAfter(s.ctx, d, s.key("work"), task.Claim{
 			RunID: runID(i), Mode: v1alpha1.RunModeRuntime, Runner: fmt.Sprintf("runner-%d", i), Lease: time.Minute,
@@ -147,6 +147,64 @@ func testClaimExactlyOnce(t *testing.T, s *suite) {
 	}
 }
 
+// A task in Review leaves it once: of parties accepting it and running it
+// again at once, exactly one write wins. After a run again, of parties
+// claiming it, exactly one starts the second run.
+func testReviewExitHappensOnce(t *testing.T, s *suite) {
+	a, b := s.open(), s.open()
+	toReview := func(name string) {
+		t.Helper()
+		s.newTask(a, name, 1, "")
+		if err := transition(s.ctx, a, s.key(name), task.Claim{RunID: runID(1), Mode: v1alpha1.RunModeRuntime, Lease: time.Minute}); err != nil {
+			t.Fatalf("claim %s: %v", name, err)
+		}
+		if err := transition(s.ctx, a, s.key(name), task.Finish{RunID: runID(1), Outcome: task.OutcomeReview}); err != nil {
+			t.Fatalf("finish %s: %v", name, err)
+		}
+	}
+
+	toReview("either")
+	readers := readBarrier()
+	wins, errs := race(parties, []storage.Driver{a, b}, func(i int, d storage.Driver) error {
+		var ev task.Event = task.Accept{}
+		if i%2 == 1 {
+			ev = task.Rerun{}
+		}
+		return transitionAfter(s.ctx, d, s.key("either"), ev, readers)
+	})
+	if wins != 1 {
+		t.Fatalf("%d review exits succeeded, want exactly 1", wins)
+	}
+	allErrorsAre(t, errs, task.ErrInvalidTransition)
+	if p := s.get(b, "either").Status.Phase; p != v1alpha1.PhaseDone && p != v1alpha1.PhaseTodo {
+		t.Fatalf("after the race: phase %s", p)
+	}
+
+	toReview("again")
+	readers = readBarrier()
+	wins, errs = race(parties, []storage.Driver{a, b}, func(_ int, d storage.Driver) error {
+		return transitionAfter(s.ctx, d, s.key("again"), task.Rerun{}, readers)
+	})
+	if wins != 1 {
+		t.Fatalf("%d runs again succeeded, want exactly 1", wins)
+	}
+	allErrorsAre(t, errs, task.ErrInvalidTransition)
+	readers = readBarrier()
+	wins, errs = race(parties, []storage.Driver{a, b}, func(i int, d storage.Driver) error {
+		return transitionAfter(s.ctx, d, s.key("again"), task.Claim{
+			RunID: runID(10 + i), Mode: v1alpha1.RunModeRuntime, Runner: fmt.Sprintf("runner-%d", i), Lease: time.Minute,
+		}, readers)
+	})
+	if wins != 1 {
+		t.Fatalf("%d claims after a run again succeeded, want exactly 1", wins)
+	}
+	allErrorsAre(t, errs, task.ErrInvalidTransition)
+	got := s.get(a, "again").Status
+	if got.Phase != v1alpha1.PhaseRunning || got.Run == nil || got.Runs == nil || got.Runs.Count != 2 || got.Run.ID != got.Runs.LastID || got.Run.ID == runID(1) {
+		t.Fatalf("after the claims: %+v", got)
+	}
+}
+
 // Re-delivering the same step advances state exactly once, and its outbox
 // item is written once.
 func testRedeliveredStepAdvancesOnce(t *testing.T, s *suite) {
@@ -159,7 +217,7 @@ func testRedeliveredStepAdvancesOnce(t *testing.T, s *suite) {
 	step := task.Advance{RunID: run, Step: 0, Attempt: 1, Runner: "w", Outbox: []v1alpha1.OutboxItem{{
 		ID: runID(100), Kind: v1alpha1.OutboxCreateSubtask, Spec: &v1alpha1.TaskSpec{Title: "child"},
 	}}}
-	readers := readBarrier(parties)
+	readers := readBarrier()
 	wins, errs := race(parties, []storage.Driver{a, b}, func(_ int, d storage.Driver) error {
 		return transitionAfter(s.ctx, d, s.key("steps"), step, readers)
 	})

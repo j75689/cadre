@@ -47,6 +47,9 @@ var (
 	// ErrDeleting means the task is being deleted: it takes no event any
 	// more.
 	ErrDeleting = errors.New("the task is being deleted")
+	// ErrNeedsAgent means a task in Review was to run again, but no Agent
+	// has it.
+	ErrNeedsAgent = fmt.Errorf("assign an Agent first: %w", ErrInvalidTransition)
 )
 
 // Kind names an event.
@@ -66,6 +69,8 @@ const (
 	KindReply     Kind = "Reply"
 	KindReclaim   Kind = "Reclaim"
 	KindCancel    Kind = "Cancel"
+	KindAccept    Kind = "Accept"
+	KindRerun     Kind = "Rerun"
 	KindAckOutbox Kind = "AckOutbox"
 	KindThread    Kind = "ThreadAdvanced"
 	KindWaitingAt Kind = "WaitingAt"
@@ -97,6 +102,8 @@ var From = map[Kind][]v1alpha1.Phase{
 	KindReply:     {v1alpha1.PhaseWaiting},
 	KindReclaim:   {v1alpha1.PhaseRunning},
 	KindCancel:    allPhases,
+	KindAccept:    {v1alpha1.PhaseReview},
+	KindRerun:     {v1alpha1.PhaseReview},
 	KindAckOutbox: allPhases,
 	KindThread:    append([]v1alpha1.Phase{unborn}, allPhases...),
 	KindWaitingAt: allPhases,
@@ -280,6 +287,15 @@ type Reclaim struct {
 // Cancel is a human cancelling the task.
 type Cancel struct{}
 
+// Accept is a human accepting the work of a task in Review: it is Done.
+type Accept struct{}
+
+// Rerun is a human sending a task in Review back to Todo, for its Agent to
+// run again: the next Claim starts a new run. Only a task assigned to an
+// Agent can be run again; this is decided here, on the fresh read, as for
+// Claim.
+type Rerun struct{}
+
 // AckOutbox removes outbox items the dispatcher has applied.
 type AckOutbox struct {
 	IDs []string
@@ -411,6 +427,8 @@ func (Finish) kind() Kind    { return KindFinish }
 func (Reply) kind() Kind     { return KindReply }
 func (Reclaim) kind() Kind   { return KindReclaim }
 func (Cancel) kind() Kind    { return KindCancel }
+func (Accept) kind() Kind    { return KindAccept }
+func (Rerun) kind() Kind     { return KindRerun }
 func (AckOutbox) kind() Kind { return KindAckOutbox }
 
 func (e Heartbeat) runID() string    { return e.RunID }
@@ -642,6 +660,16 @@ func Apply(t *v1alpha1.Task, ev Event, now time.Time) (Result, error) {
 		}
 		s.Waiting = nil
 		s.Phase = v1alpha1.PhaseCancelled
+
+	case Accept:
+		s.Phase = v1alpha1.PhaseDone
+
+	case Rerun:
+		if t.Spec.Assignee == nil || t.Spec.Assignee.Kind != v1alpha1.AssigneeAgent {
+			return Result{}, ErrNeedsAgent
+		}
+		s.Waiting = nil
+		s.Phase = v1alpha1.PhaseTodo
 
 	case ReserveItem:
 		if ev.To < 1 || ev.To == ev.From {
